@@ -435,6 +435,9 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     api_validation = ast.parse(
         (root / "gpurec" / "api" / "_validation.py").read_text(encoding="utf-8")
     )
+    api_model = (root / "gpurec" / "api" / "model.py").read_text(
+        encoding="utf-8"
+    )
     workflow_config = (
         root / "gpurec" / "workflow" / "config.py"
     ).read_text(encoding="utf-8")
@@ -489,6 +492,8 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     assert "_normalize_family_index" not in core_model
     assert 'nonnegative_int("start", start)' in core_model
     assert 'optional_positive_int("max_families", max_families)' in core_model
+    assert "math.isfinite(value)" not in api_model
+    assert 'return nonnegative_int("prefetch_batches", value)' in api_model
     assert "from numbers import Integral" not in batch_planning
     assert "math.isfinite" not in batch_planning
     assert "integer_value(name, value)" in batch_planning

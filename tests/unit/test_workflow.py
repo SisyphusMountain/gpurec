@@ -2961,6 +2961,27 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
         GeneReconModel(dataset=dataset, mode="global", **{field: value})
 
 
+def test_gene_recon_prefetch_batches_normalization_preserves_aliases():
+    normalize = api_model._normalize_prefetch_batches
+
+    assert normalize(None, lazy=True) == "all"
+    assert normalize(None, lazy=False) == 0
+    assert normalize("", lazy=True) == "all"
+    assert normalize("all", lazy=True) == "all"
+    assert normalize("none", lazy=True) == 0
+    assert normalize("false", lazy=True) == 0
+    assert normalize("3", lazy=True) == 3
+    assert normalize(4.0, lazy=True) == 4
+
+    for value in (True, 1.5, math.inf, object()):
+        with pytest.raises(ValueError, match="integer or 'all'"):
+            normalize(value, lazy=True)
+
+    for value in (-1, "-1"):
+        with pytest.raises(ValueError, match="non-negative or 'all'"):
+            normalize(value, lazy=True)
+
+
 @pytest.mark.parametrize(
     ("factory", "kwargs", "message"),
     [

@@ -7286,7 +7286,9 @@ candidate controls to the shared helpers too.  The Rust scheduler bridge keeps
 only its string adapter locally and delegates non-string integer semantics to
 the same shared validation helper.  Checkpoint resume metadata now keeps its
 checkpoint-specific error wording while using the shared nonnegative-integer
-validator.
+validator.  The resident-model \texttt{prefetch\_batches} adapter keeps only
+its \texttt{all}/disabled string aliases locally before delegating count
+semantics to that shared helper.
 
 The float-range slice now follows the same ownership boundary:
 \texttt{gpurec.\_validation} owns \texttt{finite\_float()},

@@ -304,19 +304,12 @@ def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int |
             value = int(text)
         except ValueError as exc:
             raise ValueError("prefetch_batches must be non-negative or 'all'") from exc
-    if isinstance(value, bool):
-        raise ValueError("prefetch_batches must be an integer or 'all'")
-    if isinstance(value, int):
-        count = int(value)
-    elif isinstance(value, float):
-        if not math.isfinite(value) or not value.is_integer():
-            raise ValueError("prefetch_batches must be an integer or 'all'")
-        count = int(value)
-    else:
-        raise ValueError("prefetch_batches must be an integer or 'all'")
-    if count < 0:
-        raise ValueError("prefetch_batches must be non-negative or 'all'")
-    return count
+    try:
+        return nonnegative_int("prefetch_batches", value)
+    except ValueError as exc:
+        if "non-negative" in str(exc):
+            raise ValueError("prefetch_batches must be non-negative or 'all'") from exc
+        raise ValueError("prefetch_batches must be an integer or 'all'") from exc
 
 
 def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
