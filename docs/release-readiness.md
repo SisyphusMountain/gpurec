@@ -35,8 +35,8 @@ on `examples/minimal-run-config.json` and
 remains part of the command surface, including genewise Hessian-SGD route knobs
 and the specieswise Adagrad restart schedule, and verifies the
 `--require-cuda-backward-ready` preflight gate is exposed. It also smokes
-`gpurec checkpoint-info --help` so checkpoint inspection stays available
-without CUDA model construction. The same package job keeps
+`gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
+inspection stays available without CUDA model construction. The same package job keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 checks source-archive preprocessing reports the tiny fixtures as
@@ -103,6 +103,7 @@ gpurec --help
 python -m gpurec.cli --help
 gpurec config-template --mode genewise
 gpurec config-template --mode specieswise
+gpurec summary-info --help
 gpurec checkpoint-info --help
 gpurec sample --help
 gpurec run --help
@@ -153,6 +154,7 @@ CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' gpurec config-template --mode genewise
 CUDA_VISIBLE_DEVICES='' gpurec config-template --mode specieswise
 CUDA_VISIBLE_DEVICES='' gpurec validate-config --config examples/minimal-run-config.json
+CUDA_VISIBLE_DEVICES='' gpurec summary-info --help
 CUDA_VISIBLE_DEVICES='' gpurec checkpoint-info --help
 CUDA_VISIBLE_DEVICES='' python - <<'PY'
 import gpurec

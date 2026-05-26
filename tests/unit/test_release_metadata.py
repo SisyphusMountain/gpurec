@@ -560,6 +560,10 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "gpurec validate-config --help",
         "validate-config-help.txt",
         "--require-cuda-backward-ready",
+        "gpurec summary-info --help",
+        "summary-info-help.txt",
+        "--summary",
+        "summary.json",
         "gpurec checkpoint-info --help",
         "checkpoint-info-help.txt",
         "gpurec sample --help",
@@ -1001,6 +1005,7 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "gpurec config-template --mode specieswise",
         "gpurec validate-config --help",
         "--require-cuda-backward-ready",
+        "gpurec summary-info --help",
         "gpurec checkpoint-info --help",
         "gpurec sample --help",
         "gpurec run --help",
@@ -1110,7 +1115,8 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
     assert (
         "`config-template`, `validate-config`,\n  `optimize`, "
-        "`checkpoint-info`, `sample`, `run`, and `backtrack-check`\n  commands"
+        "`summary-info`, `checkpoint-info`, `sample`, `run`, and\n  "
+        "`backtrack-check` commands"
     ) in readme
     assert "gpurec validate-config --config examples/minimal-run-config.json" in readme
     assert "--check-preprocess" in readme
@@ -1137,6 +1143,7 @@ def test_readme_documents_installed_sampling_binary_setup():
         "`gpurec validate-config --help`"
         in normalized_guide
     )
+    assert "`gpurec summary-info --help`" in normalized_guide
     assert "`gpurec checkpoint-info --help`" in normalized_guide
     assert (
         "installed `gpurec sample --help`, `gpurec run --help`, and "

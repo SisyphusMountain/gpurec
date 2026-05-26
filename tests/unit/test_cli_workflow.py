@@ -78,6 +78,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
     assert _parser_action_dests("checkpoint-info") == {"checkpoint"}
+    assert _parser_action_dests("summary-info") == {"summary"}
     assert _parser_action_dests("config-template") == {
         "mode",
         "species_tree",
@@ -1321,6 +1322,163 @@ def test_cli_checkpoint_info_raw_theta_error_suggests_real_checkpoints(
     assert "checkpoints/latest.pt" in captured.err
     assert "not theta_final.pt" in captured.err
     assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_summary_info_reports_status_route_and_final_check(
+    tmp_path: Path,
+    capsys,
+):
+    basis = "hogenom_and_" + "test_trees_" + "1000"
+    summary = tmp_path / "summary with spaces.json"
+    payload = {
+        "status": "not_converged",
+        "reason": "max_steps",
+        "mode": "genewise",
+        "optimizer": "hessian-sgd",
+        "families": 3,
+        "species": 4,
+        "batches": 2,
+        "batch_packing": "depth_first_fit",
+        "family_chunk_size": 0,
+        "clade_budget": 500_000,
+        "fixed_iters_e": None,
+        "fixed_iters_pi": 16,
+        "neumann_terms": 16,
+        "objective": "negative_log_likelihood_bits",
+        "gradient_route": "implicit_first_order_adjoint",
+        "rate_parameterization": "base2_log_dlt_rates",
+        "production_default_basis": basis,
+        "configured_steps": 5000,
+        "optimizer_step_cap": 5000,
+        "optimizer_step_cap_reason": "configured_steps",
+        "final_check_iters": 32,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "hessian_sgd_normal_fixed_iters_pi": None,
+        "hessian_sgd_normal_neumann_terms": None,
+        "steps_completed": 7,
+        "elapsed_s": 3.25,
+        "best_step": 5,
+        "sampling_checkpoint": str(tmp_path / "checkpoints" / "best.pt"),
+        "final_nll_bits": 12.5,
+        "final_log_likelihood_bits": -12.5,
+        "final_grad_inf": 0.75,
+        "final_projected_grad_inf": 0.625,
+        "best_nll_bits": 10.25,
+        "best_log_likelihood_bits": -10.25,
+        "final_check_status": "ok",
+        "final_check_source": "configured_solver_budget",
+        "final_check_loss_abs_delta_bits": 0.0,
+        "final_check_grad_max_abs_delta": 0.0,
+        "final_check_grad_rel_inf_delta": 0.0,
+    }
+    summary.write_text(json.dumps(payload), encoding="utf-8")
+
+    main(["summary-info", "--summary", str(summary)])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert gpurec_cli._optional_text("summary", summary.resolve()) in captured.out
+    for token in (
+        "status=not_converged",
+        "reason=max_steps",
+        "mode=genewise",
+        "optimizer=hessian-sgd",
+        "families=3",
+        "species=4",
+        "batches=2",
+        "batch_packing=depth_first_fit",
+        "family_chunk_size=0",
+        "clade_budget=500000",
+        "fixed_iters_e=null",
+        "fixed_iters_pi=16",
+        "neumann_terms=16",
+        "objective=negative_log_likelihood_bits",
+        "gradient_route=implicit_first_order_adjoint",
+        "rate_parameterization=base2_log_dlt_rates",
+        f"production_default_basis={basis}",
+        "configured_steps=5000",
+        "optimizer_step_cap=5000",
+        "optimizer_step_cap_reason=configured_steps",
+        "final_check_iters=32",
+        "solver_warmup_iters=4",
+        "fd_adam_warmup_steps=3",
+        "fd_hessian_refresh_steps=16",
+        "hessian_sgd_normal_fixed_iters_pi=null",
+        "hessian_sgd_normal_neumann_terms=null",
+        "steps_completed=7",
+        "elapsed_s=3.250000",
+        "best_step=5",
+        "final_nll_bits=12.500000",
+        "final_log_likelihood_bits=-12.500000",
+        "final_grad_inf=0.750000",
+        "final_projected_grad_inf=0.625000",
+        "best_nll_bits=10.250000",
+        "best_log_likelihood_bits=-10.250000",
+        "final_check_status=ok",
+        "final_check_source=configured_solver_budget",
+        "final_check_reason=null",
+        "final_check_fallback_clade_budget=null",
+        "final_check_loss_abs_delta_bits=0.000000",
+        "final_check_grad_max_abs_delta=0.000000",
+        "final_check_grad_rel_inf_delta=0.000000",
+    ):
+        assert token in captured.out
+
+
+def test_cli_summary_info_reports_adagrad_restart_route_fields(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "adagrad_restart_schedule_complete",
+                "mode": "specieswise",
+                "optimizer": "adagrad-restarts",
+                "final_check_iters": 128,
+                "adagrad_restart_schedule": "8:1:60,16:0.5:35,32:0.5:30",
+                "adagrad_restart_total_steps": 125,
+                "adagrad_restart_final_check_iters": 128,
+                "steps_completed": 125,
+                "final_nll_bits": 12.0,
+                "final_log_likelihood_bits": -12.0,
+                "final_grad_inf": 0.5,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(["summary-info", "--summary", str(summary)])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "optimizer=adagrad-restarts" in captured.out
+    assert "reason=adagrad_restart_schedule_complete" in captured.out
+    assert "final_check_iters=128" in captured.out
+    assert "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" in captured.out
+    assert "adagrad_restart_total_steps=125" in captured.out
+    assert "adagrad_restart_final_check_iters=128" in captured.out
+    assert "solver_warmup_iters" not in captured.out
+
+
+def test_cli_summary_info_reports_missing_path_without_traceback(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "missing.json"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["summary-info", "--summary", str(summary)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "--summary path does not exist or is not a file" in captured.err
+    assert str(summary) in captured.err
     assert "Traceback" not in captured.err
 
 

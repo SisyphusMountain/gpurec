@@ -285,6 +285,9 @@ jobs:
           grep -q '"adagrad_restart_final_check_iters": 128' specieswise-config-template.json
           gpurec validate-config --help | tee validate-config-help.txt
           grep -q -- "--require-cuda-backward-ready" validate-config-help.txt
+          gpurec summary-info --help | tee summary-info-help.txt
+          grep -q -- "--summary" summary-info-help.txt
+          grep -q -- "summary.json" summary-info-help.txt
           gpurec checkpoint-info --help | tee checkpoint-info-help.txt
           grep -q -- "--checkpoint" checkpoint-info-help.txt
           grep -q -- "checkpoint" checkpoint-info-help.txt

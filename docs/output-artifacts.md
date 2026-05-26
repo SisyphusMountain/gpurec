@@ -84,6 +84,12 @@ and fallback budget/loss/gradient delta fields, for quick terminal triage.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.
+The same one-line summary view is available after a run without loading a
+checkpoint or constructing the CUDA model:
+
+```bash
+gpurec summary-info --summary output_gpurec/summary.json
+```
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering

@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from gpurec.core.batch_planning import (
@@ -306,6 +307,13 @@ def _optimization_result_text(result: Any) -> str:
     )
 
 
+def _summary_info_text(summary: Path, payload: dict[str, Any]) -> str:
+    return (
+        f"{_optional_text('summary', summary)} "
+        f"{_optimization_result_text(SimpleNamespace(**payload))}"
+    )
+
+
 def optimize(config: Any) -> Any:
     from gpurec.workflow.optimize import optimize as _optimize
 
@@ -447,6 +455,14 @@ def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:
     if not path.is_file():
         raise ValueError(
             f"--checkpoint path does not exist or is not a file: {path}"
+        )
+
+
+def _validate_summary_path(summary: Path) -> None:
+    path = summary.expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(
+            f"--summary path does not exist or is not a file: {path}"
         )
 
 
@@ -1291,6 +1307,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     checkpoint_info_parser.set_defaults(_command_parser=checkpoint_info_parser)
 
+    summary_info_parser = sub.add_parser(
+        "summary-info",
+        help="Print optimization summary status and route metadata.",
+        description=(
+            "Inspect a gpurec optimization summary.json file without building "
+            "the CUDA likelihood model."
+        ),
+    )
+    summary_info_parser.add_argument(
+        "--summary",
+        type=Path,
+        required=True,
+        help="Optimization summary.json file to inspect.",
+    )
+    summary_info_parser.set_defaults(_command_parser=summary_info_parser)
+
     template_parser = sub.add_parser(
         "config-template",
         help="Print or write a flat JSON RunConfig template.",
@@ -1450,6 +1482,17 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, _sampling_error_message(exc))
         print(_checkpoint_info_text(checkpoint, payload), flush=True)
+        return
+    if args.command == "summary-info":
+        try:
+            summary = args.summary.expanduser().resolve()
+            _validate_summary_path(summary)
+            from gpurec.workflow.config import load_json_object
+
+            payload = load_json_object(summary, description="summary")
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            command_parser.error(str(exc))
+        print(_summary_info_text(summary, payload), flush=True)
         return
     if args.command == "backtrack-check":
         try:

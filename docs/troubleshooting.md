@@ -45,6 +45,12 @@ preflight command.
 Read `summary.json` first. It records `status`, `reason`, final objective and
 gradient diagnostics, final-check likelihood/gradient deltas when available,
 and the effective optimizer/batch/solver route that produced the run.
+For a terminal view of the same fields, use:
+
+```bash
+gpurec summary-info --summary output/summary.json
+```
+
 Use `checkpoint-info` when the final summary is unavailable or you need to
 inspect a resume target directly:
 
