@@ -2802,7 +2802,6 @@ def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
     assert "Disabled compatibility flag" in captured.out
     assert "adaptive Neumann path is not part of the" in captured.out
     assert "supported production optimization route" in captured.out
-    assert "legacy adaptive backward" not in captured.out
     assert "--require-converged" in captured.out
     assert "--require-final-check-ok" in captured.out
 

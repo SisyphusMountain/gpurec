@@ -506,8 +506,9 @@ def test_disabled_adaptive_neumann_terms_message_is_professional():
     assert "not part of the supported production optimization route" in (
         ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE
     )
-    assert "absolutely terrible" not in ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE
-    assert "MUST be fixed" not in ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE
+    normalized = ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE.lower()
+    assert "terrible" not in normalized
+    assert "must be fixed" not in normalized
 
 
 def test_tests_subprocess_calls_have_explicit_timeouts():
@@ -839,8 +840,9 @@ def test_run_config_reference_covers_current_config_surface():
         assert token in reference
     assert "docs/run-config-reference.md" in project_readme
     assert "run-config-reference.md" in docs_readme
-    assert "absolutely terrible" not in reference
-    assert "MUST be fixed" not in reference
+    normalized_reference = reference.lower()
+    assert "terrible" not in normalized_reference
+    assert "must be fixed" not in normalized_reference
 
 
 def test_simplification_opportunity_index_is_mapped_and_gate_oriented():
