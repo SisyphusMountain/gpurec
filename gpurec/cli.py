@@ -18,7 +18,7 @@ _SAFE_STATUS_TEXT_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
     "0123456789"
-    "._:/+-"
+    "._:/+-,"
 )
 
 
@@ -343,6 +343,64 @@ def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any],
         return {}, "missing"
 
 
+def _route_int_text(name: str, route: dict[str, Any], *, none_text: str = "null") -> str:
+    value = route.get(name)
+    if value is None:
+        return f"{name}={none_text}"
+    return _optional_int_text(name, value)
+
+
+def _route_metadata_text(route: dict[str, Any]) -> str:
+    fields = [
+        _optional_text("objective", route.get("objective")),
+        _optional_text("gradient_route", route.get("gradient_route")),
+        _optional_text(
+            "rate_parameterization",
+            route.get("rate_parameterization"),
+        ),
+        _optional_text(
+            "production_default_basis",
+            route.get("production_default_basis"),
+        ),
+        _optional_text("batch_packing", route.get("batch_packing")),
+        _route_int_text("family_chunk_size", route),
+        _route_int_text("clade_budget", route, none_text="none"),
+        _route_int_text("fixed_iters_e", route, none_text="adaptive"),
+        _route_int_text("fixed_iters_pi", route),
+        _route_int_text("neumann_terms", route),
+        _route_int_text("final_check_iters", route),
+    ]
+    if route.get("optimizer") == "hessian-sgd":
+        fields.extend(
+            [
+                _route_int_text("solver_warmup_iters", route),
+                _route_int_text("fd_adam_warmup_steps", route),
+                _route_int_text("fd_hessian_refresh_steps", route),
+                _route_int_text(
+                    "hessian_sgd_normal_fixed_iters_pi",
+                    route,
+                    none_text="full",
+                ),
+                _route_int_text(
+                    "hessian_sgd_normal_neumann_terms",
+                    route,
+                    none_text="full",
+                ),
+            ]
+        )
+    elif route.get("optimizer") == "adagrad-restarts":
+        fields.extend(
+            [
+                _optional_text(
+                    "adagrad_restart_schedule",
+                    route.get("adagrad_restart_schedule"),
+                ),
+                _route_int_text("adagrad_restart_final_check_iters", route),
+            ]
+        )
+    return " ".join(fields)
+
+
 def _checkpoint_info_text(checkpoint: Path, payload: dict[str, Any]) -> str:
     route, route_source = _checkpoint_route_metadata(payload)
     config_data = payload.get("config")
@@ -369,17 +427,7 @@ def _checkpoint_info_text(checkpoint: Path, payload: dict[str, Any]) -> str:
                 "optimizer",
                 route.get("optimizer", config_data.get("optimizer")),
             ),
-            _optional_text("objective", route.get("objective")),
-            _optional_text("gradient_route", route.get("gradient_route")),
-            _optional_text(
-                "rate_parameterization",
-                route.get("rate_parameterization"),
-            ),
-            _optional_text(
-                "production_default_basis",
-                route.get("production_default_basis"),
-            ),
-            _optional_int_text("final_check_iters", route.get("final_check_iters")),
+            _route_metadata_text(route),
             _optional_text("route_metadata_source", route_source),
             _optional_text("optimizer_phase", payload.get("optimizer_phase")),
             _optional_text("last_phase", last_row.get("optimizer/phase")),

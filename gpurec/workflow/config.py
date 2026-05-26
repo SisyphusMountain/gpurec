@@ -876,6 +876,12 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
                 "solver_warmup_iters": config.solver_warmup_iters,
                 "fd_adam_warmup_steps": config.fd_adam_warmup_steps,
                 "fd_hessian_refresh_steps": config.fd_hessian_refresh_steps,
+                "hessian_sgd_normal_fixed_iters_pi": (
+                    config.hessian_sgd_normal_fixed_iters_pi
+                ),
+                "hessian_sgd_normal_neumann_terms": (
+                    config.hessian_sgd_normal_neumann_terms
+                ),
             }
         )
     elif config.optimizer == "adagrad-restarts":

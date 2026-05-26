@@ -1211,6 +1211,28 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["rate_parameterization"] == "base2_log_dlt_rates"
     assert route["production_default_basis"] == basis
     assert route["optimizer"] == "hessian-sgd"
+    assert route["hessian_sgd_normal_fixed_iters_pi"] is None
+    assert route["hessian_sgd_normal_neumann_terms"] is None
+
+
+def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        hessian_sgd_normal_fixed_iters_pi=12,
+        hessian_sgd_normal_neumann_terms=12,
+        device="cpu",
+    )
+
+    route = effective_route_metadata(config)
+
+    assert route["optimizer"] == "hessian-sgd"
+    assert route["hessian_sgd_normal_fixed_iters_pi"] == 12
+    assert route["hessian_sgd_normal_neumann_terms"] == 12
 
 
 def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):
