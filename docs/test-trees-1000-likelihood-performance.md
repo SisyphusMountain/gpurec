@@ -602,6 +602,18 @@ Rejected follow-ups:
   `2.3115326509578153s`, `2.304071097052656s`, `2.260307011019904s`,
   `2.284385512000881s`, `2.2860829039709643s`, `2.2775780250085518s`,
   `2.2877858880674466s`, and `2.274424984003417s`.
+- A fresh post-denominator timing split confirmed that wave-step/Pibar and DTS
+  remain the fixed4 bottlenecks.  In a materialized post-warm measured pass,
+  total wall time was `1.2839083970175125s`; the largest CUDA-event buckets were
+  final DTS wave-steps (`331.646 ms` across `952` calls), eq1-only phase-2 DTS
+  (`203.701 ms` across `922` calls), non-final DTS wave-steps (`370.149 ms`
+  across `1967` calls), phase-1 leaf/no-DTS wave-steps (`229.317 ms` across
+  `618` calls), and mixed phase-2 eq1/ge2 DTS (`115.757 ms` across `30` calls).
+  This points away from further root-likelihood work and toward Pi/DTS kernels.
+- Lowering the uniform wave-step launch from `8` warps to `4` was rejected.  The
+  targeted CUDA/kernel tests passed (`7 passed`), but fixed4 materialized timing
+  regressed to `1.2981207949924283s` median and `1.2949794699670747s` minimum.
+  The wave-step kernels therefore keep `num_warps=8`.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
