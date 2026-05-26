@@ -557,6 +557,36 @@ def test_cli_config_template_prints_specieswise_adagrad_restart_defaults(capsys)
     assert "fd_hessian_refresh_steps" not in data
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_optimizer"),
+    [
+        ("genewise", "hessian-sgd"),
+        ("specieswise", "adagrad-restarts"),
+    ],
+)
+def test_cli_config_template_roundtrips_to_production_default_route(
+    mode: str,
+    expected_optimizer: str,
+    capsys,
+):
+    main(["config-template", "--mode", mode])
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+
+    config = RunConfig.from_dict(data)
+    route = effective_route_metadata(config)
+
+    assert captured.err == ""
+    assert config.mode == mode
+    assert config.optimizer == expected_optimizer
+    assert route["mode_default_optimizer"] == expected_optimizer
+    assert route["uses_mode_default_optimizer"] is True
+    assert route["uses_production_default_optimizer_settings"] is True
+    assert route["production_default_optimizer_setting_mismatches"] == []
+    assert route["uses_production_default_route"] is True
+    assert route["production_default_route_mismatches"] == []
+
+
 def test_cli_config_template_writes_output_and_refuses_overwrite(
     tmp_path: Path,
     capsys,

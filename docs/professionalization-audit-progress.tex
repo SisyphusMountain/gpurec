@@ -7679,6 +7679,12 @@ helper, keeping installed starter templates tied to the same genewise
 \texttt{hessian-sgd} and specieswise \texttt{adagrad-restarts} route metadata
 audits.
 
+Generated \texttt{gpurec config-template --mode genewise} and
+\texttt{--mode specieswise} JSON now round-trip through \texttt{RunConfig} in
+unit coverage and must report \texttt{uses\_production\_default\_route=true}.
+This guards the installed starter configs before any CUDA likelihood model is
+built.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

@@ -2378,6 +2378,10 @@ not edit files.  New or still-open findings from that refresh are:
   and the source example checks reuse that helper, keeping installed starter
   templates tied to the same genewise `hessian-sgd` and specieswise
   `adagrad-restarts` defaults audited by the route metadata.
+- Generated `gpurec config-template --mode genewise` and `--mode specieswise`
+  JSON now have direct unit coverage that round-trips through `RunConfig` and
+  reports `uses_production_default_route=true`, guarding the installed starter
+  configs before any CUDA likelihood model is built.
 
 ## Recommended Next Order
 
