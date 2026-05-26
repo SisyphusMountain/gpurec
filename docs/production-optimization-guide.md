@@ -238,9 +238,10 @@ per-step budget for fallback line-search probes. Together they bound or stop
 projected-gradient fallback polishing after L-BFGS-B reaches tiny objective
 movements. `lbfgsb_fallback_resolution_competition_factor` can spend that
 budget challenging accepted fallback moves whose decrease is only a small
-multiple of the floating-point loss resolution; keep it at `0` for the faster
-`test_trees_1000` route, and use values such as `16` only for explicit
-quality-polish probes. Intermediate `test_trees_1000` probes at factors `4`
+multiple of the floating-point loss resolution. On `test_trees_1000`, the
+current fast route pairs factor `16` with `lbfgsb_loss_schedule_force_fallback`
+so the fallback work is spent at the schedule transition; plain factor `16`
+remains a slower quality-polish setting. Intermediate probes at factors `4`
 and `8` did not preserve the lower objective basin, so this is not currently a
 smooth time/quality dial. The schedule-forced fallback and best-checkpoint
 retry controls are also dataset-specific tail escape hatches. They are not part
