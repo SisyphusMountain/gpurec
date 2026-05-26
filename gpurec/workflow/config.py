@@ -852,6 +852,10 @@ class RunConfig:
 
 def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
     route: dict[str, Any] = {
+        "objective": "negative_log_likelihood_bits",
+        "gradient_route": "implicit_first_order_adjoint",
+        "rate_parameterization": "base2_log_dlt_rates",
+        "production_default_basis": "hogenom_and_test_trees_1000",
         "mode": config.mode,
         "optimizer": config.optimizer,
         "batch_packing": config.batch_packing,

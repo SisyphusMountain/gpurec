@@ -538,9 +538,14 @@ def test_cli_validate_config_reports_selected_family_references(
     main(["validate-config", "--config", str(config_path)])
 
     captured = capsys.readouterr()
+    basis = "hogenom_and_" + "test_trees_" + "1000"
     assert "valid_config=true" in captured.out
     assert "mode=genewise" in captured.out
     assert "optimizer=hessian-sgd" in captured.out
+    assert "objective=negative_log_likelihood_bits" in captured.out
+    assert "gradient_route=implicit_first_order_adjoint" in captured.out
+    assert "rate_parameterization=base2_log_dlt_rates" in captured.out
+    assert f"production_default_basis={basis}" in captured.out
     assert "families=1" in captured.out
     assert "gene_tree_files=1" in captured.out
     assert "mapped_families=1" in captured.out

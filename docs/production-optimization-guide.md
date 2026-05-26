@@ -12,6 +12,12 @@ The workflow minimizes negative log-likelihood in bits. History rows report
 `likelihood/log_likelihood_bits`. The final run summary repeats those views as
 `final_nll_bits`/`final_log_likelihood_bits` and
 `best_nll_bits`/`best_log_likelihood_bits`.
+`summary.json` and `gpurec validate-config` also report the stable route fields
+`objective=negative_log_likelihood_bits`,
+`gradient_route=implicit_first_order_adjoint`,
+`rate_parameterization=base2_log_dlt_rates`, and
+`production_default_basis=hogenom_and_test_trees_1000` so exported artifacts
+carry the likelihood, gradient, parameterization, and benchmark-basis contract.
 
 `theta` stores base-2 log rates for duplication, loss, and transfer. The public
 rate table writes columns in D/T/L order as probabilities/rates plus the raw

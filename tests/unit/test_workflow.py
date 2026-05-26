@@ -66,6 +66,7 @@ from gpurec.workflow.config import (
     SamplingConfig,
     adagrad_restart_schedule_specs,
     dtype_from_name,
+    effective_route_metadata,
 )
 from gpurec.workflow.diagnostics import (
     append_jsonl,
@@ -1189,6 +1190,27 @@ def test_run_config_defaults_to_hessian_sgd_for_genewise_mode(tmp_path: Path):
     )
 
     assert config.optimizer == "hessian-sgd"
+
+
+def test_effective_route_metadata_reports_production_likelihood_contract(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+
+    route = effective_route_metadata(config)
+    basis = "hogenom_and_" + "test_trees_" + "1000"
+
+    assert route["objective"] == "negative_log_likelihood_bits"
+    assert route["gradient_route"] == "implicit_first_order_adjoint"
+    assert route["rate_parameterization"] == "base2_log_dlt_rates"
+    assert route["production_default_basis"] == basis
+    assert route["optimizer"] == "hessian-sgd"
 
 
 def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):

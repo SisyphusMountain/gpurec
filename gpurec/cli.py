@@ -438,6 +438,10 @@ def _validate_config_route_text(config: RunConfig) -> str:
         route["fixed_iters_e"]
     )
     fields = [
+        f"objective={route['objective']}",
+        f"gradient_route={route['gradient_route']}",
+        f"rate_parameterization={route['rate_parameterization']}",
+        f"production_default_basis={route['production_default_basis']}",
         f"batch_packing={route['batch_packing']}",
         f"family_chunk_size={route['family_chunk_size']}",
         f"clade_budget={clade_budget}",
