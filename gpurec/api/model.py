@@ -1012,6 +1012,7 @@ def _build_static_state(
     gradient_change_rtol: float,
     use_pruning: bool,
     pruning_threshold: float,
+    pi_fixed_point_relaxation: float,
     origination_prior: PreparedOriginationPrior,
     max_wave_size: Optional[int] = 8192,
     max_root_wave_size: Optional[int] = None,
@@ -1072,6 +1073,7 @@ def _build_static_state(
         gradient_change_rtol=gradient_change_rtol,
         use_pruning=use_pruning,
         pruning_threshold=pruning_threshold,
+        pi_fixed_point_relaxation=pi_fixed_point_relaxation,
     )
 
 
@@ -1096,6 +1098,7 @@ def _build_batch_static_state(
     gradient_change_rtol: float,
     use_pruning: bool,
     pruning_threshold: float,
+    pi_fixed_point_relaxation: float,
     origination_prior: PreparedOriginationPrior,
 ) -> ReconStaticState:
     device = dataset.device
@@ -1142,6 +1145,7 @@ def _build_batch_static_state(
         gradient_change_rtol=gradient_change_rtol,
         use_pruning=use_pruning,
         pruning_threshold=pruning_threshold,
+        pi_fixed_point_relaxation=pi_fixed_point_relaxation,
         clear_runtime_after_backward=True,
     )
 
@@ -1268,6 +1272,7 @@ class GeneReconModel(torch.nn.Module):
         prefetch_batches: int | str | None = None,
         pi_adjoint_warmstart: bool = False,
         pi_adjoint_cache_update_mode: str = "immediate",
+        pi_fixed_point_relaxation: float = 1.0,
         origination_probs: (
             torch.Tensor
             | Sequence[float]
@@ -1341,6 +1346,10 @@ class GeneReconModel(torch.nn.Module):
         pi_adjoint_cache_update_mode = _normalize_pi_adjoint_cache_update_mode(
             pi_adjoint_cache_update_mode
         )
+        pi_fixed_point_relaxation = positive_float(
+            "pi_fixed_point_relaxation",
+            pi_fixed_point_relaxation,
+        )
         _validate_gene_dtype(dataset.dtype)
 
         # Sanity check: dataset flags must be consistent with mode
@@ -1407,6 +1416,7 @@ class GeneReconModel(torch.nn.Module):
         self._pruning_threshold = pruning_threshold
         self._pi_adjoint_warmstart = pi_adjoint_warmstart
         self._pi_adjoint_cache_update_mode = pi_adjoint_cache_update_mode
+        self._pi_fixed_point_relaxation = pi_fixed_point_relaxation
         self.max_wave_size = max_wave_size
         self.max_root_wave_size = max_root_wave_size
         self.max_dts_partial_rows = max_dts_partial_rows
@@ -1513,6 +1523,7 @@ class GeneReconModel(torch.nn.Module):
                 gradient_change_rtol=self._gradient_change_rtol,
                 use_pruning=use_pruning,
                 pruning_threshold=pruning_threshold,
+                pi_fixed_point_relaxation=self._pi_fixed_point_relaxation,
                 max_wave_size=max_wave_size,
                 max_root_wave_size=max_root_wave_size,
                 max_dts_partial_rows=max_dts_partial_rows,
@@ -1729,6 +1740,7 @@ class GeneReconModel(torch.nn.Module):
             gradient_change_rtol=self._gradient_change_rtol,
             use_pruning=self._use_pruning,
             pruning_threshold=self._pruning_threshold,
+            pi_fixed_point_relaxation=self._pi_fixed_point_relaxation,
             origination_prior=self._origination_prior.select_families(
                 self._batch_specs[batch_idx].family_indices,
             ),
@@ -2057,6 +2069,7 @@ class GeneReconModel(torch.nn.Module):
     ) -> None:
         static.pi_adjoint_warmstart = bool(self._pi_adjoint_warmstart)
         static.pi_adjoint_cache_update_mode = self._pi_adjoint_cache_update_mode
+        static.pi_fixed_point_relaxation = self._pi_fixed_point_relaxation
         if clear_cache:
             _clear_pi_adjoint_runtime_cache(static)
 
@@ -2065,12 +2078,20 @@ class GeneReconModel(torch.nn.Module):
         *,
         enabled: bool,
         cache_update_mode: str = "immediate",
+        pi_fixed_point_relaxation: float | None = None,
     ) -> None:
         """Update Pi-adjoint warm-start policy on defaults and built batches."""
         warmstart = bool_value("pi_adjoint_warmstart", enabled)
         cache_mode = _normalize_pi_adjoint_cache_update_mode(cache_update_mode)
+        if pi_fixed_point_relaxation is not None:
+            pi_fixed_point_relaxation = positive_float(
+                "pi_fixed_point_relaxation",
+                pi_fixed_point_relaxation,
+            )
         self._pi_adjoint_warmstart = warmstart
         self._pi_adjoint_cache_update_mode = cache_mode
+        if pi_fixed_point_relaxation is not None:
+            self._pi_fixed_point_relaxation = pi_fixed_point_relaxation
         for static in self.cached_static_states:
             self._apply_pi_adjoint_warmstart_config(static, clear_cache=True)
 

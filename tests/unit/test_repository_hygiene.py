@@ -1484,6 +1484,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`hessian_sgd_normal_fixed_iters_pi`",
         "`hessian_sgd_normal_neumann_terms`",
         "`hessian_sgd_pi_adjoint_warmstart`",
+        "`pi_fixed_point_relaxation`",
         "`hessian_sgd_validation_interval`",
         "`hessian_sgd_validation_fixed_iters_pi`",
         "`hessian_sgd_validation_neumann_terms`",
@@ -1678,6 +1679,7 @@ def test_project_readme_documents_e_adjoint_diagnostics():
         "`solver/pi_adjoint_residual_absmax_max`",
         "`solver/pi_adjoint_residual_relmax_max`",
         "one extra fixed-point self-loop application",
+        "`pi_fixed_point_relaxation`",
     ):
         assert token in normalized
 

@@ -91,6 +91,11 @@ step after the solve; history rows expose
 `solver/pi_adjoint_residual_relmax_max`, and
 `solver/pi_adjoint_residual_checked_batches` so warm/cold budget validation can
 distinguish a short but converged Pi solve from a short and under-resolved one.
+Warm-started Hessian-SGD experiments can set `pi_fixed_point_relaxation` or
+`--pi-fixed-point-relaxation` to a positive Richardson relaxation factor for the
+cached Pi-adjoint fixed-point update. The default is `1.0`, which preserves the
+standard update, and non-default values are accepted only with
+`hessian_sgd_pi_adjoint_warmstart=true` on genewise `hessian-sgd` runs.
 
 Warmstarted validation runs can also lower ordinary full-stage Hessian-SGD
 Pi/Neumann budgets while periodically forcing high-budget gradients. Set

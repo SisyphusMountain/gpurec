@@ -55,7 +55,8 @@ programmatic and terminal triage. For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
 `hessian_sgd_normal_fixed_iters_pi`, and
 `hessian_sgd_normal_neumann_terms`, plus the experimental
-`hessian_sgd_pi_adjoint_warmstart` flag and periodic validation controls
+`hessian_sgd_pi_adjoint_warmstart` flag, `pi_fixed_point_relaxation`, and
+periodic validation controls
 `hessian_sgd_validation_interval`,
 `hessian_sgd_validation_fixed_iters_pi`, and
 `hessian_sgd_validation_neumann_terms`. For specieswise `adagrad-restarts`,

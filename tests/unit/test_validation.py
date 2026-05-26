@@ -73,6 +73,7 @@ def test_float_validators_reject_bool_values(
     [
         ({"tol_E": True}, "tol_E"),
         ({"pi_max_diff_tol": True}, "pi_max_diff_tol"),
+        ({"pi_fixed_point_relaxation": True}, "pi_fixed_point_relaxation"),
     ],
 )
 def test_gene_recon_model_rejects_bool_float_controls_before_device_check(

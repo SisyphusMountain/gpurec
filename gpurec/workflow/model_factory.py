@@ -18,6 +18,7 @@ def build_alerax_workflow_model(
         {
             "pi_adjoint_warmstart": True,
             "pi_adjoint_cache_update_mode": "stage",
+            "pi_fixed_point_relaxation": config.pi_fixed_point_relaxation,
         }
         if config.hessian_sgd_pi_adjoint_warmstart
         else {}

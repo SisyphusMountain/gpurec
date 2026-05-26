@@ -91,6 +91,7 @@ class OptimizationResult:
     hessian_sgd_normal_fixed_iters_pi: int | None = None
     hessian_sgd_normal_neumann_terms: int | None = None
     hessian_sgd_pi_adjoint_warmstart: bool | None = None
+    pi_fixed_point_relaxation: float | None = None
     hessian_sgd_validation_interval: int | None = None
     hessian_sgd_validation_fixed_iters_pi: int | None = None
     hessian_sgd_validation_neumann_terms: int | None = None
@@ -4192,6 +4193,9 @@ class OptimizationRunner:
                 ),
                 hessian_sgd_pi_adjoint_warmstart=_optional_result_bool(
                     route_metadata.get("hessian_sgd_pi_adjoint_warmstart")
+                ),
+                pi_fixed_point_relaxation=_optional_result_float(
+                    route_metadata.get("pi_fixed_point_relaxation")
                 ),
                 hessian_sgd_validation_interval=_optional_result_int(
                     route_metadata.get("hessian_sgd_validation_interval")

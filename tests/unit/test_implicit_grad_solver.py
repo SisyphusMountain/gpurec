@@ -43,6 +43,7 @@ def test_implicit_gradient_forwards_pi_adjoint_residual_stats(monkeypatch):
 
     def fake_pi_wave_backward(*args, **kwargs):
         assert kwargs["return_residual_stats"] is True
+        assert kwargs["fixed_point_relaxation"] == pytest.approx(1.25)
         return {
             "v_Pi": solved_pi_adjoint,
             "pi_adjoint_residual_absmax": 0.125,
@@ -94,6 +95,7 @@ def test_implicit_gradient_forwards_pi_adjoint_residual_stats(monkeypatch):
         neumann_terms=4,
         return_aux=True,
         record_pi_adjoint_residual=True,
+        pi_fixed_point_relaxation=1.25,
     )
 
     torch.testing.assert_close(grad, torch.ones_like(theta))

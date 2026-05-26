@@ -158,6 +158,7 @@ def implicit_grad_loglik_vjp_wave(
     pi_adjoint_initial_guess: Optional[torch.Tensor] = None,
     return_aux: bool = False,
     record_pi_adjoint_residual: bool = False,
+    pi_fixed_point_relaxation: float = 1.0,
 ):
     """Internal API bridge for wave-decomposed ∇θ logL computation.
 
@@ -195,6 +196,7 @@ def implicit_grad_loglik_vjp_wave(
             origination_probs_prepared=origination_probs_prepared,
             initial_v_pi=pi_adjoint_initial_guess,
             return_residual_stats=record_pi_adjoint_residual,
+            fixed_point_relaxation=pi_fixed_point_relaxation,
         )
 
         grad_theta, statsG, aux = _e_adjoint_and_theta_vjp(

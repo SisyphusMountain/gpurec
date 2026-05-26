@@ -104,13 +104,20 @@ def test_gene_recon_model_pi_adjoint_warmstart_records_residual_stats(tmp_path):
         fixed_iters_Pi=2,
         neumann_terms=2,
         pi_adjoint_warmstart=True,
+        pi_fixed_point_relaxation=1.25,
     )
+
+    loss = model()
+    loss.backward()
+    assert model.static.last_solver_stats["Pi_adjoint_warmstart_used"] is False
+    model.zero_grad(set_to_none=True)
 
     loss = model()
     loss.backward()
 
     stats = model.static.last_solver_stats
     assert stats["Pi_adjoint_warmstart_enabled"] is True
+    assert stats["Pi_adjoint_warmstart_used"] is True
     assert stats["Pi_adjoint_residual_wave_count"] > 0
     assert stats["Pi_adjoint_residual_absmax"] >= 0.0
     assert stats["Pi_adjoint_residual_relmax"] >= 0.0

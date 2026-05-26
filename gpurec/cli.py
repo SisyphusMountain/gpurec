@@ -240,6 +240,10 @@ def _optimization_result_text(result: Any) -> str:
                             None,
                         ),
                     ),
+                    _optional_metric_text(
+                        "pi_fixed_point_relaxation",
+                        getattr(result, "pi_fixed_point_relaxation", None),
+                    ),
                     _optional_int_text(
                         "hessian_sgd_validation_interval",
                         getattr(result, "hessian_sgd_validation_interval", None),
@@ -585,6 +589,10 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
                     "hessian_sgd_pi_adjoint_warmstart",
                     route.get("hessian_sgd_pi_adjoint_warmstart"),
                 ),
+                _optional_metric_text(
+                    "pi_fixed_point_relaxation",
+                    route.get("pi_fixed_point_relaxation"),
+                ),
                 _route_int_text("hessian_sgd_validation_interval", route),
                 _route_int_text(
                     "hessian_sgd_validation_fixed_iters_pi",
@@ -797,6 +805,7 @@ def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
                 "hessian_sgd_normal_fixed_iters_pi": None,
                 "hessian_sgd_normal_neumann_terms": None,
                 "hessian_sgd_pi_adjoint_warmstart": False,
+                "pi_fixed_point_relaxation": 1.0,
                 "hessian_sgd_validation_interval": 0,
                 "hessian_sgd_validation_fixed_iters_pi": None,
                 "hessian_sgd_validation_neumann_terms": None,
@@ -874,6 +883,10 @@ def _validate_config_route_text(config: RunConfig) -> str:
                 _optional_bool_text(
                     "hessian_sgd_pi_adjoint_warmstart",
                     route.get("hessian_sgd_pi_adjoint_warmstart"),
+                ),
+                _optional_metric_text(
+                    "pi_fixed_point_relaxation",
+                    route.get("pi_fixed_point_relaxation"),
                 ),
                 _route_int_text("hessian_sgd_validation_interval", route),
                 _route_int_text(
@@ -1182,6 +1195,14 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Enable the experimental staged Pi-adjoint warm-start cache for "
             "genewise hessian-sgd runs. Workflow default: disabled."
+        ),
+    )
+    parser.add_argument(
+        "--pi-fixed-point-relaxation",
+        type=float,
+        help=(
+            "Experimental Pi-adjoint fixed-point relaxation factor for "
+            "warm-started genewise hessian-sgd runs. Workflow default: 1.0."
         ),
     )
     parser.add_argument(

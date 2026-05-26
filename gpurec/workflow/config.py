@@ -426,6 +426,7 @@ _JSON_FLOAT_FIELDS = {
     "best_likelihood_min_delta",
     "projected_grad_tol",
     "projected_lbfgs_min_lr",
+    "pi_fixed_point_relaxation",
 }
 _JSON_BOOL_FIELDS = {
     "adaptive_iters",
@@ -528,6 +529,7 @@ class RunConfig:
     hessian_sgd_normal_fixed_iters_pi: int | None = None
     hessian_sgd_normal_neumann_terms: int | None = None
     hessian_sgd_pi_adjoint_warmstart: bool = False
+    pi_fixed_point_relaxation: float = 1.0
     hessian_sgd_validation_interval: int = 0
     hessian_sgd_validation_fixed_iters_pi: int | None = None
     hessian_sgd_validation_neumann_terms: int | None = None
@@ -792,6 +794,19 @@ class RunConfig:
                 "hessian_sgd_pi_adjoint_warmstart requires genewise "
                 "hessian-sgd optimizer"
             )
+        if self.pi_fixed_point_relaxation <= 0.0:
+            raise ValueError("pi_fixed_point_relaxation must be positive")
+        if (
+            self.pi_fixed_point_relaxation != 1.0
+            and (
+                self.optimizer != "hessian-sgd"
+                or not self.hessian_sgd_pi_adjoint_warmstart
+            )
+        ):
+            raise ValueError(
+                "pi_fixed_point_relaxation requires "
+                "hessian_sgd_pi_adjoint_warmstart with genewise hessian-sgd"
+            )
         hessian_sgd_validation_configured = (
             self.hessian_sgd_validation_interval > 0
             or self.hessian_sgd_validation_fixed_iters_pi is not None
@@ -957,6 +972,7 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
                 "hessian_sgd_pi_adjoint_warmstart": (
                     config.hessian_sgd_pi_adjoint_warmstart
                 ),
+                "pi_fixed_point_relaxation": config.pi_fixed_point_relaxation,
                 "hessian_sgd_validation_interval": (
                     config.hessian_sgd_validation_interval
                 ),

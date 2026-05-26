@@ -6,6 +6,8 @@ nodes.  Tiny species trees are useful for parser/config tests but need a
 small-species backward fallback before they can be end-to-end optimizer smokes.
 """
 
+import math
+
 import torch
 
 from .log2_utils import logsumexp2
@@ -95,6 +97,7 @@ def Pi_wave_backward(
     origination_probs_prepared: bool = False,
     initial_v_pi=None,
     return_residual_stats: bool = False,
+    fixed_point_relaxation: float = 1.0,
 ):
     """Wave-decomposed backward pass for implicit gradient computation.
 
@@ -129,6 +132,9 @@ def Pi_wave_backward(
         return_residual_stats: when True, apply one extra self-loop step per
             wave after the solve and return aggregate fixed-point residual
             diagnostics.
+        fixed_point_relaxation: positive Richardson relaxation factor for
+            warmstarted fixed-point updates. ``1.0`` preserves the standard
+            update ``v <- rhs + J^T v``.
 
     Returns:
         dict with:
@@ -158,6 +164,19 @@ def Pi_wave_backward(
         raise RuntimeError("Pi_wave_backward only retains the fused CUDA fast path")
     if dtype not in _SUPPORTED_BACKWARD_FLOAT_DTYPES:
         raise RuntimeError("Pi_wave_backward fused path requires float32 or float64")
+    if isinstance(fixed_point_relaxation, bool) or (
+        torch.is_tensor(fixed_point_relaxation)
+        and fixed_point_relaxation.dtype == torch.bool
+    ):
+        raise ValueError("fixed_point_relaxation must be a positive finite number")
+    try:
+        fixed_point_relaxation = float(fixed_point_relaxation)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "fixed_point_relaxation must be a positive finite number"
+        ) from exc
+    if not math.isfinite(fixed_point_relaxation) or fixed_point_relaxation <= 0.0:
+        raise ValueError("fixed_point_relaxation must be a positive finite number")
     if S <= 256:
         raise RuntimeError("Pi_wave_backward fused path requires S > 256")
     if initial_v_pi is not None:
@@ -503,6 +522,9 @@ def Pi_wave_backward(
             self_loop_grad_targets=self_loop_grad_targets,
             initial_v=None if initial_v_pi is None else initial_v_pi[ws:we],
             return_residual_stats=return_residual_stats,
+            fixed_point_relaxation=(
+                fixed_point_relaxation if initial_v_pi is not None else 1.0
+            ),
         )
         if return_residual_stats:
             v_k, aw0, aw1, aw2, aw345, aw3, aw4, residual_stats = wave_result

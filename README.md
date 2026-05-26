@@ -308,7 +308,7 @@ and preflight validation, see
 | `lbfgsb` | Single-objective L-BFGS-B-style polishing. | Uses raw BFGS curvature pairs, a generalized Cauchy point, a free-subspace solve, projected gradients at rate bounds, `lbfgs_lr`, `lbfgs_history_size`, and `lbfgs_max_ls`; Armijo line-search probes use loss-only evaluations before one accepted gradient refresh. If loss stalls while `grad/projected_inf` exceeds `projected_grad_tol`, the workflow keeps the run `not_converged` instead of declaring convergence. |
 | `batched-lbfgs` | Row-wise batched L-BFGS-B for genewise runs. | Requires `mode=genewise`; uses per-family NLL/gradient vectors, projected gradients at rate bounds, `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, `lbfgs_max_ls`, and `lbfgs_line_search`. `none` uses internal row-wise Armijo probes; `strong_wolfe` uses a vectorized row-wise port of PyTorch's bracket/zoom line search. |
 | `adam-fd-newton` | Short Adam warmup, then finite-difference/quasi-Newton updates for genewise batches. | Requires `mode=genewise`; `fd_adam_warmup_steps` controls per-batch Adam warmup, `fd_hessian_refresh_steps` controls how many rate-bounded Newton steps reuse BFGS-updated row-wise 3x3 Hessians between finite-difference refreshes, `fd_hessian_epsilon` controls refresh probes, and `fd_newton_damping` controls Hessian regularization. Newton trial rates are projected to `min_rate`/`max_rate`; there is no separate log-rate movement cap. |
-| `hessian-sgd` | Projected Hessian-conditioned gradient steps for genewise batches. | Requires `mode=genewise`; finite-difference 3x3 row Hessians refresh every `fd_hessian_refresh_steps`, receive BFGS row updates between refreshes, and precondition fresh gradients with step scale `lr`. Warmup uses reduced Pi/Neumann iterations, with a shorter schedule for very large active batches; very large batches that plateau during warmup skip redundant full-stage optimizer rows while still caching canonical full-solver values for final evaluation. Normal full-stage steps can use `hessian_sgd_normal_fixed_iters_pi` and `hessian_sgd_normal_neumann_terms`. Steps are projected to rate bounds and skip Armijo loss probes before Adam warmup. |
+| `hessian-sgd` | Projected Hessian-conditioned gradient steps for genewise batches. | Requires `mode=genewise`; finite-difference 3x3 row Hessians refresh every `fd_hessian_refresh_steps`, receive BFGS row updates between refreshes, and precondition fresh gradients with step scale `lr`. Warmup uses reduced Pi/Neumann iterations, with a shorter schedule for very large active batches; very large batches that plateau during warmup skip redundant full-stage optimizer rows while still caching canonical full-solver values for final evaluation. Normal full-stage steps can use `hessian_sgd_normal_fixed_iters_pi` and `hessian_sgd_normal_neumann_terms`. Opt-in `hessian_sgd_pi_adjoint_warmstart` can stage accepted Pi-adjoint caches; experimental `pi_fixed_point_relaxation` defaults to `1.0` and accepts non-default positive values only with that warmstart enabled. Steps are projected to rate bounds and skip Armijo loss probes before Adam warmup. |
 
 For `mode=genewise` with `optimizer=batched-lbfgs`, `adam-fd-newton`, or
 `hessian-sgd`,
@@ -396,7 +396,9 @@ summaries for monitoring. Opt-in Pi-adjoint warmstart runs also report
 `solver/pi_adjoint_residual_absmax_max` and
 `solver/pi_adjoint_residual_relmax_max`, computed from one extra fixed-point
 self-loop application, so warm-budget experiments can monitor whether the
-implicit-gradient solve is actually converging.
+implicit-gradient solve is actually converging. These experiments can set
+`pi_fixed_point_relaxation` for cached Pi-adjoint updates; the default `1.0`
+keeps the standard fixed-point update.
 
 `theta_final.pt` is a raw tensor export for inspection or custom analysis.  It
 does not carry run configuration, family ordering, or species ordering metadata;

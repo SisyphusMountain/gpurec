@@ -78,6 +78,7 @@ class ReconStaticState:
     pi_adjoint_cache: Optional[torch.Tensor] = None
     pi_adjoint_pending_cache: Optional[torch.Tensor] = None
     pi_adjoint_cache_update_mode: str = "immediate"
+    pi_fixed_point_relaxation: float = 1.0
     clear_runtime_after_backward: bool = False
     last_solver_stats: Optional[dict[str, Any]] = None
 
@@ -479,6 +480,7 @@ def compute_resident_implicit_gradient(
         pi_adjoint_initial_guess=pi_adjoint_initial_guess,
         return_aux=use_pi_adjoint_warmstart,
         record_pi_adjoint_residual=use_pi_adjoint_warmstart,
+        pi_fixed_point_relaxation=getattr(static, "pi_fixed_point_relaxation", 1.0),
     )
     if use_pi_adjoint_warmstart:
         grad_theta, stats, aux = result

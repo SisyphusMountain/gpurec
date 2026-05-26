@@ -183,7 +183,9 @@ the non-Pi parts of the gradient path are also reduced or amortized.
 3. Use the warmstart-enabled Pi-adjoint residual history fields
    (`solver/pi_adjoint_residual_*`) in HOGENOM validation runs so budget
    escalation is based on convergence, not only on a fixed iteration count.
-4. Expose `pi_fixed_point_relaxation` as an experimental config and benchmark
-   alpha values on several near-optimum checkpoints.
+4. Use the exposed experimental `pi_fixed_point_relaxation` config only with
+   genewise `hessian-sgd` Pi-adjoint warmstart enabled. Keep the default at
+   `alpha=1.0`, and benchmark alpha values on several near-optimum checkpoints
+   before enabling a non-default production recommendation.
 5. Revisit Anderson or GMRES only after the warm cache and budget policy are
    measured in an end-to-end optimizer run.

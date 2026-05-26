@@ -6,6 +6,8 @@ inputs for standalone row-mask experiments, but the retained public
 ``Pi_wave_backward`` path rejects bf16 before this helper is reached.
 """
 
+import math
+
 import torch
 import triton
 import triton.language as tl
@@ -427,6 +429,7 @@ def _wave_backward_uniform_2d_jt_kernel(
     USE_ACTIVE_MASK: tl.constexpr,
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     FIXED_POINT_UPDATE: tl.constexpr,
+    FIXED_POINT_RELAXATION: tl.constexpr,
     DTYPE: tl.constexpr,
     USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
 ):
@@ -538,9 +541,11 @@ def _wave_backward_uniform_2d_jt_kernel(
 
     if FIXED_POINT_UPDATE:
         rhs_val = tl.load(rhs_update_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        next_val = rhs_val + result
+        relaxed = term_val + FIXED_POINT_RELAXATION * (next_val - term_val)
         tl.store(
             v_k_ptr + offsets,
-            tl.where(mask, rhs_val + result, tl.zeros_like(result)),
+            tl.where(mask, relaxed, tl.zeros_like(result)),
             mask=store_mask,
         )
     else:
@@ -797,6 +802,7 @@ def _wave_backward_uniform_2d(
     self_loop_grad_targets=None,
     initial_v=None,
     return_residual_stats=False,
+    fixed_point_relaxation=1.0,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -821,6 +827,19 @@ def _wave_backward_uniform_2d(
         raise RuntimeError("unsupported self-loop constant layout")
     if use_leaf_index and leaf_logp_mode not in (0, 1, 2, 3):
         raise RuntimeError("unsupported leaf log-probability layout")
+    if isinstance(fixed_point_relaxation, bool) or (
+        torch.is_tensor(fixed_point_relaxation)
+        and fixed_point_relaxation.dtype == torch.bool
+    ):
+        raise ValueError("fixed_point_relaxation must be a positive finite number")
+    try:
+        fixed_point_relaxation = float(fixed_point_relaxation)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "fixed_point_relaxation must be a positive finite number"
+        ) from exc
+    if not math.isfinite(fixed_point_relaxation) or fixed_point_relaxation <= 0.0:
+        raise ValueError("fixed_point_relaxation must be a positive finite number")
 
     device = Pi_star.device
     dtype = Pi_star.dtype
@@ -966,6 +985,7 @@ def _wave_backward_uniform_2d(
                 USE_ACTIVE_MASK=bool(active_mask is not None),
                 SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
                 FIXED_POINT_UPDATE=True,
+                FIXED_POINT_RELAXATION=fixed_point_relaxation,
                 DTYPE=_tl_float_dtype(dtype),
                 USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
                 **jt_options,
@@ -1002,6 +1022,7 @@ def _wave_backward_uniform_2d(
                 USE_ACTIVE_MASK=bool(active_mask is not None),
                 SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
                 FIXED_POINT_UPDATE=False,
+                FIXED_POINT_RELAXATION=1.0,
                 DTYPE=_tl_float_dtype(dtype),
                 USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
                 **jt_options,
@@ -1037,6 +1058,7 @@ def _wave_backward_uniform_2d(
             USE_ACTIVE_MASK=bool(active_mask is not None),
             SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
             FIXED_POINT_UPDATE=True,
+            FIXED_POINT_RELAXATION=1.0,
             DTYPE=_tl_float_dtype(dtype),
             USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
             **jt_options,
@@ -1170,6 +1192,7 @@ def wave_backward_uniform_fused(
     self_loop_grad_targets=None,
     initial_v=None,
     return_residual_stats=False,
+    fixed_point_relaxation=1.0,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1264,6 +1287,7 @@ def wave_backward_uniform_fused(
         self_loop_grad_targets=self_loop_grad_targets,
         initial_v=initial_v,
         return_residual_stats=return_residual_stats,
+        fixed_point_relaxation=fixed_point_relaxation,
     )
 
 

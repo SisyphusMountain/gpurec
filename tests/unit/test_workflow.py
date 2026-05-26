@@ -775,19 +775,27 @@ def test_gene_recon_configure_pi_adjoint_warmstart_updates_static_state():
         pi_adjoint_cache=object(),
         pi_adjoint_pending_cache=object(),
         pi_adjoint_cache_update_mode="immediate",
+        pi_fixed_point_relaxation=1.0,
     )
     model = GeneReconModel.__new__(GeneReconModel)
     model._batched_resident = False
     model._static = static
     model._pi_adjoint_warmstart = False
     model._pi_adjoint_cache_update_mode = "immediate"
+    model._pi_fixed_point_relaxation = 1.0
 
-    model.configure_pi_adjoint_warmstart(enabled=True, cache_update_mode="stage")
+    model.configure_pi_adjoint_warmstart(
+        enabled=True,
+        cache_update_mode="stage",
+        pi_fixed_point_relaxation=1.25,
+    )
 
     assert model._pi_adjoint_warmstart is True
     assert model._pi_adjoint_cache_update_mode == "stage"
+    assert model._pi_fixed_point_relaxation == pytest.approx(1.25)
     assert static.pi_adjoint_warmstart is True
     assert static.pi_adjoint_cache_update_mode == "stage"
+    assert static.pi_fixed_point_relaxation == pytest.approx(1.25)
     assert static.pi_adjoint_cache is None
     assert static.pi_adjoint_pending_cache is None
 
@@ -805,6 +813,22 @@ def test_gene_recon_configure_pi_adjoint_warmstart_rejects_invalid_mode():
 
     assert model._pi_adjoint_warmstart is False
     assert model._pi_adjoint_cache_update_mode == "immediate"
+
+
+def test_gene_recon_configure_pi_adjoint_warmstart_rejects_invalid_relaxation():
+    model = GeneReconModel.__new__(GeneReconModel)
+    model._pi_adjoint_warmstart = False
+    model._pi_adjoint_cache_update_mode = "immediate"
+    model._pi_fixed_point_relaxation = 1.0
+
+    with pytest.raises(ValueError, match="pi_fixed_point_relaxation"):
+        model.configure_pi_adjoint_warmstart(
+            enabled=True,
+            pi_fixed_point_relaxation=0.0,
+        )
+
+    assert model._pi_adjoint_warmstart is False
+    assert model._pi_fixed_point_relaxation == pytest.approx(1.0)
 
 
 def test_close_shuts_down_executor_without_batch_lock():
@@ -1263,6 +1287,7 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["hessian_sgd_normal_fixed_iters_pi"] is None
     assert route["hessian_sgd_normal_neumann_terms"] is None
     assert route["hessian_sgd_pi_adjoint_warmstart"] is False
+    assert route["pi_fixed_point_relaxation"] == pytest.approx(1.0)
     assert route["hessian_sgd_validation_interval"] == 0
     assert route["hessian_sgd_validation_fixed_iters_pi"] is None
     assert route["hessian_sgd_validation_neumann_terms"] is None
@@ -1279,6 +1304,7 @@ def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
         hessian_sgd_normal_fixed_iters_pi=12,
         hessian_sgd_normal_neumann_terms=12,
         hessian_sgd_pi_adjoint_warmstart=True,
+        pi_fixed_point_relaxation=1.25,
         hessian_sgd_validation_interval=3,
         hessian_sgd_validation_fixed_iters_pi=32,
         hessian_sgd_validation_neumann_terms=48,
@@ -1291,6 +1317,7 @@ def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
     assert route["hessian_sgd_normal_fixed_iters_pi"] == 12
     assert route["hessian_sgd_normal_neumann_terms"] == 12
     assert route["hessian_sgd_pi_adjoint_warmstart"] is True
+    assert route["pi_fixed_point_relaxation"] == pytest.approx(1.25)
     assert route["hessian_sgd_validation_interval"] == 3
     assert route["hessian_sgd_validation_fixed_iters_pi"] == 32
     assert route["hessian_sgd_validation_neumann_terms"] == 48
@@ -1330,6 +1357,7 @@ def test_run_config_accepts_hessian_sgd_for_genewise_mode(tmp_path: Path):
     assert config.hessian_sgd_normal_fixed_iters_pi is None
     assert config.hessian_sgd_normal_neumann_terms is None
     assert config.hessian_sgd_pi_adjoint_warmstart is False
+    assert config.pi_fixed_point_relaxation == pytest.approx(1.0)
     assert config.hessian_sgd_validation_interval == 0
     assert config.hessian_sgd_validation_fixed_iters_pi is None
     assert config.hessian_sgd_validation_neumann_terms is None
@@ -1631,6 +1659,42 @@ def test_run_config_rejects_hessian_sgd_pi_adjoint_warmstart_outside_hessian_sgd
         )
 
 
+@pytest.mark.parametrize("value", [0.0, -0.5])
+def test_run_config_rejects_nonpositive_pi_fixed_point_relaxation(
+    tmp_path: Path,
+    value: float,
+):
+    with pytest.raises(ValueError, match="pi_fixed_point_relaxation must be positive"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            optimizer="hessian-sgd",
+            device="cpu",
+            hessian_sgd_pi_adjoint_warmstart=True,
+            pi_fixed_point_relaxation=value,
+        )
+
+
+def test_run_config_rejects_pi_fixed_point_relaxation_without_warmstart(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match="pi_fixed_point_relaxation requires hessian_sgd_pi_adjoint_warmstart",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            optimizer="hessian-sgd",
+            device="cpu",
+            pi_fixed_point_relaxation=1.25,
+        )
+
+
 def test_run_config_rejects_hessian_sgd_validation_controls_outside_hessian_sgd(
     tmp_path: Path,
 ):
@@ -1785,6 +1849,7 @@ def test_run_config_rejects_negative_tolerances(tmp_path: Path, field: str):
         ("fd_hessian_epsilon", math.nan),
         ("fd_newton_damping", math.inf),
         ("adaptive_rebatch_fraction", math.inf),
+        ("pi_fixed_point_relaxation", math.nan),
     ],
 )
 def test_run_config_rejects_nonfinite_float_controls(
@@ -1810,6 +1875,7 @@ def test_run_config_rejects_nonfinite_float_controls(
         ("lr", True),
         ("min_rate", True),
         ("adaptive_rebatch_fraction", False),
+        ("pi_fixed_point_relaxation", True),
     ],
 )
 def test_run_config_rejects_boolean_float_controls(
@@ -2494,6 +2560,9 @@ def test_bfloat16_is_direct_uniform_api_only(name: str):
         ("prefetch_batches", True),
         ("prefetch_batches", 1.5),
         ("prefetch_batches", "many"),
+        ("pi_fixed_point_relaxation", True),
+        ("pi_fixed_point_relaxation", 0),
+        ("pi_fixed_point_relaxation", math.inf),
     ],
 )
 def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
@@ -5895,6 +5964,7 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert result.hessian_sgd_normal_fixed_iters_pi is None
     assert result.hessian_sgd_normal_neumann_terms is None
     assert result.hessian_sgd_pi_adjoint_warmstart is None
+    assert result.pi_fixed_point_relaxation is None
     assert result.hessian_sgd_validation_interval is None
     assert result.hessian_sgd_validation_fixed_iters_pi is None
     assert result.hessian_sgd_validation_neumann_terms is None
@@ -6243,6 +6313,10 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
         == summary["hessian_sgd_pi_adjoint_warmstart"]
     )
     assert (
+        result.pi_fixed_point_relaxation
+        == summary["pi_fixed_point_relaxation"]
+    )
+    assert (
         result.hessian_sgd_validation_interval
         == summary["hessian_sgd_validation_interval"]
     )
@@ -6260,6 +6334,7 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
     assert summary["hessian_sgd_normal_fixed_iters_pi"] is None
     assert summary["hessian_sgd_normal_neumann_terms"] is None
     assert summary["hessian_sgd_pi_adjoint_warmstart"] is False
+    assert summary["pi_fixed_point_relaxation"] == pytest.approx(1.0)
     assert summary["hessian_sgd_validation_interval"] == 0
     assert summary["hessian_sgd_validation_fixed_iters_pi"] is None
     assert summary["hessian_sgd_validation_neumann_terms"] is None
