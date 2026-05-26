@@ -183,6 +183,39 @@ measured `2.2591210909886286s`, `2.2517540119588375s`,
 `2.2623116039903834s`, and `2.2573027559556067s`, so this is still rejected as
 a stable default-route change.
 
+A current-code rescreen after the optimizer-tail experiments kept the same
+likelihood route.  The documented command measured `2.2639230630011298s` to
+the first `E=7, Pi=4` likelihood, with same-model pass times
+`1.3266956610023044s`, `1.2857300619943999s`, `1.2874091420089826s`,
+`1.2924287610221654s`, and `1.2920758170075715s`; the model build was
+`0.9372274019988254s`, and every pass returned `2157098.25` bits.  Adjacent
+split-budget checks did not move the route: `E=6, Pi=4` measured
+`2.295369716011919s` with `2157096.0` bits, while `E=8, Pi=4` measured
+`2.307891097967513s` with `2157098.25` bits.  A current CPU-thread sweep still
+looked like construction noise rather than a stable setting change: single
+samples for `10`, `12`, `14`, `16`, `18`, and `20` threads measured
+`2.4643779779435135s`, `2.3228045759606175s`, `2.2937556620454416s`,
+`2.2813456609728746s`, `2.2914813839597628s`, and
+`2.2744608130306005s`, while `22` to `32` threads regressed into the
+`2.33s` to `2.42s` band.  The 16-thread documented setting remains the
+conservative default despite isolated higher-thread lows.
+
+The same rescreen rejected several tempting cold-path changes.  Raising the
+resident prefetch pool from three to four workers slowed the E7/Pi4 route to
+`2.292750907014124s` to first likelihood and increased the reserved-memory
+band, so the three-worker default stayed in place.  Larger wave caps reduced
+the maximum wave count but were only near-ties while reserving more memory:
+single samples at `12288`, `16384`, `24576`, `32768`, and `49152` measured
+`2.2750234979903325s`, `2.270935578038916s`, `2.2718784059397876s`,
+`2.2779942030319944s`, and `2.2798203129787s`.  A `16384` wave cap with
+chunk sizes `666`, `750`, and `1000` likewise stayed in the `2.27s` band and
+did not change the 21-batch envelope.  Loss-only `neumann_terms=1` kept the
+same loss but measured `2.2792304910253733s` to first likelihood, so the
+documented `N=4` command remains aligned with the split Pi budget.  Adaptive
+fixed-point stopping with an `E=8, Pi=4` cap returned the same loss but was
+slower at `2.4373364209895954s` to the first likelihood because convergence
+checks cost more than they saved on this shape.
+
 There is also a distinct fast-approximate route below fixed4.  The old tied
 `E=2, Pi=2` point is unusable, but increasing only E makes `Pi=2` useful:
 
