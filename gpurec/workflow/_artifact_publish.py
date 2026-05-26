@@ -1,3 +1,11 @@
+"""Internal staged-artifact publishing support for workflow outputs.
+
+This module is shared by optimization and sampling to publish generated files
+with backup/rollback behavior. It is not a public workflow shortcut; callers
+outside workflow internals should inspect final artifacts rather than depend on
+the staging implementation.
+"""
+
 from __future__ import annotations
 
 import shutil

@@ -1,3 +1,11 @@
+"""Internal AleRax workflow model construction boundary.
+
+The CLI and `OptimizationRunner` use this helper to apply production workflow
+configuration, CUDA readiness checks, and Pi-adjoint warm-start options before
+building `GeneReconModel`. Direct users should normally construct
+`GeneReconModel` or use the workflow runners instead.
+"""
+
 from __future__ import annotations
 
 from typing import Literal

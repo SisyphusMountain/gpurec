@@ -1,3 +1,10 @@
+"""Internal workflow cleanup and exception-chaining helpers.
+
+Optimization and sampling use these helpers to clean temporary staging
+directories and close models without losing the primary failure context. This is
+not a public workflow API surface.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

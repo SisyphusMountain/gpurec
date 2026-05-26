@@ -1,3 +1,10 @@
+"""Internal checkpoint metadata validation helpers.
+
+The checkpoint, optimization, and resume paths share this module for typed
+payload checks and model identity extraction. It is not a public workflow API;
+use ``gpurec.workflow.checkpoint`` for supported checkpoint tooling.
+"""
+
 from __future__ import annotations
 
 import math

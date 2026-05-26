@@ -21,6 +21,26 @@ Keep these user-facing capabilities:
 Everything else should be classified as internal, diagnostic, benchmark-only,
 or deprecated.
 
+## Workflow Submodule Helpers
+
+The supported workflow shortcut surface is the lazy `gpurec.workflow` export
+set plus top-level `gpurec` re-exports.  Direct submodule imports are classified
+below so internal helpers can be simplified without accidentally turning them
+into public contracts.
+
+| Surface | Current owner / risk | Guard before deletion or promotion |
+| --- | --- | --- |
+| `gpurec/workflow/__init__.py` | Public lazy export facade for `RunConfig`, `SamplingConfig`, workflow runners, result dataclasses, `optimize`, and `sample`. | Keep top-level workflow export guards and import-smoke tests. |
+| `gpurec/workflow/config.py` | Public flat `RunConfig` / `SamplingConfig` contract, JSON path resolution, optimizer defaults, and route metadata. | Keep CLI/dataclass surface parity, run-config reference coverage, and template/preflight smokes. |
+| `gpurec/workflow/optimize.py` | Public runner implementation behind `OptimizationRunner` and `optimize`; owns end-to-end likelihood optimization and final artifacts. | Keep workflow optimizer mode tests, artifact publication tests, and CPU unit gate before changing optimizer behavior. |
+| `gpurec/workflow/sampling.py` | Public runner implementation behind `SamplingRunner` and `sample`; owns checkpoint-backed RecPhyloXML sampling outputs. | Keep sampling workflow tests and backtracking distribution checks. |
+| `gpurec/workflow/checkpoint.py` | Supported lower-level checkpoint tooling for advanced restore/inspection, but not a top-level shortcut. | Keep checkpoint `__all__`, identity metadata, route metadata, and compatibility guards. |
+| `gpurec/workflow/_artifact_publish.py` | Internal staged-artifact publication helper shared by optimization and sampling. | Keep rollback/backup tests before changing final artifact publishing. |
+| `gpurec/workflow/_cleanup.py` | Internal cleanup and exception-chaining helper shared by optimization and sampling. | Keep cleanup failure-context tests before changing error handling. |
+| `gpurec/workflow/_metadata.py` | Internal checkpoint payload validation and model identity helper shared by checkpoint/optimization paths. | Keep checkpoint metadata validation tests before moving or deleting it. |
+| `gpurec/workflow/diagnostics.py` | Internal strict JSON/CSV and likelihood/gradient/solver summary helper. | Keep strict JSON and summary/artifact tests before changing diagnostics output. |
+| `gpurec/workflow/model_factory.py` | Internal AleRax workflow model construction boundary for CUDA checks and workflow-only model options. | Keep CLI/model factory forwarding tests and production preflight docs before changing construction policy. |
+
 ## Public API Pruning
 
 ### Low-Level Core Imports

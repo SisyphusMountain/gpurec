@@ -1,3 +1,10 @@
+"""Internal workflow diagnostic serialization and summary-stat helpers.
+
+Optimization and sampling use this module for strict JSON/CSV writes and
+likelihood, gradient, parameter, and solver summaries. User-facing consumers
+should prefer `summary.json`, `history.jsonl`, and the CLI inspection commands.
+"""
+
 from __future__ import annotations
 
 import csv

@@ -2574,6 +2574,71 @@ def test_checkpoint_identity_and_config_validation_boundary_is_documented():
     assert "_normalize_checkpoint_identity_value(" in checkpoint_source
 
 
+def test_runtime_surface_plan_documents_workflow_submodule_ownership():
+    root = Path(__file__).resolve().parents[2]
+    plan = (
+        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    normalized_plan = " ".join(plan.split())
+    rows = _markdown_table_rows_by_first_cell(plan)
+    expected_rows = {
+        "gpurec/workflow/__init__.py": "Public lazy export facade",
+        "gpurec/workflow/config.py": "Public flat `RunConfig`",
+        "gpurec/workflow/optimize.py": "Public runner implementation",
+        "gpurec/workflow/sampling.py": "Public runner implementation",
+        "gpurec/workflow/checkpoint.py": "Supported lower-level checkpoint tooling",
+        "gpurec/workflow/_artifact_publish.py": "Internal staged-artifact publication",
+        "gpurec/workflow/_cleanup.py": "Internal cleanup and exception-chaining",
+        "gpurec/workflow/_metadata.py": "Internal checkpoint payload validation",
+        "gpurec/workflow/diagnostics.py": "Internal strict JSON/CSV",
+        "gpurec/workflow/model_factory.py": "Internal AleRax workflow model construction",
+    }
+
+    for token in (
+        "Workflow Submodule Helpers",
+        "supported workflow shortcut surface",
+        "Direct submodule imports are classified",
+        "without accidentally turning them into public contracts",
+    ):
+        assert token in normalized_plan
+    for path, owner_text in expected_rows.items():
+        assert path in rows
+        assert owner_text in " ".join(rows[path])
+
+    internal_docstring_tokens = {
+        "gpurec/workflow/_artifact_publish.py": (
+            "Internal staged-artifact publishing support",
+            "shared by optimization and sampling",
+            "not a public workflow shortcut",
+        ),
+        "gpurec/workflow/_cleanup.py": (
+            "Internal workflow cleanup",
+            "primary failure context",
+            "not a public workflow API surface",
+        ),
+        "gpurec/workflow/_metadata.py": (
+            "Internal checkpoint metadata validation helpers",
+            "not a public workflow API",
+            "use ``gpurec.workflow.checkpoint``",
+        ),
+        "gpurec/workflow/diagnostics.py": (
+            "Internal workflow diagnostic serialization",
+            "strict JSON/CSV writes",
+            "User-facing consumers should prefer",
+        ),
+        "gpurec/workflow/model_factory.py": (
+            "Internal AleRax workflow model construction boundary",
+            "CUDA readiness checks",
+            "Direct users should normally construct",
+        ),
+    }
+    for path, tokens in internal_docstring_tokens.items():
+        module = ast.parse((root / path).read_text(encoding="utf-8"))
+        docstring = " ".join((ast.get_docstring(module) or "").split())
+        for token in tokens:
+            assert token in docstring
+
+
 def test_newick_input_subset_is_documented_on_public_surfaces():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
