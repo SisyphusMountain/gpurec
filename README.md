@@ -217,7 +217,8 @@ The `--config` option accepts a flat JSON `RunConfig`; Hydra-style YAML
 configs should be converted to JSON or passed as explicit CLI flags.  Relative
 paths in JSON configs are resolved from the config file's directory; relative
 paths passed as explicit CLI flags are resolved from the current working
-directory.
+directory.  For the maintained field-by-field config and CLI option reference,
+see [`docs/run-config-reference.md`](docs/run-config-reference.md).
 Use `gpurec validate-config --config ...` to check JSON/CLI config values,
 input paths, AleRax family records, mapping files, and referenced gene-tree
 files without constructing the CUDA likelihood model.
@@ -306,6 +307,8 @@ The production optimization guide
 explains how the likelihood objective, gradient route, solver budgets,
 genewise `hessian-sgd` default, specieswise `adagrad-restarts` default, and
 HOGENOM/`test_trees_1000` validation gates fit together.
+For the complete `RunConfig` field and CLI flag reference, see
+[`docs/run-config-reference.md`](docs/run-config-reference.md).
 For source data layout, AleRax family syntax, mapping files, path resolution,
 and preflight validation, see
 [`docs/input-preparation.md`](docs/input-preparation.md).

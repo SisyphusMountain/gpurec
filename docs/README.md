@@ -12,6 +12,9 @@ file as the map for deeper context.
   likelihood objective, gradient route, solver fidelity controls, genewise
   `hessian-sgd` default, specieswise `adagrad-restarts` default, and
   HOGENOM/`test_trees_1000` validation gates.
+- `run-config-reference.md`: maintained field-by-field `RunConfig` and CLI
+  flag reference, including optimizer scoping and completed-checkpoint resume
+  semantics.
 - `input-preparation.md`: bioinformatician-facing guide for species trees,
   AleRax `[FAMILIES]` records, gene-tree files, mapping files, JSON config path
   resolution, and `validate-config --check-preprocess` preflight validation.

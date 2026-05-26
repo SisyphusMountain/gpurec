@@ -780,6 +780,41 @@ def test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config():
     assert "see `configs/README.md` for config ownership" in project_readme
 
 
+def test_run_config_reference_covers_current_config_surface():
+    from dataclasses import fields
+
+    from gpurec.workflow.config import RunConfig
+
+    root = Path(__file__).resolve().parents[2]
+    reference = (root / "docs" / "run-config-reference.md").read_text(
+        encoding="utf-8"
+    )
+    docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    rows = _markdown_table_rows_by_first_cell(reference)
+    config_fields = {field.name for field in fields(RunConfig)}
+
+    assert set(rows) == config_fields
+    for name in config_fields:
+        assert f"`{name}`" in reference
+        assert f"--{name.replace('_', '-')}" in rows[name][0]
+
+    for token in (
+        "flat JSON and Python dataclass contract",
+        "`RunConfig.from_dict(...)` before model construction",
+        "resolves to `hessian-sgd`",
+        "resolves to `adagrad-restarts`",
+        "Non-default values require specieswise `adagrad-restarts`",
+        "Requires genewise `hessian-sgd`",
+        "Resume starts at checkpoint `next_step`",
+        "`not_converged`/`max_steps`",
+        "`--require-final-check-ok`",
+    ):
+        assert token in reference
+    assert "docs/run-config-reference.md" in project_readme
+    assert "run-config-reference.md" in docs_readme
+
+
 def test_simplification_opportunity_index_is_mapped_and_gate_oriented():
     root = Path(__file__).resolve().parents[2]
     docs_readme = " ".join(
