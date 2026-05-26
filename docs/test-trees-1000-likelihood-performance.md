@@ -41,7 +41,9 @@ the per-wave progress shim calls used only by diagnostic tracing.  Shared-theta
 loss-only streaming now reuses one max-sized Pi/Pibar scratch pair across the
 resident batches; this keeps the fixed4 timing band unchanged while avoiding the
 large CUDA allocator reserve previously caused by cycling those work tensors
-through `21` batches.  On the local 32-core host, the cold
+through `21` batches.  The forward pass also prepares the DTS `log_pD`/`log_pS`
+addressing metadata once per Pi pass instead of revalidating the same specieswise
+parameter layout for every split wave.  On the local 32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -207,17 +209,15 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss-only time | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.2797727399738505s` | `2156427.0` | `670.25` |
+| 4 | `1.2767350050271489s` | `2156427.0` | `670.25` |
 | 6 | `1.816627103020437s` | `2157095.0` | `2.25` |
 | 8 | `2.3491738659795374s` | `2157097.25` | `0.0` |
 | 128 | `35.236629224033095s` | `2157097.25` | `0.0` |
 
-With `--materialize-batches all`, the latest scratch-reuse fixed4 check split
-the build into `0.9480655260267667s` for model init plus
-`0.07432144199265167s` for full materialization, then measured seven fixed4
-repetitions after one warmup.  The `6/8` rows above are earlier
-three-repetition medians after one warmup; the `128` row is a single validation
-sample.
+With `--materialize-batches all`, the latest DTS-parameter-layout-hoist fixed4
+check measured seven fixed4 repetitions after one warmup, with a minimum of
+`1.2721429850207642s`.  The `6/8` rows above are earlier three-repetition
+medians after one warmup; the `128` row is a single validation sample.
 
 The last detailed fixed4 bottleneck profile on the same resident layout
 predates the DTS signature cleanup, but it still identifies the dominant kernel
@@ -239,6 +239,11 @@ Pibar/storage waves (`0.44713026658073274s`), local-DTS iteration-2 waves
 (`0.12040464065969005s`), and DTS phase 3 (`0.023367967963218692s`).
 All `973` split waves were fully covered; `922` were pure single-child split
 waves, `30` were mixed, and `21` were pure multi-child split waves.
+Hoisting DTS forward parameter layout checks is a CPU-side cleanup around those
+split waves: it improved the materialized fixed4 median to
+`1.2767350050271489s`, while lazy cold samples after the change measured
+`2.316268014954403s`, `2.2867282620281912s`, `2.3230369999655522s`, and
+`2.3498632150003687s`.
 
 Gradient timing for the same resident layout:
 
@@ -536,6 +541,10 @@ Differences from HOGENOM:
   (`4.81M` rows across `973` split waves versus HOGENOM's `0.94M` rows across
   `244` split waves in the accepted `depth_first_fit` layout), so the cold
   likelihood win is more visible here.
+- The DTS parameter-layout hoist follows the same shape asymmetry.  It removes
+  repeated Python validation around every split wave, which is more visible on
+  `test_trees_1000` because its accepted route launches about four times as many
+  split waves as the local HOGENOM fixture.
 - The same split-wave asymmetry makes the DTS compile-shape cleanup more valuable
   on `test_trees_1000`: hundreds of pure single-child split waves no longer
   generate redundant eq1 DTS variants during the first likelihood pass, and the

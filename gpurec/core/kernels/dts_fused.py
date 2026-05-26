@@ -63,6 +63,16 @@ def _prepare_param(p, n_splits, S, *, family_indexed=False):
     raise AssertionError("validated DTS forward layout reached unreachable branch")
 
 
+def prepare_dts_forward_param(p, n_splits, S, *, family_indexed=False):
+    """Return reusable DTS parameter addressing metadata for forward kernels."""
+    return _prepare_param(
+        p,
+        n_splits,
+        S,
+        family_indexed=family_indexed,
+    )
+
+
 @triton.jit
 def _load_dts_param(param_ptr, n, s_offs, family, S: tl.constexpr, mask,
                     mode: tl.constexpr, ROW_STRIDE: tl.constexpr,
@@ -360,6 +370,8 @@ def dts_fused_parent_reduced(
     tile_splits=64,
     ge2_max_fanout=None,
     initialize_out=True,
+    prepared_log_pD=None,
+    prepared_log_pS=None,
 ):
     """Parent-reduced DTS forward recompute.
 
@@ -381,11 +393,15 @@ def dts_fused_parent_reduced(
     family_indexed = family_idx is not None
 
     if n_eq1 > 0:
-        log_pD_vec, mode_pD, row_stride_D, species_stride_D = _prepare_param(
-            log_pD, N, S, family_indexed=family_indexed
+        log_pD_vec, mode_pD, row_stride_D, species_stride_D = (
+            prepared_log_pD
+            if prepared_log_pD is not None
+            else _prepare_param(log_pD, N, S, family_indexed=family_indexed)
         )
-        log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
-            log_pS, N, S, family_indexed=family_indexed
+        log_pS_vec, mode_pS, row_stride_S, species_stride_S = (
+            prepared_log_pS
+            if prepared_log_pS is not None
+            else _prepare_param(log_pS, N, S, family_indexed=family_indexed)
         )
         BLOCK_S = min(512, triton.next_power_of_2(S))
         launch_options = {}
@@ -422,11 +438,15 @@ def dts_fused_parent_reduced(
     if n_groups == 0:
         return out
 
-    log_pD_vec, mode_pD, row_stride_D, species_stride_D = _prepare_param(
-        log_pD, N, S, family_indexed=family_indexed
+    log_pD_vec, mode_pD, row_stride_D, species_stride_D = (
+        prepared_log_pD
+        if prepared_log_pD is not None
+        else _prepare_param(log_pD, N, S, family_indexed=family_indexed)
     )
-    log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
-        log_pS, N, S, family_indexed=family_indexed
+    log_pS_vec, mode_pS, row_stride_S, species_stride_S = (
+        prepared_log_pS
+        if prepared_log_pS is not None
+        else _prepare_param(log_pS, N, S, family_indexed=family_indexed)
     )
     BLOCK_S = min(512, triton.next_power_of_2(S))
     launch_options = {}

@@ -9,7 +9,10 @@ from .kernels.wave_step import (
     wave_step_uniform_initial_leaf_fused_into,
     wave_pibar_uniform_parent_fused,
 )
-from .kernels.dts_fused import dts_fused_parent_reduced
+from .kernels.dts_fused import (
+    dts_fused_parent_reduced,
+    prepare_dts_forward_param,
+)
 from ._helpers import _nvtx_range
 from .extract_parameters import as_family_param, as_family_species
 from .log2_utils import logsumexp2
@@ -113,7 +116,9 @@ def pi_export_state_request(*, original_order: bool) -> _PiForwardRequest:
 def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
                        S, device, dtype, active_mask=None,
                        family_idx=None,
-                       family_offset=0):
+                       family_offset=0,
+                       prepared_log_pD=None,
+                       prepared_log_pS=None):
     """Compute DTS cross-clade terms and reduce to [W, S] for one wave."""
     sl = meta['sl']
     sr = meta['sr']
@@ -138,6 +143,8 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
         tile_splits=64,
         ge2_max_fanout=meta.get('ge2_max_fanout'),
         initialize_out=initialize_out,
+        prepared_log_pD=prepared_log_pD,
+        prepared_log_pS=prepared_log_pS,
     )
 
 
@@ -342,6 +349,18 @@ def Pi_wave_forward(
         wave_consts = (DL_const, SL1_const, SL2_const, Ebar_family, E_family, mt_family)
     else:
         wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
+    dts_log_pD_param = prepare_dts_forward_param(
+        log_pD_param,
+        0,
+        S,
+        family_indexed=batched,
+    )
+    dts_log_pS_param = prepare_dts_forward_param(
+        log_pS_param,
+        0,
+        S,
+        family_indexed=batched,
+    )
 
     root_clade_ids_for_skip = None
     if output_intent.can_skip_final_pibar or trace_root_logsumexp:
@@ -546,6 +565,8 @@ def Pi_wave_forward(
                     log_pD_param, log_pS_param, S, device, dtype,
                     family_idx=family_idx if batched else None,
                     family_offset=meta['start'],
+                    prepared_log_pD=dts_log_pD_param,
+                    prepared_log_pS=dts_log_pS_param,
                 )
             else:
                 dts_r = None
