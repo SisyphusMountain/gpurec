@@ -14,6 +14,12 @@ from gpurec.core.batch_planning import (
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
 _RAW_THETA_CHECKPOINT_ERROR = "must contain a dictionary payload"
+_SAFE_STATUS_TEXT_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789"
+    "._:/+-"
+)
 
 
 def _run_config_cli_override_fields() -> tuple[str, ...]:
@@ -68,6 +74,8 @@ def _optional_text(name: str, value: object) -> str:
     text = str(value)
     if not text:
         return f"{name}=null"
+    if any(char not in _SAFE_STATUS_TEXT_CHARS for char in text):
+        text = json.dumps(text, ensure_ascii=True).replace(" ", "\\u0020")
     return f"{name}={text}"
 
 
@@ -112,8 +120,8 @@ def _optimization_result_text(result: Any) -> str:
     )
     return " ".join(
         [
-            f"status={result.status}",
-            f"reason={result.reason}",
+            _optional_text("status", getattr(result, "status", None)),
+            _optional_text("reason", getattr(result, "reason", None)),
             _optional_int_text(
                 "steps_completed",
                 getattr(result, "steps_completed", None),

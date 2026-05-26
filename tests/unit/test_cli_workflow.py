@@ -1249,7 +1249,11 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "best_log_likelihood_bits=-10.250000" in captured.out
     assert "final_check_status=ok" in captured.out
     assert "final_check_source=fallback_clade_budget" in captured.out
-    assert "final_check_reason=RuntimeError: scratch budget exceeded" in captured.out
+    assert (
+        'final_check_reason="RuntimeError:\\u0020scratch\\u0020budget\\u0020exceeded"'
+        in captured.out
+    )
+    assert "final_check_reason=RuntimeError: scratch budget exceeded" not in captured.out
     assert "final_check_fallback_clade_budget=250000.000000" in captured.out
     assert "final_check_loss_abs_delta_bits=0.125000" in captured.out
     assert "final_check_grad_max_abs_delta=0.500000" in captured.out

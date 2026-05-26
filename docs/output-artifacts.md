@@ -51,6 +51,8 @@ The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print `steps_completed`, `best_step`, and the same final/best NLL and
 log-likelihood fields, plus the final validation source, reason, status, and
 fallback budget/loss/gradient delta fields, for quick terminal triage.
+Text values that contain whitespace or control characters are emitted as JSON
+strings with spaces escaped as `\u0020` so the status line remains one record.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering

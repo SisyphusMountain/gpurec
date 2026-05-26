@@ -1403,6 +1403,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`final_check_grad_max_abs_delta`",
         "`final_check_grad_rel_inf_delta`",
         "`gpurec optimize` status line",
+        "JSON strings with spaces escaped as `\\u0020`",
         "`gpurec run`",
         "`rates_final.tsv`",
         "`per_fam_likelihoods.tsv`",
