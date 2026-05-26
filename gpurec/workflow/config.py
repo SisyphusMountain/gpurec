@@ -334,6 +334,14 @@ def effective_optimizer_step_cap(config: RunConfig) -> tuple[int, str]:
     return config.steps, "configured_steps"
 
 
+def effective_final_check_iters(config: RunConfig) -> int:
+    """Return the solver budget used by final likelihood/gradient validation."""
+
+    if config.optimizer == "adagrad-restarts":
+        return int(config.adagrad_restart_final_check_iters)
+    return int(config.final_check_iters)
+
+
 def _normalize_adagrad_restart_schedule(value: str) -> str:
     return ",".join(
         f"{phase.budget_spec()}:{phase.lr:.12g}:{phase.steps}"
@@ -1124,11 +1132,7 @@ def production_default_optimizer_setting_mismatches(
     route = {
         "mode": config.mode,
         "optimizer": config.optimizer,
-        "final_check_iters": (
-            config.adagrad_restart_final_check_iters
-            if config.optimizer == "adagrad-restarts"
-            else config.final_check_iters
-        ),
+        "final_check_iters": effective_final_check_iters(config),
         "optimizer_step_cap": optimizer_step_cap,
         "optimizer_step_cap_reason": optimizer_step_cap_reason,
         "solver_warmup_iters": config.solver_warmup_iters,
@@ -1197,11 +1201,7 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
         "fixed_iters_e": config.fixed_iters_e,
         "fixed_iters_pi": config.fixed_iters_pi,
         "neumann_terms": config.neumann_terms,
-        "final_check_iters": (
-            config.adagrad_restart_final_check_iters
-            if config.optimizer == "adagrad-restarts"
-            else config.final_check_iters
-        ),
+        "final_check_iters": effective_final_check_iters(config),
         "configured_steps": config.steps,
         "optimizer_step_cap": optimizer_step_cap,
         "optimizer_step_cap_reason": optimizer_step_cap_reason,

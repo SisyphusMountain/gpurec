@@ -7561,6 +7561,16 @@ specieswise execution selector reports \texttt{2 passed}, and
 \texttt{git diff --check} passes.  The full CPU unit gate reports
 \texttt{1479 passed, 1 skipped, 51 deselected}.
 
+\texttt{gpurec.workflow.config.effective\_final\_check\_iters(config)} now
+centralizes the final high-fidelity likelihood/gradient validation budget.
+Route metadata, production-default setting audits, and
+\texttt{OptimizationRunner} share the helper, so specieswise
+\texttt{adagrad-restarts} fixed128 validation cannot drift from the
+\texttt{final\_check\_iters} value reported in artifacts.  The touched workflow
+modules and workflow test compile, and the focused route/runner selector reports
+\texttt{4 passed}.  \texttt{git diff --check} passes, and the full CPU unit gate
+reports \texttt{1480 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

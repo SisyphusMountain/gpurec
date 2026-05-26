@@ -75,6 +75,7 @@ from gpurec.workflow.config import (
     adagrad_restart_schedule_total_steps,
     default_optimizer_for_mode,
     dtype_from_name,
+    effective_final_check_iters,
     effective_route_metadata,
     production_default_optimizer_setting_mismatches_from_route,
     production_default_route_mismatches_from_route,
@@ -1403,6 +1404,8 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["configured_steps"] == 5000
     assert route["optimizer_step_cap"] == 5000
     assert route["optimizer_step_cap_reason"] == "configured_steps"
+    assert effective_final_check_iters(config) == 32
+    assert route["final_check_iters"] == effective_final_check_iters(config)
     assert route["hessian_sgd_normal_fixed_iters_pi"] is None
     assert route["hessian_sgd_normal_neumann_terms"] is None
     assert route["hessian_sgd_pi_adjoint_warmstart"] is False
@@ -1844,11 +1847,13 @@ def test_run_config_auto_optimizer_uses_adagrad_restarts_for_specieswise_mode(
     assert config.adagrad_restart_schedule == "8:1:60,16:0.5:35,32:0.5:30"
     assert config.adagrad_restart_final_check_iters == 128
     assert adagrad_restart_schedule_total_steps(config.adagrad_restart_schedule) == 125
+    assert effective_final_check_iters(config) == 128
     route = effective_route_metadata(config)
     assert route["adagrad_restart_total_steps"] == 125
     assert route["configured_steps"] == 5000
     assert route["optimizer_step_cap"] == 125
     assert route["optimizer_step_cap_reason"] == "adagrad_restart_schedule"
+    assert route["final_check_iters"] == effective_final_check_iters(config)
     assert route["uses_production_default_optimizer_settings"] is True
     assert route["production_default_optimizer_setting_mismatches"] == []
     assert route["uses_production_default_route"] is True
@@ -1883,6 +1888,43 @@ def test_run_config_specieswise_adagrad_restarts_step_cap_honors_shorter_steps(
         "optimizer_step_cap",
         "optimizer_step_cap_reason",
     ]
+
+
+def test_effective_final_check_iters_uses_optimizer_specific_budget(
+    tmp_path: Path,
+):
+    genewise = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "genewise-out",
+        mode="genewise",
+        device="cpu",
+        final_check_iters=40,
+    )
+    specieswise = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "specieswise-out",
+        mode="specieswise",
+        device="cpu",
+        final_check_iters=8,
+        adagrad_restart_final_check_iters=32,
+    )
+    disabled_specieswise = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "specieswise-disabled-out",
+        mode="specieswise",
+        device="cpu",
+        adagrad_restart_final_check_iters=0,
+    )
+
+    assert effective_final_check_iters(genewise) == 40
+    assert effective_route_metadata(genewise)["final_check_iters"] == 40
+    assert effective_final_check_iters(specieswise) == 32
+    assert effective_route_metadata(specieswise)["final_check_iters"] == 32
+    assert effective_final_check_iters(disabled_specieswise) == 0
+    assert effective_route_metadata(disabled_specieswise)["final_check_iters"] == 0
 
 
 def test_run_config_accepts_specieswise_adagrad_restart_schedule(tmp_path: Path):
@@ -6777,6 +6819,7 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert summary["configured_steps"] == 10
     assert summary["optimizer_step_cap"] == 4
     assert summary["optimizer_step_cap_reason"] == "adagrad_restart_schedule"
+    assert runner._final_iteration_check_iters() == effective_final_check_iters(config)
     assert result.objective == summary["objective"]
     assert result.gradient_route == summary["gradient_route"]
     assert result.rate_parameterization == summary["rate_parameterization"]

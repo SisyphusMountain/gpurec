@@ -2295,6 +2295,21 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1479 passed, 1 skipped, 51 deselected after the specieswise execution
   production-route success slice.
+- `gpurec.workflow.config.effective_final_check_iters(config)` now centralizes
+  the final high-fidelity likelihood/gradient validation budget.  Route metadata,
+  production-default setting audits, and `OptimizationRunner` now share this
+  helper, so specieswise `adagrad-restarts` fixed128 validation cannot drift
+  from the `final_check_iters` value reported in artifacts.
+- `python -m py_compile gpurec/workflow/config.py gpurec/workflow/optimize.py tests/unit/test_workflow.py`:
+  passed after centralizing the effective final-check budget.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_workflow.py::test_effective_route_metadata_reports_production_likelihood_contract tests/unit/test_workflow.py::test_run_config_auto_optimizer_uses_adagrad_restarts_for_specieswise_mode tests/unit/test_workflow.py::test_effective_final_check_iters_uses_optimizer_specific_budget tests/unit/test_workflow.py::test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets`:
+  4 passed after guarding that route metadata and the runner use the same final
+  likelihood/gradient validation budget source.
+- `git diff --check`: passed before the full CPU gate for the effective
+  final-check budget helper slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1480 passed, 1 skipped, 51 deselected after centralizing and guarding the
+  effective final-check budget.
 
 ## Recommended Next Order
 
