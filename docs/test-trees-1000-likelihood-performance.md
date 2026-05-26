@@ -123,14 +123,15 @@ path does not reuse the previous fixed4 Pi state.  A fresh 2026-05-26
 | 8 | `2.3105589839979075s` | `4.5814970469800755s` | `2157097.25` | `0.0` |
 
 Progressive fixed4-start sample on the same route, using one cold model and
-then evaluating `4,6,8` in sequence:
+then evaluating `4,6,8` in sequence.  A 2026-05-26 rerun after the scalar-loss
+accumulation rejection measured:
 
 | Step | Incremental pass | Cumulative from process start | loss bits | delta vs fixed8 |
 |---:|---:|---:|---:|---:|
-| build | `0.9812196380225942s` | `0.9812196380225942s` | n/a | n/a |
-| 4 | `1.3362598160165362s` | `2.3174794540391304s` | `2156427.0` | `670.25` |
-| 6 | `1.9899028320214711s` | `4.3073822860606015s` | `2157095.0` | `2.25` |
-| 8 | `2.3181870129774325s` | `6.625569299038034s` | `2157097.25` | `0.0` |
+| build | `0.9357642909744754s` | `0.9357642909744754s` | n/a | n/a |
+| 4 | `1.3270101890084334s` | `2.262774479982909s` | `2156427.0` | `670.25` |
+| 6 | `1.7997798179858364s` | `4.062554297968745s` | `2157095.0` | `2.25` |
+| 8 | `2.3256094389944337s` | `6.388163736963179s` | `2157097.25` | `0.0` |
 
 A direct cold fixed8 sample under the same cached code path took
 `3.365096386987716s`.  So starting at fixed4 is useful when the caller can use
