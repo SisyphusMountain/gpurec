@@ -7490,6 +7490,17 @@ the focused config/CLI/docs selector reports \texttt{18 passed}, the focused
 \texttt{6 passed}, and \texttt{git diff --check} passes.  The full CPU unit
 gate reports \texttt{1467 passed, 1 skipped, 51 deselected}.
 
+The route-verdict documentation guard now keeps the README status-line contract
+and output-artifact checkpoint triage notes aligned with the emitted fields.
+\texttt{gpurec optimize}/\texttt{gpurec run} docs explicitly name
+\texttt{uses\_production\_default\_route} and
+\texttt{production\_default\_route\_mismatches}, and the checkpoint-info
+artifact reference documents that \texttt{--require-production-default-route}
+requires the shipped likelihood/gradient contract as well as optimizer-specific
+route settings.  The touched hygiene test compiles, the focused README/artifact
+selector reports \texttt{2 passed}, and \texttt{git diff --check} passes.  The
+full CPU unit gate reports \texttt{1467 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

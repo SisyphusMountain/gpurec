@@ -1545,6 +1545,8 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "unless the run reached `status=converged`" in normalized
     assert "resolved `mode`, `optimizer`, mode default optimizer" in normalized
     assert "whether the optimizer matches that default" in normalized
+    assert "`uses_production_default_route`" in project_readme
+    assert "`production_default_route_mismatches`" in project_readme
     assert "batch packing, family chunk size, clade budget" in normalized
     assert "solver iteration budgets" in normalized
     assert (
@@ -1813,6 +1815,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`--require-final-check-ok`",
         "`--require-mode-default-optimizer`",
         "`--require-production-default-route`",
+        "checkpoint route must also match the shipped likelihood/gradient contract",
         "legacy casing and underscore aliases",
         "standalone `gpurec sample`",
         "incomplete-evidence error",

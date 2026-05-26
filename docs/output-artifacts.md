@@ -192,7 +192,9 @@ When the checkpoint's saved last row contains final validation metrics,
 checkpoint's last row. Add `--require-final-check-ok` when
 automation should fail unless the checkpoint last row has
 `optimizer/final_check_status=ok`; add `--require-mode-default-optimizer` when
-the checkpoint route must use the production optimizer default for its mode. If
+the checkpoint route must use the production optimizer default for its mode, or
+`--require-production-default-route` when the checkpoint route must also match
+the shipped likelihood/gradient contract and optimizer-specific route. If
 a legacy checkpoint has no `route_metadata`, `checkpoint-info` falls back to
 recoverable config `mode` and `optimizer` fields; incomplete artifacts fail the
 gate with an incomplete-evidence error.

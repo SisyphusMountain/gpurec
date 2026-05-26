@@ -2185,6 +2185,21 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1467 passed, 1 skipped, 51 deselected after the production-route verdict
   metadata slice.
+- Operator-facing docs now explicitly name the full production-route verdict in
+  the `gpurec optimize`/`gpurec run` status-line contract and document that
+  `gpurec checkpoint-info --require-production-default-route` requires the
+  checkpoint route to match the shipped likelihood/gradient contract and
+  optimizer-specific route, not only the mode-default optimizer.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  tightening the route-verdict documentation guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_repository_hygiene.py::test_project_readme_documents_gpurec_run_end_to_end_workflow tests/unit/test_repository_hygiene.py::test_output_artifact_reference_is_linked_and_documents_contract`:
+  2 passed after guarding the README status-line contract and checkpoint route
+  gate docs.
+- `git diff --check`: passed before the full CPU gate for the route-verdict docs
+  guard slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1467 passed, 1 skipped, 51 deselected after the route-verdict docs guard
+  slice.
 
 ## Recommended Next Order
 
