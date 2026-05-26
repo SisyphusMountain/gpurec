@@ -2382,6 +2382,11 @@ not edit files.  New or still-open findings from that refresh are:
   JSON now have direct unit coverage that round-trips through `RunConfig` and
   reports `uses_production_default_route=true`, guarding the installed starter
   configs before any CUDA likelihood model is built.
+- Generated templates now also pass the public
+  `validate-config --require-mode-default-optimizer
+  --require-production-default-route` path when pointed at existing AleRax
+  inputs, so the installed starter workflow is guarded end to end through CLI
+  preflight without constructing the CUDA likelihood model.
 
 ## Recommended Next Order
 

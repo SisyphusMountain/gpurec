@@ -587,6 +587,65 @@ def test_cli_config_template_roundtrips_to_production_default_route(
     assert route["production_default_route_mismatches"] == []
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_optimizer"),
+    [
+        ("genewise", "hessian-sgd"),
+        ("specieswise", "adagrad-restarts"),
+    ],
+)
+def test_cli_config_template_output_validates_with_production_route_gates(
+    tmp_path: Path,
+    mode: str,
+    expected_optimizer: str,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+    output = tmp_path / f"{mode}.json"
+
+    main(
+        [
+            "config-template",
+            "--mode",
+            mode,
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / f"{mode}-out"),
+            "--output",
+            str(output),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert (
+        gpurec_cli._optional_text("config_template", output.resolve())
+        in captured.out
+    )
+
+    main(
+        [
+            "validate-config",
+            "--config",
+            str(output),
+            "--require-mode-default-optimizer",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "valid_config=true" in captured.out
+    assert f"mode={mode}" in captured.out
+    assert f"optimizer={expected_optimizer}" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
+
+
 def test_cli_config_template_writes_output_and_refuses_overwrite(
     tmp_path: Path,
     capsys,

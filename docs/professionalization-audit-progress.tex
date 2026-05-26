@@ -7685,6 +7685,12 @@ unit coverage and must report \texttt{uses\_production\_default\_route=true}.
 This guards the installed starter configs before any CUDA likelihood model is
 built.
 
+Generated templates now also pass the public
+\texttt{validate-config --require-mode-default-optimizer
+--require-production-default-route} path when pointed at existing AleRax
+inputs.  This guards the installed starter workflow end to end through CLI
+preflight without constructing the CUDA likelihood model.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
