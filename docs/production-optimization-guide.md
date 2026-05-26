@@ -165,9 +165,11 @@ solver budgets, effective `final_check_iters`, and optimizer-specific defaults
 such as the specieswise restart schedule and genewise Hessian-SGD normal-stage
 solver overrides. It is a preflight for path and parser issues, not a
 likelihood or gradient correctness check. Add `--check-preprocess` for a
-heavier CPU
-preprocessing pass that uses the retained Rust parser to validate selected
-Newick trees and leaf/species mappings before optimization.
+heavier CPU preprocessing pass that uses the retained Rust parser to validate
+selected Newick trees and leaf/species mappings before optimization. That
+heavier preflight also reports `cuda_backward_ready` from the preprocessed
+species-node count; the retained CUDA backward path currently requires
+`S > 256`.
 
 Inspect these outputs first:
 

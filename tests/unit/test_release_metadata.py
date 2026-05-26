@@ -523,12 +523,14 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         ),
         "optimizer=hessian-sgd",
         "hessian_sgd_normal_fixed_iters_pi=full",
+        "cuda_backward_ready=false",
         (
             "python -m gpurec.cli validate-config --config "
             "examples/specieswise-adagrad-restarts-config.json --check-preprocess"
         ),
         "optimizer=adagrad-restarts",
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30",
+        "cuda_backward_ready=false",
         "preprocess_checked=true",
     ):
         assert required in rust_smoke
@@ -1019,6 +1021,7 @@ def test_release_readiness_documents_source_archive_preprocess_smoke():
         "source-archive `validate-config --check-preprocess`",
         "examples/minimal-run-config.json",
         "examples/specieswise-adagrad-restarts-config.json",
+        "cuda_backward_ready=false",
     ):
         assert expected in guide
 

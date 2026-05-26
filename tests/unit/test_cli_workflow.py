@@ -672,6 +672,8 @@ def test_cli_validate_config_can_check_cpu_preprocessing(
     assert "preprocess_checked=true" in captured.out
     assert "preprocessed_families=1" in captured.out
     assert "preprocessed_species_nodes=3" in captured.out
+    assert "cuda_backward_ready=false" in captured.out
+    assert "cuda_backward_ready_reason=requires_s_gt_256" in captured.out
     assert captured.err == ""
 
 

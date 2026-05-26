@@ -107,12 +107,14 @@ gpurec validate-config --config run.json --check-preprocess
 ```
 
 The validation output reports the effective optimizer, batch packing, family
-chunking, solver budgets, and optimizer-specific defaults.  Treat parser
-failures as input contract failures; fix the referenced tree, family, or
-mapping file before starting `gpurec optimize`.
+chunking, solver budgets, optimizer-specific defaults, and, when
+`--check-preprocess` is used, `cuda_backward_ready` for the current species
+node count. Treat parser failures as input contract failures; fix the
+referenced tree, family, or mapping file before starting `gpurec optimize`.
 
 The checked files under `examples/` are source-checkout and source-archive
 fixtures for parser/config validation.  They are useful for confirming command
 shape, but they are not CPU optimizer smokes.  The optimized likelihood path
 currently requires CUDA, and the retained Pi backward path currently requires
-more than 256 postorder species nodes (`S > 256`).
+more than 256 postorder species nodes (`S > 256`); tiny fixtures report
+`cuda_backward_ready=false`.

@@ -24,7 +24,10 @@ gpurec validate-config --config run.json --check-preprocess
 
 Use this when preparing a new dataset or after editing Newick trees or mapping
 files. It runs the retained Rust parser on the selected families and catches
-tree/mapping problems before a full optimization run.
+tree/mapping problems before a full optimization run. It also reports
+`cuda_backward_ready`; if this is `false`, the species tree is too small for
+the retained CUDA backward path (`S > 256`) even though parser validation
+succeeded.
 
 ## Common Preflight Failures
 
@@ -33,6 +36,7 @@ tree/mapping problems before a full optimization run.
 | `unknown RunConfig field` | A JSON config contains an obsolete or misspelled key. | Start from `gpurec config-template --mode genewise` or `--mode specieswise`, then copy only supported fields. |
 | `missing gene-tree path` | A `[FAMILIES]` entry points at a gene tree that does not exist relative to the family file. | Fix the `starting_gene_tree` path or move the file next to the family list. |
 | Mapping or species-name errors during `--check-preprocess` | Gene-tree leaves, mapping labels, or species-tree labels disagree. | Check the map file first, then verify every mapped species appears in the species tree. |
+| `cuda_backward_ready=false` | CPU preprocessing succeeded, but the species tree does not satisfy the retained CUDA backward size gate. | Use a production species tree with more than 256 postorder species nodes before running `gpurec optimize`. |
 | A CUDA error appears during `validate-config` | The command probably reached `optimize`, not preflight. | Re-run only `validate-config`; the default preflight does not build `GeneReconModel` or touch CUDA. |
 
 ## Optimization Status

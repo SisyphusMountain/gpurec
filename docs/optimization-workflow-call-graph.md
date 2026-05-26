@@ -69,8 +69,10 @@ mapping files, and referenced gene-tree files without constructing
 With `--check-preprocess`, `validate-config` additionally runs CPU
 `GeneDataset` preprocessing for the selected families; that optional path loads
 the retained Rust parser and catches Newick or mapping errors before
-optimization, but still does not construct the CUDA likelihood model. `gpurec
-optimize` and `gpurec run` use the default lightweight preflight before
+optimization, then reports whether the preprocessed species-node count passes
+the retained CUDA backward `S > 256` gate. It still does not construct the CUDA
+likelihood model. `gpurec optimize` and `gpurec run` use the default lightweight
+preflight before
 entering the CUDA likelihood workflow. The Python API starts at
 `workflow.optimize(config)` and therefore skips only the CLI parser/preflight
 layer.

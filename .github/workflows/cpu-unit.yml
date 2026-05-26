@@ -254,10 +254,12 @@ jobs:
           python -m gpurec.cli validate-config --config examples/minimal-run-config.json --check-preprocess | tee genewise-validate.txt
           grep -q "optimizer=hessian-sgd" genewise-validate.txt
           grep -q "hessian_sgd_normal_fixed_iters_pi=full" genewise-validate.txt
+          grep -q "cuda_backward_ready=false" genewise-validate.txt
           grep -q "preprocess_checked=true" genewise-validate.txt
           python -m gpurec.cli validate-config --config examples/specieswise-adagrad-restarts-config.json --check-preprocess | tee specieswise-validate.txt
           grep -q "optimizer=adagrad-restarts" specieswise-validate.txt
           grep -q "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" specieswise-validate.txt
+          grep -q "cuda_backward_ready=false" specieswise-validate.txt
           grep -q "preprocess_checked=true" specieswise-validate.txt
 
       - name: Install built wheel and smoke CLI

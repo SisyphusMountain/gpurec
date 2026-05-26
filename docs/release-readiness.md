@@ -38,9 +38,10 @@ and the specieswise Adagrad restart schedule. It also smokes
 without CUDA model construction. The same package job keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
-and checks installed `gpurec sample --help`, `gpurec run --help`, and
-`gpurec backtrack-check` for external backtracking binary guidance and the
-installed missing-binary diagnostic.
+checks source-archive preprocessing reports the tiny fixtures as
+`cuda_backward_ready=false`, and checks installed `gpurec sample --help`,
+`gpurec run --help`, and `gpurec backtrack-check` for external backtracking
+binary guidance and the installed missing-binary diagnostic.
 
 Install release tooling from the dedicated extra:
 

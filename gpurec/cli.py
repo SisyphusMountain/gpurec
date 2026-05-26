@@ -14,6 +14,7 @@ from gpurec.core.batch_planning import (
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
 _RAW_THETA_CHECKPOINT_ERROR = "must contain a dictionary payload"
+_CUDA_BACKWARD_MIN_SPECIES_NODES_EXCLUSIVE = 256
 _SAFE_STATUS_TEXT_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
@@ -320,6 +321,14 @@ def _validate_run_config_preprocess(config: RunConfig) -> dict[str, int]:
     }
 
 
+def _cuda_backward_readiness(species_nodes: int) -> dict[str, object]:
+    ready = species_nodes > _CUDA_BACKWARD_MIN_SPECIES_NODES_EXCLUSIVE
+    return {
+        "cuda_backward_ready": ready,
+        "cuda_backward_ready_reason": None if ready else "requires_s_gt_256",
+    }
+
+
 def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:
     path = checkpoint.expanduser().resolve()
     if not path.is_file():
@@ -480,10 +489,14 @@ def _preflight_run_config(
     config: RunConfig,
     *,
     check_preprocess: bool = False,
-) -> dict[str, int]:
+) -> dict[str, object]:
     summary = _validate_run_config_family_references(config)
     if check_preprocess:
-        summary.update(_validate_run_config_preprocess(config))
+        preprocess_summary = _validate_run_config_preprocess(config)
+        summary.update(preprocess_summary)
+        summary.update(
+            _cuda_backward_readiness(preprocess_summary["preprocessed_species_nodes"])
+        )
     return summary
 
 
@@ -1095,7 +1108,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Also run CPU preprocessing with the retained Rust parser to check "
-            "selected Newick trees and leaf/species mappings."
+            "selected Newick trees and leaf/species mappings, then report "
+            "whether the species-node count passes the CUDA backward S > 256 gate."
         ),
     )
     validate_parser.set_defaults(_command_parser=validate_parser)
@@ -1235,10 +1249,19 @@ def main(argv: list[str] | None = None) -> None:
             command_parser.error(str(exc))
         preprocess_text = ""
         if args.check_preprocess:
+            cuda_backward_ready = (
+                "true" if summary["cuda_backward_ready"] else "false"
+            )
+            cuda_backward_reason = _optional_text(
+                "cuda_backward_ready_reason",
+                summary.get("cuda_backward_ready_reason"),
+            )
             preprocess_text = (
                 f" preprocess_checked=true"
                 f" preprocessed_families={summary['preprocessed_families']}"
                 f" preprocessed_species_nodes={summary['preprocessed_species_nodes']}"
+                f" cuda_backward_ready={cuda_backward_ready}"
+                f" {cuda_backward_reason}"
             )
         print(
             "valid_config=true "

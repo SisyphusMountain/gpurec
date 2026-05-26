@@ -207,7 +207,9 @@ optimizer-specific defaults such as the specieswise restart schedule and
 genewise Hessian-SGD normal-stage solver overrides.
 Add `--check-preprocess` when you also want the retained Rust parser to run on
 CPU and validate the selected Newick trees plus leaf/species mappings before a
-full optimization run.
+full optimization run.  That heavier preflight also prints
+`cuda_backward_ready`; this currently requires more than 256 postorder species
+nodes (`S > 256`) for the retained CUDA likelihood/gradient path.
 For a source checkout or source archive, checked JSON configs and a tiny
 AleRax-style fixture live under `examples/`.  They cover the genewise and
 specieswise production defaults documented in `examples/README.md`, including
