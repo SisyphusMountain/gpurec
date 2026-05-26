@@ -8398,6 +8398,92 @@ def test_optimization_runner_lbfgsb_can_stop_before_second_high_kkt_fallback(
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_lbfgsb_can_stop_on_budget_exhausted_high_kkt_plateau(
+    tmp_path: Path,
+):
+    class ScriptedLBFGSB:
+        def __init__(self, param: torch.nn.Parameter):
+            self.param_groups = [{"params": [param]}]
+            self.state = {param: {}}
+            self.calls = 0
+
+        def zero_grad(self, set_to_none=True):
+            param = self.param_groups[0]["params"][0]
+            param.grad = None
+
+        def step(self, closure, *, loss_closure=None):
+            closure()
+            self.calls += 1
+            param = self.param_groups[0]["params"][0]
+            flat_grad = torch.ones_like(param.detach()).reshape(-1)
+            self.state[param].update(
+                {
+                    "last_loss": torch.as_tensor(
+                        10.0,
+                        dtype=param.dtype,
+                        device=param.device,
+                    ),
+                    "last_grad": flat_grad,
+                    "last_projected_grad": flat_grad,
+                    "last_grad_evals": 1,
+                    "last_loss_evals": 8,
+                    "last_accepted": False,
+                    "last_alpha": 0.0,
+                    "last_step_inf": 0.0,
+                    "last_direction_kind": "none",
+                    "last_line_search_decrease": 0.0,
+                    "last_armijo_required_decrease": 0.0,
+                    "last_fallback_attempted": True,
+                    "last_fallback_used": False,
+                    "last_fallback_alpha": 0.0,
+                    "last_fallback_loss_evals": 4,
+                    "last_fallback_max_loss_evals": 4,
+                    "last_fallback_budget_exhausted": True,
+                    "last_fallback_reason": "line_search_failed",
+                    "last_high_kkt_stall_count": 1,
+                    "last_history_cleared_for_fallback": True,
+                }
+            )
+            return self.state[param]["last_loss"]
+
+        def state_dict(self):
+            return {}
+
+    class ScriptedRunner(_WorkflowSpecieswiseOptimizerModeRunner):
+        def _make_optimizer(self, model, phase):
+            if phase == "lbfgsb":
+                return ScriptedLBFGSB(model.theta)
+            return super()._make_optimizer(model, phase)
+
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="lbfgsb",
+        mode="specieswise",
+        steps=3,
+        loss_patience=0,
+        best_likelihood_patience=0,
+        lbfgsb_high_kkt_stop_patience=1,
+        lbfgsb_high_kkt_stop_min_fallbacks=0,
+        solver_warmup_iters=0,
+    )
+    runner = ScriptedRunner(config)
+
+    result = runner.run()
+
+    optimizer_rows = [
+        row
+        for row in _optimizer_mode_history_rows(config.out_dir)
+        if row["optimizer/phase"] == "lbfgsb"
+    ]
+    assert len(optimizer_rows) == 1
+    assert optimizer_rows[0]["optimizer/lbfgsb_fallback_budget_exhausted"] is True
+    assert optimizer_rows[0]["optimizer/lbfgsb_fallback_used"] is False
+    assert optimizer_rows[0]["optimizer/lbfgsb_high_kkt_stop_ready"] is True
+    assert result.status == "converged"
+    assert result.reason == "lbfgsb_high_kkt_tiny_progress_patience"
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_projected_lbfgs_reduces_lr_instead_of_stopping_on_large_projected_gradient(
     tmp_path: Path,
 ):

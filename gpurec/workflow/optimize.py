@@ -4322,11 +4322,20 @@ class OptimizationRunner:
                     fallback_used_this_row = bool(
                         metrics.get("optimizer/lbfgsb_fallback_used", False)
                     )
+                    fallback_budget_exhausted_this_row = bool(
+                        metrics.get(
+                            "optimizer/lbfgsb_fallback_budget_exhausted",
+                            False,
+                        )
+                    )
                     high_kkt_stop_signal = high_kkt_stall_count >= (
                         2 if high_kkt_stop_patience <= 1 else high_kkt_stop_patience
                     ) or (
                         high_kkt_stall_count >= high_kkt_stop_patience
-                        and fallback_used_this_row
+                        and (
+                            fallback_used_this_row
+                            or fallback_budget_exhausted_this_row
+                        )
                     )
                     high_kkt_stop_ready = (
                         high_kkt_stop_patience > 0
