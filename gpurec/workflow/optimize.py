@@ -3599,10 +3599,26 @@ class OptimizationRunner:
                     theta_step = float(
                         (model.theta.detach() - theta_before).abs().amax().cpu()
                     )
+                rejected_nonfinite_parameter_update = False
+                if first_order_pending_step and not _is_finite_tensor(model.theta):
+                    self._set_model_theta(model, theta_before)
+                    model.theta.grad = None
+                    theta_step = 0.0
+                    rejected_nonfinite_parameter_update = True
+                    row["optimizer/step_rejected_reason"] = (
+                        "nonfinite_parameter_update"
+                    )
+                    status = {
+                        "status": "failed",
+                        "reason": "nonfinite_parameter_update",
+                    }
                 model.clear()
                 row["theta_step_inf"] = theta_step
                 row["optimizer/step_applied"] = bool(
-                    first_order_pending_step
+                    (
+                        first_order_pending_step
+                        and not rejected_nonfinite_parameter_update
+                    )
                     or phase in _POST_STEP_OPTIMIZERS
                 )
                 row["step_s"] = time.perf_counter() - t0
@@ -3610,6 +3626,8 @@ class OptimizationRunner:
                 final_row = row
                 self._record(row)
 
+                if rejected_nonfinite_parameter_update:
+                    break
                 if adaptive_rebatch_stop:
                     status = {"status": "converged", "reason": "best_likelihood_patience"}
                     break

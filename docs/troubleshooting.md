@@ -78,6 +78,7 @@ then fails unless the saved last row reports
 | `converged` | The workflow met its stopping condition. | Use `checkpoints/best.pt` for sampling unless you intentionally need the last checkpoint. |
 | `not_converged` / `max_steps` | The run exhausted the configured step budget. | Inspect `history.jsonl`, `grad/projected_inf`, and `best_nll_bits`; increase `steps` and resume from `checkpoints/latest.pt` if the trajectory is still improving. |
 | `failed` / `nonfinite_objective_or_gradient` | A mandatory objective/gradient evaluation became nonfinite. | Keep the failed artifacts for debugging, then retry from an earlier checkpoint with a smaller learning rate or a more conservative optimizer route. |
+| `failed` / `nonfinite_parameter_update` | A first-order optimizer update produced nonfinite theta values after a finite objective/gradient evaluation. The workflow rejects the update and restores the previous finite theta before writing the failed checkpoint. | Retry from an earlier checkpoint with a smaller learning rate or stricter rate bounds; inspect the rejected history row's `optimizer/step_rejected_reason`. |
 | `adagrad_restart_schedule_complete` | The specieswise restart ladder finished all scheduled phases. | Treat it like a completed multifidelity run and inspect the fixed128 final-check diagnostics. |
 
 To continue a run:

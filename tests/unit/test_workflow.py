@@ -8539,6 +8539,53 @@ def test_optimization_runner_adam_lbfgs_schedule_runs_active_phases(tmp_path: Pa
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_rejects_nonfinite_first_order_parameter_update(
+    tmp_path: Path,
+    monkeypatch,
+):
+    def make_theta_nonfinite(self, closure=None):
+        if closure is not None:
+            closure()
+        with torch.no_grad():
+            for group in self.param_groups:
+                for parameter in group["params"]:
+                    parameter.fill_(float("nan"))
+
+    monkeypatch.setattr(torch.optim.Adam, "step", make_theta_nonfinite)
+    config = _optimizer_mode_config(tmp_path, optimizer="adam", steps=1)
+    runner = _WorkflowOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    assert result.status == "failed"
+    assert result.reason == "nonfinite_parameter_update"
+    assert result.sampling_checkpoint is None
+    assert result.final_log_likelihood_bits == pytest.approx(-result.final_nll_bits)
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == ["adam", "final_eval"]
+    assert history_rows[0]["optimizer/step_applied"] is False
+    assert (
+        history_rows[0]["optimizer/step_rejected_reason"]
+        == "nonfinite_parameter_update"
+    )
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["status"] == "failed"
+    assert latest["status"]["reason"] == "nonfinite_parameter_update"
+    assert bool(torch.isfinite(latest["theta"]).all().item())
+    torch.testing.assert_close(latest["theta"], runner.fake_model.initial_theta)
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed"
+    assert summary["reason"] == "nonfinite_parameter_update"
+    assert summary["sampling_checkpoint"] is None
+    assert summary["final_log_likelihood_bits"] == pytest.approx(
+        -summary["final_nll_bits"]
+    )
+    assert "nan" not in (config.out_dir / "rates_final.tsv").read_text(
+        encoding="utf-8"
+    ).lower()
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_lbfgs_runtime_error_is_failed_status(
     tmp_path: Path,
     monkeypatch,
