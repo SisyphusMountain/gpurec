@@ -3295,6 +3295,57 @@ def test_workflow_rate_outputs_use_normalized_survival_probability(tmp_path: Pat
     assert float(values["pS"]) == pytest.approx(expected_ps)
 
 
+def test_workflow_final_tsv_artifacts_quote_labels(tmp_path: Path):
+    theta = torch.log2(
+        torch.tensor(
+            [
+                [2.0, 3.0, 5.0],
+                [7.0, 11.0, 13.0],
+            ],
+            dtype=torch.float64,
+        )
+    )
+    model = SimpleNamespace(
+        theta=torch.nn.Parameter(theta),
+        species_names=["Species\tA", "Species\nB"],
+        family_names=["fam\tbad", "fam\nline"],
+    )
+
+    rates_path = tmp_path / "rates.tsv"
+    _write_rate_table(rates_path, model, "specieswise")
+    with rates_path.open(newline="", encoding="utf-8") as handle:
+        rate_rows = list(csv.reader(handle, delimiter="\t"))
+
+    assert rate_rows[0] == [
+        "row",
+        "name",
+        "D",
+        "T",
+        "L",
+        "pS",
+        "theta_D",
+        "theta_T",
+        "theta_L",
+    ]
+    assert rate_rows[1][1] == "Species\tA"
+    assert rate_rows[2][1] == "Species\nB"
+    assert len(rate_rows[1]) == len(rate_rows[0])
+    assert len(rate_rows[2]) == len(rate_rows[0])
+
+    likelihood_path = tmp_path / "per_fam_likelihoods.tsv"
+    optimize_workflow._write_per_family_likelihoods(
+        likelihood_path,
+        model,
+        torch.tensor([1.25, 2.5], dtype=torch.float64),
+    )
+    with likelihood_path.open(newline="", encoding="utf-8") as handle:
+        likelihood_rows = list(csv.reader(handle, delimiter="\t"))
+
+    assert likelihood_rows[0] == ["family", "nll_bits", "log_likelihood_bits"]
+    assert likelihood_rows[1] == ["fam\tbad", "1.25", "-1.25"]
+    assert likelihood_rows[2] == ["fam\nline", "2.5", "-2.5"]
+
+
 def test_workflow_jsonl_diagnostics_sanitize_nonfinite_values(tmp_path: Path):
     path = tmp_path / "history.jsonl"
     row = {

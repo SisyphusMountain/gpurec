@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import math
 import time
 from dataclasses import dataclass
@@ -470,26 +471,25 @@ def _write_rate_table(path: Path, model: GeneReconModel, mode: str) -> None:
     theta = model.theta.detach().reshape(-1, 3).to(device="cpu", dtype=torch.float64)
     rates, p_s = rates_and_survival_probability(theta)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        handle.write("row\tname\tD\tT\tL\tpS\ttheta_D\ttheta_T\ttheta_L\n")
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(
+            ("row", "name", "D", "T", "L", "pS", "theta_D", "theta_T", "theta_L")
+        )
         for row, label in enumerate(labels):
             theta_row = 0 if theta.shape[0] == 1 else row
-            handle.write(
-                "\t".join(
-                    str(value)
-                    for value in (
-                        row,
-                        label,
-                        float(rates[theta_row, 0]),
-                        float(rates[theta_row, 2]),
-                        float(rates[theta_row, 1]),
-                        float(p_s[theta_row]),
-                        float(theta[theta_row, 0]),
-                        float(theta[theta_row, 2]),
-                        float(theta[theta_row, 1]),
-                    )
+            writer.writerow(
+                (
+                    row,
+                    label,
+                    float(rates[theta_row, 0]),
+                    float(rates[theta_row, 2]),
+                    float(rates[theta_row, 1]),
+                    float(p_s[theta_row]),
+                    float(theta[theta_row, 0]),
+                    float(theta[theta_row, 2]),
+                    float(theta[theta_row, 1]),
                 )
-                + "\n"
             )
 
 
@@ -516,10 +516,11 @@ def _write_per_family_likelihoods(
     values: torch.Tensor | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        handle.write("family\tnll_bits\tlog_likelihood_bits\n")
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(("family", "nll_bits", "log_likelihood_bits"))
         for family, nll in _per_family_nll(model, values):
-            handle.write(f"{family}\t{nll:.12g}\t{-nll:.12g}\n")
+            writer.writerow((family, f"{nll:.12g}", f"{-nll:.12g}"))
 
 
 def _write_history_jsonl_with_final_row(
