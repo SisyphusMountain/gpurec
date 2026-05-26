@@ -23,10 +23,11 @@ and the packaging assumptions covered by current automated build steps.
 The CPU GitHub Actions workflow includes a packaging job that installs
 `.[release]` on Python 3.10 and 3.12, builds source and wheel artifacts, runs
 `twine check`, installs the built wheel with existing runtime dependencies,
-checks the source archive for packaged Rust preprocessing and backtracking crate
-sources, smokes those crates from the unpacked source archive,
-and smokes both `gpurec --help` and `python -m gpurec.cli --help`.  It also
-smokes installed `gpurec config-template --help`,
+checks the source archive for current documentation, packaged examples, and
+Rust preprocessing and backtracking crate sources, smokes those crates from the
+unpacked source archive, and smokes both `gpurec --help` and
+`python -m gpurec.cli --help`.  It also smokes installed
+`gpurec config-template --help`,
 `gpurec config-template --mode specieswise`, and
 `gpurec validate-config --help` so the installed template/preflight surface
 remains part of the command surface.  The same package job keeps

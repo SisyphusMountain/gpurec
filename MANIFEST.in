@@ -1,4 +1,5 @@
 recursive-include examples *.json *.map *.nwk *.txt *.md
+recursive-include docs *.md *.tex
 include crates/gpurec-backtrack/Cargo.toml
 include crates/gpurec-backtrack/Cargo.lock
 recursive-include crates/gpurec-backtrack/src *.rs

@@ -106,6 +106,13 @@ jobs:
 
           required_wheel = []
           required_sdist = required_wheel + [
+              "docs/README.md",
+              "docs/lean-fast-path.md",
+              "docs/optimization-workflow-call-graph.md",
+              "docs/output-artifacts.md",
+              "docs/production-optimization-guide.md",
+              "docs/professionalization-audit-progress.tex",
+              "docs/release-readiness.md",
               "examples/README.md",
               "examples/minimal-run-config.json",
               "examples/specieswise-adagrad-restarts-config.json",

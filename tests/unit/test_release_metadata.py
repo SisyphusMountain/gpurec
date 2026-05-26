@@ -454,6 +454,13 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "tarfile.open",
         "zipfile.ZipFile",
         "required_sdist = required_wheel +",
+        "docs/README.md",
+        "docs/lean-fast-path.md",
+        "docs/optimization-workflow-call-graph.md",
+        "docs/output-artifacts.md",
+        "docs/production-optimization-guide.md",
+        "docs/professionalization-audit-progress.tex",
+        "docs/release-readiness.md",
         "examples/README.md",
         "examples/minimal-run-config.json",
         "examples/specieswise-adagrad-restarts-config.json",
@@ -577,6 +584,12 @@ def test_manifest_includes_documented_examples_in_source_archive():
     assert "recursive-include examples" in manifest
     for pattern in ("*.json", "*.map", "*.nwk", "*.txt", "*.md"):
         assert pattern in manifest
+
+
+def test_manifest_includes_current_docs_in_source_archive():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+
+    assert "recursive-include docs *.md *.tex" in manifest
 
 
 def test_manifest_includes_rust_backtracking_crate_in_source_archive_only():
