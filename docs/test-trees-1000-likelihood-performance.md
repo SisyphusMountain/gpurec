@@ -125,6 +125,9 @@ Additional current-code rechecks kept `E=8, Pi=4` as the near-reference route:
 `E=7, Pi=4` matched the `2157098.25`-bit loss but measured `2.278900177916512s`
 and `2.287128569034394s`, while `E=6, Pi=4` measured `2.2726288129924797s`
 and `2.2791547380620614s` with the slightly optimistic `2157096.0`-bit loss.
+After adding production split-schedule support, a same-route `E=8, Pi=4,
+Neumann=4` cold recheck measured `2.3047162730363198s` total with loss
+`2157098.25` bits; it is a normal in-band sample, not a new best.
 Changing `family_chunk_size` did not change the 21-batch retained layout; a
 single `666` sample reached `2.2480324909556657s`, but repeats moved back into
 the `2.27s` to `2.32s` band, so this remains construction noise rather than a

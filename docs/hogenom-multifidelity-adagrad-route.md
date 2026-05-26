@@ -72,6 +72,15 @@ finishes about 36 seconds faster than the discovery run.
   replay with `40/60/35/30` steps took `290.6722433550167s` and validated at
   fixed128 `526990.625` bits.  That is slower and worse than the fixed8-first
   fixed replay above, so fixed mode keeps the fixed8 start by default.
+- Split Pi warm starts are also not a replacement for the fixed8-first
+  replay on HOGENOM.  On 2026-05-26, the production
+  `adagrad-restarts` split schedule `8/4:1.0:60,16:0.5:35,32:0.5:30`
+  took `242.26219764497364s` and validated at fixed128
+  `527272.875` bits.  The more aggressive `8/4:1.0:60,16/8:0.5:35,32/16:0.5:30`
+  schedule took `191.90608406998217s`, but validated at fixed128
+  `535334.9375` bits; its best checkpoint still validated at
+  `534355.5` bits.  Starting Pi at `4` saves time, but the HOGENOM
+  basin found by the original tied fixed8 warmup is materially better.
 
 ## Adaptive Schedule
 
