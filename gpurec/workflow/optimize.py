@@ -4209,7 +4209,7 @@ class OptimizationRunner:
                         )
                 objective_plateau_this_row = (
                     delta is not None
-                    and delta <= loss_change_tol_bits
+                    and delta < loss_change_tol_bits
                     and not projected_lbfgs_backoff
                     and not projected_lbfgs_min_lr_reached
                 )
