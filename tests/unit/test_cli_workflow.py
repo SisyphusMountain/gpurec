@@ -877,7 +877,10 @@ def test_cli_validate_config_require_production_default_route_rejects_custom_set
         "config production default route fields differ for mode 'genewise': "
         "fd_hessian_refresh_steps"
     ) in captured.err
-    assert "use optimizer=auto and the shipped optimizer defaults" in captured.err
+    assert (
+        "use optimizer=auto and omit route overrides so the shipped "
+        "likelihood/gradient and optimizer defaults apply"
+    ) in captured.err
     assert "valid_config=true" not in captured.out
     assert "Traceback" not in captured.err
 
@@ -1879,6 +1882,7 @@ def test_cli_checkpoint_info_require_mode_default_optimizer_fails_after_printing
     assert "uses_mode_default_optimizer=false" in captured.out
     assert "checkpoint optimizer is 'adam'" in captured.err
     assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "expected the mode default optimizer route" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -2415,6 +2419,7 @@ def test_cli_summary_info_require_mode_default_optimizer_fails_after_printing(
     assert "uses_mode_default_optimizer=false" in captured.out
     assert "summary optimizer is 'adam'" in captured.err
     assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "expected the mode default optimizer route" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -3118,6 +3123,7 @@ def test_cli_sample_require_mode_default_optimizer_rejects_override_before_sampl
     assert captured.out == ""
     assert "checkpoint optimizer is 'adam'" in captured.err
     assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "expected the mode default optimizer route" in captured.err
     assert "sampled_families" not in captured.out
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
@@ -3663,7 +3669,10 @@ def test_cli_optimize_require_production_default_route_rejects_custom_settings_b
         "config production default route fields differ for mode 'genewise': "
         "fd_hessian_refresh_steps"
     ) in captured.err
-    assert "use optimizer=auto and the shipped optimizer defaults" in captured.err
+    assert (
+        "use optimizer=auto and omit route overrides so the shipped "
+        "likelihood/gradient and optimizer defaults apply"
+    ) in captured.err
     assert captured.out == ""
     assert "usage:" in captured.err
     assert "Traceback" not in captured.err
@@ -4426,7 +4435,10 @@ def test_cli_run_require_production_default_route_rejects_custom_settings_before
         "config production default route fields differ for mode 'genewise': "
         "fd_hessian_refresh_steps"
     ) in captured.err
-    assert "use optimizer=auto and the shipped optimizer defaults" in captured.err
+    assert (
+        "use optimizer=auto and omit route overrides so the shipped "
+        "likelihood/gradient and optimizer defaults apply"
+    ) in captured.err
     assert captured.out == ""
     assert "sampled_families" not in captured.out
     assert "usage:" in captured.err

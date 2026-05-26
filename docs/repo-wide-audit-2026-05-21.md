@@ -2337,6 +2337,12 @@ not edit files.  New or still-open findings from that refresh are:
 - Strict artifact gate failures now say they expected the shipped
   likelihood/gradient and optimizer route, not only the optimizer route, so the
   remediation text matches route-contract fields such as `gradient_route`.
+- Config preflight failures now use matching remediation text: operators should
+  use `optimizer=auto` and omit route overrides so the shipped
+  likelihood/gradient and optimizer defaults apply.
+- Mode-default artifact gate failures now say they expected the mode default
+  optimizer route, avoiding production-route wording on the narrower
+  `--require-mode-default-optimizer` check.
 
 ## Recommended Next Order
 

@@ -268,7 +268,10 @@ def _require_config_production_default_route(
             _production_default_route_gate_message(
                 "config",
                 route,
-                action="use optimizer=auto and the shipped optimizer defaults",
+                action=(
+                    "use optimizer=auto and omit route overrides so the shipped "
+                    "likelihood/gradient and optimizer defaults apply"
+                ),
             )
         )
 
@@ -288,7 +291,7 @@ def _exit_unless_mode_default_optimizer(
             _mode_default_optimizer_gate_message(
                 subject,
                 audited,
-                action="expected the production default optimizer route",
+                action="expected the mode default optimizer route",
             )
             + "\n"
         ),
