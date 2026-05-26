@@ -362,7 +362,8 @@ artifact contract, including history fields, checkpoint contents, rate-table
 columns, genewise per-family likelihoods, and sampling files.
 Use `gpurec summary-info --summary output_gpurec/summary.json` to inspect the
 final summary status, likelihood/gradient diagnostics, and route metadata
-without opening JSON by hand.
+without opening JSON by hand. Add `--require-converged` when a shell pipeline
+or workflow manager should fail unless the summary status is `converged`.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 to inspect checkpoint progress, status, optimizer route, and last
 likelihood/gradient diagnostics without constructing the CUDA likelihood model.

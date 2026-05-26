@@ -203,7 +203,9 @@ Inspect these outputs first:
 - `per_fam_likelihoods.tsv`: genewise-only final per-family NLLs.
 
 Use `gpurec summary-info --summary output_gpurec/summary.json` for the same
-status, objective, gradient, and route fields in a stable terminal record.
+status, objective, gradient, and route fields in a stable terminal record. Add
+`--require-converged` for strict automation gates that should fail on
+`not_converged` or `failed` summaries.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 when you need the checkpoint's progress, status, route metadata, and last
 likelihood/gradient diagnostics without starting CUDA model construction.

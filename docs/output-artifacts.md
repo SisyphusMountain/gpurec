@@ -91,6 +91,9 @@ checkpoint or constructing the CUDA model:
 gpurec summary-info --summary output_gpurec/summary.json
 ```
 
+Add `--require-converged` when the command should print the same summary line
+and then exit nonzero unless `summary.status` is `converged`.
+
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering
 should read `checkpoints/best.pt` or `checkpoints/latest.pt` with

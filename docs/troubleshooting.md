@@ -51,6 +51,8 @@ For a terminal view of the same fields, use:
 gpurec summary-info --summary output/summary.json
 ```
 
+Use `--require-converged` when a shell pipeline, Snakemake rule, or Nextflow
+process should fail unless the run ended with `status=converged`.
 Use `checkpoint-info` when the final summary is unavailable or you need to
 inspect a resume target directly:
 

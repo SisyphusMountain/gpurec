@@ -1321,6 +1321,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Optimization summary.json file to inspect.",
     )
+    summary_info_parser.add_argument(
+        "--require-converged",
+        action="store_true",
+        help=(
+            "Exit with status 1 after printing the summary unless "
+            "summary.status is converged."
+        ),
+    )
     summary_info_parser.set_defaults(_command_parser=summary_info_parser)
 
     template_parser = sub.add_parser(
@@ -1493,6 +1501,15 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
         print(_summary_info_text(summary, payload), flush=True)
+        if args.require_converged and payload.get("status") != "converged":
+            command_parser.exit(
+                status=1,
+                message=(
+                    "summary status is "
+                    f"{payload.get('status')!r}; expected 'converged'"
+                    "\n"
+                ),
+            )
         return
     if args.command == "backtrack-check":
         try:

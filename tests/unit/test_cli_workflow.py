@@ -78,7 +78,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
     assert _parser_action_dests("checkpoint-info") == {"checkpoint"}
-    assert _parser_action_dests("summary-info") == {"summary"}
+    assert _parser_action_dests("summary-info") == {"summary", "require_converged"}
     assert _parser_action_dests("config-template") == {
         "mode",
         "species_tree",
@@ -1464,6 +1464,62 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
     assert "adagrad_restart_total_steps=125" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
     assert "solver_warmup_iters" not in captured.out
+
+
+def test_cli_summary_info_require_converged_accepts_converged_summary(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "adagrad_restart_schedule_complete",
+                "mode": "specieswise",
+                "optimizer": "adagrad-restarts",
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(["summary-info", "--summary", str(summary), "--require-converged"])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "status=converged" in captured.out
+    assert "reason=adagrad_restart_schedule_complete" in captured.out
+
+
+def test_cli_summary_info_require_converged_fails_after_printing_summary(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "not_converged",
+                "reason": "max_steps",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["summary-info", "--summary", str(summary), "--require-converged"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "status=not_converged" in captured.out
+    assert "reason=max_steps" in captured.out
+    assert "summary status is 'not_converged'; expected 'converged'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_summary_info_reports_missing_path_without_traceback(

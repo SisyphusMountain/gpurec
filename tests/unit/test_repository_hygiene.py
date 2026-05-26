@@ -1315,6 +1315,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "`final_projected_grad_inf`" in project_readme
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
     assert "gpurec summary-info --summary output_gpurec/summary.json" in project_readme
+    assert "`--require-converged`" in project_readme
     assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in normalized
 
 
@@ -1499,6 +1500,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`adagrad_restart_total_steps`",
         "`optimizer_step_cap`",
         "gpurec summary-info --summary output_gpurec/summary.json",
+        "`--require-converged`",
         "gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt",
         "`likelihood/data_nll_bits`",
         "`grad/projected_inf`",
@@ -1532,6 +1534,7 @@ def test_troubleshooting_guide_documents_operator_failure_triage():
         "`--require-cuda-backward-ready`",
         "`summary.json`",
         "gpurec summary-info --summary output/summary.json",
+        "`--require-converged`",
         "final-check likelihood/gradient deltas",
         "gpurec checkpoint-info --checkpoint output/checkpoints/latest.pt",
         "`history.jsonl`",
