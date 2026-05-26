@@ -1907,6 +1907,63 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
     assert result.adagrad_restart_final_check_iters is None
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "result_field"),
+    [
+        ("final_nll_bits", "10.0", "final_nll_bits"),
+        ("final_grad_inf", False, "final_grad_inf"),
+        ("best_nll_bits", "9.5", "best_nll_bits"),
+        ("best_step", "4", "best_step"),
+        ("final_check_iters_e", "128", "final_check_iters_e"),
+        ("pi_fixed_point_relaxation", "1.25", "pi_fixed_point_relaxation"),
+    ],
+)
+def test_optimization_result_summary_requires_typed_numeric_values(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    result_field: str,
+):
+    summary = {
+        "status": "converged",
+        "reason": "fixture",
+        "steps_completed": 5,
+        "final_nll_bits": 10.0,
+        "final_grad_inf": 0.125,
+    }
+    summary[field] = value
+
+    result = optimize_workflow._optimization_result_from_summary(
+        tmp_path / "out",
+        summary,
+    )
+
+    actual = getattr(result, result_field)
+    if result_field == "final_nll_bits":
+        assert math.isnan(actual)
+    elif result_field == "final_grad_inf":
+        assert math.isinf(actual)
+    else:
+        assert actual is None
+
+
+@pytest.mark.parametrize("value", ["5", True, math.nan])
+def test_optimization_result_summary_requires_typed_steps_completed(
+    tmp_path: Path,
+    value: object,
+):
+    summary = {
+        "status": "converged",
+        "reason": "fixture",
+        "steps_completed": value,
+        "final_nll_bits": 10.0,
+        "final_grad_inf": 0.125,
+    }
+
+    with pytest.raises(ValueError, match="steps_completed"):
+        optimize_workflow._optimization_result_from_summary(tmp_path / "out", summary)
+
+
 def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
     tmp_path: Path,
 ):

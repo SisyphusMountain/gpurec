@@ -7768,6 +7768,11 @@ fields.  Stringified numeric fields such as
 longer pass as proof that a checkpoint or summary used the shipped
 HOGENOM/\texttt{test\_trees\_1000} route.
 
+\texttt{OptimizationResult} summary reconstruction now follows the same typed
+artifact contract.  Stringified likelihood, gradient, step-count, and
+optimizer-route numerics are treated as missing or invalid instead of being
+silently coerced by the Python API.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

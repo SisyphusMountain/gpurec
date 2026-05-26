@@ -4,11 +4,13 @@ import csv
 import math
 import time
 from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from gpurec._validation import finite_float, integer_value
 from gpurec.api.autograd import (
     _clear_pi_adjoint_runtime_cache,
     _commit_pi_adjoint_pending_cache,
@@ -165,9 +167,11 @@ def _final_solver_summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 def _optional_result_float(value: object) -> float | None:
     if value is None:
         return None
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        return finite_float("summary value", value)
+    except ValueError:
         return None
 
 
@@ -175,8 +179,8 @@ def _optional_result_int(value: object) -> int | None:
     if value is None:
         return None
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        return integer_value("summary value", value)
+    except ValueError:
         return None
 
 
@@ -214,6 +218,9 @@ def _optimization_result_from_summary(
 ) -> OptimizationResult:
     final_nll_bits = _optional_result_float(summary.get("final_nll_bits"))
     final_grad_inf = _optional_result_float(summary.get("final_grad_inf"))
+    steps_completed = _optional_result_int(summary.get("steps_completed"))
+    if steps_completed is None:
+        raise ValueError("summary steps_completed must be a JSON integer")
     return OptimizationResult(
         out_dir=out_dir,
         status=str(summary.get("status", "")),
@@ -222,7 +229,7 @@ def _optimization_result_from_summary(
         final_grad_inf=math.inf if final_grad_inf is None else final_grad_inf,
         best_nll_bits=_optional_result_float(summary.get("best_nll_bits")),
         best_step=_optional_result_int(summary.get("best_step")),
-        steps_completed=int(summary["steps_completed"]),
+        steps_completed=steps_completed,
         elapsed_s=_optional_result_float(summary.get("elapsed_s")),
         mode=_optional_result_text(summary.get("mode")),
         optimizer=_optional_result_text(summary.get("optimizer")),

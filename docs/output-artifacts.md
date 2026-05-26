@@ -72,6 +72,9 @@ line expose the same family/species/batch counts, `batch_packing`,
 `uses_production_default_route`, `production_default_route_mismatches`,
 `final_check_iters`, `final_check_iters_e`, and
 optimizer-specific route fields for quick programmatic and terminal triage.
+The Python result parser follows the same typed artifact contract: stringified
+or boolean stand-ins for numeric summary fields are treated as missing or
+invalid rather than coerced into numbers.
 For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
 `hessian_sgd_normal_fixed_iters_pi`, and

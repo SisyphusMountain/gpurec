@@ -2448,6 +2448,10 @@ not edit files.  New or still-open findings from that refresh are:
   fields.  Stringified numeric fields such as `"optimizer_step_cap": "125"` and
   integer stand-ins for booleans no longer pass as proof that a checkpoint or
   summary used the shipped HOGENOM/`test_trees_1000` route.
+- `OptimizationResult` summary reconstruction now follows the same typed artifact
+  contract.  Stringified likelihood, gradient, step-count, and optimizer-route
+  numerics are treated as missing or invalid instead of being silently coerced by
+  the Python API.
 
 ## Recommended Next Order
 
