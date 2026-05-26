@@ -1117,7 +1117,7 @@ class LBFGSB(Optimizer):
         history_size = int(group["history_size"])
         max_ls = int(group["max_ls"])
         fallback_max_ls = int(group["fallback_max_ls"])
-        fallback_max_coordinates = int(group["fallback_max_coordinates"])
+        fallback_max_coordinates = int(group.get("fallback_max_coordinates", 16))
         c1 = float(group["c1"])
         shrink = float(group["shrink"])
         tolerance_grad = float(group["tolerance_grad"])

@@ -698,3 +698,34 @@ def test_lbfgsb_repeated_tiny_high_kkt_steps_trigger_projected_gradient_fallback
     assert candidate_calls == 2
     assert float(third_loss.detach().cpu()) < float(second_loss.detach().cpu())
     assert float(second_loss.detach().cpu()) < float(first_loss.detach().cpu())
+
+
+def test_lbfgsb_step_tolerates_legacy_state_without_fallback_coordinate_key():
+    x = torch.nn.Parameter(torch.tensor([0.5, -0.25], dtype=torch.float64))
+    optimizer = LBFGSB(
+        [x],
+        lr=0.5,
+        max_iter=1,
+        history_size=5,
+        max_ls=2,
+        fallback_max_ls=2,
+        fallback_max_coordinates=0,
+        tolerance_grad=0.0,
+        lower_bound=torch.full_like(x, -5.0),
+        upper_bound=torch.full_like(x, 5.0),
+    )
+    del optimizer.param_groups[0]["fallback_max_coordinates"]
+
+    def loss_fn(value: torch.Tensor) -> torch.Tensor:
+        return value.square().sum()
+
+    def closure() -> torch.Tensor:
+        optimizer.zero_grad(set_to_none=True)
+        value = loss_fn(x)
+        value.backward()
+        return value
+
+    loss = optimizer.step(closure, loss_closure=lambda: loss_fn(x.detach()))
+
+    assert torch.isfinite(loss)
+    assert optimizer.state[x]["last_grad_evals"] >= 1
