@@ -746,7 +746,18 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
     )
     model._origination_prior = SimpleNamespace(is_shared=True, probs=None)
     model._ensure_batch_static = lambda batch_idx: statics[batch_idx]
-    e_solve = SimpleNamespace(e_out={"E": torch.full((7,), -3.0)})
+    e = torch.full((7,), -3.0)
+    e_solve = SimpleNamespace(
+        e_out={
+            "E": e,
+            "E_bar": e + 0.5,
+            "E_s1": e + 1.0,
+            "E_s2": e + 1.5,
+        },
+        log_p_s=torch.full((7,), -0.5),
+        log_p_d=torch.full((7,), -1.0),
+        max_transfer=torch.full((7,), -2.0),
+    )
     calls: list[dict[str, object]] = []
 
     def fake_solve_resident_e(static_arg, theta_arg):
@@ -760,6 +771,7 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
         *,
         scratch_tensors=None,
         origination_denominator=None,
+        prepared_shared_constants=None,
     ):
         calls.append(
             {
@@ -767,6 +779,7 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
                 "e_solve": e_solve_arg,
                 "scratch_tensors": scratch_tensors,
                 "origination_denominator": origination_denominator,
+                "prepared_shared_constants": prepared_shared_constants,
             }
         )
         return torch.tensor(float(len(calls)), dtype=torch.float32)
@@ -791,6 +804,8 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
     assert calls[1]["scratch_tensors"] is first_scratch
     assert calls[0]["origination_denominator"] is calls[1]["origination_denominator"]
     assert torch.is_tensor(calls[0]["origination_denominator"])
+    assert calls[0]["prepared_shared_constants"] is calls[1]["prepared_shared_constants"]
+    assert isinstance(calls[0]["prepared_shared_constants"], dict)
 
 
 def test_shared_no_grad_full_loss_rejects_vector_batch_loss(monkeypatch):
