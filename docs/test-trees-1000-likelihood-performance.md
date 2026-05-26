@@ -546,6 +546,46 @@ Rejected follow-ups:
   steady fixed4 materialized check measured `1.2784311089781113s` median and
   `1.2743548050057143s` minimum, and the cold route produced a new low
   `2.257182637054939s`.
+- A post-denominator-reuse route resweep still kept the documented
+  `315000` clade budget.  Single fixed4 cold samples measured:
+
+  | clade budget | batches | first pass | total to first likelihood | peak reserved |
+  |---:|---:|---:|---:|---:|
+  | `250000` | `26` | `1.3293938959832303s` | `2.303362254984677s` | `4.189453125 GiB` |
+  | `315000` | `21` | `1.3200315139838494s` | `2.2602628639433533s` | `5.16796875 GiB` |
+  | `400000` | `17` | `1.3185203209868632s` | `2.289328532991931s` | `6.458984375 GiB` |
+  | `500000` | `13` | `1.3148925850400701s` | `2.279398131009657s` | `7.984375 GiB` |
+  | `650000` | `10` | `1.3140173489809968s` | `2.342297429975588s` | `10.267578125 GiB` |
+
+  Larger batches slightly reduced the measured likelihood pass, but construction
+  time and peak memory rose enough that they did not improve end-to-end time.
+  This differs from the HOGENOM tuning pattern: here the generated-family shape
+  already gives enough work per batch, so fewer resident batches are not a clear
+  win.
+- A current-code `max_wave_size` resweep also kept `8192`.  One pass over
+  `4096`, `8192`, `12288`, and `16384` measured cold totals of
+  `2.298833917011507s`, `2.264543463010341s`, `2.257202097971458s`, and
+  `2.307180391973816s`, respectively.  The `12288` sample was a near-tie with
+  the best historical `8192` sample and reduced the max wave count from `61` to
+  `58`, but paired repeats did not hold the win: `8192` totals were
+  `2.280936630035285s`, `2.2816185380215757s`, and
+  `2.264976181962993s`, while `12288` totals were
+  `2.264912271988578s`, `2.2910129600204527s`, and
+  `2.28301867301343s`.
+- A narrow current-code CPU-thread recheck at `12`, `16`, and `18` preprocessing
+  threads did not displace the documented `16`-thread route.  Paired fixed4 cold
+  totals were `12`: `2.296057304018177s`, `2.2838334499974735s`; `16`:
+  `2.2834402269800194s`, `2.3150741640129127s`; and `18`:
+  `2.314814416982699s`, `2.2755942060030065s`.  The spread is construction
+  noise rather than a stable route change.
+- A scalar root-row NLL-sum helper was prototyped and reverted.  It added a
+  `compute_nll_root_rows_sum()` loss-only helper so no-grad callers could avoid
+  materializing the final per-family NLL vector.  Targeted tests passed while the
+  prototype was present (`24 passed`), but fixed4 cold samples stayed in-band
+  (`2.313574720057659s`, `2.3038053709897213s`, `2.2635737379896455s`) and the
+  materialized steady median regressed to `1.2852614839794114s` versus the
+  current `1.2784311089781113s` median.  The root reductions were already a
+  small part of the pass, so this was not an aligned improvement.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
