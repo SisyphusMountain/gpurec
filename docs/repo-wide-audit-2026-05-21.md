@@ -1938,7 +1938,9 @@ not edit files.  New or still-open findings from that refresh are:
   metadata now uses the shared nonnegative-integer validator beneath its
   checkpoint-specific error messages.  The resident-model `prefetch_batches`
   adapter now keeps only its `all`/disabled string aliases locally before
-  delegating count semantics to the same nonnegative-integer helper.
+  delegating count semantics to the same nonnegative-integer helper.  The
+  stochastic backtracking bridge now keeps only seed/event range checks locally
+  and delegates integral-number coercion to the shared integer helper.
 - The float-range part of the duplicated-validation finding is now reduced as
   well.  `gpurec._validation` owns `finite_float()`, `positive_float()`, and
   `nonnegative_float()`; the API validation module re-exports those helpers for

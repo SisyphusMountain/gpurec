@@ -15,12 +15,12 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from gpurec._validation import integer_value
 from gpurec.api.model import FamilyInput, GeneReconModel, ReconciliationState
 from gpurec.recphyloxml import (
     EVENT_KEYS,
@@ -103,17 +103,10 @@ def _integer_limit(
     minimum: int,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-    if isinstance(value, Integral):
-        number = int(value)
-    elif isinstance(value, Real):
-        value_float = float(value)
-        if not math.isfinite(value_float) or not value_float.is_integer():
-            raise ValueError(f"{name} must be an integer")
-        number = int(value_float)
-    else:
-        raise ValueError(f"{name} must be an integer")
+    try:
+        number = integer_value(name, value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
     if number < minimum:
         if minimum == 0:
             raise ValueError(f"{name} must be non-negative")

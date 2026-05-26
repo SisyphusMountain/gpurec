@@ -7288,7 +7288,9 @@ the same shared validation helper.  Checkpoint resume metadata now keeps its
 checkpoint-specific error wording while using the shared nonnegative-integer
 validator.  The resident-model \texttt{prefetch\_batches} adapter keeps only
 its \texttt{all}/disabled string aliases locally before delegating count
-semantics to that shared helper.
+semantics to that shared helper.  The stochastic backtracking bridge now keeps
+seed/event range checks locally while delegating integral-number coercion to
+the shared integer helper.
 
 The float-range slice now follows the same ownership boundary:
 \texttt{gpurec.\_validation} owns \texttt{finite\_float()},

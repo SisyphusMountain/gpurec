@@ -3939,6 +3939,36 @@ def test_public_backtracking_rejects_invalid_seed_and_event_limits():
         )  # type: ignore[arg-type]
 
 
+def test_backtracking_limit_helpers_keep_sampling_range_errors():
+    assert (
+        backtracking._integer_limit(
+            "seed",
+            7.0,
+            minimum=0,
+            maximum=(1 << 64) - 1,
+        )
+        == 7
+    )
+    assert backtracking._integer_limit("max_events", 9.0, minimum=1) == 9
+    assert backtracking._optional_int_limit("seed", None, minimum=0) is None
+
+    for value in (True, 1.5, math.inf, "7", object()):
+        with pytest.raises(ValueError, match="seed must be an integer"):
+            backtracking._integer_limit("seed", value, minimum=0)
+
+    with pytest.raises(ValueError, match="seed must be non-negative"):
+        backtracking._integer_limit("seed", -1, minimum=0)
+    with pytest.raises(ValueError, match="max_events must be positive"):
+        backtracking._integer_limit("max_events", 0, minimum=1)
+    with pytest.raises(ValueError, match="seed must be <= "):
+        backtracking._integer_limit(
+            "seed",
+            1 << 64,
+            minimum=0,
+            maximum=(1 << 64) - 1,
+        )
+
+
 def test_public_backtracking_accepts_integral_real_limits(
     tmp_path: Path,
     monkeypatch,

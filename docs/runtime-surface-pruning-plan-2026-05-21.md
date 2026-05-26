@@ -278,8 +278,10 @@ Possible simplifications:
   keeps checkpoint-specific errors while using the shared nonnegative-integer
   and finite-float validators.  Resident-model `prefetch_batches` keeps only
   its `all`/disabled string aliases locally before using the same
-  nonnegative-integer validator.  Keep `gpurec._validation` torch-lazy so this
-  does not make checkpoint metadata imports heavy.
+  nonnegative-integer validator.  The backtracking bridge keeps seed/event
+  range checks locally but uses the shared integer validator for coercion.
+  Keep `gpurec._validation` torch-lazy so this does not make checkpoint
+  metadata imports heavy.
 - Keep `dtype_from_name()` workflow-specific only if CLI wording needs it.
 - Keep optimizer modes only if behavior is tested by fake-model guards.
 
