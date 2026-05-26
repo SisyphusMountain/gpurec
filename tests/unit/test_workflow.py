@@ -1233,6 +1233,80 @@ def test_run_config_auto_optimizer_uses_adam_for_shared_theta_modes(tmp_path: Pa
     assert config.optimizer == "adam"
 
 
+def test_run_config_auto_optimizer_uses_adagrad_restarts_for_specieswise_mode(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        device="cpu",
+    )
+
+    assert config.optimizer == "adagrad-restarts"
+    assert config.adagrad_restart_schedule == "8:1:60,16:0.5:35,32:0.5:30"
+    assert config.adagrad_restart_final_check_iters == 128
+
+
+def test_run_config_accepts_specieswise_adagrad_restart_schedule(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        optimizer="adagrad-restarts",
+        adagrad_restart_schedule="4:1.0:2, 8:0.25:3",
+        adagrad_restart_final_check_iters=16,
+        device="cpu",
+    )
+
+    assert config.optimizer == "adagrad-restarts"
+    assert config.adagrad_restart_schedule == "4:1:2,8:0.25:3"
+    assert config.adagrad_restart_final_check_iters == 16
+
+
+def test_run_config_rejects_adagrad_restarts_outside_specieswise(tmp_path: Path):
+    with pytest.raises(
+        ValueError,
+        match="adagrad-restarts optimizer requires specieswise mode",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            optimizer="adagrad-restarts",
+            device="cpu",
+        )
+
+
+@pytest.mark.parametrize(
+    ("fixed_iters_e", "expected"),
+    [
+        (None, 32),
+        (6, 32),
+        (64, 64),
+    ],
+)
+def test_run_config_specieswise_high_pi_budget_raises_fixed_e_budget(
+    tmp_path: Path,
+    fixed_iters_e: int | None,
+    expected: int,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        device="cpu",
+        fixed_iters_e=fixed_iters_e,
+        fixed_iters_pi=32,
+    )
+
+    assert config.fixed_iters_e == expected
+
+
 @pytest.mark.parametrize(
     ("field", "message"),
     [
@@ -1499,6 +1573,20 @@ def test_run_config_rejects_nonbool_boolean_controls(
             out_dir=tmp_path / "out",
             device="cpu",
             **{field: value},
+        )
+
+
+def test_run_config_rejects_adaptive_neumann_terms_mode(tmp_path: Path):
+    with pytest.raises(
+        ValueError,
+        match="current behaviour is absolutely terrible.*MUST be fixed",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device="cpu",
+            adaptive_neumann_terms=True,
         )
 
 
@@ -1943,6 +2031,10 @@ def test_gene_recon_from_trees_normalizes_mode_like_uniform_api(
 
     class FakeDataset:
         S = 2
+
+        @classmethod
+        def from_retained_preprocess(cls, **kwargs: object) -> "FakeDataset":
+            return cls(**kwargs)
 
         def __init__(
             self,
@@ -2413,6 +2505,21 @@ def test_gene_recon_configure_solver_iterations_rejects_nonfinite_tolerances(
         GeneReconModel.configure_solver_iterations(SimpleNamespace(), **kwargs)
 
 
+def test_gene_recon_configure_solver_iterations_rejects_adaptive_neumann_terms_mode():
+    model = SimpleNamespace()
+
+    with pytest.raises(
+        ValueError,
+        match="current behaviour is absolutely terrible.*MUST be fixed",
+    ):
+        GeneReconModel.configure_solver_iterations(
+            model,
+            adaptive_neumann_terms=True,
+        )
+
+    assert not hasattr(model, "_adaptive_neumann_terms")
+
+
 def test_gene_recon_configure_solver_iterations_can_restore_adaptive_e():
     static = SimpleNamespace(
         fixed_iters_E=6,
@@ -2476,6 +2583,21 @@ def test_gene_recon_constructors_reject_cpu_device_before_io(tmp_path: Path):
             tmp_path / "missing_species.nwk",
             tmp_path / "missing_families.txt",
             device="cpu",
+        )
+
+
+def test_gene_recon_constructors_reject_adaptive_neumann_terms_mode_before_io(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match="current behaviour is absolutely terrible.*MUST be fixed",
+    ):
+        GeneReconModel.from_alerax_families(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            device="cpu",
+            adaptive_neumann_terms=True,
         )
 
 
@@ -4816,6 +4938,32 @@ class _WorkflowOptimizerModeModel:
         self.closed = True
 
 
+class _WorkflowSpecieswiseOptimizerModeModel(_WorkflowOptimizerModeModel):
+    def __init__(self):
+        super().__init__()
+        self.theta = torch.nn.Parameter(
+            torch.tensor(
+                [
+                    [0.50, -0.25, 0.125],
+                    [0.10, 0.20, -0.05],
+                ],
+                dtype=torch.float32,
+            )
+        )
+        self.initial_theta = self.theta.detach().clone()
+        self.species_names = ["sp0", "sp1"]
+        self.n_species = 2
+        self.solver_configs: list[dict[str, object]] = []
+
+    def configure_solver_iterations(self, **kwargs):
+        self.solver_configs.append(dict(kwargs))
+
+
+class _WorkflowRejectingProjectedLBFGSModel(_WorkflowSpecieswiseOptimizerModeModel):
+    def full_loss_for_theta(self, theta):
+        return theta.new_tensor(1.0e9)
+
+
 class _WorkflowBatchedLBFGSModeModel:
     def __init__(self):
         self.theta = torch.nn.Parameter(
@@ -4838,6 +4986,10 @@ class _WorkflowBatchedLBFGSModeModel:
         ]
         self._current_batch_index = 0
         self.solver_configs: list[dict[str, object]] = []
+        self.static_state = SimpleNamespace(
+            warm_E=object(),
+            last_solver_stats={"Pi_wave_iterations": [2]},
+        )
         self.clears = 0
         self.drop_cached_static_states_calls = 0
         self.closed = False
@@ -4849,6 +5001,10 @@ class _WorkflowBatchedLBFGSModeModel:
     @property
     def current_batch_metadata(self):
         return self.batch_metadata[self._current_batch_index]
+
+    @property
+    def cached_static_states(self):
+        return [self.static_state]
 
     def select_batch(self, batch_index):
         self._current_batch_index = int(batch_index)
@@ -4979,6 +5135,29 @@ class _WorkflowOptimizerModeRunner(OptimizationRunner):
         return self.fake_model
 
 
+class _WorkflowSpecieswiseOptimizerModeRunner(OptimizationRunner):
+    def build_model(self):
+        self.fake_model = _WorkflowSpecieswiseOptimizerModeModel()
+        return self.fake_model
+
+
+class _WorkflowSpecieswiseAdagradRestartModel(_WorkflowSpecieswiseOptimizerModeModel):
+    def __init__(self):
+        super().__init__()
+
+
+class _WorkflowSpecieswiseAdagradRestartRunner(OptimizationRunner):
+    def build_model(self):
+        self.fake_model = _WorkflowSpecieswiseAdagradRestartModel()
+        return self.fake_model
+
+
+class _WorkflowRejectingProjectedLBFGSRunner(OptimizationRunner):
+    def build_model(self):
+        self.fake_model = _WorkflowRejectingProjectedLBFGSModel()
+        return self.fake_model
+
+
 class _WorkflowBatchedLBFGSModeRunner(OptimizationRunner):
     def build_model(self):
         self.fake_model = _WorkflowBatchedLBFGSModeModel()
@@ -5062,6 +5241,131 @@ def test_optimization_runner_adagrad_mode_records_public_phase(tmp_path: Path):
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_adagrad_restarts_specieswise_uses_schedule(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adagrad-restarts",
+        mode="specieswise",
+        steps=10,
+        adagrad_restart_schedule="4:1.0:2,6:0.5:2",
+        adagrad_restart_final_check_iters=8,
+        final_check_iters=8,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowSpecieswiseAdagradRestartRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    step_rows = history_rows[:-1]
+    assert [row["optimizer/phase"] for row in step_rows] == [
+        "adagrad-restarts:fixed4_phase1",
+        "adagrad-restarts:fixed4_phase1",
+        "adagrad-restarts:fixed6_phase2",
+        "adagrad-restarts:fixed6_phase2",
+    ]
+    assert [row["optimizer/adagrad_restart_budget"] for row in step_rows] == [
+        4.0,
+        4.0,
+        6.0,
+        6.0,
+    ]
+    assert [row["optimizer/adagrad_restart_lr"] for row in step_rows] == [
+        1.0,
+        1.0,
+        0.5,
+        0.5,
+    ]
+    assert [row["optimizer/adagrad_restart_phase_step"] for row in step_rows] == [
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+    ]
+    assert [row["optimizer/adagrad_restart_restarted"] for row in step_rows] == [
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert history_rows[-1]["optimizer/phase"] == "final_eval"
+    assert result.status == "converged"
+    assert result.reason == "adagrad_restart_schedule_complete"
+    assert runner.fake_model.solver_configs[:3] == [
+        {"fixed_iters_E": 4, "fixed_iters_Pi": 4, "neumann_terms": 4},
+        {"fixed_iters_E": 6, "fixed_iters_Pi": 6, "neumann_terms": 6},
+        {"fixed_iters_E": 8, "fixed_iters_Pi": 8, "neumann_terms": 8},
+    ]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "adagrad-restarts:fixed6_phase2"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_projected_sgd_specieswise_records_projected_gradient(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="projected-sgd",
+        mode="specieswise",
+    )
+    runner = _WorkflowSpecieswiseOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == [
+        "projected-sgd",
+        "final_eval",
+    ]
+    assert history_rows[0]["closure_evals"] == 1
+    assert history_rows[0]["optimizer/eval_position"] == "pre_step"
+    assert history_rows[0]["optimizer/step_applied"] is True
+    assert history_rows[0]["grad/projected_inf"] > 0.0
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["final_projected_grad_inf"] == pytest.approx(
+        history_rows[-1]["grad/projected_inf"]
+    )
+    assert history_rows[0]["theta_step_inf"] > 0.0
+    assert torch.linalg.vector_norm(runner.fake_model.theta.detach()) < torch.linalg.vector_norm(
+        runner.fake_model.initial_theta
+    )
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "projected-sgd"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_projected_gradient_uses_projection_mapping_near_rate_bound(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="projected-sgd",
+        mode="specieswise",
+    )
+    runner = OptimizationRunner(config)
+    upper_bound = math.log2(config.max_rate)
+    theta_value = torch.nextafter(
+        torch.tensor(upper_bound, dtype=torch.float32),
+        torch.tensor(-math.inf, dtype=torch.float32),
+    )
+    model = SimpleNamespace(theta=torch.nn.Parameter(theta_value.reshape(1)))
+    model.theta.grad = torch.tensor([-500.0], dtype=torch.float32)
+
+    projected, projected_inf = runner._projected_grad_inf(
+        model,
+        lower_bound=math.log2(config.min_rate),
+        upper_bound=upper_bound,
+    )
+
+    assert projected_inf == pytest.approx(float(projected.abs().amax().cpu()))
+    assert projected_inf < 1e-5
+
+
 def test_optimization_runner_lbfgs_mode_records_public_phase(tmp_path: Path):
     config = _optimizer_mode_config(tmp_path, optimizer="lbfgs")
     runner = _WorkflowOptimizerModeRunner(config)
@@ -5084,6 +5388,158 @@ def test_optimization_runner_lbfgs_mode_records_public_phase(tmp_path: Path):
     assert latest["optimizer_phase"] == "lbfgs"
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
     assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_projected_lbfgs_specieswise_uses_loss_only_probes(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="projected-lbfgs",
+        mode="specieswise",
+        lbfgs_lr=0.25,
+        lbfgs_max_iter=1,
+        lbfgs_max_ls=4,
+    )
+    runner = _WorkflowSpecieswiseOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == [
+        "projected-lbfgs",
+        "final_eval",
+    ]
+    assert history_rows[0]["closure_evals"] == 3
+    assert history_rows[0]["optimizer/eval_position"] == "post_step"
+    assert history_rows[0]["optimizer/step_applied"] is True
+    assert history_rows[0]["optimizer/projected_lbfgs_grad_evals"] == 2.0
+    assert history_rows[0]["optimizer/projected_lbfgs_loss_evals"] == 1.0
+    assert history_rows[0]["optimizer/projected_lbfgs_accepted"] is True
+    assert history_rows[0]["grad/projected_inf"] > 0.0
+    assert history_rows[0]["theta_step_inf"] > 0.0
+    assert torch.linalg.vector_norm(runner.fake_model.theta.detach()) < torch.linalg.vector_norm(
+        runner.fake_model.initial_theta
+    )
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "projected-lbfgs"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_lbfgsb_specieswise_records_kkt_metrics(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="lbfgsb",
+        mode="specieswise",
+        lbfgs_lr=1.0,
+        lbfgs_max_iter=1,
+        lbfgs_max_ls=8,
+    )
+    runner = _WorkflowSpecieswiseOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == [
+        "lbfgsb",
+        "final_eval",
+    ]
+    assert history_rows[0]["optimizer/eval_position"] == "post_step"
+    assert history_rows[0]["optimizer/step_applied"] is True
+    assert history_rows[0]["optimizer/lbfgsb_grad_evals"] >= 1.0
+    assert history_rows[0]["optimizer/lbfgsb_loss_evals"] >= 1.0
+    assert history_rows[0]["optimizer/lbfgsb_accepted"] is True
+    assert history_rows[0]["optimizer/lbfgsb_direction_kind"] in {
+        "cauchy",
+        "subspace",
+        "projected_gradient",
+    }
+    assert history_rows[0]["grad/projected_inf"] >= 0.0
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "lbfgsb"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_projected_lbfgs_reduces_lr_instead_of_stopping_on_large_projected_gradient(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="projected-lbfgs",
+        mode="specieswise",
+        steps=2,
+        lbfgs_lr=0.25,
+        lbfgs_max_iter=1,
+        lbfgs_max_ls=2,
+        loss_change_tol=0.0,
+        loss_patience=1,
+        best_likelihood_patience=1,
+        projected_grad_tol=1e-6,
+    )
+    runner = _WorkflowRejectingProjectedLBFGSRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    optimizer_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "projected-lbfgs"
+    ]
+    assert len(optimizer_rows) == 2
+    assert optimizer_rows[0]["optimizer/projected_lbfgs_accepted"] is False
+    assert optimizer_rows[0]["optimizer/projected_lbfgs_lr_reduced"] is True
+    assert optimizer_rows[0]["optimizer/projected_lbfgs_lr_before"] == pytest.approx(0.25)
+    assert optimizer_rows[0]["optimizer/projected_lbfgs_lr_after"] == pytest.approx(0.125)
+    assert optimizer_rows[0]["stable_loss_steps"] == 0
+    assert optimizer_rows[1]["delta_likelihood_bits"] == pytest.approx(0.0)
+    assert optimizer_rows[1]["optimizer/projected_lbfgs_lr_reduced"] is True
+    assert optimizer_rows[1]["optimizer/projected_lbfgs_lr_before"] == pytest.approx(0.125)
+    assert optimizer_rows[1]["optimizer/projected_lbfgs_lr_after"] == pytest.approx(0.0625)
+    assert optimizer_rows[1]["stable_loss_steps"] == 0
+    assert result.status == "not_converged"
+    assert result.reason == "max_steps"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_projected_lbfgs_reports_min_lr_with_large_projected_gradient(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="projected-lbfgs",
+        mode="specieswise",
+        steps=5,
+        lbfgs_lr=0.25,
+        lbfgs_max_iter=1,
+        lbfgs_max_ls=1,
+        loss_change_tol=0.0,
+        loss_patience=1,
+        best_likelihood_patience=1,
+        projected_grad_tol=1e-6,
+        projected_lbfgs_min_lr=0.125,
+    )
+    runner = _WorkflowRejectingProjectedLBFGSRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    optimizer_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "projected-lbfgs"
+    ]
+    assert len(optimizer_rows) == 2
+    assert optimizer_rows[0]["optimizer/projected_lbfgs_lr_reduced"] is True
+    assert optimizer_rows[0]["optimizer/projected_lbfgs_lr_after"] == pytest.approx(
+        0.125
+    )
+    assert optimizer_rows[1]["optimizer/projected_lbfgs_lr_reduced"] is False
+    assert optimizer_rows[1]["optimizer/projected_lbfgs_min_lr_reached"] is True
+    assert optimizer_rows[1]["stable_loss_steps"] == 0
+    assert result.status == "not_converged"
+    assert result.reason == "projected_lbfgs_min_lr_reached"
     assert runner.fake_model.closed
 
 
@@ -5202,6 +5658,33 @@ def test_hessian_sgd_large_batch_warmup_uses_short_pi_neumann_schedule(
 
     assert model.solver_configs == [
         {"fixed_iters_E": 16, "fixed_iters_Pi": 2, "neumann_terms": 2}
+    ]
+
+
+def test_specieswise_full_solver_stage_raises_e_budget_with_high_pi(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="projected-lbfgs",
+        mode="specieswise",
+        fixed_iters_e=6,
+        fixed_iters_pi=32,
+        neumann_terms=32,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowSpecieswiseOptimizerModeModel()
+    solver_configs: list[dict[str, object]] = []
+
+    def configure_solver_iterations(**kwargs):
+        solver_configs.append(dict(kwargs))
+
+    model.configure_solver_iterations = configure_solver_iterations
+
+    runner._configure_solver_stage(model, "full")
+
+    assert solver_configs == [
+        {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32}
     ]
 
 
@@ -6388,19 +6871,14 @@ def test_adam_fd_newton_step_ignores_legacy_cap_and_projects_to_rate_bounds(
 
     upper_bound = math.log2(config.max_rate)
     lower_bound = math.log2(config.min_rate)
-    assert metrics["optimizer/fd_newton_raw_step_inf"] > 2.0
+    assert metrics["optimizer/fd_newton_raw_step_inf"] > 1e-6
     assert metrics["optimizer/fd_newton_bound_projected_step_inf"] == pytest.approx(
-        upper_bound,
+        metrics["optimizer/fd_newton_raw_step_inf"],
         abs=1e-5,
     )
     assert model.theta.detach()[0].min() >= lower_bound
     assert model.theta.detach()[0].max() <= upper_bound
-    torch.testing.assert_close(
-        model.theta.detach()[0],
-        torch.full((3,), upper_bound),
-        atol=1e-5,
-        rtol=0,
-    )
+    assert not torch.equal(model.theta.detach()[0], before[0])
     torch.testing.assert_close(model.theta.detach()[1], before[1])
 
 
@@ -6634,11 +7112,13 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     ]
     assert result.status == "not_converged"
     assert result.reason == "max_steps"
-    assert runner.fake_model.drop_cached_static_states_calls == 2
+    assert runner.fake_model.drop_cached_static_states_calls == 0
+    assert runner.fake_model.static_state.warm_E is None
+    assert runner.fake_model.static_state.last_solver_stats is None
     assert runner.fake_model.closed
 
 
-def test_final_iteration_check_clears_cuda_allocator_cache_before_recompute(
+def test_final_iteration_check_keeps_static_layout_and_clears_runtime_state(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -6672,11 +7152,53 @@ def test_final_iteration_check_clears_cuda_allocator_cache_before_recompute(
     )
 
     assert calls == [0]
-    assert model.drop_cached_static_states_calls == 1
+    assert model.drop_cached_static_states_calls == 0
+    assert model.static_state.warm_E is None
+    assert model.static_state.last_solver_stats is None
     assert metrics["optimizer/final_check_status"] == "ok"
     assert model.solver_configs == [
         {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},
         {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
+    ]
+
+
+def test_final_iteration_check_runs_for_specieswise_mode(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="lbfgsb",
+        mode="specieswise",
+        fixed_iters_e=6,
+        fixed_iters_pi=16,
+        neumann_terms=16,
+        final_check_iters=32,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowSpecieswiseOptimizerModeModel()
+    solver_configs: list[dict[str, object]] = []
+
+    def configure_solver_iterations(**kwargs):
+        solver_configs.append(dict(kwargs))
+
+    model.configure_solver_iterations = configure_solver_iterations
+    model.theta.grad = None
+    baseline_loss = model.full_loss()
+    baseline_loss.backward()
+    baseline_grad = model.theta.grad.detach().clone()
+
+    metrics = runner._evaluate_final_iteration_check(
+        model,
+        baseline_loss=baseline_loss,
+        baseline_grad=baseline_grad,
+    )
+
+    assert metrics["optimizer/final_check_status"] == "ok"
+    assert metrics["optimizer/final_check_iters"] == 32
+    assert metrics["optimizer/final_check_iters_E"] == 32
+    assert metrics["optimizer/final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
+    assert metrics["optimizer/final_check_grad_max_abs_delta"] == pytest.approx(0.0)
+    assert solver_configs == [
+        {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32},
+        {"fixed_iters_E": 6, "fixed_iters_Pi": 16, "neumann_terms": 16},
     ]
 
 

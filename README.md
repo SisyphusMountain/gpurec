@@ -247,17 +247,27 @@ the retained Pi backward/gradient path.  Do not use bf16 for release smokes,
 optimizer checkpoints, or Hessian/second-order diagnostics.
 
 Optimizer modes are selected with `optimizer` in JSON or `--optimizer` on the
-CLI. If omitted, `auto` resolves to `batched-lbfgs` for `mode=genewise` and
-`adam` for shared-theta modes. Workflow rate bounds default to `min_rate=2^-30`
-and `max_rate=2`:
+CLI. If omitted, `auto` resolves to `hessian-sgd` for `mode=genewise`,
+`adagrad-restarts` for `mode=specieswise`, and `adam` for `mode=global`.
+Workflow rate bounds default to `min_rate=2^-30` and `max_rate=2`:
+
+The production optimization guide
+[`docs/production-optimization-guide.md`](docs/production-optimization-guide.md)
+explains how the likelihood objective, gradient route, solver budgets,
+genewise `hessian-sgd` default, specieswise `adagrad-restarts` default, and
+HOGENOM/`test_trees_1000` validation gates fit together.
 
 | Mode | Behavior | Notes |
 | --- | --- | --- |
-| `auto` | Mode-dependent workflow default. | Uses `batched-lbfgs` for `mode=genewise`; uses `adam` for `global` and `specieswise`. |
+| `auto` | Mode-dependent workflow default. | Uses `hessian-sgd` for `mode=genewise`, `adagrad-restarts` for `mode=specieswise`, and `adam` for `mode=global`. |
 | `adam` | Adam optimizer for all configured steps. | Uses `lr` and ordinary PyTorch Adam state. |
 | `adagrad` | Adagrad optimizer for all configured steps. | Uses `lr`; retained for long-running comparison runs. |
+| `adagrad-restarts` | Specieswise multifidelity Adagrad with state resets. | Requires `mode=specieswise`; this is the specieswise `auto` default. The default schedule is `8:1.0:60,16:0.5:35,32:0.5:30`, meaning fixed `E/Pi/Neumann` budgets of 8, 16, then 32, with Adagrad state reset at each budget increase. The final validation/gradient evaluation uses `adagrad_restart_final_check_iters=128`. Override the phase ladder with `adagrad_restart_schedule` or `--adagrad-restart-schedule`. |
+| `projected-sgd` | Projected SGD for all configured steps. | Uses `lr`, records projected gradients at rate bounds, and clamps D/L/T rates to `min_rate`/`max_rate` after every step. |
 | `lbfgs` | PyTorch LBFGS for all configured steps. | Uses `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, and `lbfgs_line_search`.  `lbfgs_line_search` is `none` or `strong_wolfe`; LBFGS runtime errors stop the run with a failed status. |
 | `adam-lbfgs` | Adam warmup, then LBFGS polishing. | `adam_warmup_steps` controls the phase switch; incompatible resumed optimizer state is discarded when the checkpoint phase differs from the current phase. |
+| `projected-lbfgs` | Single-objective projected L-BFGS-B-style polishing. | Uses projected gradients at rate bounds, `lbfgs_lr`, `lbfgs_history_size`, and `lbfgs_max_ls`; Armijo line-search probes use loss-only evaluations before one accepted gradient refresh. If loss stalls while `grad/projected_inf` exceeds `projected_grad_tol`, the workflow reduces the base L-BFGS step size instead of declaring convergence. HOGENOM specieswise convergence sweeps found `--lbfgs-lr 0.4` fastest by wall time and `--lbfgs-lr 0.5` the best tested time/objective tradeoff. |
+| `lbfgsb` | Single-objective L-BFGS-B-style polishing. | Uses raw BFGS curvature pairs, a generalized Cauchy point, a free-subspace solve, projected gradients at rate bounds, `lbfgs_lr`, `lbfgs_history_size`, and `lbfgs_max_ls`; Armijo line-search probes use loss-only evaluations before one accepted gradient refresh. If loss stalls while `grad/projected_inf` exceeds `projected_grad_tol`, the workflow keeps the run `not_converged` instead of declaring convergence. |
 | `batched-lbfgs` | Row-wise batched L-BFGS-B for genewise runs. | Requires `mode=genewise`; uses per-family NLL/gradient vectors, projected gradients at rate bounds, `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, `lbfgs_max_ls`, and `lbfgs_line_search`. `none` uses internal row-wise Armijo probes; `strong_wolfe` uses a vectorized row-wise port of PyTorch's bracket/zoom line search. |
 | `adam-fd-newton` | Short Adam warmup, then finite-difference/quasi-Newton updates for genewise batches. | Requires `mode=genewise`; `fd_adam_warmup_steps` controls per-batch Adam warmup, `fd_hessian_refresh_steps` controls how many rate-bounded Newton steps reuse BFGS-updated row-wise 3x3 Hessians between finite-difference refreshes, `fd_hessian_epsilon` controls refresh probes, and `fd_newton_damping` controls Hessian regularization. Newton trial rates are projected to `min_rate`/`max_rate`; there is no separate log-rate movement cap. |
 | `hessian-sgd` | Projected Hessian-conditioned gradient steps for genewise batches. | Requires `mode=genewise`; finite-difference 3x3 row Hessians refresh every `fd_hessian_refresh_steps`, receive BFGS row updates between refreshes, and precondition fresh gradients with step scale `lr`. Warmup uses reduced Pi/Neumann iterations, with a shorter schedule for very large active batches; very large batches that plateau during warmup skip redundant full-stage optimizer rows while still caching canonical full-solver values for final evaluation. Normal full-stage steps can use `hessian_sgd_normal_fixed_iters_pi` and `hessian_sgd_normal_neumann_terms`. Steps are projected to rate bounds and skip Armijo loss probes before Adam warmup. |
@@ -455,6 +465,9 @@ of dataset path overrides.
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
 | One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes on the local HOGENOM layout. |
 | Specieswise multifidelity Adagrad | `python scripts/benchmark_hogenom_specieswise_multifidelity_adagrad.py` | Counts-free route from uniform 0.05 rates: fixed8 Adagrad warmup, fixed16 bridge, fixed32 repair, and fixed128 validation; `--schedule-mode adaptive` chooses phase lengths from higher-budget validation stalls. |
+| Specieswise route benchmark | `python scripts/benchmark_hogenom_specieswise_e2e.py` | Summarizes the local accepted optimization route, time-to-target, and manual stages with unknown elapsed time. |
+| Specieswise pulse benchmark | `python scripts/benchmark_hogenom_specieswise_pulses.py` | Checkout-local benchmark for short projected-gradient pulse probes from a HOGENOM specieswise checkpoint; defaults to fixed, non-adaptive solver iterations for validation. |
+| Specieswise tail replay | `python scripts/replay_hogenom_specieswise_tail.py` | Replays and times the accepted post-SGD pulse tail, then validates the final theta at fixed128. |
 | Historical notebooks | `notebooks/` | Checkout-local HOGENOM analyses; see `notebooks/README.md` before using or migrating them. |
 
 Optional script dependencies are intentionally separate from the core package

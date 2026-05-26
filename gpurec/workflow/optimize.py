@@ -30,7 +30,11 @@ from .checkpoint import (
     save_checkpoint,
     validate_checkpoint_model_compatibility,
 )
-from .config import RunConfig
+from .config import (
+    AdagradRestartPhase,
+    RunConfig,
+    adagrad_restart_schedule_specs,
+)
 from .diagnostics import (
     append_jsonl,
     json_dumps_strict,
@@ -99,7 +103,14 @@ _BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
 )
 _HESSIAN_CONDITIONED_OPTIMIZERS = frozenset({"adam-fd-newton", "hessian-sgd"})
 _POST_STEP_OPTIMIZERS = frozenset(
-    {"lbfgs", "batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
+    {
+        "lbfgs",
+        "projected-lbfgs",
+        "lbfgsb",
+        "batched-lbfgs",
+        "adam-fd-newton",
+        "hessian-sgd",
+    }
 )
 
 
@@ -113,6 +124,14 @@ class _FDNewtonHessianState:
     active_grad: torch.Tensor
     active_loss: torch.Tensor
     updates_since_refresh: int = 0
+
+
+@dataclass(frozen=True)
+class _ActiveAdagradRestartPhase:
+    index: int
+    name: str
+    start_step: int
+    phase: AdagradRestartPhase
 
 
 def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
@@ -133,6 +152,20 @@ def _drop_cached_static_states_if_needed(model: GeneReconModel) -> None:
     )
     if callable(drop_cached_static_states):
         drop_cached_static_states()
+    else:
+        model.clear()
+    _clear_cuda_allocator_cache_if_needed(model)
+
+
+def _clear_cached_solver_runtime_state(model: GeneReconModel) -> None:
+    """Clear mutable solver warm-start state without rebuilding static layouts."""
+    statics = getattr(model, "cached_static_states", None)
+    if statics is not None:
+        for static in list(statics):
+            if hasattr(static, "warm_E"):
+                static.warm_E = None
+            if hasattr(static, "last_solver_stats"):
+                static.last_solver_stats = None
     else:
         model.clear()
     _clear_cuda_allocator_cache_if_needed(model)
@@ -462,6 +495,44 @@ def _active_batch_patience(configured_patience: int) -> int:
     return min(configured_patience, _ACTIVE_BATCH_LBFGS_STALL_PATIENCE)
 
 
+def _is_adagrad_restart_phase(phase: str) -> bool:
+    return phase == "adagrad-restarts" or phase.startswith("adagrad-restarts:")
+
+
+def _adagrad_restart_phase_name(
+    specs: tuple[AdagradRestartPhase, ...],
+    index: int,
+) -> str:
+    phase = specs[index]
+    if len(specs) == 3:
+        label = ("warmup", "bridge", "repair")[index]
+    else:
+        label = f"phase{index + 1}"
+    return f"fixed{phase.budget}_{label}"
+
+
+def _adagrad_restart_total_steps(specs: tuple[AdagradRestartPhase, ...]) -> int:
+    return sum(phase.steps for phase in specs)
+
+
+def _active_adagrad_restart_phase(
+    specs: tuple[AdagradRestartPhase, ...],
+    step: int,
+) -> _ActiveAdagradRestartPhase | None:
+    start_step = 0
+    for index, phase in enumerate(specs):
+        stop_step = start_step + phase.steps
+        if step < stop_step:
+            return _ActiveAdagradRestartPhase(
+                index=index,
+                name=_adagrad_restart_phase_name(specs, index),
+                start_step=start_step,
+                phase=phase,
+            )
+        start_step = stop_step
+    return None
+
+
 class OptimizationRunner:
     def __init__(self, config: RunConfig):
         self.config = config
@@ -482,8 +553,10 @@ class OptimizationRunner:
         config = self.config
         if phase == "adam":
             return torch.optim.Adam([model.theta], lr=config.lr)
-        if phase == "adagrad":
+        if phase == "adagrad" or _is_adagrad_restart_phase(phase):
             return torch.optim.Adagrad([model.theta], lr=config.lr, eps=1e-10)
+        if phase == "projected-sgd":
+            return torch.optim.SGD([model.theta], lr=config.lr)
         if phase == "batched-lbfgs":
             from gpurec.optimization import BatchedLBFGS
 
@@ -506,6 +579,33 @@ class OptimizationRunner:
             return torch.optim.Adam([model.theta], lr=config.lr)
         if phase == "hessian-sgd":
             return torch.optim.SGD([model.theta], lr=config.lr)
+        if phase == "projected-lbfgs":
+            from gpurec.optimization import ProjectedLBFGS
+
+            return ProjectedLBFGS(
+                [model.theta],
+                lr=config.lbfgs_lr,
+                max_iter=config.lbfgs_max_iter,
+                history_size=config.lbfgs_history_size,
+                max_ls=config.lbfgs_max_ls,
+                tolerance_grad=0.0,
+                lower_bound=math.log2(config.min_rate),
+                upper_bound=math.log2(config.max_rate),
+            )
+        if phase == "lbfgsb":
+            from gpurec.optimization import LBFGSB
+
+            return LBFGSB(
+                [model.theta],
+                lr=config.lbfgs_lr,
+                max_iter=config.lbfgs_max_iter,
+                history_size=config.lbfgs_history_size,
+                max_ls=config.lbfgs_max_ls,
+                tolerance_grad=0.0,
+                lower_bound=math.log2(config.min_rate),
+                upper_bound=math.log2(config.max_rate),
+                active_tol=1e-7,
+            )
         if phase == "lbfgs":
             return torch.optim.LBFGS(
                 [model.theta],
@@ -519,6 +619,14 @@ class OptimizationRunner:
         raise ValueError(f"unknown optimizer phase {phase!r}")
 
     def _phase_for_step(self, step: int) -> str:
+        if self.config.optimizer == "adagrad-restarts":
+            specs = adagrad_restart_schedule_specs(
+                self.config.adagrad_restart_schedule,
+            )
+            active_phase = _active_adagrad_restart_phase(specs, step)
+            if active_phase is None:
+                return "adagrad-restarts:complete"
+            return f"adagrad-restarts:{active_phase.name}"
         if self.config.optimizer == "adam-lbfgs":
             return "adam" if step < self.config.adam_warmup_steps else "lbfgs"
         return self.config.optimizer
@@ -537,6 +645,17 @@ class OptimizationRunner:
         row.update(parameter_stats(model.theta))
         row.update(solver_stats(model))
         return loss, row
+
+    def _evaluate_loss_only(self, model: GeneReconModel) -> torch.Tensor:
+        with torch.no_grad():
+            full_loss_for_theta = getattr(model, "full_loss_for_theta", None)
+            if callable(full_loss_for_theta):
+                loss = full_loss_for_theta(model.theta.detach())
+            else:
+                loss = model.full_loss()
+        if not torch.is_tensor(loss) or loss.numel() != 1:
+            raise RuntimeError("loss-only optimizer probe did not return a scalar loss")
+        return loss.detach().reshape(())
 
     def _evaluate_genewise_vector_and_grad(
         self,
@@ -584,6 +703,74 @@ class OptimizationRunner:
             seen.add(budget)
             out.append(budget)
         return out
+
+    def _fixed_iters_E_for_pi_budget(self, pi_iters: int) -> int | None:
+        pi_iters = int(pi_iters)
+        if self.config.mode == "specieswise" and pi_iters > 16:
+            if self.config.fixed_iters_e is None:
+                return pi_iters
+            return max(int(self.config.fixed_iters_e), pi_iters)
+        return self.config.fixed_iters_e
+
+    def _final_check_fixed_iters_E(self, check_iters: int) -> int | None:
+        if self.config.optimizer == "adagrad-restarts":
+            return int(check_iters)
+        return self._fixed_iters_E_for_pi_budget(check_iters)
+
+    def _final_iteration_check_iters(self) -> int:
+        if self.config.optimizer == "adagrad-restarts":
+            return int(self.config.adagrad_restart_final_check_iters)
+        return int(self.config.final_check_iters)
+
+    def _configure_specieswise_final_eval_solver_stage(
+        self,
+        model: GeneReconModel,
+    ) -> bool:
+        if self.config.mode != "specieswise":
+            return False
+        if (
+            self.config.optimizer != "adagrad-restarts"
+            and self.config.final_check_iters <= 0
+        ):
+            return False
+        configure_solver = getattr(model, "configure_solver_iterations", None)
+        if not callable(configure_solver):
+            return False
+        if self.config.optimizer == "adagrad-restarts":
+            check_iters = int(self.config.adagrad_restart_final_check_iters)
+            if check_iters <= 0:
+                return False
+            configure_solver(
+                fixed_iters_E=check_iters,
+                fixed_iters_Pi=check_iters,
+                neumann_terms=check_iters,
+            )
+            return True
+        configure_solver(
+            fixed_iters_E=self._fixed_iters_E_for_pi_budget(
+                self.config.fixed_iters_pi
+            ),
+            fixed_iters_Pi=self.config.fixed_iters_pi,
+            neumann_terms=self.config.neumann_terms,
+        )
+        return True
+
+    def _configure_specieswise_adagrad_restart_phase(
+        self,
+        model: GeneReconModel,
+        phase: _ActiveAdagradRestartPhase,
+    ) -> None:
+        configure_solver = getattr(model, "configure_solver_iterations", None)
+        if not callable(configure_solver):
+            raise RuntimeError(
+                "adagrad-restarts requires a model with configure_solver_iterations"
+            )
+        budget = int(phase.phase.budget)
+        configure_solver(
+            fixed_iters_E=budget,
+            fixed_iters_Pi=budget,
+            neumann_terms=budget,
+        )
 
     def _evaluate_genewise_vector_and_grad_with_memory_fallback(
         self,
@@ -706,7 +893,7 @@ class OptimizationRunner:
                         )
                     )
                 fallback_model.configure_solver_iterations(
-                    fixed_iters_E=self.config.fixed_iters_e,
+                    fixed_iters_E=self._final_check_fixed_iters_E(check_iters),
                     fixed_iters_Pi=check_iters,
                     neumann_terms=check_iters,
                 )
@@ -755,10 +942,19 @@ class OptimizationRunner:
         ) from original_exc
 
     def _uses_solver_warmup(self) -> bool:
+        config = self.config
+        if config.solver_warmup_iters <= 0:
+            return False
+        if config.optimizer == "adagrad-restarts":
+            return False
+        if (
+            config.mode == "genewise"
+            and config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
+        ):
+            return True
         return (
-            self.config.mode == "genewise"
-            and self.config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
-            and self.config.solver_warmup_iters > 0
+            config.mode == "specieswise"
+            and config.fixed_iters_pi > config.solver_warmup_iters
         )
 
     def _configure_solver_stage(
@@ -788,7 +984,7 @@ class OptimizationRunner:
             return
         if stage == "full":
             model.configure_solver_iterations(
-                fixed_iters_E=config.fixed_iters_e,
+                fixed_iters_E=self._fixed_iters_E_for_pi_budget(config.fixed_iters_pi),
                 fixed_iters_Pi=config.fixed_iters_pi,
                 neumann_terms=config.neumann_terms,
             )
@@ -802,13 +998,14 @@ class OptimizationRunner:
     ) -> None:
         config = self.config
         if config.optimizer == "hessian-sgd" and stage == "full":
+            fixed_iters_Pi = (
+                config.hessian_sgd_normal_fixed_iters_pi
+                if config.hessian_sgd_normal_fixed_iters_pi is not None
+                else config.fixed_iters_pi
+            )
             model.configure_solver_iterations(
-                fixed_iters_E=config.fixed_iters_e,
-                fixed_iters_Pi=(
-                    config.hessian_sgd_normal_fixed_iters_pi
-                    if config.hessian_sgd_normal_fixed_iters_pi is not None
-                    else config.fixed_iters_pi
-                ),
+                fixed_iters_E=self._fixed_iters_E_for_pi_budget(fixed_iters_Pi),
+                fixed_iters_Pi=fixed_iters_Pi,
                 neumann_terms=(
                     config.hessian_sgd_normal_neumann_terms
                     if config.hessian_sgd_normal_neumann_terms is not None
@@ -852,17 +1049,20 @@ class OptimizationRunner:
         baseline_grad: torch.Tensor,
     ) -> dict[str, Any]:
         config = self.config
-        check_iters = int(config.final_check_iters)
+        check_iters = self._final_iteration_check_iters()
+        check_iters_E = self._final_check_fixed_iters_E(check_iters)
         configure_solver = getattr(model, "configure_solver_iterations", None)
-        if config.mode != "genewise" or not callable(configure_solver):
+        if not callable(configure_solver):
             return {
                 "optimizer/final_check_status": "skipped",
                 "optimizer/final_check_iters": check_iters,
+                "optimizer/final_check_iters_E": check_iters_E,
             }
         if check_iters <= 0:
             return {
                 "optimizer/final_check_status": "disabled",
                 "optimizer/final_check_iters": 0,
+                "optimizer/final_check_iters_E": 0,
             }
 
         baseline_loss_bits = float(baseline_loss.detach().cpu())
@@ -876,12 +1076,13 @@ class OptimizationRunner:
         metrics: dict[str, Any] = {
             "optimizer/final_check_status": "failed",
             "optimizer/final_check_iters": check_iters,
+            "optimizer/final_check_iters_E": check_iters_E,
             "optimizer/final_check_evals": 1,
         }
         try:
-            _drop_cached_static_states_if_needed(model)
+            _clear_cached_solver_runtime_state(model)
             configure_solver(
-                fixed_iters_E=config.fixed_iters_e,
+                fixed_iters_E=check_iters_E,
                 fixed_iters_Pi=check_iters,
                 neumann_terms=check_iters,
             )
@@ -896,14 +1097,38 @@ class OptimizationRunner:
                 except RuntimeError as check_exc:
                     if not _is_memory_retryable_runtime_error(check_exc):
                         raise
-                    check_loss_vec, check_grad, fallback_metrics = (
-                        self._evaluate_final_check_genewise_with_memory_fallback(
-                            model,
-                            check_iters=check_iters,
-                            original_exc=check_exc,
-                        )
+                    _drop_cached_static_states_if_needed(model)
+                    configure_solver(
+                        fixed_iters_E=check_iters_E,
+                        fixed_iters_Pi=check_iters,
+                        neumann_terms=check_iters,
                     )
-                    metrics.update(fallback_metrics)
+                    try:
+                        check_loss_vec, _check_metrics = (
+                            self._evaluate_genewise_vector_and_grad(model)
+                        )
+                        check_grad = model.theta.grad
+                        metrics.update(
+                            {
+                                "optimizer/final_check_source": (
+                                    "recomputed_after_cache_drop"
+                                ),
+                                "optimizer/final_check_fallback_reason": (
+                                    f"{type(check_exc).__name__}: {check_exc}"
+                                ),
+                            }
+                        )
+                    except RuntimeError as retry_exc:
+                        if not _is_memory_retryable_runtime_error(retry_exc):
+                            raise
+                        check_loss_vec, check_grad, fallback_metrics = (
+                            self._evaluate_final_check_genewise_with_memory_fallback(
+                                model,
+                                check_iters=check_iters,
+                                original_exc=check_exc,
+                            )
+                        )
+                        metrics.update(fallback_metrics)
                 check_loss = check_loss_vec.sum()
             else:
                 check_loss, _check_metrics = self._evaluate_and_backward(model)
@@ -1076,9 +1301,8 @@ class OptimizationRunner:
         if grad is None:
             raise RuntimeError("projected gradient requested before gradient evaluation")
         theta = model.theta.detach()
-        projected = grad.detach().clone()
-        projected[(theta <= lower_bound) & (projected > 0)] = 0
-        projected[(theta >= upper_bound) & (projected < 0)] = 0
+        grad = grad.detach()
+        projected = theta - torch.clamp(theta - grad, min=lower_bound, max=upper_bound)
         projected_inf = float(projected.detach().abs().amax().cpu()) if projected.numel() else 0.0
         return projected, projected_inf
 
@@ -1165,9 +1389,11 @@ class OptimizationRunner:
         lower_bound: float,
         upper_bound: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        projected = active_grad.clone()
-        projected[(active_theta <= lower_bound) & (projected > 0)] = 0
-        projected[(active_theta >= upper_bound) & (projected < 0)] = 0
+        projected = active_theta - torch.clamp(
+            active_theta - active_grad,
+            min=lower_bound,
+            max=upper_bound,
+        )
         return projected, projected.abs() > 0
 
     def _fd_newton_state_matches(
@@ -1830,6 +2056,15 @@ class OptimizationRunner:
             self.history_jsonl.unlink()
 
         model = self.build_model()
+        adagrad_restart_specs: tuple[AdagradRestartPhase, ...] = ()
+        adagrad_restart_step_limit: int | None = None
+        if config.optimizer == "adagrad-restarts":
+            adagrad_restart_specs = adagrad_restart_schedule_specs(
+                config.adagrad_restart_schedule,
+            )
+            adagrad_restart_step_limit = _adagrad_restart_total_steps(
+                adagrad_restart_specs,
+            )
         optimizer: torch.optim.Optimizer | None = None
         started = time.perf_counter()
         best_nll: float | None = None
@@ -1840,6 +2075,7 @@ class OptimizationRunner:
         active_batch_index = 0
         active_batch_local_step = 0
         active_optimizer_batch_index: int | None = None
+        active_adagrad_restart_phase_index: int | None = None
         batchwise_active_optimizer = (
             config.mode == "genewise"
             and config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
@@ -1859,6 +2095,7 @@ class OptimizationRunner:
         )
         solver_warmup_enabled = self._uses_solver_warmup()
         active_solver_stage = "warmup" if solver_warmup_enabled else "full"
+        global_solver_warmup = solver_warmup_enabled and not batchwise_active_optimizer
         batch_best_nll: float | None = None
         batch_best_step: int | None = None
         batch_final_loss_cache: torch.Tensor | None = None
@@ -2049,15 +2286,58 @@ class OptimizationRunner:
                     dtype=torch.bool,
                 )
                 if model.current_batch_index != active_batch_index:
-                    _drop_cached_static_states_if_needed(model)
+                    _clear_cached_solver_runtime_state(model)
                 model.select_batch(active_batch_index)
                 self._configure_active_solver_stage(
                     model,
                     active_solver_stage,
                 )
+            elif global_solver_warmup:
+                self._configure_active_solver_stage(model, active_solver_stage)
 
-            current_phase = self._phase_for_step(start_step)
+            optimization_stop_step = config.steps
+            if adagrad_restart_step_limit is not None:
+                optimization_stop_step = min(
+                    optimization_stop_step,
+                    adagrad_restart_step_limit,
+                )
+
+            if (
+                config.optimizer == "adagrad-restarts"
+                and start_step >= optimization_stop_step
+            ):
+                current_phase = self._phase_for_step(
+                    max(0, optimization_stop_step - 1)
+                )
+            else:
+                current_phase = self._phase_for_step(start_step)
+            initial_adagrad_restart_phase: _ActiveAdagradRestartPhase | None = None
+            if config.optimizer == "adagrad-restarts":
+                initial_adagrad_restart_phase = _active_adagrad_restart_phase(
+                    adagrad_restart_specs,
+                    (
+                        start_step
+                        if start_step < optimization_stop_step
+                        else max(0, optimization_stop_step - 1)
+                    ),
+                )
+                if initial_adagrad_restart_phase is None:
+                    raise RuntimeError(
+                        "adagrad-restarts schedule did not contain the start step"
+                    )
+                if start_step < optimization_stop_step:
+                    self._configure_specieswise_adagrad_restart_phase(
+                        model,
+                        initial_adagrad_restart_phase,
+                    )
+                    active_adagrad_restart_phase_index = (
+                        initial_adagrad_restart_phase.index
+                    )
             optimizer = self._make_optimizer(model, current_phase)
+            if initial_adagrad_restart_phase is not None:
+                optimizer.param_groups[0]["lr"] = float(
+                    initial_adagrad_restart_phase.phase.lr
+                )
             if (
                 current_phase in _BATCHWISE_ACTIVE_OPTIMIZERS
                 and batchwise_active_optimizer
@@ -2079,11 +2359,21 @@ class OptimizationRunner:
                     ),
                 )
 
-            for step in range(start_step, config.steps):
+            for step in range(start_step, optimization_stop_step):
                 phase = self._phase_for_step(step)
+                adagrad_restart_active_phase = None
+                if config.optimizer == "adagrad-restarts":
+                    adagrad_restart_active_phase = _active_adagrad_restart_phase(
+                        adagrad_restart_specs,
+                        step,
+                    )
+                    if adagrad_restart_active_phase is None:
+                        raise RuntimeError(
+                            "adagrad-restarts schedule ended before optimization stop"
+                        )
                 if batchwise_batched_lbfgs and phase == "batched-lbfgs":
                     if model.current_batch_index != active_batch_index:
-                        _drop_cached_static_states_if_needed(model)
+                        _clear_cached_solver_runtime_state(model)
                         model.select_batch(active_batch_index)
                     if (
                         optimizer is None
@@ -2093,12 +2383,35 @@ class OptimizationRunner:
                         current_phase = phase
                         optimizer = self._make_optimizer(model, phase)
                         active_optimizer_batch_index = active_batch_index
+                elif _is_adagrad_restart_phase(phase):
+                    if adagrad_restart_active_phase is None:
+                        raise RuntimeError("missing adagrad-restarts active phase")
+                    if (
+                        optimizer is None
+                        or phase != current_phase
+                        or active_adagrad_restart_phase_index
+                        != adagrad_restart_active_phase.index
+                    ):
+                        _clear_cached_solver_runtime_state(model)
+                        self._configure_specieswise_adagrad_restart_phase(
+                            model,
+                            adagrad_restart_active_phase,
+                        )
+                        current_phase = phase
+                        optimizer = self._make_optimizer(model, phase)
+                        optimizer.param_groups[0]["lr"] = float(
+                            adagrad_restart_active_phase.phase.lr
+                        )
+                        active_adagrad_restart_phase_index = (
+                            adagrad_restart_active_phase.index
+                        )
+                        active_optimizer_batch_index = None
                 elif (
                     (batchwise_fd_newton or batchwise_hessian_sgd)
                     and phase in _HESSIAN_CONDITIONED_OPTIMIZERS
                 ):
                     if model.current_batch_index != active_batch_index:
-                        _drop_cached_static_states_if_needed(model)
+                        _clear_cached_solver_runtime_state(model)
                         model.select_batch(active_batch_index)
                     if (
                         optimizer is None
@@ -2118,6 +2431,7 @@ class OptimizationRunner:
                 closure_evals = 0
                 batched_grad_evals = 0
                 batched_loss_evals = 0
+                projected_loss_evals = 0
                 metrics: dict[str, Any] = {}
                 adaptive_rebatch_pending_indices: list[int] | None = None
                 adaptive_rebatch_stop = False
@@ -2165,6 +2479,13 @@ class OptimizationRunner:
                         return self._evaluate_active_genewise_loss_vector(model)
                     return self._evaluate_genewise_loss_vector(model)
 
+                def projected_loss_closure() -> torch.Tensor:
+                    nonlocal projected_loss_evals
+                    projected_loss_evals += 1
+                    with torch.no_grad():
+                        model.clamp_theta_(config.min_rate, config.max_rate)
+                    return self._evaluate_loss_only(model)
+
                 save_best_after_row = False
                 first_order_pending_step = False
                 eval_position = (
@@ -2190,6 +2511,124 @@ class OptimizationRunner:
                     closure_evals += 1
                     if (
                         not torch.isfinite(loss_current).item()
+                        or not _is_finite_tensor(model.theta.grad)
+                    ):
+                        status = {
+                            "status": "failed",
+                            "reason": "nonfinite_objective_or_gradient",
+                        }
+                        model.clear()
+                        break
+                    model.clear()
+                elif phase in {"projected-lbfgs", "lbfgsb"}:
+                    metric_prefix = (
+                        "projected_lbfgs" if phase == "projected-lbfgs" else "lbfgsb"
+                    )
+                    try:
+                        optimizer.step(
+                            closure,
+                            loss_closure=projected_loss_closure,
+                        )
+                    except RuntimeError:
+                        status = {
+                            "status": "failed",
+                            "reason": f"{metric_prefix}_runtime_error",
+                        }
+                        break
+                    opt_state = optimizer.state.get(model.theta, {})
+                    closure_evals = int(opt_state.get("last_grad_evals", closure_evals)) + int(
+                        opt_state.get("last_loss_evals", projected_loss_evals)
+                    )
+                    with torch.no_grad():
+                        model.clamp_theta_(config.min_rate, config.max_rate)
+                    theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
+                    grad_current = opt_state.get("last_grad")
+                    loss_current = opt_state.get("last_loss")
+                    projected_grad = opt_state.get("last_projected_grad")
+                    if torch.is_tensor(grad_current):
+                        model.theta.grad = grad_current.detach().reshape_as(model.theta).to(
+                            device=model.theta.device,
+                            dtype=model.theta.dtype,
+                        )
+                    if torch.is_tensor(loss_current):
+                        loss_current = loss_current.detach().to(
+                            device=model.theta.device,
+                            dtype=model.theta.dtype,
+                        ).reshape(())
+                        metrics = dict(metrics)
+                        metrics["likelihood/data_nll_bits"] = float(
+                            loss_current.detach().cpu()
+                        )
+                        metrics["likelihood/log_likelihood_bits"] = float(
+                            -loss_current.detach().cpu()
+                        )
+                        if model.theta.grad is not None:
+                            metrics.update(tensor_stats("grad", model.theta.grad))
+                            metrics.update(parameter_stats(model.theta))
+                            metrics.update(solver_stats(model))
+                    else:
+                        model.theta.grad = None
+                        loss_current, metrics = self._evaluate_and_backward(model)
+                        closure_evals += 1
+                    if torch.is_tensor(projected_grad):
+                        projected_inf = (
+                            float(projected_grad.detach().abs().amax().cpu())
+                            if projected_grad.numel()
+                            else 0.0
+                        )
+                    else:
+                        _projected_grad, projected_inf = self._projected_grad_inf(
+                            model,
+                            lower_bound=math.log2(config.min_rate),
+                            upper_bound=math.log2(config.max_rate),
+                        )
+                    metrics["grad/projected_inf"] = projected_inf
+                    metrics[f"optimizer/{metric_prefix}_grad_evals"] = float(
+                        int(opt_state.get("last_grad_evals", 0))
+                    )
+                    metrics[f"optimizer/{metric_prefix}_loss_evals"] = float(
+                        int(opt_state.get("last_loss_evals", projected_loss_evals))
+                    )
+                    metrics[f"optimizer/{metric_prefix}_accepted"] = bool(
+                        opt_state.get("last_accepted", False)
+                    )
+                    metrics[f"optimizer/{metric_prefix}_alpha"] = float(
+                        opt_state.get("last_alpha", 0.0)
+                    )
+                    metrics[f"optimizer/{metric_prefix}_step_inf"] = float(
+                        opt_state.get("last_step_inf", theta_step)
+                    )
+                    direction_kind = opt_state.get("last_direction_kind")
+                    if direction_kind is not None:
+                        metrics[f"optimizer/{metric_prefix}_direction_kind"] = str(
+                            direction_kind
+                        )
+                    metrics[f"optimizer/{metric_prefix}_line_search_decrease"] = float(
+                        opt_state.get("last_line_search_decrease", 0.0)
+                    )
+                    metrics[
+                        f"optimizer/{metric_prefix}_armijo_required_decrease"
+                    ] = float(opt_state.get("last_armijo_required_decrease", 0.0))
+                    metrics[f"optimizer/{metric_prefix}_fallback_attempted"] = bool(
+                        opt_state.get("last_fallback_attempted", False)
+                    )
+                    metrics[f"optimizer/{metric_prefix}_fallback_used"] = bool(
+                        opt_state.get("last_fallback_used", False)
+                    )
+                    metrics[f"optimizer/{metric_prefix}_fallback_alpha"] = float(
+                        opt_state.get("last_fallback_alpha", 0.0)
+                    )
+                    metrics[f"optimizer/{metric_prefix}_fallback_reason"] = str(
+                        opt_state.get("last_fallback_reason", "none")
+                    )
+                    metrics[f"optimizer/{metric_prefix}_high_kkt_stall_count"] = float(
+                        int(opt_state.get("last_high_kkt_stall_count", 0))
+                    )
+                    metrics[
+                        f"optimizer/{metric_prefix}_history_cleared_for_fallback"
+                    ] = bool(opt_state.get("last_history_cleared_for_fallback", False))
+                    if (
+                        (torch.is_tensor(loss_current) and not torch.isfinite(loss_current).item())
                         or not _is_finite_tensor(model.theta.grad)
                     ):
                         status = {
@@ -2427,6 +2866,38 @@ class OptimizationRunner:
                             "reason": "nonfinite_objective_or_gradient",
                         }
                         break
+                    if phase == "projected-sgd" or _is_adagrad_restart_phase(phase):
+                        _projected_grad, projected_grad_inf = self._projected_grad_inf(
+                            model,
+                            lower_bound=math.log2(config.min_rate),
+                            upper_bound=math.log2(config.max_rate),
+                        )
+                        metrics["grad/projected_inf"] = projected_grad_inf
+                    if _is_adagrad_restart_phase(phase):
+                        if adagrad_restart_active_phase is None:
+                            raise RuntimeError("missing adagrad-restarts active phase")
+                        phase_step = step - adagrad_restart_active_phase.start_step
+                        metrics["optimizer/adagrad_restart_phase"] = (
+                            adagrad_restart_active_phase.name
+                        )
+                        metrics["optimizer/adagrad_restart_phase_index"] = float(
+                            adagrad_restart_active_phase.index
+                        )
+                        metrics["optimizer/adagrad_restart_phase_step"] = float(
+                            phase_step
+                        )
+                        metrics["optimizer/adagrad_restart_phase_steps"] = float(
+                            adagrad_restart_active_phase.phase.steps
+                        )
+                        metrics["optimizer/adagrad_restart_budget"] = float(
+                            adagrad_restart_active_phase.phase.budget
+                        )
+                        metrics["optimizer/adagrad_restart_lr"] = float(
+                            adagrad_restart_active_phase.phase.lr
+                        )
+                        metrics["optimizer/adagrad_restart_restarted"] = (
+                            phase_step == 0
+                        )
                     theta_step = 0.0
                     first_order_pending_step = True
 
@@ -2573,6 +3044,9 @@ class OptimizationRunner:
                     batchwise_active_optimizer
                     and phase in _BATCHWISE_ACTIVE_OPTIMIZERS
                 )
+                solver_stage_scope = active_objective_scope or global_solver_warmup
+                if solver_stage_scope:
+                    metrics.setdefault("optimizer/solver_stage", active_solver_stage)
                 active_family_count = (
                     max(1, int(metrics.get("optimizer/batch_family_count", 1)))
                     if active_objective_scope
@@ -2584,7 +3058,81 @@ class OptimizationRunner:
                 )
                 objective = float(metrics["likelihood/data_nll_bits"])
                 delta = None if previous_objective is None else previous_objective - objective
-                if delta is not None and delta <= loss_change_tol_bits:
+                projected_lbfgs_backoff = False
+                projected_lbfgs_min_lr_reached = False
+                bounded_high_projected_plateau = False
+                if phase in {"projected-lbfgs", "lbfgsb"} and optimizer is not None:
+                    metric_prefix = (
+                        "projected_lbfgs" if phase == "projected-lbfgs" else "lbfgsb"
+                    )
+                    projected_inf_raw = metrics.get("grad/projected_inf")
+                    projected_inf_value = (
+                        float(projected_inf_raw)
+                        if projected_inf_raw is not None
+                        else float("inf")
+                    )
+                    accepted = bool(
+                        metrics.get(f"optimizer/{metric_prefix}_accepted", True)
+                    )
+                    plateau = delta is not None and delta <= loss_change_tol_bits
+                    high_projected_grad = projected_inf_value > config.projected_grad_tol
+                    bounded_high_projected_plateau = high_projected_grad and (
+                        plateau or not accepted
+                    )
+                    if (
+                        phase == "projected-lbfgs"
+                        and high_projected_grad
+                        and (plateau or not accepted)
+                    ):
+                        group = optimizer.param_groups[0]
+                        old_lr = float(group["lr"])
+                        min_lr = float(config.projected_lbfgs_min_lr)
+                        shrink = float(group.get("shrink", 0.5))
+                        accepted_alpha = float(
+                            metrics.get("optimizer/projected_lbfgs_alpha", 0.0)
+                        )
+                        if 0.0 < accepted_alpha < old_lr:
+                            candidate_lr = accepted_alpha * shrink
+                        else:
+                            candidate_lr = old_lr * shrink
+                        new_lr = max(min_lr, candidate_lr)
+                        if new_lr < old_lr:
+                            group["lr"] = new_lr
+                            projected_lbfgs_backoff = True
+                        else:
+                            projected_lbfgs_min_lr_reached = True
+                        metrics["optimizer/projected_lbfgs_projected_grad_tol"] = (
+                            float(config.projected_grad_tol)
+                        )
+                        metrics["optimizer/projected_lbfgs_lr_before"] = old_lr
+                        metrics["optimizer/projected_lbfgs_lr_after"] = new_lr
+                        metrics["optimizer/projected_lbfgs_lr_reduced"] = (
+                            projected_lbfgs_backoff
+                        )
+                        metrics["optimizer/projected_lbfgs_min_lr_reached"] = (
+                            projected_lbfgs_min_lr_reached
+                        )
+                        metrics["optimizer/projected_lbfgs_high_projected_grad"] = True
+                    else:
+                        metrics[f"optimizer/{metric_prefix}_projected_grad_tol"] = (
+                            float(config.projected_grad_tol)
+                        )
+                        if phase == "projected-lbfgs":
+                            metrics["optimizer/projected_lbfgs_lr_reduced"] = False
+                            metrics["optimizer/projected_lbfgs_min_lr_reached"] = False
+                        metrics[f"optimizer/{metric_prefix}_high_projected_grad"] = (
+                            high_projected_grad
+                        )
+                        metrics[f"optimizer/{metric_prefix}_blocked_loss_stop"] = (
+                            bounded_high_projected_plateau
+                        )
+                if (
+                    delta is not None
+                    and delta <= loss_change_tol_bits
+                    and not projected_lbfgs_backoff
+                    and not projected_lbfgs_min_lr_reached
+                    and not bounded_high_projected_plateau
+                ):
                     stable_loss_steps += 1
                 else:
                     stable_loss_steps = 0
@@ -2641,6 +3189,8 @@ class OptimizationRunner:
                     checkpoint_status["active_batch_index"] = active_batch_index
                     checkpoint_status["active_solver_stage"] = active_solver_stage
                     checkpoint_status["active_batch_local_step"] = active_batch_local_step
+                elif global_solver_warmup:
+                    checkpoint_status["active_solver_stage"] = active_solver_stage
                 if save_best_after_row and phase not in _POST_STEP_OPTIMIZERS:
                     best_row = dict(row)
                     best_row["optimizer/step_applied"] = False
@@ -2768,22 +3318,35 @@ class OptimizationRunner:
                         flush=True,
                     )
 
-                step_status = _step_stopping_status(
-                    config,
-                    step=step,
-                    stable_loss_steps=stable_loss_steps,
-                    best_step=row_best_step,
-                    loss_patience=(
-                        _active_batch_patience(config.loss_patience)
-                        if active_objective_scope
-                        else None
-                    ),
-                    best_likelihood_patience=(
-                        _active_batch_patience(config.best_likelihood_patience)
-                        if active_objective_scope
-                        else None
-                    ),
-                )
+                if (
+                    projected_lbfgs_backoff
+                    or projected_lbfgs_min_lr_reached
+                    or bounded_high_projected_plateau
+                ):
+                    step_status = None
+                else:
+                    step_status = _step_stopping_status(
+                        config,
+                        step=step,
+                        stable_loss_steps=stable_loss_steps,
+                        best_step=row_best_step,
+                        loss_patience=(
+                            _active_batch_patience(config.loss_patience)
+                            if active_objective_scope
+                            else None
+                        ),
+                        best_likelihood_patience=(
+                            _active_batch_patience(config.best_likelihood_patience)
+                            if active_objective_scope
+                            else None
+                        ),
+                    )
+                if projected_lbfgs_min_lr_reached:
+                    status = {
+                        "status": "not_converged",
+                        "reason": "projected_lbfgs_min_lr_reached",
+                    }
+                    break
                 full_stage_plateau = (
                     step_status is not None
                     and active_objective_scope
@@ -2848,7 +3411,7 @@ class OptimizationRunner:
                     continue
 
                 warmup_switch = (
-                    active_objective_scope
+                    solver_stage_scope
                     and active_solver_stage == "warmup"
                     and self._should_switch_solver_warmup(
                         stable_loss_steps=stable_loss_steps,
@@ -2856,7 +3419,7 @@ class OptimizationRunner:
                 )
                 if (
                     step_status is not None
-                    and active_objective_scope
+                    and solver_stage_scope
                     and active_solver_stage == "warmup"
                 ):
                     active_clade_count = int(
@@ -2944,6 +3507,9 @@ class OptimizationRunner:
                     optimizer = None
                     active_optimizer_batch_index = None
                     active_batch_last_checked_converged_count = 0
+                    if global_solver_warmup:
+                        best_nll = None
+                        best_step = None
                     self._configure_active_solver_stage(
                         model,
                         active_solver_stage,
@@ -3032,7 +3598,7 @@ class OptimizationRunner:
                                 row=row,
                                 optimizer_phase=phase,
                             )
-                        _drop_cached_static_states_if_needed(model)
+                        _clear_cached_solver_runtime_state(model)
                         model.select_batch(active_batch_index)
                         self._configure_active_solver_stage(
                             model,
@@ -3043,10 +3609,22 @@ class OptimizationRunner:
                     status = step_status
                     break
             else:
-                status = {"status": "not_converged", "reason": "max_steps"}
+                if (
+                    adagrad_restart_step_limit is not None
+                    and optimization_stop_step >= adagrad_restart_step_limit
+                    and config.steps >= adagrad_restart_step_limit
+                ):
+                    status = {
+                        "status": "converged",
+                        "reason": "adagrad_restart_schedule_complete",
+                    }
+                else:
+                    status = {"status": "not_converged", "reason": "max_steps"}
 
             final_eval_started = time.perf_counter()
-            if batchwise_active_optimizer:
+            if not self._configure_specieswise_final_eval_solver_stage(model) and (
+                batchwise_active_optimizer
+            ):
                 self._configure_solver_stage(model, "full")
             model.theta.grad = None
             final_per_family_nll: torch.Tensor | None = None
@@ -3128,6 +3706,14 @@ class OptimizationRunner:
                         baseline_grad=model.theta.grad,
                     )
                 )
+                _final_projected_grad, final_projected_grad_inf = (
+                    self._projected_grad_inf(
+                        model,
+                        lower_bound=math.log2(config.min_rate),
+                        upper_bound=math.log2(config.max_rate),
+                    )
+                )
+                final_metrics["grad/projected_inf"] = final_projected_grad_inf
                 final_eval_s = time.perf_counter() - final_eval_started
                 final_nll_bits = float(final_loss.detach().cpu())
                 final_grad_inf = float(final_metrics.get("grad/inf", math.inf))
@@ -3197,6 +3783,11 @@ class OptimizationRunner:
                 "batches": len(model.batch_metadata),
                 "final_nll_bits": final_nll_bits,
                 "final_grad_inf": final_grad_inf,
+                "final_projected_grad_inf": (
+                    None
+                    if final_eval_failed
+                    else float(final_metrics.get("grad/projected_inf", math.inf))
+                ),
             }
             _write_final_artifacts(
                 config,

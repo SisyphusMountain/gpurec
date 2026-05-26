@@ -9,6 +9,7 @@ from profiling import evaluate_hogenom_alerax_rates as evaluate_rates
 from scripts import compare_backtracking_alerax_events as compare_events
 from scripts import export_hogenom_rates_from_checkpoint as export_rates
 from scripts import hogenom_ccp_wandb_opt as hogenom_opt
+from scripts import visualize_hogenom_loss_landscape as landscape
 from scripts.compare_backtracking_alerax_events import load_rates
 from scripts.export_hogenom_rates_from_checkpoint import (
     parse_newick,
@@ -96,6 +97,154 @@ def test_evaluate_rates_closes_model_after_family_nll_failure():
         evaluate_rates._nll_per_family_with_cleanup(model)
 
     assert model.close_calls == 1
+
+
+def test_landscape_representative_family_indices_cover_leaf_count_quantiles():
+    leaf_counts = [50, 10, 30, 20, 40]
+
+    assert landscape.representative_family_indices(
+        leaf_counts,
+        target_count=3,
+    ) == [1, 2, 0]
+
+
+def test_landscape_resolve_family_selection_by_name_and_leaf_count():
+    selections = landscape.resolve_family_selection(
+        names=["a", "b", "c"],
+        tree_paths=[["a.trees"], ["b.trees"], ["c.trees"]],
+        leaf_maps=[
+            {"a1": "A", "a2": "B"},
+            {"b1": "A"},
+            {"c1": "A", "c2": "B", "c3": "C"},
+        ],
+        family_indices=None,
+        family_names=["c", "a"],
+        representative_count=2,
+    )
+
+    assert [(item.index, item.name, item.leaf_count) for item in selections] == [
+        (2, "c", 3),
+        (0, "a", 2),
+    ]
+
+
+def test_landscape_resolve_family_selection_rejects_mixed_selectors():
+    with pytest.raises(ValueError, match="either family indices or family names"):
+        landscape.resolve_family_selection(
+            names=["a"],
+            tree_paths=[["a.trees"]],
+            leaf_maps=[{}],
+            family_indices=[0],
+            family_names=["a"],
+            representative_count=1,
+        )
+
+
+def test_landscape_grid_points_must_be_odd():
+    assert landscape.validate_grid_points(7) == 7
+    with pytest.raises(Exception, match="odd integer"):
+        landscape.validate_grid_points(8)
+
+
+def test_landscape_load_anchor_theta_accepts_tensor_and_checkpoint(tmp_path: Path):
+    tensor_path = tmp_path / "theta.pt"
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    torch.save(torch.tensor([1.0, 2.0, 3.0]), tensor_path)
+    torch.save({"theta": torch.arange(6, dtype=torch.float32).reshape(2, 3)}, checkpoint_path)
+
+    torch.testing.assert_close(
+        landscape.load_anchor_theta(tensor_path),
+        torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        landscape.load_anchor_theta(checkpoint_path),
+        torch.arange(6, dtype=torch.float64).reshape(2, 3),
+    )
+
+
+def test_landscape_anchor_for_family_validates_row_count():
+    anchor = torch.arange(6, dtype=torch.float64).reshape(2, 3)
+
+    torch.testing.assert_close(
+        landscape.anchor_for_family(anchor, family_index=1, family_count=2),
+        torch.tensor([3.0, 4.0, 5.0], dtype=torch.float64),
+    )
+    with pytest.raises(ValueError, match="expected 1 or 3 family rows"):
+        landscape.anchor_for_family(anchor, family_index=1, family_count=3)
+
+
+def test_landscape_finite_difference_hessian_matches_quadratic():
+    matrix = torch.tensor(
+        [
+            [2.0, 0.5, -0.25],
+            [0.5, 4.0, 0.75],
+            [-0.25, 0.75, 3.0],
+        ],
+        dtype=torch.float64,
+    )
+
+    def evaluate(theta: torch.Tensor) -> float:
+        return float(0.5 * theta @ matrix @ theta)
+
+    actual = landscape.finite_difference_hessian(
+        evaluate,
+        torch.tensor([0.7, -1.2, 0.25], dtype=torch.float64),
+        step_log2=1e-3,
+    )
+
+    torch.testing.assert_close(actual, matrix, rtol=1e-5, atol=1e-5)
+
+
+def test_landscape_evaluate_thetas_in_blocks_concatenates_block_outputs():
+    seen_shapes: list[tuple[int, int]] = []
+
+    def evaluate_block(block: torch.Tensor) -> torch.Tensor:
+        seen_shapes.append(tuple(block.shape))
+        return block.sum(dim=1)
+
+    rows = torch.arange(15, dtype=torch.float64).reshape(5, 3)
+    actual = landscape.evaluate_thetas_in_blocks(
+        rows,
+        batch_size=2,
+        evaluate_block=evaluate_block,
+    )
+
+    assert seen_shapes == [(2, 3), (2, 3), (1, 3)]
+    torch.testing.assert_close(actual, rows.sum(dim=1))
+
+
+def test_landscape_evaluate_thetas_in_blocks_validates_result_count():
+    with pytest.raises(RuntimeError, match="returned 1 value"):
+        landscape.evaluate_thetas_in_blocks(
+            torch.zeros((2, 3), dtype=torch.float64),
+            batch_size=2,
+            evaluate_block=lambda _block: torch.zeros(1),
+        )
+
+
+def test_landscape_batched_hessian_matches_quadratic():
+    matrix = torch.tensor(
+        [
+            [3.0, -0.25, 0.5],
+            [-0.25, 1.5, 0.75],
+            [0.5, 0.75, 2.0],
+        ],
+        dtype=torch.float64,
+    )
+
+    def evaluate_many(theta_rows: torch.Tensor) -> torch.Tensor:
+        return torch.tensor(
+            [float(0.5 * theta @ matrix @ theta) for theta in theta_rows],
+            dtype=torch.float64,
+        )
+
+    actual = landscape.finite_difference_hessian_batched(
+        evaluate_many,
+        torch.tensor([-0.2, 0.4, 1.1], dtype=torch.float64),
+        step_log2=1e-3,
+    )
+
+    torch.testing.assert_close(actual, matrix, rtol=1e-5, atol=1e-5)
 
 
 def test_compare_backtracking_load_rates_reads_global_model_parameters(

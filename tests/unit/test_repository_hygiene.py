@@ -443,6 +443,7 @@ def test_hogenom_scripts_use_public_model_surface():
         root / "scripts" / "optimize_hogenom_ccp_wandb.py",
         root / "scripts" / "optimize_hogenom_penalty316_kkt.py",
         root / "scripts" / "profile_hogenom_ccp_pass.py",
+        root / "scripts" / "visualize_hogenom_loss_landscape.py",
     ]
     forbidden = (
         "model._",
@@ -623,8 +624,18 @@ def test_scripts_readme_ownership_matrix_covers_tracked_script_surface():
         path.name
         for path in _tracked_files(root, "scripts/*.py", "scripts/*.R")
     }
+    script_surface = tracked_scripts | {
+        name
+        for name in rows
+        if (root / "scripts" / name).exists()
+    }
     allowed_statuses = {
         "Checkout-local AleRax comparison helper.",
+        "Checkout-local HOGENOM counts-init route benchmark.",
+        "Checkout-local HOGENOM landscape visualizer.",
+        "Checkout-local HOGENOM optimizer benchmark.",
+        "Checkout-local HOGENOM route benchmark.",
+        "Checkout-local HOGENOM route replay.",
         "Compatibility wrapper.",
         "Fixed-dataset global-uniform reproducer.",
         "Fixed-dataset specieswise-uniform reproducer.",
@@ -651,7 +662,7 @@ def test_scripts_readme_ownership_matrix_covers_tracked_script_surface():
         "profile_hogenom_ccp_pass.py",
     }
 
-    assert set(rows) == tracked_scripts
+    assert set(rows) == script_surface
     for name, (status, ownership) in rows.items():
         assert status in allowed_statuses, name
         assert ownership, name
@@ -1293,15 +1304,21 @@ def test_project_readme_documents_workflow_optimizer_modes():
         "| `auto` |",
         "| `adam` |",
         "| `adagrad` |",
+        "| `adagrad-restarts` |",
+        "| `projected-sgd` |",
         "| `lbfgs` |",
         "| `adam-lbfgs` |",
+        "| `projected-lbfgs` |",
+        "| `lbfgsb` |",
         "| `batched-lbfgs` |",
         "| `adam-fd-newton` |",
-        "If omitted, `auto` resolves to `batched-lbfgs` for `mode=genewise`",
+        "If omitted, `auto` resolves to `hessian-sgd` for `mode=genewise`",
+        "`adagrad-restarts` for `mode=specieswise`",
         "Workflow rate bounds default to `min_rate=2^-30` and `max_rate=2`",
         "`lbfgs_line_search` is `none` or `strong_wolfe`",
         "LBFGS runtime errors stop the run with a failed status",
         "`adam_warmup_steps` controls the phase switch",
+        "Armijo line-search probes use loss-only evaluations",
         "`fd_adam_warmup_steps` controls per-batch Adam warmup",
         "`fd_hessian_refresh_steps` controls",
         "`fd_newton_damping` controls Hessian regularization",
@@ -1316,6 +1333,33 @@ def test_project_readme_documents_workflow_optimizer_modes():
     assert "--fd-newton-max-step" not in (
         root / "gpurec" / "cli.py"
     ).read_text(encoding="utf-8")
+
+
+def test_production_optimization_guide_is_linked_and_documents_routes():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    guide = (root / "docs" / "production-optimization-guide.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(guide.split())
+
+    assert "docs/production-optimization-guide.md" in project_readme
+    assert "production-optimization-guide.md" in docs_readme
+    for token in (
+        "negative log-likelihood in bits",
+        "`theta` stores base-2 log rates",
+        "`hessian-sgd`",
+        "`adagrad-restarts`",
+        "8:1.0:60,16:0.5:35,32:0.5:30",
+        "`adagrad_restart_final_check_iters=128`",
+        "HOGENOM",
+        "`tests/data/test_trees_1000`",
+        "likelihood/gradient parity",
+        "`history.jsonl`",
+        "`per_fam_likelihoods.tsv`",
+    ):
+        assert token in normalized
 
 
 def test_project_readme_documents_completed_resume_status():

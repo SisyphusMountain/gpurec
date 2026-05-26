@@ -8,6 +8,10 @@ file as the map for deeper context.
 
 - `lean-fast-path.md`: retained benchmark path and performance command for the
   lean branch.
+- `production-optimization-guide.md`: production-facing guide for the
+  likelihood objective, gradient route, solver fidelity controls, genewise
+  `hessian-sgd` default, specieswise `adagrad-restarts` default, and
+  HOGENOM/`test_trees_1000` validation gates.
 - `simplification-opportunity-index-2026-05-21.md`: direct inventory of
   removable or mergeable alternative paths, with source-file evidence, retained
   behavior, and deletion gates.

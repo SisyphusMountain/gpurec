@@ -99,13 +99,51 @@ one-worker A/B samples measured `2.3445855720201507s` and
 `1.336572587955743s`.  Peak reserved CUDA memory remains around `5.17 GiB`,
 well below the older `21.36 GiB` high-memory all-prefetch route.
 
-Cold first-pass fidelity samples with the same construction path:
+Cold first-pass tied-budget fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
 | 4 | `2.257182637054939s` | `2156427.0` | `670.25` |
 | 6 | `2.788982933969237s` | `2157095.0` | `2.25` |
 | 8 | `3.3188985750311986s` | `2157097.25` | `0.0` |
+
+Splitting the E and Pi budgets gives a better near-reference point for this
+generated dataset.  Keeping Pi at `4` but raising E removes almost all of the
+fixed4 likelihood gap without paying the tied fixed6/fixed8 Pi loop cost:
+
+| E budget | Pi budget | cold total samples | loss bits | signed loss delta vs fixed8 |
+|---:|---:|---:|---:|---:|
+| 6 | 4 | `2.373896275938023s`, `2.318044687039219s`, `2.357071833044756s`, `2.280870435992256s` | `2157096.0` | `-1.25` |
+| 8 | 4 | `2.3150818049907684s`, `2.3092537610209547s`, `2.3501645749202s`, `2.2569857829948887s`, `2.3006827870267443s`, `2.270271884975955s` | `2157098.25` | `+1.0` |
+
+The `E=8, Pi=4` route has a best-observed cold total of
+`2.2569857829948887s`, effectively tied with the raw fixed4 low but within one
+bit of the fixed8/fixed128 likelihood.  The `E=6, Pi=4` route is slightly more
+optimistic than fixed8, but still much closer than tied fixed4 and much faster
+than tied fixed6.
+
+Split-budget near-reference command:
+
+```bash
+env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
+  python profiling/bench_resident_likelihood.py \
+  --dataset tests/data/test_trees_1000 \
+  --mode specieswise \
+  --fixed-iters-e 8 \
+  --fixed-iters-pi 4 \
+  --preprocess-cpu-cores 16 \
+  --measure loss-only \
+  --warmups 0 \
+  --reps 1 \
+  --family-chunk-size 500 \
+  --clade-budget 315000 \
+  --batch-packing clade_first_fit \
+  --max-wave-size 8192 \
+  --max-root-wave-size none \
+  --max-dts-partial-rows none \
+  --materialize-batches none \
+  --prefetch-batches all
+```
 
 The same 2026-05-26 sanity run measured a direct fixed8 cold total of
 `3.3119525730144233s`, with `0.949136951006949s` model construction and
@@ -682,7 +720,12 @@ Differences from HOGENOM:
   optimizer budget ladder with a `128` validation check.  On `test_trees_1000`,
   the first useful fidelity point is lower: start the exploratory phase at `4`
   Pi iterations rather than going directly to `8`, then promote once the cheap
-  phase stalls.  `6` is already nearly at the high-budget likelihood here.
+  phase stalls.  `6` is already nearly at the high-budget likelihood here, and
+  for likelihood-only checks the best measured near-reference point decouples
+  the budgets: `E=8, Pi=4` is within one bit of tied fixed8/fixed128 while
+  staying in the fixed4 Pi timing band.  That split-budget shortcut was not the
+  HOGENOM route, where the accepted schedule used tied higher-fidelity
+  optimizer phases.
 - HOGENOM worked best with `depth_first_fit`.  On `test_trees_1000`, depth-first
   originally gave similar steady likelihood timing but paid an extra Python
   construction prepass.  Retaining the native Rust layouts removes that Python

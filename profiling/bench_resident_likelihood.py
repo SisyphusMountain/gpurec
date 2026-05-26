@@ -63,6 +63,21 @@ def _parse_fixed_iters(value: str) -> list[int]:
     return budgets
 
 
+def _parse_positive_ints(value: str) -> list[int]:
+    budgets: list[int] = []
+    for part in value.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        budget = int(text)
+        if budget <= 0:
+            raise argparse.ArgumentTypeError("iteration budgets must be positive")
+        budgets.append(budget)
+    if not budgets:
+        raise argparse.ArgumentTypeError("at least one iteration budget is required")
+    return budgets
+
+
 def _parse_prefetch_batches(value: str) -> int | str:
     text = value.strip().lower()
     if text in ("all", "none"):
@@ -85,6 +100,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype("float32"))
     parser.add_argument("--fixed-iters", type=_parse_fixed_iters, default=_parse_fixed_iters("4,6,8"))
+    parser.add_argument(
+        "--fixed-iters-e",
+        type=_parse_positive_ints,
+        default=None,
+        help=(
+            "Optional comma-separated E budgets. When provided, also provide "
+            "--fixed-iters-pi; --fixed-iters is ignored."
+        ),
+    )
+    parser.add_argument(
+        "--fixed-iters-pi",
+        type=_parse_fixed_iters,
+        default=None,
+        help="Optional comma-separated Pi budgets paired with --fixed-iters-e.",
+    )
+    parser.add_argument(
+        "--neumann-terms",
+        type=_parse_positive_ints,
+        default=None,
+        help=(
+            "Optional comma-separated Neumann budgets paired with split E/Pi "
+            "budgets. Defaults to the Pi budgets."
+        ),
+    )
     parser.add_argument("--theta-rate", type=float, default=0.05)
     parser.add_argument("--preprocess-cpu-cores", type=int, default=None)
     parser.add_argument("--family-chunk-size", type=int, default=500)
@@ -121,6 +160,37 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _budget_schedule(args: argparse.Namespace) -> list[dict[str, int]]:
+    if args.fixed_iters_e is None and args.fixed_iters_pi is None:
+        return [
+            {
+                "fixed_iters_E": int(budget),
+                "fixed_iters_Pi": int(budget),
+                "neumann_terms": int(budget),
+            }
+            for budget in args.fixed_iters
+        ]
+    if args.fixed_iters_e is None or args.fixed_iters_pi is None:
+        raise ValueError("--fixed-iters-e and --fixed-iters-pi must be provided together")
+    if len(args.fixed_iters_e) != len(args.fixed_iters_pi):
+        raise ValueError("--fixed-iters-e and --fixed-iters-pi must have the same length")
+    if args.neumann_terms is not None and len(args.neumann_terms) != len(args.fixed_iters_pi):
+        raise ValueError("--neumann-terms must match the split budget list length")
+    neumann_terms = args.neumann_terms if args.neumann_terms is not None else args.fixed_iters_pi
+    return [
+        {
+            "fixed_iters_E": int(e_budget),
+            "fixed_iters_Pi": int(pi_budget),
+            "neumann_terms": int(neumann_budget),
+        }
+        for e_budget, pi_budget, neumann_budget in zip(
+            args.fixed_iters_e,
+            args.fixed_iters_pi,
+            neumann_terms,
+        )
+    ]
+
+
 def _synchronize() -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -147,11 +217,17 @@ def _clear_solver_runtime_state(model: GeneReconModel) -> None:
             static.last_solver_stats = None
 
 
-def _configure_budget(model: GeneReconModel, budget: int) -> None:
+def _configure_budget(
+    model: GeneReconModel,
+    *,
+    fixed_iters_E: int,
+    fixed_iters_Pi: int,
+    neumann_terms: int,
+) -> None:
     model.configure_solver_iterations(
-        fixed_iters_E=budget,
-        fixed_iters_Pi=budget,
-        neumann_terms=budget,
+        fixed_iters_E=fixed_iters_E,
+        fixed_iters_Pi=fixed_iters_Pi,
+        neumann_terms=neumann_terms,
         adaptive_neumann_terms=False,
     )
     _clear_solver_runtime_state(model)
@@ -179,7 +255,7 @@ def _time_loss_grad(model: GeneReconModel) -> tuple[float, float, float]:
 def _timed_rows(
     model: GeneReconModel,
     *,
-    budget: int,
+    budget: dict[str, int],
     measure: str,
     warmups: int,
     reps: int,
@@ -190,7 +266,7 @@ def _timed_rows(
         raise ValueError("--reps must be positive")
     rows: list[dict[str, Any]] = []
     for warmup in range(warmups):
-        _configure_budget(model, budget)
+        _configure_budget(model, **budget)
         if measure == "loss-only":
             elapsed_s, loss = _time_loss_only(model)
             row = {"event": "warmup", "idx": warmup, "measure": measure, "elapsed_s": elapsed_s, "loss_bits": loss}
@@ -204,10 +280,11 @@ def _timed_rows(
                 "loss_bits": loss,
                 "grad_inf": grad_inf,
             }
+        row.update(budget)
         print(json.dumps(row, sort_keys=True), flush=True)
 
     for rep in range(reps):
-        _configure_budget(model, budget)
+        _configure_budget(model, **budget)
         if measure == "loss-only":
             elapsed_s, loss = _time_loss_only(model)
             row = {"event": "measured", "idx": rep, "measure": measure, "elapsed_s": elapsed_s, "loss_bits": loss}
@@ -221,6 +298,7 @@ def _timed_rows(
                 "loss_bits": loss,
                 "grad_inf": grad_inf,
             }
+        row.update(budget)
         rows.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
     return rows
@@ -229,7 +307,7 @@ def _timed_rows(
 def _summary_row(
     *,
     model: GeneReconModel,
-    budget: int,
+    budget: dict[str, int],
     measure: str,
     rows: list[dict[str, Any]],
     build_s: float,
@@ -239,10 +317,26 @@ def _summary_row(
     last = rows[-1]
     first_measured_s = float(rows[0]["elapsed_s"])
     median_s = statistics.median(times)
+    tied_budget = (
+        budget["fixed_iters_E"]
+        if (
+            budget["fixed_iters_E"]
+            == budget["fixed_iters_Pi"]
+            == budget["neumann_terms"]
+        )
+        else None
+    )
     row: dict[str, Any] = {
         "event": "summary",
         "measure": measure,
-        "budget": budget,
+        "budget": (
+            tied_budget
+            if tied_budget is not None
+            else f"E{budget['fixed_iters_E']}_Pi{budget['fixed_iters_Pi']}_N{budget['neumann_terms']}"
+        ),
+        "fixed_iters_E": budget["fixed_iters_E"],
+        "fixed_iters_Pi": budget["fixed_iters_Pi"],
+        "neumann_terms": budget["neumann_terms"],
         "reps": len(rows),
         "median_s": median_s,
         "mean_s": statistics.mean(times),
@@ -278,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
     if not species_tree.is_file():
         raise FileNotFoundError(species_tree)
     genes = _selected_genes(dataset, start=args.start, fams=args.fams)
+    budget_schedule = _budget_schedule(args)
+    first_budget = budget_schedule[0]
 
     torch.cuda.empty_cache()
     gc.collect()
@@ -290,9 +386,9 @@ def main(argv: list[str] | None = None) -> int:
         dtype=args.dtype,
         preprocess_cpu_cores=args.preprocess_cpu_cores,
         theta_init_rates=(args.theta_rate, args.theta_rate, args.theta_rate),
-        fixed_iters_E=args.fixed_iters[0],
-        fixed_iters_Pi=args.fixed_iters[0],
-        neumann_terms=args.fixed_iters[0],
+        fixed_iters_E=first_budget["fixed_iters_E"],
+        fixed_iters_Pi=first_budget["fixed_iters_Pi"],
+        neumann_terms=first_budget["neumann_terms"],
         adaptive_iters=False,
         adaptive_neumann_terms=False,
         family_chunk_size=args.family_chunk_size,
@@ -336,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                 "max_root_wave_size": args.max_root_wave_size,
                 "max_dts_partial_rows": args.max_dts_partial_rows,
                 "prefetch_batches": args.prefetch_batches,
+                "budget_schedule": budget_schedule,
             },
             sort_keys=True,
         ),
@@ -344,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
 
     measures = ("loss-only", "loss-grad") if args.measure == "both" else (args.measure,)
     cumulative_first_measured_by_measure = {measure: build_s for measure in measures}
-    for budget in args.fixed_iters:
+    for budget in budget_schedule:
         for measure in measures:
             rows = _timed_rows(
                 model,

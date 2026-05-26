@@ -11,6 +11,7 @@ import gpurec.api.uniform_chunked as uniform_chunked_module
 from gpurec import UniformChunkedReconModel
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow.optimize import (
+    OptimizationRunner,
     _ResumeState,
     _resume_state_from_payload,
     _step_stopping_status,
@@ -246,6 +247,56 @@ def _run_config(tmp_path: Path, **overrides: object) -> RunConfig:
     }
     values.update(overrides)
     return RunConfig(**values)
+
+
+def test_specieswise_solver_warmup_starts_below_full_pi_budget(tmp_path: Path) -> None:
+    config = _run_config(
+        tmp_path,
+        mode="specieswise",
+        optimizer="projected-lbfgs",
+        fixed_iters_e=None,
+        fixed_iters_pi=8,
+        neumann_terms=8,
+        solver_warmup_iters=4,
+    )
+    runner = OptimizationRunner(config)
+    calls: list[dict[str, object]] = []
+    model = SimpleNamespace(
+        configure_solver_iterations=lambda **kwargs: calls.append(kwargs),
+        current_batch_metadata=SimpleNamespace(clade_count=0),
+    )
+
+    assert runner._uses_solver_warmup()
+
+    runner._configure_active_solver_stage(model, "warmup")
+    runner._configure_active_solver_stage(model, "full")
+
+    assert calls == [
+        {
+            "fixed_iters_E": 4,
+            "fixed_iters_Pi": 4,
+            "neumann_terms": 4,
+        },
+        {
+            "fixed_iters_E": None,
+            "fixed_iters_Pi": 8,
+            "neumann_terms": 8,
+        },
+    ]
+
+
+def test_specieswise_solver_warmup_is_skipped_when_not_lower_budget(
+    tmp_path: Path,
+) -> None:
+    config = _run_config(
+        tmp_path,
+        mode="specieswise",
+        optimizer="projected-lbfgs",
+        fixed_iters_pi=4,
+        solver_warmup_iters=4,
+    )
+
+    assert not OptimizationRunner(config)._uses_solver_warmup()
 
 
 def test_uniform_chunked_full_sum_estimate_scales_loss_and_grad(monkeypatch):

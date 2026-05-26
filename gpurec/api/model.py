@@ -29,6 +29,7 @@ from typing import Any, Optional, Sequence
 
 import torch
 
+from gpurec._validation import disabled_adaptive_neumann_terms_value
 from gpurec.core.batch_planning import (
     normalize_batch_packing,
     normalize_clade_budget,
@@ -359,9 +360,8 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             normalized["adaptive_iters"],
         )
     if "adaptive_neumann_terms" in normalized:
-        normalized["adaptive_neumann_terms"] = bool_value(
-            "adaptive_neumann_terms",
-            normalized["adaptive_neumann_terms"],
+        normalized["adaptive_neumann_terms"] = disabled_adaptive_neumann_terms_value(
+            normalized["adaptive_neumann_terms"]
         )
     if "use_pruning" in normalized:
         normalized["use_pruning"] = bool_value(
@@ -1260,9 +1260,8 @@ class GeneReconModel(torch.nn.Module):
             convergence_check_interval,
         )
         adaptive_iters = bool_value("adaptive_iters", adaptive_iters)
-        adaptive_neumann_terms = bool_value(
-            "adaptive_neumann_terms",
-            adaptive_neumann_terms,
+        adaptive_neumann_terms = disabled_adaptive_neumann_terms_value(
+            adaptive_neumann_terms
         )
         if adaptive_iters and convergence_check_interval % 2 != 0:
             raise ValueError(
@@ -2046,9 +2045,8 @@ class GeneReconModel(torch.nn.Module):
             )
             self._gradient_change_tol = gradient_change_tol
         if adaptive_neumann_terms is not None:
-            adaptive_neumann_terms = bool_value(
-                "adaptive_neumann_terms",
-                adaptive_neumann_terms,
+            adaptive_neumann_terms = disabled_adaptive_neumann_terms_value(
+                adaptive_neumann_terms
             )
             self._adaptive_neumann_terms = adaptive_neumann_terms
 

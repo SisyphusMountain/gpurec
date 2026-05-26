@@ -103,7 +103,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
         neumann_terms=6,
         final_check_iters=12,
         adaptive_iters=False,
-        adaptive_neumann_terms=True,
+        adaptive_neumann_terms=False,
         convergence_check_interval=6,
         e_logsumexp_tol=2e-5,
         pi_max_diff_tol=3e-5,
@@ -150,7 +150,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["fixed_iters_Pi"] == 8
     assert kwargs["neumann_terms"] == 6
     assert kwargs["adaptive_iters"] is False
-    assert kwargs["adaptive_neumann_terms"] is True
+    assert kwargs["adaptive_neumann_terms"] is False
     assert kwargs["convergence_check_interval"] == 6
     assert kwargs["e_logsumexp_tol"] == pytest.approx(2e-5)
     assert kwargs["pi_max_diff_tol"] == pytest.approx(3e-5)
@@ -202,6 +202,28 @@ def test_cli_forwards_hessian_sgd_solver_controls(tmp_path: Path):
     assert config.hessian_sgd_normal_neumann_terms == 10
 
 
+def test_cli_forwards_adagrad_restart_controls(tmp_path: Path):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + [
+            "--mode",
+            "specieswise",
+            "--optimizer",
+            "adagrad-restarts",
+            "--adagrad-restart-schedule",
+            "4:1.0:2,8:0.5:3",
+            "--adagrad-restart-final-check-iters",
+            "16",
+        ]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert config.optimizer == "adagrad-restarts"
+    assert config.adagrad_restart_schedule == "4:1:2,8:0.5:3"
+    assert config.adagrad_restart_final_check_iters == 16
+
+
 def test_cli_accepts_legacy_gradient_tolerance_options_as_noops(tmp_path: Path):
     args = build_parser().parse_args(
         _minimal_workflow_cli_args("optimize", tmp_path)
@@ -217,6 +239,19 @@ def test_cli_accepts_legacy_gradient_tolerance_options_as_noops(tmp_path: Path):
 
     assert not hasattr(config, "grad_inf_tol")
     assert not hasattr(config, "solver_warmup_grad_inf_tol")
+
+
+def test_cli_rejects_adaptive_neumann_terms_mode(tmp_path: Path):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + ["--adaptive-neumann-terms"]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="current behaviour is absolutely terrible.*MUST be fixed",
+    ):
+        _run_config_from_args(args)
 
 
 def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):

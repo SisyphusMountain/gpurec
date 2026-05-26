@@ -279,7 +279,14 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="Minimum remaining families before adaptive rebatching can run.",
     )
-    parser.add_argument("--fixed-iters-e", type=int, help="Fixed E iterations per solve.")
+    parser.add_argument(
+        "--fixed-iters-e",
+        type=int,
+        help=(
+            "Fixed E iterations per solve. In specieswise mode, fixed Pi "
+            "budgets above 16 force E to be at least the Pi budget."
+        ),
+    )
     parser.add_argument("--max-iters-e", type=int, help="Maximum adaptive E iterations.")
     parser.add_argument("--tol-e", type=float, help="E fixed-point convergence tolerance.")
     parser.add_argument("--fixed-iters-pi", type=int, help="Fixed Pi iterations per solve.")
@@ -293,16 +300,18 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help=(
             "Initial fixed solver budget for supported genewise active-batch "
-            "optimizers; hessian-sgd keeps E at --fixed-iters-e and uses this "
-            "only for Pi/Neumann. Use 0 to disable."
+            "optimizers and specieswise runs whose full Pi budget is larger; "
+            "hessian-sgd keeps E at --fixed-iters-e and uses this only for "
+            "Pi/Neumann. Use 0 to disable."
         ),
     )
     parser.add_argument(
         "--final-check-iters",
         type=int,
         help=(
-            "Final Pi/Neumann iteration budget used only to compare the final "
-            "loss and gradient against the configured full budget; use 0 to disable."
+            "Final validation solver budget used only to compare the final loss "
+            "and gradient against the configured full budget. Specieswise mode "
+            "also uses this for fixed E iterations; use 0 to disable."
         ),
     )
     parser.add_argument(
@@ -377,15 +386,19 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
             "auto",
             "adam",
             "adagrad",
+            "projected-sgd",
             "lbfgs",
             "adam-lbfgs",
+            "projected-lbfgs",
+            "lbfgsb",
             "batched-lbfgs",
             "adam-fd-newton",
             "hessian-sgd",
+            "adagrad-restarts",
         ),
         help=(
-            "Optimizer schedule. auto uses hessian-sgd for genewise mode "
-            "and adam otherwise."
+            "Optimizer schedule. auto uses hessian-sgd for genewise mode, "
+            "adagrad-restarts for specieswise mode, and adam otherwise."
         ),
     )
     parser.add_argument("--steps", type=int, help="Maximum optimization steps.")
@@ -423,6 +436,21 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
             "Optional Neumann iteration budget for hessian-sgd full-stage steps."
         ),
     )
+    parser.add_argument(
+        "--adagrad-restart-schedule",
+        help=(
+            "Specieswise adagrad-restarts phase schedule as "
+            "budget:lr:steps entries, for example 8:1.0:60,16:0.5:35."
+        ),
+    )
+    parser.add_argument(
+        "--adagrad-restart-final-check-iters",
+        type=int,
+        help=(
+            "Final specieswise validation budget for adagrad-restarts; "
+            "workflow default: 128."
+        ),
+    )
     parser.add_argument("--lbfgs-lr", type=float, help="LBFGS learning rate.")
     parser.add_argument("--lbfgs-history-size", type=int, help="LBFGS history size.")
     parser.add_argument("--lbfgs-max-iter", type=int, help="LBFGS inner iterations per step.")
@@ -454,6 +482,20 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
             "Loss-change stopping tolerance; genewise active-batch optimizers "
             "apply this per active family."
         ),
+    )
+    parser.add_argument(
+        "--projected-grad-tol",
+        type=float,
+        help=(
+            "Projected-gradient infinity-norm tolerance for projected optimizers; "
+            "projected-lbfgs/lbfgsb keep optimizing instead of stopping "
+            "while this is exceeded."
+        ),
+    )
+    parser.add_argument(
+        "--projected-lbfgs-min-lr",
+        type=float,
+        help="Minimum projected-lbfgs base learning rate after automatic backoff.",
     )
     parser.add_argument(
         "--loss-patience",

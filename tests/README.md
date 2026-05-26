@@ -36,12 +36,17 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_forward_output_intent.py \
   tests/unit/test_core_helpers.py \
   tests/unit/test_dts_layout_contract.py \
+  tests/unit/test_entropy.py \
   tests/unit/test_examples.py \
   tests/unit/test_extract_parameters.py \
   tests/unit/test_family_layout.py \
   tests/unit/test_gradient_accumulator.py \
+  tests/unit/test_hogenom_multifidelity_adagrad.py \
+  tests/unit/test_lbfgsb.py \
+  tests/unit/test_lbfgsb_schilling_conformance.py \
   tests/unit/test_origination_prior.py \
   tests/unit/test_parameter_layout.py \
+  tests/unit/test_projected_lbfgs.py \
   tests/unit/test_recphyloxml.py \
   tests/unit/test_release_metadata.py \
   tests/unit/test_repository_hygiene.py \

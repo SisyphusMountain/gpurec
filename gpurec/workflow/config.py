@@ -9,7 +9,11 @@ from typing import Any
 
 import torch
 
-from gpurec._validation import bool_value, finite_float
+from gpurec._validation import (
+    bool_value,
+    disabled_adaptive_neumann_terms_value,
+    finite_float,
+)
 from gpurec.core.batch_planning import (
     normalize_batch_packing as _normalize_batch_packing,
     normalize_family_chunk_size as _normalize_family_chunk_size,
@@ -21,6 +25,14 @@ def _default_device() -> str:
 
 
 UINT64_MAX = (1 << 64) - 1
+DEFAULT_ADAGRAD_RESTART_SCHEDULE = "8:1.0:60,16:0.5:35,32:0.5:30"
+
+
+@dataclass(frozen=True)
+class AdagradRestartPhase:
+    budget: int
+    lr: float
+    steps: int
 
 
 def dtype_from_name(name: str) -> torch.dtype:
@@ -170,13 +182,61 @@ def _normalize_device(value: str | None) -> str:
 def _normalize_optimizer(mode: str, value: str) -> str:
     if not isinstance(value, str):
         raise ValueError(
-            "optimizer must be auto, adam, adagrad, lbfgs, adam-lbfgs, "
-            "batched-lbfgs, adam-fd-newton, or hessian-sgd"
+            "optimizer must be auto, adam, adagrad, projected-sgd, lbfgs, "
+            "adam-lbfgs, projected-lbfgs, lbfgsb, batched-lbfgs, "
+            "adam-fd-newton, hessian-sgd, or adagrad-restarts"
         )
     normalized = value.strip().lower().replace("_", "-")
     if normalized == "auto":
-        return "hessian-sgd" if mode == "genewise" else "adam"
+        if mode == "genewise":
+            return "hessian-sgd"
+        if mode == "specieswise":
+            return "adagrad-restarts"
+        return "adam"
     return normalized
+
+
+def adagrad_restart_schedule_specs(value: str) -> tuple[AdagradRestartPhase, ...]:
+    if not isinstance(value, str):
+        raise ValueError("adagrad_restart_schedule must be a string")
+    text = value.strip()
+    if not text:
+        raise ValueError("adagrad_restart_schedule must not be empty")
+    phases: list[AdagradRestartPhase] = []
+    for position, raw_entry in enumerate(text.split(","), start=1):
+        entry = raw_entry.strip()
+        if not entry:
+            raise ValueError(
+                "adagrad_restart_schedule entries must be budget:lr:steps"
+            )
+        pieces = [piece.strip() for piece in entry.split(":")]
+        if len(pieces) != 3:
+            raise ValueError(
+                "adagrad_restart_schedule entries must be budget:lr:steps"
+            )
+        budget = _normalize_positive_even_int(
+            f"adagrad_restart_schedule entry {position} budget",
+            pieces[0],
+        )
+        lr = _normalize_finite_float(
+            f"adagrad_restart_schedule entry {position} lr",
+            pieces[1],
+        )
+        if lr <= 0.0:
+            raise ValueError("adagrad_restart_schedule learning rates must be positive")
+        steps = _normalize_positive_int(
+            f"adagrad_restart_schedule entry {position} steps",
+            pieces[2],
+        )
+        phases.append(AdagradRestartPhase(budget=budget, lr=lr, steps=steps))
+    return tuple(phases)
+
+
+def _normalize_adagrad_restart_schedule(value: str) -> str:
+    return ",".join(
+        f"{phase.budget}:{phase.lr:.12g}:{phase.steps}"
+        for phase in adagrad_restart_schedule_specs(value)
+    )
 
 
 def _normalize_workflow_batch_packing(value: str | None) -> str:
@@ -254,6 +314,7 @@ _JSON_INT_FIELDS = {
     "fd_hessian_refresh_steps",
     "hessian_sgd_normal_fixed_iters_pi",
     "hessian_sgd_normal_neumann_terms",
+    "adagrad_restart_final_check_iters",
     "adaptive_rebatch_check_interval",
     "adaptive_rebatch_min_remaining_families",
     "lbfgs_history_size",
@@ -282,6 +343,8 @@ _JSON_FLOAT_FIELDS = {
     "adaptive_rebatch_fraction",
     "loss_change_tol",
     "best_likelihood_min_delta",
+    "projected_grad_tol",
+    "projected_lbfgs_min_lr",
 }
 _JSON_BOOL_FIELDS = {"adaptive_iters", "adaptive_neumann_terms", "adaptive_rebatch"}
 _RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
@@ -378,6 +441,8 @@ class RunConfig:
     fd_hessian_refresh_steps: int = 16
     hessian_sgd_normal_fixed_iters_pi: int | None = None
     hessian_sgd_normal_neumann_terms: int | None = None
+    adagrad_restart_schedule: str = DEFAULT_ADAGRAD_RESTART_SCHEDULE
+    adagrad_restart_final_check_iters: int = 128
     lbfgs_lr: float = 0.1
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 1
@@ -394,6 +459,8 @@ class RunConfig:
     loss_patience: int = 1
     best_likelihood_patience: int = 1
     best_likelihood_min_delta: float = 0.0
+    projected_grad_tol: float = 1e-3
+    projected_lbfgs_min_lr: float = 1e-8
 
     checkpoint_every: int = 1
     # History rows are recorded every optimizer step; this only gates stdout.
@@ -407,6 +474,9 @@ class RunConfig:
         self.resume_from = _normalize_optional_path("resume_from", self.resume_from)
         for name in _JSON_BOOL_FIELDS:
             setattr(self, name, _normalize_bool(name, getattr(self, name)))
+        self.adaptive_neumann_terms = disabled_adaptive_neumann_terms_value(
+            self.adaptive_neumann_terms
+        )
         self.start = _normalize_nonnegative_int("start", self.start)
         self.max_families = _normalize_optional_positive_int(
             "max_families",
@@ -440,6 +510,11 @@ class RunConfig:
             "fixed_iters_pi",
             self.fixed_iters_pi,
         )
+        if self.mode == "specieswise" and self.fixed_iters_pi > 16:
+            self.fixed_iters_e = max(
+                self.fixed_iters_pi,
+                0 if self.fixed_iters_e is None else int(self.fixed_iters_e),
+            )
         self.neumann_terms = _normalize_positive_int(
             "neumann_terms",
             self.neumann_terms,
@@ -480,6 +555,13 @@ class RunConfig:
         self.hessian_sgd_normal_neumann_terms = _normalize_optional_positive_int(
             "hessian_sgd_normal_neumann_terms",
             self.hessian_sgd_normal_neumann_terms,
+        )
+        self.adagrad_restart_schedule = _normalize_adagrad_restart_schedule(
+            self.adagrad_restart_schedule,
+        )
+        self.adagrad_restart_final_check_iters = _normalize_nonnegative_int(
+            "adagrad_restart_final_check_iters",
+            self.adagrad_restart_final_check_iters,
         )
         self.adaptive_rebatch_check_interval = _normalize_positive_int(
             "adaptive_rebatch_check_interval",
@@ -558,9 +640,12 @@ class RunConfig:
             "gradient_change_rtol",
             "loss_change_tol",
             "best_likelihood_min_delta",
+            "projected_grad_tol",
         ):
             if _normalize_finite_float(name, getattr(self, name)) < 0.0:
                 raise ValueError(f"{name} must be non-negative")
+        if _normalize_finite_float("projected_lbfgs_min_lr", self.projected_lbfgs_min_lr) <= 0.0:
+            raise ValueError("projected_lbfgs_min_lr must be positive")
         min_rate = _normalize_finite_float("min_rate", self.min_rate)
         max_rate = _normalize_finite_float("max_rate", self.max_rate)
         if min_rate <= 0.0 or max_rate <= min_rate:
@@ -577,15 +662,20 @@ class RunConfig:
         if self.optimizer not in {
             "adam",
             "adagrad",
+            "projected-sgd",
             "lbfgs",
             "adam-lbfgs",
+            "projected-lbfgs",
+            "lbfgsb",
             "batched-lbfgs",
             "adam-fd-newton",
             "hessian-sgd",
+            "adagrad-restarts",
         }:
             raise ValueError(
-                "optimizer must be auto, adam, adagrad, lbfgs, adam-lbfgs, "
-                "batched-lbfgs, adam-fd-newton, or hessian-sgd"
+                "optimizer must be auto, adam, adagrad, projected-sgd, "
+                "lbfgs, adam-lbfgs, projected-lbfgs, lbfgsb, batched-lbfgs, "
+                "adam-fd-newton, hessian-sgd, or adagrad-restarts"
             )
         if self.optimizer == "batched-lbfgs" and self.mode != "genewise":
             raise ValueError("batched-lbfgs optimizer requires genewise mode")
@@ -593,6 +683,13 @@ class RunConfig:
             raise ValueError("adam-fd-newton optimizer requires genewise mode")
         if self.optimizer == "hessian-sgd" and self.mode != "genewise":
             raise ValueError("hessian-sgd optimizer requires genewise mode")
+        if self.optimizer == "adagrad-restarts" and self.mode != "specieswise":
+            raise ValueError("adagrad-restarts optimizer requires specieswise mode")
+        if self.adagrad_restart_final_check_iters > 0:
+            _normalize_positive_even_int(
+                "adagrad_restart_final_check_iters",
+                self.adagrad_restart_final_check_iters,
+            )
         if self.steps < 1:
             raise ValueError("steps must be positive")
         lr = _normalize_finite_float("lr", self.lr)
