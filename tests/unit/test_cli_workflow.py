@@ -3092,6 +3092,64 @@ def test_cli_summary_info_require_production_default_route_accepts_current_route
     assert "production_default_route_mismatches=none" in captured.out
 
 
+def test_cli_summary_info_combined_route_gates_share_audited_route_evidence(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        device="cpu",
+    )
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "adagrad_restart_schedule_complete",
+                **effective_route_metadata(config),
+                "steps_completed": 125,
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_route_evidence = gpurec_cli._production_default_route_evidence
+    calls = 0
+
+    def counted_route_evidence(route):
+        nonlocal calls
+        calls += 1
+        return original_route_evidence(route)
+
+    monkeypatch.setattr(
+        gpurec_cli,
+        "_production_default_route_evidence",
+        counted_route_evidence,
+    )
+
+    main(
+        [
+            "summary-info",
+            "--summary",
+            str(summary),
+            "--require-mode-default-optimizer",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert calls == 1
+    assert "mode=specieswise" in captured.out
+    assert "optimizer=adagrad-restarts" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+
+
 def test_cli_summary_info_require_production_default_route_rejects_custom_settings(
     tmp_path: Path,
     capsys,

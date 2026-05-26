@@ -168,7 +168,9 @@ the summary carries the relevant optimizer-specific fields, including
 `--require-production-default-route` fails with an incomplete-evidence error.
 When complete evidence is available, it prints
 `uses_production_default_route` and `production_default_route_mismatches` with
-the same verdict that drives the gate. `mode=global` can still satisfy
+the same audited route snapshot that drives the gate. When both route gates are
+requested, the displayed mode-default and production-route verdicts are derived
+from that same snapshot. `mode=global` can still satisfy
 `--require-mode-default-optimizer`, but it fails `--require-production-default-route`
 with a `mode` mismatch because the strict production-route gate is scoped to
 the retained genewise `hessian-sgd` and specieswise `adagrad-restarts`

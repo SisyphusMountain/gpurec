@@ -459,7 +459,8 @@ the summary proves the run used the mode default optimizer for its mode;
 add `--require-production-default-route` when it should also require the
 shipped likelihood/gradient route metadata and optimizer-specific settings
 reported by `uses_production_default_route`, including the stored
-`final_check_iters_e` evidence.
+`final_check_iters_e` evidence. When both route gates are requested, the
+printed summary line and both gates use the same audited route snapshot.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 to inspect checkpoint progress, status, optimizer route, and last
 likelihood/gradient diagnostics without constructing the CUDA likelihood model.

@@ -38,6 +38,11 @@ _MODE_DEFAULT_OPTIMIZER_ARTIFACT_ACTION = "expected the mode default optimizer r
 _PRODUCTION_DEFAULT_ROUTE_ARTIFACT_ACTION = (
     "expected the shipped likelihood/gradient and optimizer route"
 )
+_ProductionRouteEvidence = tuple[
+    dict[str, Any],
+    tuple[str, ...],
+    tuple[str, ...],
+]
 _SAFE_STATUS_TEXT_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
@@ -140,6 +145,19 @@ def _route_with_production_default_audit_fields(
     route: dict[str, Any],
 ) -> dict[str, Any]:
     audited, missing, mismatches = _production_default_route_evidence(route)
+    return _route_with_production_default_evidence_fields(
+        audited,
+        missing,
+        mismatches,
+    )
+
+
+def _route_with_production_default_evidence_fields(
+    audited: dict[str, Any],
+    missing: tuple[str, ...],
+    mismatches: tuple[str, ...],
+) -> dict[str, Any]:
+    audited = dict(audited)
     if not missing:
         audited["production_default_route_mismatches"] = list(mismatches)
         audited["uses_production_default_route"] = len(mismatches) == 0
@@ -202,7 +220,19 @@ def _mode_default_optimizer_gate_message(
     *,
     action: str | None = None,
 ) -> str:
-    audited = _route_with_mode_default_audit_fields(route)
+    return _mode_default_optimizer_gate_message_from_audited(
+        subject,
+        _route_with_mode_default_audit_fields(route),
+        action=action,
+    )
+
+
+def _mode_default_optimizer_gate_message_from_audited(
+    subject: str,
+    audited: dict[str, Any],
+    *,
+    action: str | None = None,
+) -> str:
     missing = [
         name
         for name in ("mode", "optimizer", "mode_default_optimizer")
@@ -236,6 +266,23 @@ def _production_default_route_gate_message(
     action: str | None = None,
 ) -> str:
     audited, missing, mismatches = _production_default_route_evidence(route)
+    return _production_default_route_gate_message_from_evidence(
+        subject,
+        audited,
+        missing,
+        mismatches,
+        action=action,
+    )
+
+
+def _production_default_route_gate_message_from_evidence(
+    subject: str,
+    audited: dict[str, Any],
+    missing: tuple[str, ...],
+    mismatches: tuple[str, ...],
+    *,
+    action: str | None = None,
+) -> str:
     if missing:
         message = (
             f"{subject} production default route evidence is incomplete; "
@@ -291,14 +338,19 @@ def _exit_unless_mode_default_optimizer(
     route: dict[str, Any],
     *,
     subject: str,
+    audited_route: dict[str, Any] | None = None,
 ) -> None:
-    audited = _route_with_mode_default_audit_fields(route)
+    audited = (
+        _route_with_mode_default_audit_fields(route)
+        if audited_route is None
+        else audited_route
+    )
     if audited.get("uses_mode_default_optimizer") is True:
         return
     parser.exit(
         status=1,
         message=(
-            _mode_default_optimizer_gate_message(
+            _mode_default_optimizer_gate_message_from_audited(
                 subject,
                 audited,
                 action=_MODE_DEFAULT_OPTIMIZER_ARTIFACT_ACTION,
@@ -313,16 +365,23 @@ def _exit_unless_production_default_route(
     route: dict[str, Any],
     *,
     subject: str,
+    production_route_evidence: _ProductionRouteEvidence | None = None,
 ) -> None:
-    audited, missing, mismatches = _production_default_route_evidence(route)
+    audited, missing, mismatches = (
+        _production_default_route_evidence(route)
+        if production_route_evidence is None
+        else production_route_evidence
+    )
     if not missing and not mismatches:
         return
     parser.exit(
         status=1,
         message=(
-            _production_default_route_gate_message(
+            _production_default_route_gate_message_from_evidence(
                 subject,
                 audited,
+                missing,
+                mismatches,
                 action=_PRODUCTION_DEFAULT_ROUTE_ARTIFACT_ACTION,
             )
             + "\n"
@@ -684,8 +743,17 @@ def _optimization_result_text(result: Any) -> str:
     )
 
 
-def _summary_info_text(summary: Path, payload: dict[str, Any]) -> str:
-    payload = _route_with_production_default_audit_fields(payload)
+def _summary_info_text(
+    summary: Path,
+    payload: dict[str, Any],
+    *,
+    audited_payload: dict[str, Any] | None = None,
+) -> str:
+    payload = (
+        _route_with_production_default_audit_fields(payload)
+        if audited_payload is None
+        else audited_payload
+    )
     return (
         f"{_optional_text('summary', summary)} "
         f"{_optimization_result_text(SimpleNamespace(**payload))}"
@@ -2150,18 +2218,40 @@ def main(argv: list[str] | None = None) -> None:
             payload = load_json_object(summary, description="summary")
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
-        print(_summary_info_text(summary, payload), flush=True)
+        route_gate_required = (
+            args.require_mode_default_optimizer
+            or args.require_production_default_route
+        )
+        production_route_evidence = (
+            _production_default_route_evidence(payload) if route_gate_required else None
+        )
+        audited_payload = (
+            _route_with_production_default_evidence_fields(
+                production_route_evidence[0],
+                production_route_evidence[1],
+                production_route_evidence[2],
+            )
+            if production_route_evidence is not None
+            else None
+        )
+        gate_payload = audited_payload if audited_payload is not None else payload
+        print(
+            _summary_info_text(summary, payload, audited_payload=audited_payload),
+            flush=True,
+        )
         if args.require_mode_default_optimizer:
             _exit_unless_mode_default_optimizer(
                 command_parser,
-                payload,
+                gate_payload,
                 subject="summary",
+                audited_route=audited_payload,
             )
         if args.require_production_default_route:
             _exit_unless_production_default_route(
                 command_parser,
-                payload,
+                gate_payload,
                 subject="summary",
+                production_route_evidence=production_route_evidence,
             )
         if args.require_converged and payload.get("status") != "converged":
             command_parser.exit(
