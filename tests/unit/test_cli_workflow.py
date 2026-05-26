@@ -2956,6 +2956,95 @@ def test_cli_sample_require_mode_default_optimizer_rejects_override_before_sampl
     assert "Traceback" not in captured.err
 
 
+def test_cli_sample_require_production_default_route_accepts_default_checkpoint(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        effective_route_metadata(config),
+    )
+    captured_config = {}
+
+    def capture_sample(sample_config):
+        captured_config["config"] = sample_config
+        return SimpleNamespace(
+            families_sampled=1,
+            samples_per_family=sample_config.samples,
+            xml_files=2,
+            out_dir=sample_config.out_dir,
+        )
+
+    monkeypatch.setattr("gpurec.cli.sample", capture_sample)
+
+    main(
+        [
+            "sample",
+            "--checkpoint",
+            str(checkpoint),
+            "--samples",
+            "2",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured_config["config"].checkpoint == checkpoint.resolve()
+    assert "sampled_families=1 samples=2 xml=2 out_dir=null" in captured.out
+
+
+def test_cli_sample_require_production_default_route_rejects_stale_route(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    route = effective_route_metadata(config)
+    route["gradient_route"] = "legacy_autograd"
+    checkpoint = _checkpoint_with_route_metadata(tmp_path, route)
+
+    def unexpected_sample(sample_config):
+        raise AssertionError("sample should not be called")
+
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "sample",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert captured.out == ""
+    assert (
+        "checkpoint production default route fields differ for mode 'genewise': "
+        "gradient_route"
+    ) in captured.err
+    assert "sampled_families" not in captured.out
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_optimize_reports_workflow_errors_without_traceback(
     tmp_path: Path,
     capsys,

@@ -2200,6 +2200,19 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1467 passed, 1 skipped, 51 deselected after the route-verdict docs guard
   slice.
+- Standalone `gpurec sample --require-production-default-route` now has direct
+  CLI coverage proving the command accepts current default-route checkpoints
+  and rejects stale likelihood-route checkpoints before invoking the sampling
+  workflow.
+- `python -m py_compile tests/unit/test_cli_workflow.py`: passed after adding
+  standalone sampling production-route gate coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_cli_workflow.py::test_cli_sample_require_production_default_route_accepts_default_checkpoint tests/unit/test_cli_workflow.py::test_cli_sample_require_production_default_route_rejects_stale_route`:
+  2 passed after guarding standalone sampling production-route gates.
+- `git diff --check`: passed before the full CPU gate for the standalone
+  sampling production-route gate slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1469 passed, 1 skipped, 51 deselected after the standalone sampling
+  production-route gate slice.
 
 ## Recommended Next Order
 

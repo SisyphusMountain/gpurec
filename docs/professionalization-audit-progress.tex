@@ -7501,6 +7501,14 @@ route settings.  The touched hygiene test compiles, the focused README/artifact
 selector reports \texttt{2 passed}, and \texttt{git diff --check} passes.  The
 full CPU unit gate reports \texttt{1467 passed, 1 skipped, 51 deselected}.
 
+Standalone sampling now has direct coverage for the strict production-route
+checkpoint gate.  \texttt{gpurec sample --require-production-default-route}
+accepts a current default-route checkpoint and rejects a stale likelihood route
+before invoking the sampling workflow.  The touched CLI test compiles, the
+focused sampling gate selector reports \texttt{2 passed}, and
+\texttt{git diff --check} passes.  The full CPU unit gate reports
+\texttt{1469 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
