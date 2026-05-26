@@ -1907,6 +1907,10 @@ not edit files.  New or still-open findings from that refresh are:
   wrapper, DTS Pibar staging wrapper, and DTS-staged Pibar VJP wrapper.  These
   tests pin the direct caller contract without requiring CUDA or reaching
   Triton launch.
+- The broad env-driven kernel launch tuning finding is now closed for package
+  runtime.  Tracked kernel modules carry no `GPUREC_*` literals or direct
+  environment reads, package code reads only the supported environment owner
+  manifest, and repository hygiene guards both contracts.
 - The family path/name/map normalization part of the duplicated-validation
   finding is now fixed for dataset construction and the uniform chunked API:
   they share `gpurec.core.model.normalize_family_inputs()` for default family

@@ -214,8 +214,8 @@ Verification:
 
 The supported runtime environment surface is intentionally small.  This table
 is a support manifest for environment variables that users may rely on; package
-internals may still contain temporary reads while pruning is in progress, but
-those reads are not public contracts.
+code reads only the supported variables in this manifest, and repository
+hygiene checks compare tracked package reads against it.
 
 ### Environment Owner Manifest
 
@@ -242,8 +242,8 @@ Plan:
   explicit API/CLI/profiling arguments rather than environment aliases.
 - Keep backward CUDA/Triton diagnostic selectors and kernel launch tuning out
   of the supported docs/test manifest.
-- Continue pruning temporary package-internal reads until runtime behavior is
-  reproducible from constructor/config state.
+- Keep new package environment reads out of the runtime unless they are added
+  to this manifest with a user-facing owner and documentation.
 
 Expected user-facing result:
 

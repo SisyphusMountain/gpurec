@@ -2940,9 +2940,68 @@ def test_runtime_surface_plan_records_package_environment_owners():
     assert "preprocess cache locations" in normalized_plan
     assert "backward CUDA/Triton selectors" in normalized_plan
     assert "kernel launch tuning" in normalized_plan
+    assert (
+        "package code reads only the supported variables in this manifest"
+        in normalized_plan
+    )
     assert sorted(
         name for name in _UNSUPPORTED_ENV_DOC_FLAGS if name in pruning_plan
     ) == []
+
+
+def test_kernel_modules_stay_free_of_environment_runtime_knobs():
+    root = Path(__file__).resolve().parents[2]
+    kernel_paths = sorted(
+        {
+            path
+            for path in _tracked_files(
+                root,
+                "gpurec/core/kernels/*.py",
+                "gpurec/core/kernels/**/*.py",
+            )
+        }
+    )
+
+    env_literals: dict[str, list[str]] = {}
+    env_reads: list[str] = []
+    for path in kernel_paths:
+        relative = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8")
+        flags = sorted(set(_GPUREC_ENV_PATTERN.findall(source)))
+        if flags:
+            env_literals[relative] = flags
+
+        module = ast.parse(source)
+        for node in ast.walk(module):
+            if isinstance(node, ast.Call):
+                func = node.func
+                reads_environ_get = (
+                    isinstance(func, ast.Attribute)
+                    and func.attr in {"get", "setdefault"}
+                    and isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "environ"
+                    and isinstance(func.value.value, ast.Name)
+                    and func.value.value.id == "os"
+                )
+                reads_getenv = (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "getenv"
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "os"
+                )
+                if reads_environ_get or reads_getenv:
+                    env_reads.append(relative)
+            elif (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "environ"
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "os"
+            ):
+                env_reads.append(relative)
+
+    assert env_literals == {}
+    assert sorted(set(env_reads)) == []
 
 
 def test_project_readme_excludes_removed_diagnostic_environment_matrix():

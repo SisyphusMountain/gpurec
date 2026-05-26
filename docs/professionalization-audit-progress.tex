@@ -7253,6 +7253,11 @@ wrapper, DTS Pibar staging wrapper, and DTS-staged Pibar VJP wrapper.  These
 tests pin the direct caller contract without requiring CUDA or reaching Triton
 launch.
 
+The broad env-driven kernel launch tuning finding is now closed for package
+runtime.  Tracked kernel modules carry no \texttt{GPUREC\_*} literals or direct
+environment reads, package code reads only the supported environment owner
+manifest, and repository hygiene guards both contracts.
+
 The family path/name/map normalization slice of the duplicated-validation
 finding is now addressed for dataset construction and the uniform chunked API
 through shared \texttt{gpurec.core.model.normalize\_family\_inputs()} handling.
