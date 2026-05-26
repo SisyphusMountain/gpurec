@@ -919,8 +919,13 @@ def test_simplification_opportunity_index_is_mapped_and_gate_oriented():
         "what specific paths can be simplified or removed",
         "`simplification-opportunity-index-2026-05-21.md`",
         "implementation plan behind that index",
+        "Focused CUDA guards now cover forced-max parity and loose-tolerance early stops",
     ):
         assert token in refactor_plan
+    assert (
+        "Adaptive iteration parity still needs end-to-end CUDA coverage"
+        not in refactor_plan
+    )
 
     for token in (
         "which documents and code paths show concrete opportunities to simplify",
@@ -2024,10 +2029,17 @@ def test_removed_likelihood_aliases_stay_out_of_runtime_surface():
 
     for token in (
         "LIK-02 - Remove Or Deprecate Misleading Log-Likelihood Aliases",
-        "Remove the misleading aliases after public usage is checked",
+        "Former compatibility aliases",
+        "have been removed from `gpurec.core.likelihood`",
+        "`compute_nll*` helpers are the current low-level surface",
         "Repository hygiene coverage proving tracked Python surfaces use `compute_nll*`",
     ):
         assert token in simplification_index
+
+    assert (
+        "are compatibility aliases that return negative log-likelihood values"
+        not in simplification_index
+    )
 
     offenders = [
         path.relative_to(root).as_posix()
@@ -3808,6 +3820,11 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "direct `build_wave_layout()` family-index gap is now fixed",
     ):
         assert token in normalized_audit
+
+    assert (
+        "`full_loss_for_theta(theta)` tensors still lack public shape validation"
+        not in normalized_audit
+    )
 
 
 def test_collate_gene_families_docstring_uses_current_layout_owner():

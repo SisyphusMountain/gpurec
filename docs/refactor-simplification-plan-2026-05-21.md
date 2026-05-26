@@ -196,9 +196,10 @@ Expected simplification:
 
 Risk:
 
-- Adaptive iteration parity still needs end-to-end CUDA coverage before a larger
-  evaluator split. Root trace early-stop carry-forward behavior is now specified
-  and guarded by focused unit coverage.
+- Broad adaptive iteration parity still needs data-backed end-to-end CUDA
+  coverage before a larger evaluator split. Focused CUDA guards now cover
+  forced-max parity and loose-tolerance early stops, and root trace early-stop
+  carry-forward behavior is specified and guarded by focused unit coverage.
 
 ### 4. Prune Backward Runtime Alternatives
 

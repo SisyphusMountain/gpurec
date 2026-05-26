@@ -504,10 +504,12 @@ removed and are guarded against returning.
   family-index gap is now fixed: family count/offset metadata must be provided
   together, have matching lengths, stay in bounds, avoid overlaps, and cover
   every clade before `family_idx` is materialized.  Explicit `theta_init` and
-  `full_loss_for_theta(theta)` tensors still lack public shape validation before
-  parameter extraction.  The stale `collate_gene_families()` docstring found in
-  the same pass is also fixed and guarded so source docs point at preprocessed
-  CCP payloads and `build_wave_layout()` instead of removed
+  `full_loss_for_theta(theta)` tensor validation is now fixed as well: shared
+  raw-theta checks reject wrong shapes, non-floating tensors, and nonfinite
+  values before parameter extraction, CUDA checks, or streaming work.  The stale
+  `collate_gene_families()` docstring found in the same pass is also fixed and
+  guarded so source docs point at preprocessed CCP payloads and
+  `build_wave_layout()` instead of removed
   `preprocess_gene_with_species` / `likelihood_2.py` surfaces.
 
 ## Adequately Covered Or Lower-Risk Areas

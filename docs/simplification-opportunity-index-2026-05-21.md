@@ -171,15 +171,16 @@ Gate:
 
 Historical alternatives:
 
-- `compute_log_likelihood()` and `compute_log_likelihood_root_rows()` are
-  compatibility aliases that return negative log-likelihood values.
+- Former compatibility aliases `compute_log_likelihood()` and
+  `compute_log_likelihood_root_rows()` have been removed from
+  `gpurec.core.likelihood`; the `compute_nll*` helpers are the current
+  low-level surface.
 
 Simplification:
 
 - Keep `compute_nll*` internally.
-- Remove the misleading aliases after public usage is checked.
-- Keep a source guard that prevents tracked runtime, tests, scripts, and
-  profiling code from reintroducing them.
+- Keep the source guard that prevents tracked runtime, tests, scripts, and
+  profiling code from reintroducing the removed aliases.
 
 Keep:
 
