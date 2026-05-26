@@ -2439,6 +2439,11 @@ not edit files.  New or still-open findings from that refresh are:
   that the tiny fixtures intentionally fail `--require-cuda-backward-ready` with
   `cuda_backward_ready_reason=requires_s_gt_256` before any GPU optimization
   starts.
+- `scripts/check_release_metadata.py` now validates the tracked
+  `[project.scripts]` table and requires `gpurec = "gpurec.cli:main"`, so a
+  stale `gpurec.cli.reconcile` console-script entry point cannot pass release
+  metadata checks even if a local environment still has an older script on
+  `PATH`.
 
 ## Recommended Next Order
 

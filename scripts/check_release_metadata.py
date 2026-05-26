@@ -21,6 +21,7 @@ REQUIRED_CLASSIFIERS = {
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 }
 REQUIRED_URLS = {"Repository", "Issues", "Documentation"}
+REQUIRED_CONSOLE_SCRIPTS = {"gpurec": "gpurec.cli:main"}
 _URL_PATTERN = re.compile(r"^https?://\S+$")
 
 
@@ -94,6 +95,20 @@ def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _script_metadata_issues(project: dict[str, Any]) -> list[str]:
+    scripts = project.get("scripts") or {}
+    if not isinstance(scripts, dict):
+        return ["pyproject.toml [project.scripts] must be a table"]
+    issues: list[str] = []
+    for name, expected in sorted(REQUIRED_CONSOLE_SCRIPTS.items()):
+        value = scripts.get(name)
+        if value != expected:
+            issues.append(
+                f"pyproject.toml [project.scripts] {name} must be {expected!r}"
+            )
+    return issues
+
+
 def _load_toml(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     try:
@@ -119,8 +134,13 @@ def _parse_minimal_pyproject(text: str) -> dict[str, Any]:
             table = line.strip("[]")
             if table == "project.urls":
                 data["project"].setdefault("urls", {})
+            elif table == "project.scripts":
+                data["project"].setdefault("scripts", {})
             continue
-        if table not in {"project", "project.urls"} or "=" not in line:
+        if (
+            table not in {"project", "project.urls", "project.scripts"}
+            or "=" not in line
+        ):
             continue
         key, value = [part.strip() for part in line.split("=", 1)]
         if value == "[":
@@ -149,10 +169,14 @@ def _parse_toml_value(value: str) -> Any:
     return value
 
 
-def _set_project_value(data: dict[str, Any], table: str | None, key: str, value: Any) -> None:
+def _set_project_value(
+    data: dict[str, Any], table: str | None, key: str, value: Any
+) -> None:
     project = data["project"]
     if table == "project.urls":
         project.setdefault("urls", {})[key] = value
+    elif table == "project.scripts":
+        project.setdefault("scripts", {})[key] = value
     else:
         project[key] = value
 
@@ -181,6 +205,7 @@ def release_metadata_issues(root: Path) -> list[str]:
         )
 
     issues.extend(_url_metadata_issues(project))
+    issues.extend(_script_metadata_issues(project))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)

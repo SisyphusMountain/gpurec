@@ -78,6 +78,8 @@ def _write_complete_release_metadata_fixture(
     license_line: str = 'license = { file = "LICENSE" }',
     create_readme: bool = True,
     urls_block: str | None = None,
+    scripts_block: str | None = None,
+    project_extra: str = "",
 ) -> None:
     (root / "LICENSE").write_text("fixture license\n", encoding="utf-8")
     if create_readme:
@@ -90,6 +92,11 @@ Repository = "https://example.invalid/repo"
 Issues = "https://example.invalid/issues"
 Documentation = "https://example.invalid/docs"
 """.lstrip()
+    if scripts_block is None:
+        scripts_block = """
+[project.scripts]
+gpurec = "gpurec.cli:main"
+""".lstrip()
     (root / "pyproject.toml").write_text(
         f"""
 [project]
@@ -99,7 +106,7 @@ description = "fixture"
 {readme_block}requires-python = ">=3.10,<3.13"
 {license_line}
 authors = [{{ name = "Fixture Maintainer" }}]
-classifiers = [
+{project_extra}classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Science/Research",
@@ -113,6 +120,7 @@ classifiers = [
 ]
 
 {urls_block}
+{scripts_block}
 """.lstrip(),
         encoding="utf-8",
     )
@@ -134,6 +142,7 @@ def test_release_metadata_check_reports_only_current_license_blockers():
     assert "authors" not in result.stdout
     assert "classifier(s)" not in result.stdout
     assert "project.urls" not in result.stdout
+    assert "project.scripts" not in result.stdout
     assert "readme" not in result.stdout.lower()
     assert "Traceback" not in result.stderr
 
@@ -256,6 +265,51 @@ def test_release_metadata_check_requires_project_urls_table(tmp_path: Path):
 
     assert result.returncode == 1
     assert "[project.urls] must be a table" in result.stdout
+    assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_project_scripts_table(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        scripts_block="",
+        project_extra='scripts = "gpurec.cli:main"\n',
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "[project.scripts] must be a table" in result.stdout
+    assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_gpurec_console_script(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        scripts_block="""
+[project.scripts]
+gpurec = "gpurec.cli.reconcile:main"
+""".lstrip(),
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "[project.scripts] gpurec must be 'gpurec.cli:main'" in result.stdout
+    assert "gpurec.cli.reconcile" not in result.stdout
     assert "license" not in result.stdout
     assert result.stderr == ""
 
@@ -401,7 +455,7 @@ gpurec = "gpurec.cli:main"
         "Issues": "https://example.invalid/issues",
         "Documentation": "https://example.invalid/docs",
     }
-    assert "gpurec" not in project
+    assert project["scripts"] == {"gpurec": "gpurec.cli:main"}
 
 
 def test_minimal_pyproject_parser_supports_current_project_release_fields():
@@ -420,6 +474,7 @@ def test_minimal_pyproject_parser_supports_current_project_release_fields():
     assert project["urls"]["Documentation"] == (
         "https://github.com/SisyphusMountain/gpurec#readme"
     )
+    assert project["scripts"]["gpurec"] == "gpurec.cli:main"
     for required in (
         "Development Status :: 3 - Alpha",
         "Programming Language :: Python :: 3.10",
@@ -1092,6 +1147,7 @@ def test_release_readiness_preserves_license_no_publish_blocker():
         "top-level `LICENSE` file",
         "matching `pyproject.toml` license metadata",
         "license classifier",
+        "`gpurec = \"gpurec.cli:main\"` console-script entry point",
         "currently expected to fail",
         "Do not bypass it for redistribution",
         "Do not publish artifacts until the license",

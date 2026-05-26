@@ -7755,6 +7755,13 @@ and document that the tiny fixtures intentionally fail
 \texttt{cuda_backward_ready_reason=requires_s_gt_256} before any GPU
 optimization starts.
 
+\texttt{scripts/check_release_metadata.py} now validates the tracked
+\texttt{[project.scripts]} table and requires
+\texttt{gpurec = "gpurec.cli:main"}.  A stale
+\texttt{gpurec.cli.reconcile} console-script entry point therefore cannot pass
+release metadata checks even if an older local environment still has such a
+script on \texttt{PATH}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

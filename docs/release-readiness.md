@@ -105,9 +105,10 @@ python scripts/check_release_metadata.py
 ```
 
 The checker validates required project metadata, required URLs and
-classifiers, declared README files, and declared license metadata.  License
-metadata may point at a file or provide inline text, but redistribution still
-requires the top-level license file called out in the blocker list.
+classifiers, the `gpurec = "gpurec.cli:main"` console-script entry point,
+declared README files, and declared license metadata.  License metadata may
+point at a file or provide inline text, but redistribution still requires the
+top-level license file called out in the blocker list.
 
 This check is currently expected to fail on the unresolved license blockers
 listed above.  Do not bypass it for redistribution; choose a license, add the
