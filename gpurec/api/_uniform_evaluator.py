@@ -46,6 +46,33 @@ class ResidentExportStateResult:
     pibar: torch.Tensor | None
 
 
+def compute_pi_output_root_nll(
+    pi_out: dict[str, torch.Tensor | None],
+    e: torch.Tensor,
+    origination_probs: torch.Tensor | None,
+    *,
+    root_clade_ids: torch.Tensor | None = None,
+    origination_probs_prepared: bool = True,
+    denominator: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Compute root-row NLL from a named Pi forward-output contract."""
+    root_rows = pi_out.get("Pi_root_rows")
+    if root_rows is None:
+        if root_clade_ids is None:
+            raise ValueError("root_clade_ids is required when Pi_root_rows is absent")
+        pi_wave_ordered = pi_out["Pi_wave_ordered"]
+        if pi_wave_ordered is None:
+            raise ValueError("Pi_wave_ordered is required when Pi_root_rows is absent")
+        root_rows = gather_root_rows(pi_wave_ordered, root_clade_ids)
+    return compute_nll_root_rows(
+        root_rows,
+        e,
+        origination_probs,
+        origination_probs_prepared=origination_probs_prepared,
+        denominator=denominator,
+    )
+
+
 @torch.no_grad()
 def evaluate_resident_no_grad(
     static: ReconStaticState,
@@ -65,8 +92,8 @@ def evaluate_resident_no_grad(
     )
     _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
 
-    loss_vec = compute_nll_root_rows(
-        solve.pi_out["Pi_root_rows"],
+    loss_vec = compute_pi_output_root_nll(
+        solve.pi_out,
         solve.e_out["E"],
         _origination_probs_for_static(static),
         origination_probs_prepared=True,
@@ -93,11 +120,11 @@ def evaluate_resident_gradient_forward(
         _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
 
     with _nvtx_range("resident root likelihood"):
-        root_clade_ids = static.wave_layout["root_clade_ids"]
-        loss_vec = compute_nll_root_rows(
-            gather_root_rows(solve.pi_out["Pi_wave_ordered"], root_clade_ids),
+        loss_vec = compute_pi_output_root_nll(
+            solve.pi_out,
             solve.e_out["E"],
             _origination_probs_for_static(static),
+            root_clade_ids=static.wave_layout["root_clade_ids"],
             origination_probs_prepared=True,
         )
     return ResidentGradientForwardResult(solve=solve, loss_vec=loss_vec)
@@ -189,8 +216,8 @@ def evaluate_resident_no_grad_with_solved_e(
     )
     _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
 
-    loss_vec = compute_nll_root_rows(
-        solve.pi_out["Pi_root_rows"],
+    loss_vec = compute_pi_output_root_nll(
+        solve.pi_out,
         solve.e_out["E"],
         _origination_probs_for_static(static),
         origination_probs_prepared=True,

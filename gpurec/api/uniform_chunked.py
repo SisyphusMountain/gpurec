@@ -28,11 +28,7 @@ from gpurec.core.forward import (
     pi_training_state_request,
 )
 from gpurec.core.gradient_accumulator import StructuredGradientAccumulator
-from gpurec.core.likelihood import (
-    E_fixed_point,
-    compute_nll_root_rows,
-    gather_root_rows,
-)
+from gpurec.core.likelihood import E_fixed_point
 from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipeline_policy
 from gpurec.core.model import (
     GeneDataset,
@@ -47,6 +43,7 @@ from gpurec.core.origination import (
 )
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
+from ._uniform_evaluator import compute_pi_output_root_nll
 from ._validation import (
     auto_int as _as_auto_int,
     auto_nonnegative_int as _auto_nonnegative_int,
@@ -572,16 +569,16 @@ def _evaluate_chunked_uniform_result(
                 fixed_iters=state.fixed_iters_Pi,
             )
             if need_grad:
-                root_clade_ids = built.wave_layout["root_clade_ids"]
-                loss_vec = compute_nll_root_rows(
-                    gather_root_rows(pi_out["Pi_wave_ordered"], root_clade_ids),
+                loss_vec = compute_pi_output_root_nll(
+                    pi_out,
                     e_out["E"],
                     chunk_origination_probs,
+                    root_clade_ids=built.wave_layout["root_clade_ids"],
                     origination_probs_prepared=True,
                 )
             else:
-                loss_vec = compute_nll_root_rows(
-                    pi_out["Pi_root_rows"],
+                loss_vec = compute_pi_output_root_nll(
+                    pi_out,
                     e_out["E"],
                     chunk_origination_probs,
                     origination_probs_prepared=True,

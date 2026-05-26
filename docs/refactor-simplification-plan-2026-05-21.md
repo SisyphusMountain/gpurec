@@ -68,16 +68,18 @@ Current duplication:
 
 - `gpurec/api/autograd.py:491` `_GeneReconFunction.forward()` runs E, Pi,
   `compute_nll()`, saves tensors, and delegates backward.
-- `gpurec/api/_uniform_evaluator.py:106`
+- `gpurec/api/_uniform_evaluator.py:133`
   `evaluate_resident_static_state()` now owns resident no-grad and optional
   gradient E/Pi/NLL orchestration; `gpurec/api/model.py:1183`
   `_evaluate_static_state()` is a thin compatibility wrapper.
-- `gpurec/api/_uniform_evaluator.py:146`
+- `gpurec/api/_uniform_evaluator.py:173`
   `evaluate_resident_export_state()` now owns resident export E/Pi solves and
   clade-order selection; `gpurec/api/model.py:2448`
   `reconciliation_state()` builds the public state object.
-- `gpurec/api/uniform_chunked.py:722` `_evaluate_chunked_uniform()` repeats E,
-  chunked Pi forward, optional Pi backward, E-adjoint, stats, and reductions.
+- `gpurec/api/uniform_chunked.py:719` `_evaluate_chunked_uniform()` still owns
+  chunk selection, optional Pi backward, E-adjoint, stats, and reductions, but
+  chunked root-row NLL now routes through
+  `gpurec/api/_uniform_evaluator.py:49` `compute_pi_output_root_nll()`.
 
 Plan:
 
@@ -85,8 +87,9 @@ Plan:
   `gpurec/api/_uniform_evaluator.py`.
 - Move common E/Pi/root-likelihood logic behind one request object. Resident
   no-grad, gradient-forward, and static-state evaluation now share
-  `_uniform_evaluator.py`; the autograd bridge still owns the implicit-gradient
-  VJP implementation.
+  `_uniform_evaluator.py`, and chunked uniform evaluation uses the same
+  Pi-output-to-root-NLL helper; the autograd bridge still owns the
+  implicit-gradient VJP implementation.
 - Make `_GeneReconFunction`, `_GeneReconFullLossFunction`, and
   `_UniformChunkedFunction` call the evaluator instead of open-coding the
   pipeline.

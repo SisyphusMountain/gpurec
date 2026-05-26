@@ -418,6 +418,109 @@ def test_evaluate_resident_export_state_selects_requested_order(monkeypatch):
     ]
 
 
+def test_pi_output_root_nll_uses_root_rows_without_gather(monkeypatch):
+    root_rows = torch.tensor([[1.0, 2.0]], dtype=torch.float64)
+    e = torch.tensor([0.5, 0.25], dtype=torch.float64)
+    weights = torch.tensor([0.4, 0.6], dtype=torch.float64)
+    denominator = torch.tensor(0.75, dtype=torch.float64)
+    expected = torch.tensor([3.5], dtype=torch.float64)
+    calls: list[dict[str, object]] = []
+
+    def fail_gather(*_args, **_kwargs):
+        raise AssertionError("root-row Pi output should not be gathered again")
+
+    def fake_compute_nll_root_rows(
+        root_rows_arg,
+        e_arg,
+        origination_probs,
+        *,
+        origination_probs_prepared,
+        denominator=None,
+    ):
+        calls.append(
+            {
+                "root_rows": root_rows_arg,
+                "e": e_arg,
+                "origination_probs": origination_probs,
+                "origination_probs_prepared": origination_probs_prepared,
+                "denominator": denominator,
+            }
+        )
+        return expected
+
+    monkeypatch.setattr(api_evaluator, "gather_root_rows", fail_gather)
+    monkeypatch.setattr(
+        api_evaluator,
+        "compute_nll_root_rows",
+        fake_compute_nll_root_rows,
+    )
+
+    actual = api_evaluator.compute_pi_output_root_nll(
+        {"Pi_root_rows": root_rows},
+        e,
+        weights,
+        denominator=denominator,
+    )
+
+    assert actual is expected
+    assert len(calls) == 1
+    assert calls[0]["root_rows"] is root_rows
+    assert calls[0]["e"] is e
+    assert calls[0]["origination_probs"] is weights
+    assert calls[0]["origination_probs_prepared"] is True
+    assert calls[0]["denominator"] is denominator
+
+
+def test_pi_output_root_nll_gathers_wave_ordered_rows(monkeypatch):
+    pi_wave_ordered = torch.tensor(
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+        dtype=torch.float64,
+    )
+    root_ids = torch.tensor([2, 0], dtype=torch.long)
+    gathered = torch.tensor([[5.0, 6.0], [1.0, 2.0]], dtype=torch.float64)
+    e = torch.tensor([0.5, 0.25], dtype=torch.float64)
+    expected = torch.tensor([1.25, 2.5], dtype=torch.float64)
+    gather_calls: list[dict[str, object]] = []
+
+    def fake_gather_root_rows(pi_arg, roots_arg):
+        gather_calls.append({"pi": pi_arg, "roots": roots_arg})
+        return gathered
+
+    def fake_compute_nll_root_rows(
+        root_rows_arg,
+        e_arg,
+        origination_probs,
+        *,
+        origination_probs_prepared,
+        denominator=None,
+    ):
+        assert root_rows_arg is gathered
+        assert e_arg is e
+        assert origination_probs is None
+        assert origination_probs_prepared is True
+        assert denominator is None
+        return expected
+
+    monkeypatch.setattr(api_evaluator, "gather_root_rows", fake_gather_root_rows)
+    monkeypatch.setattr(
+        api_evaluator,
+        "compute_nll_root_rows",
+        fake_compute_nll_root_rows,
+    )
+
+    actual = api_evaluator.compute_pi_output_root_nll(
+        {"Pi_wave_ordered": pi_wave_ordered},
+        e,
+        None,
+        root_clade_ids=root_ids,
+    )
+
+    assert actual is expected
+    assert len(gather_calls) == 1
+    assert gather_calls[0]["pi"] is pi_wave_ordered
+    assert gather_calls[0]["roots"] is root_ids
+
+
 def test_evaluate_static_state_rejects_non_genewise_per_family_gradients():
     static = SimpleNamespace(genewise=False)
     theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
@@ -1093,6 +1196,7 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
         origination_probs,
         *,
         origination_probs_prepared,
+        denominator=None,
     ):
         likelihood_calls.append(
             {
@@ -1100,6 +1204,7 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
                 "e": e_arg,
                 "origination_probs": origination_probs,
                 "origination_probs_prepared": origination_probs_prepared,
+                "denominator": denominator,
             }
         )
         return torch.tensor([1.25, 2.5], dtype=theta.dtype)
@@ -1135,6 +1240,7 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
     assert likelihood_calls[0]["e"] is e
     assert likelihood_calls[0]["origination_probs"] is None
     assert likelihood_calls[0]["origination_probs_prepared"] is True
+    assert likelihood_calls[0]["denominator"] is None
     assert static.warm_E is not e
     torch.testing.assert_close(static.warm_E, e)
     assert static.last_solver_stats == {

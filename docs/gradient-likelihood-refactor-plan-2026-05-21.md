@@ -28,14 +28,16 @@ rebuild it differently:
 - Differentiable active-batch path:
   `gpurec/api/autograd.py:491` `_GeneReconFunction`.
 - No-grad / explicit-theta / full-stream path:
-  `gpurec/api/_uniform_evaluator.py:106` `evaluate_resident_static_state()`
+  `gpurec/api/_uniform_evaluator.py:133` `evaluate_resident_static_state()`
   and `gpurec/api/model.py:1880` `_stream_full_batches()`.
 - Export-state path:
-  `gpurec/api/_uniform_evaluator.py:146`
+  `gpurec/api/_uniform_evaluator.py:173`
   `evaluate_resident_export_state()` feeding
   `gpurec/api/model.py:2448` `reconciliation_state()`.
 - Large global/uniform chunk path:
-  `gpurec/api/uniform_chunked.py:722` `_evaluate_chunked_uniform()`.
+  `gpurec/api/uniform_chunked.py:719` `_evaluate_chunked_uniform()`, with
+  root NLL routed through `gpurec/api/_uniform_evaluator.py:49`
+  `compute_pi_output_root_nll()`.
 - Benchmark path:
   `profiling/bench_uniform_forward_backward_pipeline.py`.
 

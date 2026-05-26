@@ -2027,6 +2027,7 @@ def test_resident_gradient_forward_lives_in_uniform_evaluator():
     }
 
     for name in (
+        "compute_pi_output_root_nll",
         "ResidentGradientForwardResult",
         "ResidentExportStateResult",
         "evaluate_resident_gradient_forward",
@@ -2086,6 +2087,30 @@ def test_model_reconciliation_state_uses_export_evaluator():
     assert "evaluate_resident_export_state" in called_names
     assert "solve_resident_e_pi" not in called_names
     assert "pi_export_state_request" not in called_names
+
+
+def test_uniform_chunked_uses_shared_pi_output_root_nll_helper():
+    root = Path(__file__).resolve().parents[2]
+    module = ast.parse(
+        (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_evaluate_chunked_uniform_result"
+    )
+    called_names = {
+        node.func.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "compute_pi_output_root_nll" in called_names
+    assert "compute_nll_root_rows" not in called_names
+    assert "gather_root_rows" not in called_names
 
 
 def test_api_uses_named_pi_forward_request_contract():

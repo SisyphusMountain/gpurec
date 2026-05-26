@@ -34,15 +34,16 @@ Current alternatives:
 
 - `gpurec/api/autograd.py:491` `_GeneReconFunction.forward()` runs E, Pi,
   root likelihood, tensor saving, and backward delegation.
-- `gpurec/api/_uniform_evaluator.py:106`
+- `gpurec/api/_uniform_evaluator.py:133`
   `evaluate_resident_static_state()` now owns resident no-grad and optional
   gradient E/Pi/NLL orchestration; `gpurec/api/model.py:1183`
   `_evaluate_static_state()` is a thin wrapper.
-- `gpurec/api/_uniform_evaluator.py:146`
+- `gpurec/api/_uniform_evaluator.py:173`
   `evaluate_resident_export_state()` now owns resident export E/Pi work and
   clade-order selection.
-- `gpurec/api/uniform_chunked.py:722` `_evaluate_chunked_uniform()` repeats
-  E/Pi/gradient/stat reductions for chunked uniform mode.
+- `gpurec/api/uniform_chunked.py:719` `_evaluate_chunked_uniform()` still owns
+  chunked E/Pi/gradient/stat reductions, but chunked root-row NLL uses shared
+  `gpurec/api/_uniform_evaluator.py:49` `compute_pi_output_root_nll()`.
 
 Simplification:
 
