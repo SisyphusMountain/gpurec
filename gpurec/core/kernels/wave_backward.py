@@ -6,12 +6,11 @@ inputs for standalone row-mask experiments, but the retained public
 ``Pi_wave_backward`` path rejects bf16 before this helper is reached.
 """
 
-import math
-
 import torch
 import triton
 import triton.language as tl
 
+from gpurec.core._solver_validation import fixed_point_relaxation_value
 from gpurec.core.kernels._dts_layout_contract import dts_backward_param_layout
 from gpurec.core.memory_policy import proposal0_memory_gate
 
@@ -827,19 +826,7 @@ def _wave_backward_uniform_2d(
         raise RuntimeError("unsupported self-loop constant layout")
     if use_leaf_index and leaf_logp_mode not in (0, 1, 2, 3):
         raise RuntimeError("unsupported leaf log-probability layout")
-    if isinstance(fixed_point_relaxation, bool) or (
-        torch.is_tensor(fixed_point_relaxation)
-        and fixed_point_relaxation.dtype == torch.bool
-    ):
-        raise ValueError("fixed_point_relaxation must be a positive finite number")
-    try:
-        fixed_point_relaxation = float(fixed_point_relaxation)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "fixed_point_relaxation must be a positive finite number"
-        ) from exc
-    if not math.isfinite(fixed_point_relaxation) or fixed_point_relaxation <= 0.0:
-        raise ValueError("fixed_point_relaxation must be a positive finite number")
+    fixed_point_relaxation = fixed_point_relaxation_value(fixed_point_relaxation)
 
     device = Pi_star.device
     dtype = Pi_star.dtype

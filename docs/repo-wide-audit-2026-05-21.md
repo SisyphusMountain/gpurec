@@ -1946,8 +1946,11 @@ not edit files.  New or still-open findings from that refresh are:
   `nonnegative_float()`; the API validation module re-exports those helpers for
   direct API callers while workflow float adapters and checkpoint resume
   metadata already delegate to the same shared finite-float validator.  The
-  shared validation module keeps torch-specific bool-tensor detection lazy so
-  checkpoint metadata imports stay lightweight.
+  Pi-adjoint fixed-point relaxation control now delegates through a core solver
+  helper to the shared positive-float validator while preserving the retained
+  backward path's legacy error wording.  The shared validation module keeps
+  torch-specific bool-tensor detection lazy so checkpoint metadata imports stay
+  lightweight.
 - The profiling ownership-boundary documentation gap is now fixed.
   `profiling/README.md` documents the two tracked profiling entrypoints, their
   source-checkout/CUDA/local-data assumptions, output-contract expectations,
@@ -2077,6 +2080,20 @@ not edit files.  New or still-open findings from that refresh are:
   workflow now commits staged adjoints only after the accepted current-theta
   gradient.  Production optimizer defaults are unchanged until warmstarted
   gradient budgets are validated end to end.
+- Pi-adjoint fixed-point relaxation validation now uses the shared
+  positive-float semantics through `gpurec.core._solver_validation` in both the
+  retained `Pi_wave_backward()` entrypoint and its fused self-loop wrapper,
+  while preserving the old `"fixed_point_relaxation must be a positive finite
+  number"` error text for direct callers.
+- `python -m py_compile gpurec/core/_solver_validation.py gpurec/core/backward.py gpurec/core/kernels/wave_backward.py tests/unit/test_core_backward.py tests/unit/test_repository_hygiene.py`:
+  passed after adding the shared Pi-adjoint relaxation helper and source guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_core_backward.py::test_fixed_point_relaxation_value_accepts_numeric_scalars tests/unit/test_core_backward.py::test_fixed_point_relaxation_value_rejects_invalid_controls tests/unit/test_repository_hygiene.py::test_workflow_numeric_validation_uses_shared_helpers`:
+  14 passed after adding the helper regression and hygiene guard.
+- `git diff --check`: passed after the Pi-adjoint relaxation validation
+  cleanup.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1449 passed, 1 skipped, 51 deselected after the Pi-adjoint relaxation
+  validation cleanup.
 
 ## Recommended Next Order
 

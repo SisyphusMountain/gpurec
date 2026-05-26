@@ -1,11 +1,52 @@
+import math
+
+import pytest
 import torch
 
 import gpurec.core.backward as backward
+from gpurec.core._solver_validation import fixed_point_relaxation_value
 from gpurec.core.extract_parameters import as_family_param
 
 
 DEVICE = torch.device("cpu")
 DTYPE = torch.float64
+FIXED_POINT_RELAXATION_MESSAGE = (
+    "fixed_point_relaxation must be a positive finite number"
+)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1, 1.0),
+        (1.25, 1.25),
+        ("2.0", 2.0),
+        (torch.tensor(1.5), 1.5),
+    ],
+)
+def test_fixed_point_relaxation_value_accepts_numeric_scalars(value, expected):
+    assert fixed_point_relaxation_value(value) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        True,
+        torch.tensor(True),
+        0,
+        torch.tensor(0.0),
+        -1.0,
+        math.inf,
+        math.nan,
+        object(),
+        torch.tensor([1.0, 2.0]),
+    ],
+)
+def test_fixed_point_relaxation_value_rejects_invalid_controls(value):
+    with pytest.raises(ValueError) as exc_info:
+        fixed_point_relaxation_value(value)
+
+    assert str(exc_info.value) == FIXED_POINT_RELAXATION_MESSAGE
 
 
 def test_backward_auto_wrap_records_family_idx_none_as_single_shared_row():

@@ -450,6 +450,12 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     core_model = (root / "gpurec" / "core" / "model.py").read_text(
         encoding="utf-8"
     )
+    core_backward = (root / "gpurec" / "core" / "backward.py").read_text(
+        encoding="utf-8"
+    )
+    solver_validation = (
+        root / "gpurec" / "core" / "_solver_validation.py"
+    ).read_text(encoding="utf-8")
     batch_planning = (
         root / "gpurec" / "core" / "batch_planning.py"
     ).read_text(encoding="utf-8")
@@ -458,6 +464,9 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     ).read_text(encoding="utf-8")
     schedule_rust = (
         root / "gpurec" / "core" / "schedule_rust.py"
+    ).read_text(encoding="utf-8")
+    wave_backward = (
+        root / "gpurec" / "core" / "kernels" / "wave_backward.py"
     ).read_text(encoding="utf-8")
 
     shared_function_names = {
@@ -497,6 +506,11 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     assert 'optional_positive_int("max_families", max_families)' in core_model
     assert "math.isfinite(value)" not in api_model
     assert 'return nonnegative_int("prefetch_batches", value)' in api_model
+    assert "positive_float(\"fixed_point_relaxation\", value)" in solver_validation
+    assert "fixed_point_relaxation_value(fixed_point_relaxation)" in core_backward
+    assert "fixed_point_relaxation_value(fixed_point_relaxation)" in wave_backward
+    assert "math.isfinite(fixed_point_relaxation)" not in core_backward
+    assert "math.isfinite(fixed_point_relaxation)" not in wave_backward
     assert "from numbers import Integral" not in backtracking_source
     assert "integer_value(name, value)" in backtracking_source
     assert "from numbers import Integral" not in batch_planning

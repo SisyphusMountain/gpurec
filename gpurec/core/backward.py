@@ -6,15 +6,14 @@ nodes.  Tiny species trees are useful for parser/config tests but need a
 small-species backward fallback before they can be end-to-end optimizer smokes.
 """
 
-import math
-
 import torch
 
-from .log2_utils import logsumexp2
-from .likelihood import prepare_origination_probs
 from ._helpers import _safe_exp2_ratio  # noqa: F401
-from .memory_policy import proposal0_memory_gate
+from ._solver_validation import fixed_point_relaxation_value
 from .extract_parameters import as_family_param, as_family_species
+from .likelihood import prepare_origination_probs
+from .log2_utils import logsumexp2
+from .memory_policy import proposal0_memory_gate
 from .species import species_wave_topology
 from .backward_pruning_policy import (
     backward_pruning_policy,
@@ -164,19 +163,7 @@ def Pi_wave_backward(
         raise RuntimeError("Pi_wave_backward only retains the fused CUDA fast path")
     if dtype not in _SUPPORTED_BACKWARD_FLOAT_DTYPES:
         raise RuntimeError("Pi_wave_backward fused path requires float32 or float64")
-    if isinstance(fixed_point_relaxation, bool) or (
-        torch.is_tensor(fixed_point_relaxation)
-        and fixed_point_relaxation.dtype == torch.bool
-    ):
-        raise ValueError("fixed_point_relaxation must be a positive finite number")
-    try:
-        fixed_point_relaxation = float(fixed_point_relaxation)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "fixed_point_relaxation must be a positive finite number"
-        ) from exc
-    if not math.isfinite(fixed_point_relaxation) or fixed_point_relaxation <= 0.0:
-        raise ValueError("fixed_point_relaxation must be a positive finite number")
+    fixed_point_relaxation = fixed_point_relaxation_value(fixed_point_relaxation)
     if S <= 256:
         raise RuntimeError("Pi_wave_backward fused path requires S > 256")
     if initial_v_pi is not None:
