@@ -353,7 +353,10 @@ Measured routes:
 | A | `7/4:1.0:12,8:0.5:8,16/8:0.5:8`, `adagrad-restarts`, phase patience `1` | `170.31107250403147s` | `1707816.5` | `3.9513802528381348` | E16/Pi8 at `lr=0.5` was too aggressive and tripped the phase-loss stop after two repair evaluations. |
 | B | `7/4:1.0:12,8:0.5:40`, `adagrad-restarts`, phase patience `1` | `407.7515940640005s` | `1704378.5` | `0.9977045059204102` | Current best short Pi4-start route. Fixed8, fixed16, and fixed32 validation all returned `1704378.5` bits. |
 | C | `8:1.0:12,8:0.5:40`, direct fixed8 `adagrad-restarts`, phase patience `1` | `430.63535784796113s` | `1704378.625` | `0.9977216720581055` | Same trajectory as B within fp32 noise, but about `22.88s` slower because the first 12 steps use tied fixed8 instead of E7/Pi4. |
-| B + early L-BFGS-B tail | Resume B, `lbfgsb`, `lr=0.1`, 20 L-BFGS-B steps | `786.3332051589969s` combined | `1700015.5` | `27.92882537841797` | Best time-to-low-NLL switch found so far; it beats the 92-step Adagrad point by `2225.75` bits with about `54s` more wall time. |
+| 12-step Pi4 + L-BFGS-B tail | `7/4:1.0:12`, then `lbfgsb`, `lr=0.1`, 20 L-BFGS-B steps | `469.3958375949878s` combined | `1703574.875` | `28.24788475036621` | Too early for the L-BFGS-B switch; the tail spends most of its work catching up from a high NLL. |
+| A + L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.1`, 20 L-BFGS-B steps | `547.463271428016s` combined | `1700309.75` | `28.042160034179688` | Better time-to-NLL than switching at step 52. |
+| A + longer L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.1`, 30 L-BFGS-B steps total | `745.2935658869683s` combined | `1699746.125` | `20.155467987060547` | Best time-to-low-NLL route found so far; fixed8, fixed16, and fixed32 validation all returned `1699746.125` bits. |
+| B + early L-BFGS-B tail | Resume B, `lbfgsb`, `lr=0.1`, 20 L-BFGS-B steps | `786.3332051589969s` combined | `1700015.5` | `27.92882537841797` | Later switch is slower and slightly worse than the 30-step tail from A. |
 | B + fixed-cap continuation | Resume B with `7/4:1.0:12,8:0.5:80`, phase patience `0` | `732.2706705760211s` combined | `1702241.25` | `0.5673627853393555` | Still improving by about `31` bits per step at the cap. |
 | B + continuation + L-BFGS-B tail | Resume the 92-step Adagrad point, `lbfgsb`, `lr=0.1`, 30 L-BFGS-B steps total | `1308.1464419650729s` combined | `1699551.25` | `28.2503719329834` | Fixed8, fixed16, and fixed32 validation all returned `1699551.25` bits, but the projected gradient is large, so this is not an optimum certificate. |
 
@@ -373,6 +376,14 @@ higher NLL, `1702241.25`, but a much smaller projected-gradient residual,
 the best objective seen in this round is `4827.25` bits.  Switching from B
 directly into L-BFGS-B reaches `1700015.5` bits in `786.33s`, only `464.25`
 bits above the longer L-BFGS-B tail while saving about `522s`.
+
+Switch-point screening shows that L-BFGS-B should not start immediately after
+the first 12 E7/Pi4 steps, but also should not wait for 52 Adagrad steps if the
+target is time-to-low-NLL.  The best measured switch so far is after route A's
+22 steps: 20 L-BFGS-B steps reached `1700309.75` bits in `547.46s`, and 30
+L-BFGS-B steps reached `1699746.125` bits in `745.29s`.  This is `269.375`
+bits better and about `41s` faster than switching from the 52-step Adagrad
+point to a 20-step L-BFGS-B tail.
 
 While testing resumed continuations, a workflow stop-rule issue was found and
 fixed: extending a completed checkpoint used to restore `previous_objective`
