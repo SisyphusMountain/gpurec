@@ -4207,13 +4207,13 @@ class OptimizationRunner:
                         metrics[f"optimizer/{metric_prefix}_blocked_loss_stop"] = (
                             bounded_high_projected_plateau
                         )
-                if (
+                objective_plateau_this_row = (
                     delta is not None
                     and delta <= loss_change_tol_bits
                     and not projected_lbfgs_backoff
                     and not projected_lbfgs_min_lr_reached
-                    and not bounded_high_projected_plateau
-                ):
+                )
+                if objective_plateau_this_row and not bounded_high_projected_plateau:
                     stable_loss_steps += 1
                 else:
                     stable_loss_steps = 0
@@ -4337,9 +4337,11 @@ class OptimizationRunner:
                             or fallback_budget_exhausted_this_row
                         )
                     )
+                    high_kkt_objective_stalled = objective_plateau_this_row
                     high_kkt_stop_ready = (
                         high_kkt_stop_patience > 0
                         and high_kkt_stop_signal
+                        and high_kkt_objective_stalled
                         and lbfgsb_fallback_used_count
                         >= int(config.lbfgsb_high_kkt_stop_min_fallbacks)
                     )
@@ -4351,6 +4353,9 @@ class OptimizationRunner:
                     )
                     metrics["optimizer/lbfgsb_high_kkt_stop_min_fallbacks"] = float(
                         int(config.lbfgsb_high_kkt_stop_min_fallbacks)
+                    )
+                    metrics["optimizer/lbfgsb_high_kkt_objective_stalled"] = (
+                        high_kkt_objective_stalled
                     )
                     metrics["optimizer/lbfgsb_high_kkt_stop_ready"] = (
                         high_kkt_stop_ready
