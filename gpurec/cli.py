@@ -399,6 +399,7 @@ def _validate_config_route_text(config: RunConfig) -> str:
         f"fixed_iters_e={fixed_iters_e}",
         f"fixed_iters_pi={route['fixed_iters_pi']}",
         f"neumann_terms={route['neumann_terms']}",
+        f"final_check_iters={route['final_check_iters']}",
     ]
     if config.optimizer == "hessian-sgd":
         fields.extend(

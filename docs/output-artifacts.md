@@ -35,6 +35,10 @@ gradient summaries at bounds use `grad/projected_inf`. Solver diagnostics use
 and `best_log_likelihood_bits`.  If the final likelihood/gradient validation
 fails, `final_log_likelihood_bits` is `null`; inspect `status`, `reason`, and
 the final `history.jsonl` row before using the rates.
+The `final_check_iters` field records the effective solver iteration budget
+used for the final high-fidelity likelihood/gradient validation; for
+specieswise `adagrad-restarts`, this is the resolved
+`adagrad_restart_final_check_iters` value.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print `steps_completed`, `best_step`, and the same final/best NLL and
 log-likelihood fields for quick terminal triage.

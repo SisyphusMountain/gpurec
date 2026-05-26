@@ -5392,6 +5392,7 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert summary["optimizer"] == "adagrad-restarts"
     assert summary["adagrad_restart_schedule"] == "8/4:1:2,16/8/6:0.5:2"
     assert summary["adagrad_restart_final_check_iters"] == 32
+    assert summary["final_check_iters"] == 32
     assert summary["fixed_iters_pi"] == 16
     assert summary["neumann_terms"] == 16
     assert runner.fake_model.solver_configs[:3] == [
@@ -7660,6 +7661,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert summary["fixed_iters_e"] is None
     assert summary["fixed_iters_pi"] == 16
     assert summary["neumann_terms"] == 16
+    assert summary["final_check_iters"] == 32
     assert summary["final_nll_bits"] == pytest.approx(result.final_nll_bits)
     assert summary["final_log_likelihood_bits"] == pytest.approx(
         -result.final_nll_bits

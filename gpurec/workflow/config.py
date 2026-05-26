@@ -860,6 +860,11 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
         "fixed_iters_e": config.fixed_iters_e,
         "fixed_iters_pi": config.fixed_iters_pi,
         "neumann_terms": config.neumann_terms,
+        "final_check_iters": (
+            config.adagrad_restart_final_check_iters
+            if config.optimizer == "adagrad-restarts"
+            else config.final_check_iters
+        ),
     }
     if config.optimizer == "hessian-sgd":
         route.update(

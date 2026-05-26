@@ -155,9 +155,10 @@ template keeps `optimizer=auto` and writes the default
 `validate-config` checks the flat JSON/CLI config, selected AleRax family
 records, mapping files, and referenced gene-tree files without CUDA or
 preprocessing. Its summary prints the resolved optimizer, batch planning,
-solver budgets, and optimizer-specific defaults such as the specieswise restart
-schedule. It is a preflight for path and parser issues, not a likelihood or
-gradient correctness check. Add `--check-preprocess` for a heavier CPU
+solver budgets, effective `final_check_iters`, and optimizer-specific defaults
+such as the specieswise restart schedule. It is a preflight for path and parser
+issues, not a likelihood or gradient correctness check. Add `--check-preprocess`
+for a heavier CPU
 preprocessing pass that uses the retained Rust parser to validate selected
 Newick trees and leaf/species mappings before optimization.
 

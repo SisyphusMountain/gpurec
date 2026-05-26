@@ -523,6 +523,7 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "fixed_iters_e=adaptive" in captured.out
     assert "fixed_iters_pi=16" in captured.out
     assert "neumann_terms=16" in captured.out
+    assert "final_check_iters=32" in captured.out
     assert "solver_warmup_iters=4" in captured.out
     assert "fd_adam_warmup_steps=3" in captured.out
     assert "fd_hessian_refresh_steps=16" in captured.out
@@ -560,6 +561,7 @@ def test_cli_validate_config_reports_specieswise_restart_route(
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30"
         in captured.out
     )
+    assert "final_check_iters=128" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
     assert captured.err == ""
 
