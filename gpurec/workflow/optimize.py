@@ -4,13 +4,13 @@ import csv
 import math
 import time
 from dataclasses import dataclass
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from gpurec._validation import finite_float, integer_value
+from gpurec._validation import finite_float
 from gpurec.api.autograd import (
     _clear_pi_adjoint_runtime_cache,
     _commit_pi_adjoint_pending_cache,
@@ -178,10 +178,9 @@ def _optional_result_float(value: object) -> float | None:
 def _optional_result_int(value: object) -> int | None:
     if value is None:
         return None
-    try:
-        return integer_value("summary value", value)
-    except ValueError:
+    if isinstance(value, bool) or not isinstance(value, Integral):
         return None
+    return int(value)
 
 
 def _optional_result_text(value: object) -> str | None:

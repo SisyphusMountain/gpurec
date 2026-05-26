@@ -1916,7 +1916,12 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         ("final_grad_inf", False, "final_grad_inf"),
         ("best_nll_bits", "9.5", "best_nll_bits"),
         ("best_step", "4", "best_step"),
+        ("best_step", 4.0, "best_step"),
+        ("families", 10.0, "families"),
+        ("configured_steps", 5000.0, "configured_steps"),
         ("final_check_iters_e", "128", "final_check_iters_e"),
+        ("final_check_iters_e", 128.0, "final_check_iters_e"),
+        ("adagrad_restart_total_steps", 125.0, "adagrad_restart_total_steps"),
         ("pi_fixed_point_relaxation", "1.25", "pi_fixed_point_relaxation"),
     ],
 )
@@ -1949,7 +1954,7 @@ def test_optimization_result_summary_requires_typed_numeric_values(
         assert actual is None
 
 
-@pytest.mark.parametrize("value", ["5", True, math.nan])
+@pytest.mark.parametrize("value", ["5", 5.0, True, math.nan])
 def test_optimization_result_summary_requires_typed_steps_completed(
     tmp_path: Path,
     value: object,

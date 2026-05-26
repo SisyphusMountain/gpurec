@@ -73,12 +73,12 @@ line expose the same family/species/batch counts, `batch_packing`,
 `uses_production_default_route`, `production_default_route_mismatches`,
 `final_check_iters`, `final_check_iters_e`, and
 optimizer-specific route fields for quick programmatic and terminal triage.
-The Python result parser follows the same typed artifact contract: stringified
-or boolean stand-ins for numeric summary fields are treated as missing or
-invalid rather than coerced into numbers.
+The Python result parser follows the same typed artifact contract: stringified,
+floating, or boolean stand-ins for integer summary fields are treated as
+missing or invalid rather than coerced into integers.
 The CPU-safe artifact inspection commands follow that same display contract:
 `gpurec summary-info` and `gpurec checkpoint-info` print malformed numeric
-artifact fields as `null` instead of converting strings or booleans into
+artifact fields as `null` instead of converting strings, floats, or booleans into
 numbers.
 For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
