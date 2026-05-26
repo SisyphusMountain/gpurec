@@ -359,7 +359,8 @@ Measured routes:
 | A + L-BFGS-B tail, `lr=0.3` | Resume A, `lbfgsb`, `lr=0.3`, 20 L-BFGS-B steps | `548.8858391030226s` combined | `1699565.875` validated | `3.1161506175994873` validated | First route in the current best objective band from uniform `0.05`. Fixed8, fixed16, and fixed32 validation all returned `1699565.875` bits. |
 | A + L-BFGS-B tail, `lr=0.4` | Resume A, `lbfgsb`, `lr=0.4`, 20 L-BFGS-B steps | `550.6247605990502s` combined | `1699564.25` validated | `2.950817108154297` validated | Lower residual than `lr=0.5`, but `4.375` bits higher and `2.33s` slower. Fixed8, fixed16, and fixed32 validation all returned `1699564.25` bits. |
 | A + L-BFGS-B tail, `lr=0.5` | Resume A, `lbfgsb`, `lr=0.5`, 20 L-BFGS-B steps | `548.2928214290296s` combined | `1699559.875` validated | `4.012872695922852` validated | The workflow summary reported `1699560.0` bits, while manual fixed8, fixed16, and fixed32 validation all returned `1699559.875` bits. |
-| A + L-BFGS-B tail, current best | Resume A, `lbfgsb`, `lr=0.6`, 20 L-BFGS-B steps | `549.3528225499904s` combined | `1699550.875` validated | `5.094226837158203` validated | Best validated objective observed so far, `0.375` bits lower than the long B-continuation tail in about `42%` of its wall time. Fixed8, fixed16, and fixed32 validation all returned `1699550.875` bits. |
+| A + L-BFGS-B tail, fast best | Resume A, `lbfgsb`, `lr=0.6`, 20 L-BFGS-B steps | `549.3528225499904s` combined | `1699550.875` validated | `5.094226837158203` validated | Fast validated route, `0.375` bits lower than the old long B-continuation tail in about `42%` of its wall time. Fixed8, fixed16, and fixed32 validation all returned `1699550.875` bits. |
+| A + L-BFGS-B continuation, current best | Continue the `lr=0.6` tail for 10 more L-BFGS-B steps | `746.7829839309561s` combined | `1699505.5` validated | `9.706039428710938` validated | Best validated objective observed so far. Fixed8, fixed16, and fixed32 validation all returned `1699505.5` bits, but the final accepted step still improved by `8.625` bits. |
 | A + L-BFGS-B tail, rejected high step | Resume A, `lbfgsb`, `lr=0.7`, 20 L-BFGS-B steps | `548.9326881880406s` combined | `1699557.125` | `13.341646194458008` | Upper-bracket reject: worse than `lr=0.6` by `6.25` bits with a much larger residual, so no manual fixed16/fixed32 validation was run. |
 | A + longer L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.1`, 30 L-BFGS-B steps total | `745.2935658869683s` combined | `1699746.125` | `20.155467987060547` | Longer `lr=0.1` tail is slower and worse than the 20-step `lr=0.3` tail. Fixed8, fixed16, and fixed32 validation all returned `1699746.125` bits. |
 | B + early L-BFGS-B tail | Resume B, `lbfgsb`, `lr=0.1`, 20 L-BFGS-B steps | `786.3332051589969s` combined | `1700015.5` | `27.92882537841797` | Later switch is slower and slightly worse than the 30-step tail from A. |
@@ -373,16 +374,20 @@ fixed8 gradient evaluations.  The average first-phase step time was
 the second fixed8 phase averaged `7.9114916901962715s` for B and
 `7.950046648895659s` for C.
 
-The best likelihood value observed in these runs is now the 22-step route A
-followed by 20 L-BFGS-B steps at `lr=0.6`: it lands at `1699550.875` bits in
-`549.35s`, `0.375` bits below the previous best long B-continuation tail while
-saving about `758.79s`.  This is not yet a final optimum: the projected-gradient
-infinity norm remained `5.09423`, and the final accepted L-BFGS-B step still
-improved the objective by `6.125` bits.  The `lr=0.4` variant has a smaller
-residual, `2.95082`, but is `13.375` bits higher and `1.27s` slower than
-`lr=0.6` in the measured runs.  Pushing to `lr=0.7` worsened the endpoint to
-`1699557.125` bits with projected-gradient infinity norm `13.34`, so the
-current useful step scale is bracketed between `0.5` and `0.7`.
+The fastest validated endpoint that beats the old long B-continuation tail is
+the 22-step route A followed by 20 L-BFGS-B steps at `lr=0.6`: it lands at
+`1699550.875` bits in `549.35s`, `0.375` bits below the previous best long
+B-continuation tail while saving about `758.79s`.  Continuing that same L-BFGS-B
+state for 10 more steps reaches the best likelihood observed so far,
+`1699505.5` bits, in `746.78s`.  This is still not a final optimum: the
+projected-gradient infinity norm remained `9.70604`, and the final accepted
+continuation step still improved the objective by `8.625` bits.
+
+The `lr=0.4` variant has a smaller residual, `2.95082`, but is `13.375` bits
+higher and `1.27s` slower than the 20-step `lr=0.6` route in the measured runs.
+Pushing to `lr=0.7` worsened the 20-step endpoint to `1699557.125` bits with
+projected-gradient infinity norm `13.34`, so the current useful initial
+L-BFGS-B step scale is bracketed between `0.5` and `0.7`.
 
 The more conservative 92-step Adagrad point has a higher NLL, `1702241.25`,
 but a smaller projected-gradient residual, `0.56736`.  The current known gap
@@ -400,8 +405,9 @@ Raising the L-BFGS-B step scale to `lr=0.3` made the 20-step tail reach
 `1699565.875` bits in `548.89s`; `lr=0.4` reached `1699564.25` bits in
 `550.62s`; `lr=0.5` reached `1699559.875` bits in `548.29s`; and `lr=0.6`
 reached `1699550.875` bits in `549.35s`; `lr=0.7` fell back to `1699557.125`
-bits.  The improvement is coming from end-to-end parameter movement, not from
-spending more work on Pi/E iterations.
+bits.  Continuing the accepted `lr=0.6` L-BFGS-B state for 10 more steps reached
+`1699505.5` bits in `746.78s` combined.  The improvement is coming from
+end-to-end parameter movement, not from spending more work on Pi/E iterations.
 
 While testing resumed continuations, a workflow stop-rule issue was found and
 fixed: extending a completed checkpoint used to restore `previous_objective`
