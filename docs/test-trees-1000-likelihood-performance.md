@@ -429,6 +429,13 @@ Rejected follow-ups:
   `14`, `2.600s` at `15`, `2.548s` at `16`, `2.519s` at `17`, and `2.559s`
   at `18`, but repeats regressed to about `2.560s` at `17` and `2.603s` at
   `14`.  The documented command therefore keeps `--preprocess-cpu-cores 16`.
+- A later post-scratch/current-code thread resweep likewise failed to replace
+  `16`.  Single samples at `12`, `14`, `16`, `18`, and `20` threads measured
+  `2.285087577009108s`, `2.311186804960016s`, `2.2968016039812937s`,
+  `2.2749476860044524s`, and `2.349719259014819s`, but the low `18`-thread
+  sample did not repeat (`2.3079166330280714s`, `2.2973673989763483s`,
+  `2.3156927170348354s`).  The `12`-thread repeat also landed in-band
+  (`2.297266439010855s`, `2.300386350019835s`, `2.318546007038094s`).
 - Family chunk size was not an active lever under the current `315000` clade
   budget.  Sweeping `250`, `333`, `400`, `500`, `625`, `750`, and `1000` all
   produced `21` batches and similar fixed4 likelihood times.  A paired cold
