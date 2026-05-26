@@ -49,6 +49,7 @@ from gpurec.core.origination import (
 )
 from gpurec.core.parameter_layout import ParameterLayout
 from gpurec.core.forward import pi_export_state_request
+from gpurec.core.likelihood import compute_origination_denominator
 
 from .autograd import (
     ReconStaticState,
@@ -1861,6 +1862,15 @@ class GeneReconModel(torch.nn.Module):
         if not need_grad and self._mode != "genewise":
             first_static = self._ensure_batch_static(0)
             e_solve = solve_resident_e(first_static, theta)
+            origination_denominator = (
+                compute_origination_denominator(
+                    e_solve.e_out["E"],
+                    self._origination_prior.probs,
+                    origination_probs_prepared=True,
+                )
+                if self._origination_prior.is_shared
+                else None
+            )
             scratch_shape = (
                 max(meta.clade_count for meta in self.batch_metadata),
                 int(self._dataset.S),
@@ -1888,6 +1898,7 @@ class GeneReconModel(torch.nn.Module):
                     static,
                     e_solve,
                     scratch_tensors=scratch_tensors,
+                    origination_denominator=origination_denominator,
                 )
                 total_loss = total_loss + loss_i.to(
                     device=total_loss.device,

@@ -71,6 +71,21 @@ def test_root_row_nll_matches_full_pi_for_origination_probability_modes(mode):
     torch.testing.assert_close(root_row_nll, full_pi_nll, rtol=1e-12, atol=1e-12)
 
 
+def test_root_row_nll_accepts_precomputed_denominator():
+    dtype = torch.float64
+    root_rows = torch.tensor(
+        [[-4.0, -2.0, -5.0], [-1.5, -3.0, -2.5]],
+        dtype=dtype,
+    )
+    E = torch.tensor([-3.0, -2.0, -4.0], dtype=dtype)
+    denominator = torch.log2(1 - torch.exp2(E).mean(dim=-1))
+
+    expected = compute_nll_root_rows(root_rows, E)
+    actual = compute_nll_root_rows(root_rows, E, denominator=denominator)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+
 def test_e_step_requires_ancestors_t():
     dtype = torch.float64
     E = torch.full((3,), -1.0, dtype=dtype)

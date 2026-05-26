@@ -45,8 +45,10 @@ through `21` batches.  The forward pass also prepares the DTS `log_pD`/`log_pS`
 addressing metadata once per Pi pass instead of revalidating the same specieswise
 parameter layout for every split wave.  Lazy resident-batch prefetch now uses
 three background static-layout workers instead of one, hiding more of the
-remaining per-batch layout-to-device work under the first likelihood pass.  On
-the local 32-core host, the cold
+remaining per-batch layout-to-device work under the first likelihood pass.
+Shared-theta no-grad streaming also precomputes the root-origination
+denominator from the single shared E solve instead of recomputing it for every
+resident batch.  On the local 32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -77,15 +79,18 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9394730250351131s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.3213535840041004s` |
-| total to first fixed4 likelihood | `2.2608266090392135s` |
+| model init / first resident batch | `0.9345410540117882s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.3226415830431506s` |
+| total to first fixed4 likelihood | `2.257182637054939s` |
 
 The three-worker lazy-prefetch route produced fixed4 cold totals of
 `2.2904225840466097s`, `2.266941985988524s`,
 `2.2779467049986124s`, `2.262116832949687s`,
 `2.2608266090392135s`, `2.2833276209421456s`,
-`2.279989818984177s`, and `2.2708818310056813s`.
+`2.279989818984177s`, and `2.2708818310056813s`.  After precomputing the
+shared origination denominator, three same-route cold samples measured
+`2.278459662979003s`, `2.2939429280231707s`, and the current low
+`2.257182637054939s`.
 The new low remains best-observed rather than a stable median, but the measured
 first-pass component moved from the previous one-worker `~1.334s` band to about
 `1.321s` to `1.325s` in the three-worker samples.  Immediate same-checkout
@@ -98,7 +103,7 @@ Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.2608266090392135s` | `2156427.0` | `670.25` |
+| 4 | `2.257182637054939s` | `2156427.0` | `670.25` |
 | 6 | `2.788982933969237s` | `2157095.0` | `2.25` |
 | 8 | `3.3188985750311986s` | `2157097.25` | `0.0` |
 
@@ -535,6 +540,12 @@ Rejected follow-ups:
   the cold/materialized build-plus-first-measured sample was
   `2.369563494983595s`.  The profiling helper therefore keeps its existing
   always-available NVTX behavior.
+- Precomputing the shared root-origination denominator once from the reused E
+  solve is a small accepted loss-only cleanup.  It removes repeated
+  `exp2/mean/log2` denominator work across the `21` resident batches.  The
+  steady fixed4 materialized check measured `1.2784311089781113s` median and
+  `1.2743548050057143s` minimum, and the cold route produced a new low
+  `2.257182637054939s`.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
@@ -605,6 +616,11 @@ Differences from HOGENOM:
   multifidelity script materializes resident batches before optimizing and has
   fewer/larger optimizer-gradient passes, so this change is not expected to
   move its route in the same way.
+- The shared-denominator cleanup is likewise more visible in the generated
+  likelihood-only benchmark than in the accepted HOGENOM route.  It removes one
+  repeated scalar denominator computation per resident batch after the shared E
+  solve; HOGENOM's route spends much more wall time in gradient and optimizer
+  work.
 - HOGENOM had a faster high-memory no-family-cap scheduling option.  On
   `test_trees_1000`, no-family-cap does not reduce the batch or wave envelope
   under `clade_first_fit` at the current clade budget, so the finite

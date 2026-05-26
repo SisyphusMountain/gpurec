@@ -199,8 +199,9 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
         dtype=torch.float32,
         S=7,
     )
+    model._origination_prior = SimpleNamespace(is_shared=True, probs=None)
     model._ensure_batch_static = lambda batch_idx: statics[batch_idx]
-    e_solve = object()
+    e_solve = SimpleNamespace(e_out={"E": torch.full((7,), -3.0)})
     calls: list[dict[str, object]] = []
 
     def fake_solve_resident_e(static_arg, theta_arg):
@@ -213,12 +214,14 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
         e_solve_arg,
         *,
         scratch_tensors=None,
+        origination_denominator=None,
     ):
         calls.append(
             {
                 "static": static_arg,
                 "e_solve": e_solve_arg,
                 "scratch_tensors": scratch_tensors,
+                "origination_denominator": origination_denominator,
             }
         )
         return torch.tensor(float(len(calls)), dtype=torch.float32)
@@ -241,6 +244,8 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
     assert tuple(first_scratch[0].shape) == (5, 7)
     assert tuple(first_scratch[1].shape) == (5, 7)
     assert calls[1]["scratch_tensors"] is first_scratch
+    assert calls[0]["origination_denominator"] is calls[1]["origination_denominator"]
+    assert torch.is_tensor(calls[0]["origination_denominator"])
 
 
 def test_evaluate_static_state_grad_uses_resident_gradient_boundary(monkeypatch):

@@ -370,17 +370,20 @@ def compute_nll_root_rows(
     origination_probs=None,
     *,
     origination_probs_prepared: bool = False,
+    denominator=None,
 ):
     """Compute per-family NLL from already-gathered root rows.
 
     ``Pi_root_rows`` is ``[G, S]`` in family order. This is equivalent to
     ``compute_nll(Pi, E, root_ids)`` when ``Pi_root_rows`` has been
     gathered as ``Pi[root_ids]``, but avoids keeping the full Pi matrix alive in
-    root-likelihood-only callers.
+    root-likelihood-only callers.  ``denominator`` may be supplied by callers
+    that reuse one E solve across multiple root-row batches.
     """
     if origination_probs is None:
         numerator = logsumexp2(Pi_root_rows, dim=-1) - math.log2(Pi_root_rows.shape[-1])
-        denominator = torch.log2((1 - torch.exp2(E).mean(dim=-1)))
+        if denominator is None:
+            denominator = torch.log2((1 - torch.exp2(E).mean(dim=-1)))
     else:
         probs = prepare_origination_probs(
             origination_probs,
@@ -391,9 +394,10 @@ def compute_nll_root_rows(
             assume_prepared=origination_probs_prepared,
         )
         numerator = _weighted_logsumexp2(Pi_root_rows, probs)
-        denominator = compute_origination_denominator(
-            E,
-            probs,
-            origination_probs_prepared=True,
-        )
+        if denominator is None:
+            denominator = compute_origination_denominator(
+                E,
+                probs,
+                origination_probs_prepared=True,
+            )
     return -(numerator - denominator)

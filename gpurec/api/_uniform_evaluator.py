@@ -60,6 +60,7 @@ def evaluate_resident_no_grad_with_solved_e(
     *,
     per_family: bool = False,
     scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
+    origination_denominator: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Return resident no-grad NLL using a shared E solution."""
     require_default_objective("GeneReconModel")
@@ -77,6 +78,7 @@ def evaluate_resident_no_grad_with_solved_e(
         solve.e_out["E"],
         _origination_probs_for_static(static),
         origination_probs_prepared=True,
+        denominator=origination_denominator,
     )
     static.warm_E = None
     return loss_vec.detach() if per_family else loss_vec.sum().detach()
