@@ -510,6 +510,12 @@ Rejected follow-ups:
   passed, but fixed4 steady timing measured `1.2773516669985838s` median and
   `1.2740960630471818s` minimum, and the cold fixed4 total was
   `2.311466729035601s`.  The normal telemetry path remains in place.
+- Making core NVTX ranges opt-in by environment variable did not improve the
+  normal likelihood run.  With NVTX disabled by default, fixed4 steady timing
+  measured `1.2794013429665938s` median and `1.2745843709562905s` minimum, and
+  the cold/materialized build-plus-first-measured sample was
+  `2.369563494983595s`.  The profiling helper therefore keeps its existing
+  always-available NVTX behavior.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
