@@ -185,6 +185,134 @@ def _optional_result_bool(value: object) -> bool | None:
     return None
 
 
+def _optional_result_path(value: object) -> Path | None:
+    text = _optional_result_text(value)
+    return None if text is None else Path(text)
+
+
+def _optimization_result_from_summary(
+    out_dir: Path,
+    summary: dict[str, Any],
+) -> OptimizationResult:
+    final_nll_bits = _optional_result_float(summary.get("final_nll_bits"))
+    final_grad_inf = _optional_result_float(summary.get("final_grad_inf"))
+    return OptimizationResult(
+        out_dir=out_dir,
+        status=str(summary.get("status", "")),
+        reason=str(summary.get("reason", "")),
+        final_nll_bits=math.nan if final_nll_bits is None else final_nll_bits,
+        final_grad_inf=math.inf if final_grad_inf is None else final_grad_inf,
+        best_nll_bits=_optional_result_float(summary.get("best_nll_bits")),
+        best_step=_optional_result_int(summary.get("best_step")),
+        steps_completed=int(summary["steps_completed"]),
+        elapsed_s=_optional_result_float(summary.get("elapsed_s")),
+        mode=_optional_result_text(summary.get("mode")),
+        optimizer=_optional_result_text(summary.get("optimizer")),
+        families=_optional_result_int(summary.get("families")),
+        species=_optional_result_int(summary.get("species")),
+        batches=_optional_result_int(summary.get("batches")),
+        batch_packing=_optional_result_text(summary.get("batch_packing")),
+        family_chunk_size=_optional_result_int(summary.get("family_chunk_size")),
+        clade_budget=_optional_result_int(summary.get("clade_budget")),
+        fixed_iters_e=_optional_result_int(summary.get("fixed_iters_e")),
+        fixed_iters_pi=_optional_result_int(summary.get("fixed_iters_pi")),
+        neumann_terms=_optional_result_int(summary.get("neumann_terms")),
+        objective=_optional_result_text(summary.get("objective")),
+        gradient_route=_optional_result_text(summary.get("gradient_route")),
+        rate_parameterization=_optional_result_text(
+            summary.get("rate_parameterization")
+        ),
+        production_default_basis=_optional_result_text(
+            summary.get("production_default_basis")
+        ),
+        configured_steps=_optional_result_int(summary.get("configured_steps")),
+        optimizer_step_cap=_optional_result_int(summary.get("optimizer_step_cap")),
+        optimizer_step_cap_reason=_optional_result_text(
+            summary.get("optimizer_step_cap_reason")
+        ),
+        final_check_iters=_optional_result_int(summary.get("final_check_iters")),
+        solver_warmup_iters=_optional_result_int(
+            summary.get("solver_warmup_iters")
+        ),
+        fd_adam_warmup_steps=_optional_result_int(
+            summary.get("fd_adam_warmup_steps")
+        ),
+        fd_hessian_refresh_steps=_optional_result_int(
+            summary.get("fd_hessian_refresh_steps")
+        ),
+        hessian_sgd_normal_fixed_iters_pi=_optional_result_int(
+            summary.get("hessian_sgd_normal_fixed_iters_pi")
+        ),
+        hessian_sgd_normal_neumann_terms=_optional_result_int(
+            summary.get("hessian_sgd_normal_neumann_terms")
+        ),
+        hessian_sgd_pi_adjoint_warmstart=_optional_result_bool(
+            summary.get("hessian_sgd_pi_adjoint_warmstart")
+        ),
+        pi_fixed_point_relaxation=_optional_result_float(
+            summary.get("pi_fixed_point_relaxation")
+        ),
+        hessian_sgd_validation_interval=_optional_result_int(
+            summary.get("hessian_sgd_validation_interval")
+        ),
+        hessian_sgd_validation_fixed_iters_pi=_optional_result_int(
+            summary.get("hessian_sgd_validation_fixed_iters_pi")
+        ),
+        hessian_sgd_validation_neumann_terms=_optional_result_int(
+            summary.get("hessian_sgd_validation_neumann_terms")
+        ),
+        adagrad_restart_schedule=_optional_result_text(
+            summary.get("adagrad_restart_schedule")
+        ),
+        adagrad_restart_total_steps=_optional_result_int(
+            summary.get("adagrad_restart_total_steps")
+        ),
+        adagrad_restart_final_check_iters=_optional_result_int(
+            summary.get("adagrad_restart_final_check_iters")
+        ),
+        final_projected_grad_inf=_optional_result_float(
+            summary.get("final_projected_grad_inf")
+        ),
+        sampling_checkpoint=_optional_result_path(summary.get("sampling_checkpoint")),
+        final_log_likelihood_bits=_optional_result_float(
+            summary.get("final_log_likelihood_bits")
+        ),
+        best_log_likelihood_bits=_optional_result_float(
+            summary.get("best_log_likelihood_bits")
+        ),
+        final_check_status=_optional_result_text(
+            summary.get("final_check_status")
+        ),
+        final_check_source=_optional_result_text(
+            summary.get("final_check_source")
+        ),
+        final_check_reason=_optional_result_text(
+            summary.get("final_check_reason")
+        ),
+        final_check_fallback_clade_budget=_optional_result_float(
+            summary.get("final_check_fallback_clade_budget")
+        ),
+        final_check_loss_abs_delta_bits=_optional_result_float(
+            summary.get("final_check_loss_abs_delta_bits")
+        ),
+        final_check_grad_max_abs_delta=_optional_result_float(
+            summary.get("final_check_grad_max_abs_delta")
+        ),
+        final_check_grad_rel_inf_delta=_optional_result_float(
+            summary.get("final_check_grad_rel_inf_delta")
+        ),
+        final_solver_e_adjoint_failed_batches=_optional_result_float(
+            summary.get("final_solver_e_adjoint_failed_batches")
+        ),
+        final_solver_e_adjoint_success_batches=_optional_result_float(
+            summary.get("final_solver_e_adjoint_success_batches")
+        ),
+        final_solver_e_adjoint_rel_res_max=_optional_result_float(
+            summary.get("final_solver_e_adjoint_rel_res_max")
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class _ResumeState:
     start_step: int = 0
@@ -4279,131 +4407,7 @@ class OptimizationRunner:
                 history_jsonl=self.history_jsonl,
                 per_family_nll=final_per_family_nll,
             )
-            result = OptimizationResult(
-                out_dir=config.out_dir,
-                status=str(status["status"]),
-                reason=str(status["reason"]),
-                final_nll_bits=final_nll_bits,
-                final_grad_inf=final_grad_inf,
-                best_nll_bits=None if best_nll is None else float(best_nll),
-                best_step=None if best_step is None else int(best_step),
-                steps_completed=int(final_row["step"]),
-                elapsed_s=float(final_status["elapsed_s"]),
-                mode=config.mode,
-                optimizer=config.optimizer,
-                families=int(model.n_families),
-                species=int(model.n_species),
-                batches=len(model.batch_metadata),
-                batch_packing=_optional_result_text(
-                    route_metadata.get("batch_packing")
-                ),
-                family_chunk_size=int(route_metadata["family_chunk_size"]),
-                clade_budget=_optional_result_int(route_metadata.get("clade_budget")),
-                fixed_iters_e=_optional_result_int(
-                    route_metadata.get("fixed_iters_e")
-                ),
-                fixed_iters_pi=_optional_result_int(
-                    route_metadata.get("fixed_iters_pi")
-                ),
-                neumann_terms=_optional_result_int(
-                    route_metadata.get("neumann_terms")
-                ),
-                objective=_optional_result_text(route_metadata.get("objective")),
-                gradient_route=_optional_result_text(
-                    route_metadata.get("gradient_route")
-                ),
-                rate_parameterization=_optional_result_text(
-                    route_metadata.get("rate_parameterization")
-                ),
-                production_default_basis=_optional_result_text(
-                    route_metadata.get("production_default_basis")
-                ),
-                configured_steps=int(route_metadata["configured_steps"]),
-                optimizer_step_cap=int(route_metadata["optimizer_step_cap"]),
-                optimizer_step_cap_reason=_optional_result_text(
-                    route_metadata.get("optimizer_step_cap_reason")
-                ),
-                final_check_iters=int(route_metadata["final_check_iters"]),
-                solver_warmup_iters=_optional_result_int(
-                    route_metadata.get("solver_warmup_iters")
-                ),
-                fd_adam_warmup_steps=_optional_result_int(
-                    route_metadata.get("fd_adam_warmup_steps")
-                ),
-                fd_hessian_refresh_steps=_optional_result_int(
-                    route_metadata.get("fd_hessian_refresh_steps")
-                ),
-                hessian_sgd_normal_fixed_iters_pi=_optional_result_int(
-                    route_metadata.get("hessian_sgd_normal_fixed_iters_pi")
-                ),
-                hessian_sgd_normal_neumann_terms=_optional_result_int(
-                    route_metadata.get("hessian_sgd_normal_neumann_terms")
-                ),
-                hessian_sgd_pi_adjoint_warmstart=_optional_result_bool(
-                    route_metadata.get("hessian_sgd_pi_adjoint_warmstart")
-                ),
-                pi_fixed_point_relaxation=_optional_result_float(
-                    route_metadata.get("pi_fixed_point_relaxation")
-                ),
-                hessian_sgd_validation_interval=_optional_result_int(
-                    route_metadata.get("hessian_sgd_validation_interval")
-                ),
-                hessian_sgd_validation_fixed_iters_pi=_optional_result_int(
-                    route_metadata.get("hessian_sgd_validation_fixed_iters_pi")
-                ),
-                hessian_sgd_validation_neumann_terms=_optional_result_int(
-                    route_metadata.get("hessian_sgd_validation_neumann_terms")
-                ),
-                adagrad_restart_schedule=_optional_result_text(
-                    route_metadata.get("adagrad_restart_schedule")
-                ),
-                adagrad_restart_total_steps=_optional_result_int(
-                    route_metadata.get("adagrad_restart_total_steps")
-                ),
-                adagrad_restart_final_check_iters=_optional_result_int(
-                    route_metadata.get("adagrad_restart_final_check_iters")
-                ),
-                final_projected_grad_inf=final_projected_grad_inf,
-                sampling_checkpoint=sampling_checkpoint,
-                final_log_likelihood_bits=final_log_likelihood_bits,
-                best_log_likelihood_bits=best_log_likelihood_bits,
-                final_check_status=(
-                    _optional_result_text(
-                        final_check_summary.get("final_check_status")
-                    )
-                ),
-                final_check_source=(
-                    _optional_result_text(
-                        final_check_summary.get("final_check_source")
-                    )
-                ),
-                final_check_reason=(
-                    _optional_result_text(
-                        final_check_summary.get("final_check_reason")
-                    )
-                ),
-                final_check_fallback_clade_budget=_optional_result_float(
-                    final_check_summary.get("final_check_fallback_clade_budget")
-                ),
-                final_check_loss_abs_delta_bits=_optional_result_float(
-                    final_check_summary.get("final_check_loss_abs_delta_bits")
-                ),
-                final_check_grad_max_abs_delta=_optional_result_float(
-                    final_check_summary.get("final_check_grad_max_abs_delta")
-                ),
-                final_check_grad_rel_inf_delta=_optional_result_float(
-                    final_check_summary.get("final_check_grad_rel_inf_delta")
-                ),
-                final_solver_e_adjoint_failed_batches=_optional_result_float(
-                    final_solver_summary.get("final_solver_e_adjoint_failed_batches")
-                ),
-                final_solver_e_adjoint_success_batches=_optional_result_float(
-                    final_solver_summary.get("final_solver_e_adjoint_success_batches")
-                ),
-                final_solver_e_adjoint_rel_res_max=_optional_result_float(
-                    final_solver_summary.get("final_solver_e_adjoint_rel_res_max")
-                ),
-            )
+            result = _optimization_result_from_summary(config.out_dir, summary)
         except BaseException as exc:
             close_model_after_error(model, exc)
             raise

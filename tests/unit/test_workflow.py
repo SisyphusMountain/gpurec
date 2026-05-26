@@ -1309,6 +1309,129 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["hessian_sgd_validation_neumann_terms"] is None
 
 
+def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
+    checkpoint = tmp_path / "out" / "checkpoints" / "best.pt"
+    basis = "hogenom_and_" + "test_trees_" + "1000"
+    summary = {
+        "status": "converged",
+        "reason": "loss_change_patience",
+        "elapsed_s": 1.25,
+        "best_nll_bits": 9.5,
+        "best_step": 4,
+        "objective": "negative_log_likelihood_bits",
+        "gradient_route": "implicit_first_order_adjoint",
+        "rate_parameterization": "base2_log_dlt_rates",
+        "production_default_basis": basis,
+        "mode": "genewise",
+        "optimizer": "hessian-sgd",
+        "batch_packing": "depth_first_fit",
+        "family_chunk_size": 64,
+        "clade_budget": 500_000,
+        "fixed_iters_e": None,
+        "fixed_iters_pi": 16,
+        "neumann_terms": 16,
+        "final_check_iters": 32,
+        "configured_steps": 5000,
+        "optimizer_step_cap": 5000,
+        "optimizer_step_cap_reason": "configured_steps",
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "hessian_sgd_normal_fixed_iters_pi": 12,
+        "hessian_sgd_normal_neumann_terms": 14,
+        "hessian_sgd_pi_adjoint_warmstart": True,
+        "pi_fixed_point_relaxation": 1.25,
+        "hessian_sgd_validation_interval": 8,
+        "hessian_sgd_validation_fixed_iters_pi": 32,
+        "hessian_sgd_validation_neumann_terms": 48,
+        "families": 10,
+        "species": 257,
+        "batches": 3,
+        "steps_completed": 5,
+        "sampling_checkpoint": str(checkpoint),
+        "final_nll_bits": 10.0,
+        "final_log_likelihood_bits": -10.0,
+        "best_log_likelihood_bits": -9.5,
+        "final_grad_inf": 0.125,
+        "final_projected_grad_inf": 0.0625,
+        "final_check_status": "ok",
+        "final_check_source": "configured_solver_budget",
+        "final_check_reason": "within_tolerance",
+        "final_check_fallback_clade_budget": 100_000.0,
+        "final_check_loss_abs_delta_bits": 0.0,
+        "final_check_grad_max_abs_delta": 1e-6,
+        "final_check_grad_rel_inf_delta": 1e-7,
+        "final_solver_e_adjoint_failed_batches": 0.0,
+        "final_solver_e_adjoint_success_batches": 3.0,
+        "final_solver_e_adjoint_rel_res_max": 0.001,
+    }
+
+    result = optimize_workflow._optimization_result_from_summary(
+        tmp_path / "out",
+        summary,
+    )
+
+    expected = {
+        "status": "converged",
+        "reason": "loss_change_patience",
+        "mode": "genewise",
+        "optimizer": "hessian-sgd",
+        "objective": "negative_log_likelihood_bits",
+        "gradient_route": "implicit_first_order_adjoint",
+        "rate_parameterization": "base2_log_dlt_rates",
+        "production_default_basis": basis,
+        "batch_packing": "depth_first_fit",
+        "family_chunk_size": 64,
+        "clade_budget": 500_000,
+        "fixed_iters_e": None,
+        "fixed_iters_pi": 16,
+        "neumann_terms": 16,
+        "configured_steps": 5000,
+        "optimizer_step_cap": 5000,
+        "optimizer_step_cap_reason": "configured_steps",
+        "final_check_iters": 32,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "hessian_sgd_normal_fixed_iters_pi": 12,
+        "hessian_sgd_normal_neumann_terms": 14,
+        "hessian_sgd_pi_adjoint_warmstart": True,
+        "hessian_sgd_validation_interval": 8,
+        "hessian_sgd_validation_fixed_iters_pi": 32,
+        "hessian_sgd_validation_neumann_terms": 48,
+        "families": 10,
+        "species": 257,
+        "batches": 3,
+        "steps_completed": 5,
+        "best_step": 4,
+        "final_check_status": "ok",
+        "final_check_source": "configured_solver_budget",
+        "final_check_reason": "within_tolerance",
+    }
+    for field, value in expected.items():
+        assert getattr(result, field) == value
+    assert result.out_dir == tmp_path / "out"
+    assert result.sampling_checkpoint == checkpoint
+    assert result.elapsed_s == pytest.approx(1.25)
+    assert result.final_nll_bits == pytest.approx(10.0)
+    assert result.final_log_likelihood_bits == pytest.approx(-10.0)
+    assert result.best_nll_bits == pytest.approx(9.5)
+    assert result.best_log_likelihood_bits == pytest.approx(-9.5)
+    assert result.final_grad_inf == pytest.approx(0.125)
+    assert result.final_projected_grad_inf == pytest.approx(0.0625)
+    assert result.pi_fixed_point_relaxation == pytest.approx(1.25)
+    assert result.final_check_fallback_clade_budget == pytest.approx(100_000.0)
+    assert result.final_check_loss_abs_delta_bits == pytest.approx(0.0)
+    assert result.final_check_grad_max_abs_delta == pytest.approx(1e-6)
+    assert result.final_check_grad_rel_inf_delta == pytest.approx(1e-7)
+    assert result.final_solver_e_adjoint_failed_batches == pytest.approx(0.0)
+    assert result.final_solver_e_adjoint_success_batches == pytest.approx(3.0)
+    assert result.final_solver_e_adjoint_rel_res_max == pytest.approx(0.001)
+    assert result.adagrad_restart_schedule is None
+    assert result.adagrad_restart_total_steps is None
+    assert result.adagrad_restart_final_check_iters is None
+
+
 def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
     tmp_path: Path,
 ):
