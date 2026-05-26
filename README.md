@@ -357,7 +357,10 @@ basis, optimizer-specific route fields,
 `final_check_grad_max_abs_delta`, and `final_check_grad_rel_inf_delta` for
 quick terminal triage. Add `--require-converged` to `gpurec optimize` when a
 shell pipeline should print the same optimization status line and then exit
-nonzero unless the run reached `status=converged`.
+nonzero unless the run reached `status=converged`. Add
+`--require-final-check-ok` when the same pipeline should also fail unless the
+final high-fidelity likelihood/gradient validation reports
+`final_check_status=ok`.
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including history fields, checkpoint contents, rate-table
@@ -365,7 +368,9 @@ columns, genewise per-family likelihoods, and sampling files.
 Use `gpurec summary-info --summary output_gpurec/summary.json` to inspect the
 final summary status, likelihood/gradient diagnostics, and route metadata
 without opening JSON by hand. Add `--require-converged` when a shell pipeline
-or workflow manager should fail unless the summary status is `converged`.
+or workflow manager should fail unless the summary status is `converged`, and
+add `--require-final-check-ok` when it should also require
+`final_check_status=ok`.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 to inspect checkpoint progress, status, optimizer route, and last
 likelihood/gradient diagnostics without constructing the CUDA likelihood model.
@@ -465,7 +470,9 @@ reported by the optimizer, falling back to `checkpoints/best.pt` or
 fails.  Failed optimization still prints the optimization status line before
 `gpurec run` exits. Add `--require-converged` when `gpurec run` should print
 the optimization status and exit before sampling unless the run reached
-`status=converged`. When sampling succeeds, the final status line also reports
+`status=converged`; add `--require-final-check-ok` when it should also skip
+sampling unless `final_check_status=ok`. When sampling succeeds, the final
+status line also reports
 `sampled_families`, `samples`, `xml`, and `sample_out_dir`. Use
 `gpurec sample --checkpoint ...` to sample an existing run.
 

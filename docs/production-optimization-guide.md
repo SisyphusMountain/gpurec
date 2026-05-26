@@ -209,6 +209,9 @@ status, objective, gradient, and route fields in a stable terminal record. Add
 For direct optimization workflows, add `gpurec optimize --require-converged`
 when the optimize command itself should return nonzero for `not_converged`
 instead of relying on a later `summary-info` check.
+Add `--require-final-check-ok` to `gpurec optimize`, `gpurec summary-info`, or
+`gpurec run` when the shell command should also fail unless the final
+high-fidelity likelihood/gradient validation reports `final_check_status=ok`.
 For combined optimize-and-sample workflows, add
 `gpurec run --require-converged` when sampling should be skipped unless
 optimization reached `status=converged`.

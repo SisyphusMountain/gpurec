@@ -47,6 +47,21 @@ def _exit_runtime_error(parser: argparse.ArgumentParser, message: str) -> None:
     parser.exit(status=1, message=f"error: {message}\n")
 
 
+def _exit_unless_final_check_ok(
+    parser: argparse.ArgumentParser,
+    status: object,
+    *,
+    subject: str,
+    action: str | None = None,
+) -> None:
+    if status == "ok":
+        return
+    message = f"{subject} final check status is {status!r}; expected 'ok'"
+    if action is not None:
+        message = f"{message}; {action}"
+    parser.exit(status=1, message=f"{message}\n")
+
+
 def _optional_metric_text(name: str, value: object) -> str:
     if value is None:
         return f"{name}=null"
@@ -1239,6 +1254,14 @@ def build_parser() -> argparse.ArgumentParser:
             "the status is converged."
         ),
     )
+    optimize_parser.add_argument(
+        "--require-final-check-ok",
+        action="store_true",
+        help=(
+            "After printing the optimization status, exit with status 1 unless "
+            "final_check_status is ok."
+        ),
+    )
     optimize_parser.set_defaults(_command_parser=optimize_parser)
 
     validate_parser = sub.add_parser(
@@ -1294,6 +1317,14 @@ def build_parser() -> argparse.ArgumentParser:
             "sampling unless the status is converged."
         ),
     )
+    run_parser.add_argument(
+        "--require-final-check-ok",
+        action="store_true",
+        help=(
+            "After optimization, print the optimization status and exit before "
+            "sampling unless final_check_status is ok."
+        ),
+    )
     run_parser.set_defaults(_command_parser=run_parser)
 
     backtrack_check_parser = sub.add_parser(
@@ -1343,6 +1374,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Exit with status 1 after printing the summary unless "
             "summary.status is converged."
+        ),
+    )
+    summary_info_parser.add_argument(
+        "--require-final-check-ok",
+        action="store_true",
+        help=(
+            "Exit with status 1 after printing the summary unless "
+            "summary.final_check_status is ok."
         ),
     )
     summary_info_parser.set_defaults(_command_parser=summary_info_parser)
@@ -1433,6 +1472,12 @@ def main(argv: list[str] | None = None) -> None:
                     f"{result.status!r}; expected 'converged'"
                     "\n"
                 ),
+            )
+        if args.require_final_check_ok:
+            _exit_unless_final_check_ok(
+                command_parser,
+                getattr(result, "final_check_status", None),
+                subject="optimization",
             )
         return
     if args.command == "validate-config":
@@ -1535,6 +1580,12 @@ def main(argv: list[str] | None = None) -> None:
                     "\n"
                 ),
             )
+        if args.require_final_check_ok:
+            _exit_unless_final_check_ok(
+                command_parser,
+                payload.get("final_check_status"),
+                subject="summary",
+            )
         return
     if args.command == "backtrack-check":
         try:
@@ -1591,6 +1642,22 @@ def main(argv: list[str] | None = None) -> None:
                     f"{opt_result.status!r}; expected 'converged'; "
                     "refusing to sample\n"
                 ),
+            )
+        if args.require_final_check_ok and getattr(
+            opt_result,
+            "final_check_status",
+            None,
+        ) != "ok":
+            print(
+                f"{_optimization_result_text(opt_result)} "
+                f"{_optional_text('out_dir', run_config.out_dir)}",
+                flush=True,
+            )
+            _exit_unless_final_check_ok(
+                command_parser,
+                getattr(opt_result, "final_check_status", None),
+                subject="optimization",
+                action="refusing to sample",
             )
         checkpoint = getattr(opt_result, "sampling_checkpoint", None)
         if checkpoint is None:

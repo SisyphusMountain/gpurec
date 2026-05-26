@@ -83,7 +83,8 @@ same final/best NLL and log-likelihood fields, plus `final_grad_inf`,
 and fallback budget/loss/gradient delta fields, for quick terminal triage.
 Add `--require-converged` to `gpurec optimize` when the command should print
 the same status line and then exit nonzero unless the optimization status is
-`converged`.
+`converged`. Add `--require-final-check-ok` when it should also require
+`final_check_status=ok` before returning success.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.
@@ -95,7 +96,9 @@ gpurec summary-info --summary output_gpurec/summary.json
 ```
 
 Add `--require-converged` when the command should print the same summary line
-and then exit nonzero unless `summary.status` is `converged`.
+and then exit nonzero unless `summary.status` is `converged`. Add
+`--require-final-check-ok` when downstream automation should also require
+`summary.final_check_status` to be `ok`.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering
@@ -124,7 +127,8 @@ status line prints the optimization fields plus `sampled_families`, `samples`,
 optimization fails, `gpurec run` prints the optimization status fields and exits
 without sampling fields. With `--require-converged`, `gpurec run` also prints
 the optimization status fields and exits before sampling when the optimization
-status is anything other than `converged`.
+status is anything other than `converged`. With `--require-final-check-ok`, it
+also exits before sampling unless `final_check_status=ok`.
 
 | Path | Contents |
 |---|---|

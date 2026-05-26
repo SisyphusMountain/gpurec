@@ -64,7 +64,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     assert set(_run_config_cli_override_fields()) == run_config_fields
     assert not hasattr(gpurec_cli, "_RUN_CONFIG_CLI_OVERRIDE_FIELDS")
     assert _parser_action_dests("optimize") == (
-        expected_parser_dests | {"require_converged"}
+        expected_parser_dests | {"require_converged", "require_final_check_ok"}
     )
     assert _parser_action_dests("validate-config") == (
         expected_parser_dests | {"check_preprocess", "require_cuda_backward_ready"}
@@ -78,10 +78,15 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "max_events",
         "backtrack_binary",
         "require_converged",
+        "require_final_check_ok",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
     assert _parser_action_dests("checkpoint-info") == {"checkpoint"}
-    assert _parser_action_dests("summary-info") == {"summary", "require_converged"}
+    assert _parser_action_dests("summary-info") == {
+        "summary",
+        "require_converged",
+        "require_final_check_ok",
+    }
     assert _parser_action_dests("config-template") == {
         "mode",
         "species_tree",
@@ -1525,6 +1530,69 @@ def test_cli_summary_info_require_converged_fails_after_printing_summary(
     assert "Traceback" not in captured.err
 
 
+def test_cli_summary_info_require_final_check_ok_accepts_ok_summary(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "not_converged",
+                "reason": "max_steps",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "final_check_status": "ok",
+                "final_check_source": "configured_solver_budget",
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(["summary-info", "--summary", str(summary), "--require-final-check-ok"])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "status=not_converged" in captured.out
+    assert "final_check_status=ok" in captured.out
+    assert "final_check_source=configured_solver_budget" in captured.out
+
+
+def test_cli_summary_info_require_final_check_ok_fails_after_printing_summary(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "best_likelihood_patience",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "final_check_status": "failed",
+                "final_check_source": "configured_solver_budget",
+                "final_check_reason": "nonfinite_check_gradient",
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["summary-info", "--summary", str(summary), "--require-final-check-ok"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "status=converged" in captured.out
+    assert "final_check_status=failed" in captured.out
+    assert "final_check_reason=nonfinite_check_gradient" in captured.out
+    assert "summary final check status is 'failed'; expected 'ok'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_summary_info_reports_missing_path_without_traceback(
     tmp_path: Path,
     capsys,
@@ -1877,6 +1945,74 @@ def test_cli_optimize_require_converged_fails_after_printing_status(
     assert "final_nll_bits=12.000000" in captured.out
     assert "best_nll_bits=11.000000" in captured.out
     assert "optimization status is 'not_converged'; expected 'converged'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_optimize_require_final_check_ok_accepts_ok_result(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def checked_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="not_converged",
+            reason="max_steps",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            final_check_status="ok",
+            final_check_source="configured_solver_budget",
+            final_nll_bits=12.0,
+            best_nll_bits=11.0,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", checked_optimize)
+
+    main(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + ["--require-final-check-ok"]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "status=not_converged" in captured.out
+    assert "final_check_status=ok" in captured.out
+    assert "final_check_source=configured_solver_budget" in captured.out
+
+
+def test_cli_optimize_require_final_check_ok_fails_after_printing_status(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unchecked_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="converged",
+            reason="best_likelihood_patience",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            final_check_status="skipped",
+            final_check_source="not_evaluated",
+            final_nll_bits=12.0,
+            best_nll_bits=11.0,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", unchecked_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("optimize", tmp_path)
+            + ["--require-final-check-ok"]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "status=converged" in captured.out
+    assert "final_check_status=skipped" in captured.out
+    assert "final_check_source=not_evaluated" in captured.out
+    assert "optimization final check status is 'skipped'; expected 'ok'" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -2251,6 +2387,57 @@ def test_cli_run_require_converged_refuses_not_converged_sampling(
     assert "Traceback" not in captured.err
 
 
+def test_cli_run_require_final_check_ok_refuses_unchecked_sampling(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    checkpoint_dir = tmp_path / "out" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "latest.pt").write_bytes(b"not sampled")
+
+    def unchecked_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="converged",
+            reason="best_likelihood_patience",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            sampling_checkpoint=checkpoint_dir / "latest.pt",
+            final_check_status="disabled",
+            final_check_source="not_evaluated",
+            final_nll_bits=12.0,
+            best_nll_bits=11.0,
+        )
+
+    def unexpected_sample(config):
+        raise AssertionError("sample should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unchecked_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("run", tmp_path)
+            + ["--require-final-check-ok"]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "status=converged" in captured.out
+    assert "final_check_status=disabled" in captured.out
+    assert "final_check_source=not_evaluated" in captured.out
+    assert "sampled_families" not in captured.out
+    assert "sample_out_dir" not in captured.out
+    assert (
+        "optimization final check status is 'disabled'; expected 'ok'; "
+        "refusing to sample"
+    ) in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_run_rejects_checkpoint_argument_without_traceback(capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(["run", "--checkpoint", "existing.pt"])
@@ -2275,6 +2462,7 @@ def test_cli_run_help_omits_checkpoint_argument(capsys):
     assert "--checkpoint CHECKPOINT" not in captured.out
     assert "--resume-from" in captured.out
     assert "--require-converged" in captured.out
+    assert "--require-final-check-ok" in captured.out
     assert "--backtrack-binary" in captured.out
     assert "GPUREC_BACKTRACK_BIN" in captured.out
 
@@ -2341,6 +2529,7 @@ def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
     assert "ffd/clade_ffd" in captured.out
     assert "depth_ffd/wave_first_fit" in captured.out
     assert "--require-converged" in captured.out
+    assert "--require-final-check-ok" in captured.out
 
 
 def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):
