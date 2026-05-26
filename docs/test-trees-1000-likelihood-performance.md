@@ -122,6 +122,24 @@ bit of the fixed8/fixed128 likelihood.  The `E=6, Pi=4` route is slightly more
 optimistic than fixed8, but still much closer than tied fixed4 and much faster
 than tied fixed6.
 
+There is also a distinct fast-approximate route below fixed4.  The old tied
+`E=2, Pi=2` point is unusable, but increasing only E makes `Pi=2` useful:
+
+| E budget | Pi budget | materialized pass | loss bits | signed loss delta vs fixed8 |
+|---:|---:|---:|---:|---:|
+| 2 | 2 | `0.7900940429535694s` | `2098963.0` | `-58134.25` |
+| 3 | 2 | `0.7688322209869511s` | `2149260.0` | `-7837.25` |
+| 4 | 2 | `0.768705825030338s` | `2156863.0` | `-234.25` |
+| 5 | 2 | `0.769144629011862s` | `2157447.25` | `+350.0` |
+| 6 | 2 | `0.7699056839919649s` | `2157479.75` | `+382.5` |
+| 8 | 2 | `0.7709092769655399s` | `2157481.25` | `+384.0` |
+
+The best fast-approximate point is `E=4, Pi=2`: it is much faster than tied
+fixed4 and its absolute loss error is smaller than tied fixed4's `670.25`-bit
+gap.  Five cold `E=4, Pi=2` samples measured `1.789836187963374s`,
+`1.7681905870558694s`, `1.8027284189593047s`, `1.801696198002901s`, and
+`1.7690634109312668s`, all with loss `2156863.0`.
+
 A materialized split-budget sweep with Pi fixed at `4` measured `E=5` at
 `1.2753524020081386s` and `2157060.5` bits, `E=6` at
 `1.2751596000161953s` and `2157096.0` bits, `E=7` at
@@ -402,16 +420,17 @@ is steady-state after that warmup.
 
 Interpretation:
 
-- Starting at `4` Pi iterations is a good warm phase.  It is about `40%`
-  cheaper than `8` for likelihood-only and about `27%` cheaper than `8` for
+- Tied `4` Pi/E iterations is a good warm phase.  It is about `40%` cheaper
+  than tied `8` for likelihood-only and about `27%` cheaper than tied `8` for
   loss+backward.
-- Do not start the default ladder at `2` on this dataset.  A steady-state
-  sample measured `0.7704234900302254s`, but its loss was only `2098963.0`
-  bits, about `58134.25` bits below the fixed8/fixed128 value.
-- Do not treat `4` as final fidelity on this dataset.  It is still `670` bits
-  away from the fixed128 reference, in the optimistic direction.  Promote to at
-  least `6` once a cheap phase stops making progress; `6` is within `2` bits of
-  fixed128 here.
+- Do not start a tied-budget ladder at `2` on this dataset.  A tied `E=2, Pi=2`
+  steady-state sample measured `0.7704234900302254s`, but its loss was only
+  `2098963.0` bits, about `58134.25` bits below the fixed8/fixed128 value.
+  The useful fast low-budget point is split `E=4, Pi=2`, not tied `2`.
+- Do not treat tied `4` as final fidelity on this dataset.  It is still `670`
+  bits away from the fixed128 reference, in the optimistic direction.
+  `E=4, Pi=2` is faster and closer in absolute loss error, and `E=8, Pi=4` is
+  the current near-reference point.
 - `8`, `32`, and `128` agree at the printed precision, so higher fixed budgets
   are useful mainly as periodic validation points, not every-step work.
 - The fixed4 error is spread across the resident batches, not concentrated in
@@ -772,13 +791,11 @@ Differences from HOGENOM:
 
 - HOGENOM's successful counts-free specieswise route used a `8 -> 16 -> 32`
   optimizer budget ladder with a `128` validation check.  On `test_trees_1000`,
-  the first useful fidelity point is lower: start the exploratory phase at `4`
-  Pi iterations rather than going directly to `8`, then promote once the cheap
-  phase stalls.  `6` is already nearly at the high-budget likelihood here, and
-  for likelihood-only checks the best measured near-reference point decouples
-  the budgets: `E=8, Pi=4` is within one bit of tied fixed8/fixed128 while
-  staying in the fixed4 Pi timing band.  That split-budget shortcut was not the
-  HOGENOM route, where the accepted schedule used tied higher-fidelity
+  the first useful fidelity points are lower and decoupled: `E=4, Pi=2` is the
+  best fast approximate likelihood point found so far, and `E=8, Pi=4` is the
+  best measured near-reference point, within one bit of tied fixed8/fixed128
+  while staying in the fixed4 Pi timing band.  Those split-budget shortcuts were
+  not the HOGENOM route, where the accepted schedule used tied higher-fidelity
   optimizer phases.
 - HOGENOM worked best with `depth_first_fit`.  On `test_trees_1000`, depth-first
   originally gave similar steady likelihood timing but paid an extra Python
