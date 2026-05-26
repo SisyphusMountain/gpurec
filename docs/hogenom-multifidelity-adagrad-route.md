@@ -81,6 +81,13 @@ finishes about 36 seconds faster than the discovery run.
   `535334.9375` bits; its best checkpoint still validated at
   `534355.5` bits.  Starting Pi at `4` saves time, but the HOGENOM
   basin found by the original tied fixed8 warmup is materially better.
+- After adding opt-in phase-loss promotion to the production workflow, a short
+  smoke run with `8/4:1.0:2,16/8:0.5:2`,
+  `adagrad_restart_phase_loss_patience=1`, and fixed16 final validation took
+  `15.33s` process wall time (`8.957843975978903s` optimizer elapsed).  Solver
+  stats verified the first phase used Pi/Neumann `4`, the second used
+  Pi/Neumann `8`, and the final evaluation used fixed16.  This only validates
+  the workflow scheduling path; it is not an optimum comparison.
 
 ## Adaptive Schedule
 

@@ -1365,6 +1365,8 @@ def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
         "checkpoint_every": 1,
     }
     data.update(production_default_optimizer_config_overrides(args.mode))
+    if args.mode == "specieswise":
+        data["adagrad_restart_phase_loss_patience"] = 0
     return data
 
 
@@ -1729,6 +1731,14 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Final specieswise validation budget for adagrad-restarts; "
             "workflow default: 128."
+        ),
+    )
+    parser.add_argument(
+        "--adagrad-restart-phase-loss-patience",
+        type=int,
+        help=(
+            "For specieswise adagrad-restarts, advance to the next restart "
+            "phase after this many flat-loss steps; 0 keeps fixed phase lengths."
         ),
     )
     parser.add_argument("--lbfgs-lr", type=float, help="LBFGS learning rate.")

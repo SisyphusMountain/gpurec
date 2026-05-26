@@ -481,6 +481,7 @@ _JSON_INT_FIELDS = {
     "hessian_sgd_validation_fixed_iters_pi",
     "hessian_sgd_validation_neumann_terms",
     "adagrad_restart_final_check_iters",
+    "adagrad_restart_phase_loss_patience",
     "adaptive_rebatch_check_interval",
     "adaptive_rebatch_min_remaining_families",
     "lbfgs_history_size",
@@ -626,6 +627,7 @@ class RunConfig:
     hessian_sgd_validation_neumann_terms: int | None = None
     adagrad_restart_schedule: str = DEFAULT_ADAGRAD_RESTART_SCHEDULE
     adagrad_restart_final_check_iters: int = DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS
+    adagrad_restart_phase_loss_patience: int = 0
     lbfgs_lr: float = 0.1
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 1
@@ -760,6 +762,10 @@ class RunConfig:
         self.adagrad_restart_final_check_iters = _normalize_nonnegative_int(
             "adagrad_restart_final_check_iters",
             self.adagrad_restart_final_check_iters,
+        )
+        self.adagrad_restart_phase_loss_patience = _normalize_nonnegative_int(
+            "adagrad_restart_phase_loss_patience",
+            self.adagrad_restart_phase_loss_patience,
         )
         self.adaptive_rebatch_check_interval = _normalize_positive_int(
             "adaptive_rebatch_check_interval",

@@ -456,6 +456,8 @@ def test_cli_forwards_adagrad_restart_controls(tmp_path: Path):
             "4:1.0:2,8:0.5:3",
             "--adagrad-restart-final-check-iters",
             "16",
+            "--adagrad-restart-phase-loss-patience",
+            "2",
         ]
     )
 
@@ -464,6 +466,7 @@ def test_cli_forwards_adagrad_restart_controls(tmp_path: Path):
     assert config.optimizer == "adagrad-restarts"
     assert config.adagrad_restart_schedule == "4:1:2,8:0.5:3"
     assert config.adagrad_restart_final_check_iters == 16
+    assert config.adagrad_restart_phase_loss_patience == 2
 
 
 def test_cli_normalizes_mode_and_optimizer_alias_flags(tmp_path: Path):
@@ -569,6 +572,7 @@ def test_cli_config_template_prints_specieswise_adagrad_restart_defaults(capsys)
     assert "hessian_sgd_pi_adjoint_warmstart" not in data
     assert "pi_fixed_point_relaxation" not in data
     assert "hessian_sgd_validation_interval" not in data
+    assert data["adagrad_restart_phase_loss_patience"] == 0
     assert "fd_hessian_refresh_steps" not in data
 
 

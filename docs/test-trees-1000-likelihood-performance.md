@@ -128,6 +128,15 @@ and `2.2791547380620614s` with the slightly optimistic `2157096.0`-bit loss.
 After adding production split-schedule support, a same-route `E=8, Pi=4,
 Neumann=4` cold recheck measured `2.3047162730363198s` total with loss
 `2157098.25` bits; it is a normal in-band sample, not a new best.
+An explicit promotion sequence starting with `E=8, Pi=4` and then evaluating
+tied fixed8 measured `2.2692654849379323s` to the Pi4 result, then another
+`2.3189413659856655s` for the fixed8 pass, for `4.588206850923598s`
+cumulative.  Starting with Pi4 is therefore useful when the approximate result
+or first optimizer phase is useful by itself; it is not a free prelude if the
+caller immediately requires a tied fixed8 likelihood.
+Starting with tied fixed4 and then promoting to `E=8, Pi=4` measured
+`3.5742293469957076s` cumulative, so the best near-reference single result
+still starts directly at `E=8, Pi=4`.
 Changing `family_chunk_size` did not change the 21-batch retained layout; a
 single `666` sample reached `2.2480324909556657s`, but repeats moved back into
 the `2.27s` to `2.32s` band, so this remains construction noise rather than a
@@ -257,6 +266,18 @@ Runtime environment rechecks did not establish a route change.  Explicit
 repeat as a stable improvement, and `CUDA_DEVICE_MAX_CONNECTIONS=8` measured
 `2.2815428160247393s`.  Setting `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1` measured
 `2.2856818459695205s`.
+
+The production workflow now also supports opt-in early phase promotion for
+specieswise `adagrad-restarts`: `adagrad_restart_phase_loss_patience > 0`
+advances to the next scheduled budget when the current phase's loss stalls,
+while the schedule's `steps` values remain hard caps.  A short validation run
+on this dataset used `8/4:1.0:3,8:0.5:3` with phase patience `1`, fixed phase
+caps, and fixed8 final validation.  Process wall time was `63.42s`; optimizer
+summary elapsed was `61.245588069956284s`.  The first phase solver stats
+reported Pi/Neumann `4`, the second reported Pi/Neumann `8`, and final
+fixed8 validation ended at `1761134.0` bits with projected gradient infinity
+norm `11.61174201965332`.  This run validates the Pi4-start workflow path; it
+is a six-step smoke, not an optimum search.
 
 Adaptive fixed-point stopping is also rejected for this likelihood-only route.
 The benchmark harness can now pass `--adaptive-iters`, but the convergence

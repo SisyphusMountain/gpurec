@@ -194,6 +194,10 @@ E/Pi/Neumann budget fields are typed JSON integers; the schedule learning rate
 remains numeric and `optimizer/adagrad_restart_restarted` is boolean. The final
 validation uses
 `adagrad_restart_final_check_iters=128` by default.
+Set `adagrad_restart_phase_loss_patience` above `0` to treat each phase's
+`steps` value as a cap and promote to the next scheduled budget after that many
+consecutive flat-loss steps. The default is `0`, which preserves the fixed
+phase lengths used by the recorded HOGENOM replay.
 The default ladder has `adagrad_restart_total_steps=125`; `steps` is treated as
 a maximum cap, so specieswise `adagrad-restarts` stops when either the configured
 step cap or the restart ladder is exhausted. `gpurec validate-config`,

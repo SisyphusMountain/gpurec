@@ -7182,9 +7182,22 @@ class _WorkflowSpecieswiseAdagradRestartModel(_WorkflowSpecieswiseOptimizerModeM
         super().__init__()
 
 
+class _WorkflowSpecieswiseAdagradRestartPlateauModel(
+    _WorkflowSpecieswiseAdagradRestartModel
+):
+    def full_loss(self):
+        return self.theta.sum() * 0.0 + 10.0
+
+
 class _WorkflowSpecieswiseAdagradRestartRunner(OptimizationRunner):
     def build_model(self):
         self.fake_model = _WorkflowSpecieswiseAdagradRestartModel()
+        return self.fake_model
+
+
+class _WorkflowSpecieswiseAdagradRestartPlateauRunner(OptimizationRunner):
+    def build_model(self):
+        self.fake_model = _WorkflowSpecieswiseAdagradRestartPlateauModel()
         return self.fake_model
 
 
@@ -7510,6 +7523,96 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
         {"fixed_iters_E": 16, "fixed_iters_Pi": 8, "neumann_terms": 6},
         {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32},
     ]
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_adagrad_restarts_builds_model_with_first_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adagrad-restarts",
+        mode="specieswise",
+        adagrad_restart_schedule="8/4:1.0:2,16/8/6:0.5:2",
+        fixed_iters_pi=16,
+        neumann_terms=16,
+    )
+    call: dict[str, object] = {}
+
+    def fake_build_model(config_arg: RunConfig, *, prefetch_batches: object):
+        call["config"] = config_arg
+        call["prefetch_batches"] = prefetch_batches
+        return _WorkflowSpecieswiseAdagradRestartModel()
+
+    monkeypatch.setattr(
+        optimize_workflow,
+        "build_alerax_workflow_model",
+        fake_build_model,
+    )
+
+    model = OptimizationRunner(config).build_model()
+
+    build_config = call["config"]
+    assert isinstance(build_config, RunConfig)
+    assert model is not None
+    assert build_config.fixed_iters_e == 8
+    assert build_config.fixed_iters_pi == 4
+    assert build_config.neumann_terms == 4
+    assert config.fixed_iters_pi == 16
+    assert call["prefetch_batches"] == "all"
+
+
+def test_optimization_runner_adagrad_restarts_can_advance_flat_phases(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adagrad-restarts",
+        mode="specieswise",
+        steps=10,
+        adagrad_restart_schedule="8/4:1.0:5,16/8:0.5:5",
+        adagrad_restart_final_check_iters=32,
+        final_check_iters=8,
+        loss_patience=0,
+        best_likelihood_patience=0,
+        adagrad_restart_phase_loss_patience=1,
+    )
+    runner = _WorkflowSpecieswiseAdagradRestartPlateauRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    step_rows = history_rows[:-1]
+    assert [row["optimizer/phase"] for row in step_rows] == [
+        "adagrad-restarts:E8_Pi4_phase1",
+        "adagrad-restarts:E8_Pi4_phase1",
+        "adagrad-restarts:E16_Pi8_phase2",
+        "adagrad-restarts:E16_Pi8_phase2",
+    ]
+    assert [row["optimizer/adagrad_restart_phase_step"] for row in step_rows] == [
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+    ]
+    assert step_rows[1]["optimizer/adagrad_restart_phase_complete"] is True
+    assert (
+        step_rows[1]["optimizer/adagrad_restart_phase_complete_reason"]
+        == "loss_change_patience"
+    )
+    assert step_rows[1]["optimizer/adagrad_restart_next_phase"] == "E16_Pi8_phase2"
+    assert step_rows[3]["optimizer/adagrad_restart_phase_complete"] is True
+    assert result.status == "converged"
+    assert result.reason == "adagrad_restart_phase_loss_patience"
+    assert runner.fake_model.solver_configs[:3] == [
+        {"fixed_iters_E": 8, "fixed_iters_Pi": 4, "neumann_terms": 4},
+        {"fixed_iters_E": 16, "fixed_iters_Pi": 8, "neumann_terms": 8},
+        {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32},
+    ]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["status"] == "converged"
+    assert latest["status"]["reason"] == "adagrad_restart_phase_loss_patience"
     assert runner.fake_model.closed
 
 

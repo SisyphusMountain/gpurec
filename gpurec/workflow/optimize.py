@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
@@ -368,6 +368,8 @@ class _ResumeState:
     active_batch_index: int = 0
     active_solver_stage: str = "full"
     active_batch_local_step: int = 0
+    adagrad_restart_dynamic_phase_index: int | None = None
+    adagrad_restart_dynamic_phase_start_step: int | None = None
     converged_family_indices: tuple[int, ...] = ()
     batch_plan_generation: int = 0
 
@@ -639,6 +641,18 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
                 ckpt_status.get("active_batch_local_step", MISSING),
                 default=0,
             )
+        ),
+        adagrad_restart_dynamic_phase_index=checkpoint_nonnegative_int(
+            path,
+            "status.adagrad_restart_dynamic_phase_index",
+            ckpt_status.get("adagrad_restart_dynamic_phase_index"),
+            allow_none=True,
+        ),
+        adagrad_restart_dynamic_phase_start_step=checkpoint_nonnegative_int(
+            path,
+            "status.adagrad_restart_dynamic_phase_start_step",
+            ckpt_status.get("adagrad_restart_dynamic_phase_start_step"),
+            allow_none=True,
         ),
         converged_family_indices=_checkpoint_index_tuple(
             path,
@@ -972,6 +986,22 @@ def _active_adagrad_restart_phase(
     return None
 
 
+def _adagrad_restart_phase_by_index(
+    specs: tuple[AdagradRestartPhase, ...],
+    *,
+    index: int,
+    start_step: int,
+) -> _ActiveAdagradRestartPhase:
+    if index < 0 or index >= len(specs):
+        raise RuntimeError("adagrad-restarts dynamic phase index is out of range")
+    return _ActiveAdagradRestartPhase(
+        index=index,
+        name=_adagrad_restart_phase_name(specs, index),
+        start_step=start_step,
+        phase=specs[index],
+    )
+
+
 class OptimizationRunner:
     def __init__(self, config: RunConfig):
         self.config = config
@@ -980,13 +1010,27 @@ class OptimizationRunner:
 
     def build_model(self) -> GeneReconModel:
         config = self.config
+        build_config = config
+        if config.optimizer == "adagrad-restarts":
+            first_phase = adagrad_restart_schedule_specs(
+                config.adagrad_restart_schedule,
+            )[0]
+            build_config = replace(
+                config,
+                fixed_iters_e=first_phase.fixed_iters_e,
+                fixed_iters_pi=first_phase.fixed_iters_pi,
+                neumann_terms=first_phase.neumann_terms,
+            )
         prefetch_batches: int | str = (
             1
             if config.mode == "genewise"
             and config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
             else "all"
         )
-        return build_alerax_workflow_model(config, prefetch_batches=prefetch_batches)
+        return build_alerax_workflow_model(
+            build_config,
+            prefetch_batches=prefetch_batches,
+        )
 
     def _make_optimizer(self, model: GeneReconModel, phase: str) -> torch.optim.Optimizer:
         config = self.config
@@ -2701,6 +2745,13 @@ class OptimizationRunner:
         active_batch_local_step = 0
         active_optimizer_batch_index: int | None = None
         active_adagrad_restart_phase_index: int | None = None
+        adagrad_restart_dynamic_enabled = (
+            config.optimizer == "adagrad-restarts"
+            and config.adagrad_restart_phase_loss_patience > 0
+        )
+        adagrad_restart_dynamic_phase_index = 0
+        adagrad_restart_dynamic_phase_start_step = 0
+        adagrad_restart_dynamic_state_loaded = False
         batchwise_active_optimizer = (
             config.mode == "genewise"
             and config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
@@ -2826,6 +2877,26 @@ class OptimizationRunner:
             enriched["batch_plan_generation"] = batch_plan_generation
             return enriched
 
+        def _print_progress_row(
+            *,
+            step: int,
+            phase: str,
+            row: dict[str, Any],
+            objective: float,
+            delta: float | None,
+            row_best_nll: float | None,
+        ) -> None:
+            print(
+                f"step={step} phase={phase} "
+                f"solver={row.get('optimizer/solver_stage', 'full')} "
+                f"nll_bits={objective:.6f} "
+                f"grad_inf={row.get('grad/inf', float('nan')):.6g} "
+                f"delta={float('nan') if delta is None else delta:.6g} "
+                f"best={float('nan') if row_best_nll is None else row_best_nll:.6f} "
+                f"step_s={row['step_s']:.3f}",
+                flush=True,
+            )
+
         try:
             if config.resume_from is not None:
                 resume_payload = load_checkpoint(
@@ -2856,6 +2927,20 @@ class OptimizationRunner:
                 active_batch_index = resume_state.active_batch_index
                 active_solver_stage = resume_state.active_solver_stage
                 active_batch_local_step = resume_state.active_batch_local_step
+                if adagrad_restart_dynamic_enabled:
+                    if resume_state.adagrad_restart_dynamic_phase_index is not None:
+                        adagrad_restart_dynamic_phase_index = int(
+                            resume_state.adagrad_restart_dynamic_phase_index
+                        )
+                    if resume_state.adagrad_restart_dynamic_phase_start_step is not None:
+                        adagrad_restart_dynamic_phase_start_step = int(
+                            resume_state.adagrad_restart_dynamic_phase_start_step
+                        )
+                    adagrad_restart_dynamic_state_loaded = (
+                        resume_state.adagrad_restart_dynamic_phase_index is not None
+                        and resume_state.adagrad_restart_dynamic_phase_start_step
+                        is not None
+                    )
                 batch_plan_generation = resume_state.batch_plan_generation
                 if adaptive_rebatch_enabled and converged_family_mask is not None:
                     if resume_state.converged_family_indices:
@@ -2927,29 +3012,44 @@ class OptimizationRunner:
                     adagrad_restart_step_limit,
                 )
 
-            if (
-                config.optimizer == "adagrad-restarts"
-                and start_step >= optimization_stop_step
-            ):
-                current_phase = self._phase_for_step(
-                    max(0, optimization_stop_step - 1)
-                )
-            else:
-                current_phase = self._phase_for_step(start_step)
             initial_adagrad_restart_phase: _ActiveAdagradRestartPhase | None = None
             if config.optimizer == "adagrad-restarts":
-                initial_adagrad_restart_phase = _active_adagrad_restart_phase(
-                    adagrad_restart_specs,
-                    (
-                        start_step
-                        if start_step < optimization_stop_step
-                        else max(0, optimization_stop_step - 1)
-                    ),
+                phase_lookup_step = (
+                    start_step
+                    if start_step < optimization_stop_step
+                    else max(0, optimization_stop_step - 1)
                 )
+                if (
+                    adagrad_restart_dynamic_enabled
+                    and config.resume_from is not None
+                    and not adagrad_restart_dynamic_state_loaded
+                ):
+                    fallback_phase = _active_adagrad_restart_phase(
+                        adagrad_restart_specs,
+                        phase_lookup_step,
+                    )
+                    if fallback_phase is None:
+                        raise RuntimeError(
+                            "adagrad-restarts schedule did not contain the start step"
+                        )
+                    adagrad_restart_dynamic_phase_index = fallback_phase.index
+                    adagrad_restart_dynamic_phase_start_step = fallback_phase.start_step
+                if adagrad_restart_dynamic_enabled:
+                    initial_adagrad_restart_phase = _adagrad_restart_phase_by_index(
+                        adagrad_restart_specs,
+                        index=adagrad_restart_dynamic_phase_index,
+                        start_step=adagrad_restart_dynamic_phase_start_step,
+                    )
+                else:
+                    initial_adagrad_restart_phase = _active_adagrad_restart_phase(
+                        adagrad_restart_specs,
+                        phase_lookup_step,
+                    )
                 if initial_adagrad_restart_phase is None:
                     raise RuntimeError(
                         "adagrad-restarts schedule did not contain the start step"
                     )
+                current_phase = f"adagrad-restarts:{initial_adagrad_restart_phase.name}"
                 if start_step < optimization_stop_step:
                     self._configure_specieswise_adagrad_restart_phase(
                         model,
@@ -2958,6 +3058,12 @@ class OptimizationRunner:
                     active_adagrad_restart_phase_index = (
                         initial_adagrad_restart_phase.index
                     )
+            elif start_step >= optimization_stop_step:
+                current_phase = self._phase_for_step(
+                    max(0, optimization_stop_step - 1)
+                )
+            else:
+                current_phase = self._phase_for_step(start_step)
             optimizer = self._make_optimizer(model, current_phase)
             if initial_adagrad_restart_phase is not None:
                 optimizer.param_groups[0]["lr"] = float(
@@ -2985,17 +3091,27 @@ class OptimizationRunner:
                 )
 
             for step in range(start_step, optimization_stop_step):
-                phase = self._phase_for_step(step)
                 adagrad_restart_active_phase = None
+                adagrad_restart_phase_step: int | None = None
                 if config.optimizer == "adagrad-restarts":
-                    adagrad_restart_active_phase = _active_adagrad_restart_phase(
-                        adagrad_restart_specs,
-                        step,
-                    )
+                    if adagrad_restart_dynamic_enabled:
+                        adagrad_restart_active_phase = _adagrad_restart_phase_by_index(
+                            adagrad_restart_specs,
+                            index=adagrad_restart_dynamic_phase_index,
+                            start_step=adagrad_restart_dynamic_phase_start_step,
+                        )
+                    else:
+                        adagrad_restart_active_phase = _active_adagrad_restart_phase(
+                            adagrad_restart_specs,
+                            step,
+                        )
                     if adagrad_restart_active_phase is None:
                         raise RuntimeError(
                             "adagrad-restarts schedule ended before optimization stop"
                         )
+                    phase = f"adagrad-restarts:{adagrad_restart_active_phase.name}"
+                else:
+                    phase = self._phase_for_step(step)
                 if batchwise_batched_lbfgs and phase == "batched-lbfgs":
                     if model.current_batch_index != active_batch_index:
                         _clear_cached_solver_runtime_state(model)
@@ -3626,6 +3742,7 @@ class OptimizationRunner:
                         if adagrad_restart_active_phase is None:
                             raise RuntimeError("missing adagrad-restarts active phase")
                         phase_step = step - adagrad_restart_active_phase.start_step
+                        adagrad_restart_phase_step = phase_step
                         metrics["optimizer/adagrad_restart_phase"] = (
                             adagrad_restart_active_phase.name
                         )
@@ -3893,6 +4010,63 @@ class OptimizationRunner:
                 else:
                     stable_loss_steps = 0
                 previous_objective = objective
+                adagrad_restart_phase_next_index: int | None = None
+                adagrad_restart_phase_next_start_step: int | None = None
+                adagrad_restart_terminal_status: dict[str, str] | None = None
+                if (
+                    adagrad_restart_dynamic_enabled
+                    and adagrad_restart_active_phase is not None
+                    and adagrad_restart_phase_step is not None
+                ):
+                    phase_done_by_loss = (
+                        stable_loss_steps
+                        >= int(config.adagrad_restart_phase_loss_patience)
+                    )
+                    phase_done_by_cap = (
+                        adagrad_restart_phase_step + 1
+                        >= int(adagrad_restart_active_phase.phase.steps)
+                    )
+                    phase_done_reason = None
+                    if phase_done_by_loss:
+                        phase_done_reason = "loss_change_patience"
+                    elif phase_done_by_cap:
+                        phase_done_reason = "phase_step_cap"
+                    if phase_done_reason is not None:
+                        last_adagrad_phase = (
+                            adagrad_restart_active_phase.index + 1
+                            >= len(adagrad_restart_specs)
+                        )
+                        metrics["optimizer/adagrad_restart_dynamic_phase"] = True
+                        metrics["optimizer/adagrad_restart_phase_complete"] = True
+                        metrics["optimizer/adagrad_restart_phase_complete_reason"] = (
+                            phase_done_reason
+                        )
+                        metrics["optimizer/adagrad_restart_phase_loss_patience"] = (
+                            float(config.adagrad_restart_phase_loss_patience)
+                        )
+                        if last_adagrad_phase:
+                            adagrad_restart_terminal_status = {
+                                "status": "converged",
+                                "reason": (
+                                    "adagrad_restart_phase_loss_patience"
+                                    if phase_done_by_loss
+                                    else "adagrad_restart_schedule_complete"
+                                ),
+                            }
+                        else:
+                            adagrad_restart_phase_next_index = (
+                                adagrad_restart_active_phase.index + 1
+                            )
+                            adagrad_restart_phase_next_start_step = step + 1
+                            metrics["optimizer/adagrad_restart_next_phase"] = (
+                                _adagrad_restart_phase_name(
+                                    adagrad_restart_specs,
+                                    adagrad_restart_phase_next_index,
+                                )
+                            )
+                    else:
+                        metrics["optimizer/adagrad_restart_dynamic_phase"] = True
+                        metrics["optimizer/adagrad_restart_phase_complete"] = False
 
                 if active_objective_scope:
                     improved = (
@@ -3947,6 +4121,22 @@ class OptimizationRunner:
                     checkpoint_status["active_batch_local_step"] = active_batch_local_step
                 elif global_solver_warmup:
                     checkpoint_status["active_solver_stage"] = active_solver_stage
+                if adagrad_restart_dynamic_enabled:
+                    checkpoint_status["adagrad_restart_dynamic_phase_index"] = (
+                        adagrad_restart_dynamic_phase_index
+                        if adagrad_restart_phase_next_index is None
+                        else adagrad_restart_phase_next_index
+                    )
+                    checkpoint_status[
+                        "adagrad_restart_dynamic_phase_start_step"
+                    ] = (
+                        adagrad_restart_dynamic_phase_start_step
+                        if adagrad_restart_phase_next_start_step is None
+                        else adagrad_restart_phase_next_start_step
+                    )
+                    if adagrad_restart_phase_next_index is not None:
+                        checkpoint_status["previous_objective"] = None
+                        checkpoint_status["stable_loss_steps"] = 0
                 if save_best_after_row and phase not in _POST_STEP_OPTIMIZERS:
                     best_row = dict(row)
                     best_row["optimizer/step_applied"] = False
@@ -4004,6 +4194,65 @@ class OptimizationRunner:
                 if adaptive_rebatch_stop:
                     status = {"status": "converged", "reason": "best_likelihood_patience"}
                     break
+                if adagrad_restart_terminal_status is not None:
+                    if step % config.log_every == 0:
+                        _print_progress_row(
+                            step=step,
+                            phase=phase,
+                            row=row,
+                            objective=objective,
+                            delta=delta,
+                            row_best_nll=row_best_nll,
+                        )
+                    status = adagrad_restart_terminal_status
+                    if config.checkpoint_every:
+                        self._save_status(
+                            latest_checkpoint,
+                            model=model,
+                            optimizer=optimizer,
+                            step=step,
+                            next_step=step + 1,
+                            status=_adaptive_checkpoint_status(
+                                {**checkpoint_status, **status}
+                            ),
+                            row=row,
+                            optimizer_phase=phase,
+                        )
+                    break
+                if adagrad_restart_phase_next_index is not None:
+                    if step % config.log_every == 0:
+                        _print_progress_row(
+                            step=step,
+                            phase=phase,
+                            row=row,
+                            objective=objective,
+                            delta=delta,
+                            row_best_nll=row_best_nll,
+                        )
+                    if config.checkpoint_every:
+                        self._save_status(
+                            latest_checkpoint,
+                            model=model,
+                            optimizer=None,
+                            step=step,
+                            next_step=step + 1,
+                            status=_adaptive_checkpoint_status(checkpoint_status),
+                            row=row,
+                            optimizer_phase=phase,
+                        )
+                    adagrad_restart_dynamic_phase_index = (
+                        adagrad_restart_phase_next_index
+                    )
+                    adagrad_restart_dynamic_phase_start_step = int(
+                        adagrad_restart_phase_next_start_step
+                    )
+                    previous_objective = None
+                    stable_loss_steps = 0
+                    optimizer = None
+                    active_adagrad_restart_phase_index = None
+                    active_optimizer_batch_index = None
+                    resume_info = {}
+                    continue
                 if adaptive_rebatch_pending_indices is not None:
                     _drop_cached_static_states_if_needed(model)
                     model.replan_resident_batches(adaptive_rebatch_pending_indices)
@@ -4082,15 +4331,13 @@ class OptimizationRunner:
                     )
 
                 if step % config.log_every == 0:
-                    print(
-                        f"step={step} phase={phase} "
-                        f"solver={row.get('optimizer/solver_stage', 'full')} "
-                        f"nll_bits={objective:.6f} "
-                        f"grad_inf={row.get('grad/inf', float('nan')):.6g} "
-                        f"delta={float('nan') if delta is None else delta:.6g} "
-                        f"best={float('nan') if row_best_nll is None else row_best_nll:.6f} "
-                        f"step_s={row['step_s']:.3f}",
-                        flush=True,
+                    _print_progress_row(
+                        step=step,
+                        phase=phase,
+                        row=row,
+                        objective=objective,
+                        delta=delta,
+                        row_best_nll=row_best_nll,
                     )
 
                 if (
