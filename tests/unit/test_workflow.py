@@ -11136,6 +11136,8 @@ def test_optimization_runner_final_latest_resumes_at_next_optimizer_step(tmp_pat
         ("adam", 1),
         ("final_eval", 2),
     ]
+    assert history_rows[0]["delta_likelihood_bits"] is None
+    assert history_rows[0]["stable_loss_steps"] == 0
     resumed_latest = load_checkpoint(
         resumed_config.out_dir / "checkpoints" / "latest.pt"
     )

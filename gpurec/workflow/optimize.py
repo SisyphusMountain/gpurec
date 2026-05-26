@@ -2924,6 +2924,13 @@ class OptimizationRunner:
                 best_step = resume_state.best_step
                 previous_objective = resume_state.previous_objective
                 stable_loss_steps = resume_state.stable_loss_steps
+                resume_status = checkpoint_status_dict(config.resume_from, resume_payload)
+                if (
+                    start_step < config.steps
+                    and resume_status.get("status") != "running"
+                ):
+                    previous_objective = None
+                    stable_loss_steps = 0
                 active_batch_index = resume_state.active_batch_index
                 active_solver_stage = resume_state.active_solver_stage
                 active_batch_local_step = resume_state.active_batch_local_step
