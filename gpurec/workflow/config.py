@@ -850,6 +850,37 @@ class RunConfig:
         )
 
 
+def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
+    route: dict[str, Any] = {
+        "mode": config.mode,
+        "optimizer": config.optimizer,
+        "batch_packing": config.batch_packing,
+        "family_chunk_size": config.family_chunk_size,
+        "clade_budget": config.clade_budget,
+        "fixed_iters_e": config.fixed_iters_e,
+        "fixed_iters_pi": config.fixed_iters_pi,
+        "neumann_terms": config.neumann_terms,
+    }
+    if config.optimizer == "hessian-sgd":
+        route.update(
+            {
+                "solver_warmup_iters": config.solver_warmup_iters,
+                "fd_adam_warmup_steps": config.fd_adam_warmup_steps,
+                "fd_hessian_refresh_steps": config.fd_hessian_refresh_steps,
+            }
+        )
+    elif config.optimizer == "adagrad-restarts":
+        route.update(
+            {
+                "adagrad_restart_schedule": config.adagrad_restart_schedule,
+                "adagrad_restart_final_check_iters": (
+                    config.adagrad_restart_final_check_iters
+                ),
+            }
+        )
+    return _jsonable(route)
+
+
 @dataclass
 class SamplingConfig:
     checkpoint: Path

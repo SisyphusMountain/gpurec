@@ -34,6 +34,7 @@ from .config import (
     AdagradRestartPhase,
     RunConfig,
     adagrad_restart_schedule_specs,
+    effective_route_metadata,
 )
 from .diagnostics import (
     append_jsonl,
@@ -3786,6 +3787,7 @@ class OptimizationRunner:
                 sampling_checkpoint = latest_checkpoint
             summary = {
                 **final_status,
+                **effective_route_metadata(config),
                 "families": model.n_families,
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),

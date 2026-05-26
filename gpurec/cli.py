@@ -288,33 +288,38 @@ def _write_config_template(args: argparse.Namespace) -> Path | None:
 
 
 def _validate_config_route_text(config: RunConfig) -> str:
-    clade_budget = "none" if config.clade_budget is None else str(config.clade_budget)
-    fixed_iters_e = (
-        "adaptive" if config.fixed_iters_e is None else str(config.fixed_iters_e)
+    from gpurec.workflow.config import effective_route_metadata
+
+    route = effective_route_metadata(config)
+    clade_budget = (
+        "none" if route["clade_budget"] is None else str(route["clade_budget"])
+    )
+    fixed_iters_e = "adaptive" if route["fixed_iters_e"] is None else str(
+        route["fixed_iters_e"]
     )
     fields = [
-        f"batch_packing={config.batch_packing}",
-        f"family_chunk_size={config.family_chunk_size}",
+        f"batch_packing={route['batch_packing']}",
+        f"family_chunk_size={route['family_chunk_size']}",
         f"clade_budget={clade_budget}",
         f"fixed_iters_e={fixed_iters_e}",
-        f"fixed_iters_pi={config.fixed_iters_pi}",
-        f"neumann_terms={config.neumann_terms}",
+        f"fixed_iters_pi={route['fixed_iters_pi']}",
+        f"neumann_terms={route['neumann_terms']}",
     ]
     if config.optimizer == "hessian-sgd":
         fields.extend(
             [
-                f"solver_warmup_iters={config.solver_warmup_iters}",
-                f"fd_adam_warmup_steps={config.fd_adam_warmup_steps}",
-                f"fd_hessian_refresh_steps={config.fd_hessian_refresh_steps}",
+                f"solver_warmup_iters={route['solver_warmup_iters']}",
+                f"fd_adam_warmup_steps={route['fd_adam_warmup_steps']}",
+                f"fd_hessian_refresh_steps={route['fd_hessian_refresh_steps']}",
             ]
         )
     elif config.optimizer == "adagrad-restarts":
         fields.extend(
             [
-                f"adagrad_restart_schedule={config.adagrad_restart_schedule}",
+                f"adagrad_restart_schedule={route['adagrad_restart_schedule']}",
                 (
                     "adagrad_restart_final_check_iters="
-                    f"{config.adagrad_restart_final_check_iters}"
+                    f"{route['adagrad_restart_final_check_iters']}"
                 ),
             ]
         )

@@ -1388,6 +1388,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`history.jsonl`",
         "`optimization_history.csv`",
         "`summary.json`",
+        "effective optimizer/batch/solver route",
         "`rates_final.tsv`",
         "`per_fam_likelihoods.tsv`",
         "`theta_final.pt`",
