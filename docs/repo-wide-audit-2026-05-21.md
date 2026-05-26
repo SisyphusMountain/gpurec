@@ -864,8 +864,9 @@ not edit files.  New or still-open findings from that refresh are:
   `leaf` events.  It also states that gpurec-generated sample XML files are
   expected to contain one `recGeneTree` per file while the shared event-count
   traversal can read multiple `recGeneTree` blocks in compatibility inputs.
-  Behavior changes around first-clade selection or global origination counting
-  still need dedicated regressions.
+  First-root-clade selection and file-level origination counting for multi-tree
+  compatibility inputs now have dedicated RecPhyloXML regressions before parser
+  or counter changes.
 - `json_dumps_strict()` now documents its sanitizing contract.  The helper name
   refers to standards-compliant JSON output: non-finite floats are converted to
   JSON `null` before dumping, rather than being rejected or emitted as

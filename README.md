@@ -448,7 +448,10 @@ with `clade` nodes, `eventsRec` event containers, and the event tags
 `speciation`, `duplication`, `branchingOut`, `transferBack`, `loss`, and
 `leaf`.  gpurec-generated sample XML files are expected to contain one
 `recGeneTree` per file; the shared event-count traversal can still read
-multiple `recGeneTree` blocks in compatibility inputs.
+multiple `recGeneTree` blocks in compatibility inputs.  For aggregate species
+counts, origination is a file-level event: the first speciation reached by the
+shared traversal is counted as origination, matching gpurec's one-tree-per-file
+sample output while keeping multi-tree compatibility inputs deterministic.
 Use `--family-start` and `--sample-max-families` to sample a family window,
 `--seed` for reproducible stochastic backtracking, and `--max-events` to cap
 pathological samples.

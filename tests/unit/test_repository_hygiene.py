@@ -1280,6 +1280,8 @@ def test_project_readme_documents_sampling_output_layout():
         "`transferBack`",
         "gpurec-generated sample XML files are expected to contain one `recGeneTree` per file",
         "shared event-count traversal can still read multiple `recGeneTree` blocks",
+        "origination is a file-level event",
+        "the first speciation reached by the shared traversal is counted as origination",
     ):
         assert token in normalized
 

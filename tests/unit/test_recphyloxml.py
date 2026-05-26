@@ -78,3 +78,81 @@ def test_backtracking_and_sampling_use_shared_recphyloxml_traversal():
     assert species_counts["Donor"]["transfers"] == 1.0
     assert species_counts["Recipient"]["transfers_to"] == 1.0
     assert transfers[("Donor", "Recipient")] == 1.0
+
+
+def test_recphyloxml_traversal_uses_first_root_clade_per_gene_tree():
+    xml = """
+    <recPhylo>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><speciation speciesLocation="RootA"/></eventsRec>
+            <clade><eventsRec><leaf speciesLocation="LeafA"/></eventsRec></clade>
+          </clade>
+          <clade>
+            <eventsRec><duplication speciesLocation="IgnoredRoot"/></eventsRec>
+            <clade><eventsRec><leaf speciesLocation="IgnoredLeaf"/></eventsRec></clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><duplication speciesLocation="RootB"/></eventsRec>
+            <clade><eventsRec><leaf speciesLocation="LeafB"/></eventsRec></clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+    </recPhylo>
+    """
+
+    roots = list(iter_rec_gene_tree_clades(xml))
+    event_counts = recphyloxml_event_counts(xml, alerax_style=False)
+
+    assert [primary_event_name(root) for root in roots] == [
+        "speciation",
+        "duplication",
+    ]
+    assert event_counts == {
+        "S": 1,
+        "SL": 0,
+        "D": 1,
+        "DL": 0,
+        "T": 0,
+        "TL": 0,
+        "L": 0,
+        "Leaf": 2,
+    }
+
+
+def test_recphyloxml_species_counts_use_one_file_level_origination():
+    xml = """
+    <recPhylo>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><speciation speciesLocation="FirstRoot"/></eventsRec>
+            <clade><eventsRec><leaf speciesLocation="FirstLeaf"/></eventsRec></clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><speciation speciesLocation="SecondRoot"/></eventsRec>
+            <clade><eventsRec><leaf speciesLocation="SecondLeaf"/></eventsRec></clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+    </recPhylo>
+    """
+
+    species_counts, transfers = _xml_species_and_transfer_counts(xml)
+
+    assert species_counts["FirstRoot"]["origination"] == 1.0
+    assert species_counts["SecondRoot"]["origination"] == 0.0
+    assert species_counts["FirstRoot"]["speciations"] == 1.0
+    assert species_counts["SecondRoot"]["speciations"] == 1.0
+    assert species_counts["FirstLeaf"]["copies"] == 1.0
+    assert species_counts["SecondLeaf"]["copies"] == 1.0
+    assert transfers == {}
