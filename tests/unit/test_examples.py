@@ -116,6 +116,68 @@ def test_examples_readme_documents_mode_specific_default_configs():
         assert token in normalized
 
 
+def test_example_configs_validate_through_cli_production_route_gates(capsys):
+    production_basis = "hogenom_and_" + "test_trees_" + "1000"
+    cases = (
+        (
+            "minimal-run-config.json",
+            (
+                "mode=genewise",
+                "optimizer=hessian-sgd",
+                "mode_default_optimizer=hessian-sgd",
+                "uses_mode_default_optimizer=true",
+                "uses_production_default_optimizer_settings=true",
+                "production_default_optimizer_setting_mismatches=none",
+                "configured_steps=10",
+                "optimizer_step_cap=10",
+                "optimizer_step_cap_reason=configured_steps",
+                "hessian_sgd_normal_fixed_iters_pi=full",
+                "hessian_sgd_normal_neumann_terms=full",
+                "hessian_sgd_pi_adjoint_warmstart=false",
+                "pi_fixed_point_relaxation=1.000000",
+                "hessian_sgd_validation_interval=0",
+                "final_check_iters=32",
+            ),
+        ),
+        (
+            "specieswise-adagrad-restarts-config.json",
+            (
+                "mode=specieswise",
+                "optimizer=adagrad-restarts",
+                "mode_default_optimizer=adagrad-restarts",
+                "uses_mode_default_optimizer=true",
+                "uses_production_default_optimizer_settings=true",
+                "production_default_optimizer_setting_mismatches=none",
+                "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30",
+                "adagrad_restart_total_steps=125",
+                "optimizer_step_cap=125",
+                "optimizer_step_cap_reason=adagrad_restart_schedule",
+                "adagrad_restart_final_check_iters=128",
+                "final_check_iters=128",
+            ),
+        ),
+    )
+
+    for config_name, expected_tokens in cases:
+        cli.main(
+            [
+                "validate-config",
+                "--config",
+                str(ROOT / "examples" / config_name),
+                "--require-mode-default-optimizer",
+                "--require-production-default-route",
+            ]
+        )
+        captured = capsys.readouterr()
+
+        assert captured.err == ""
+        assert "valid_config=true" in captured.out
+        assert f"production_default_basis={production_basis}" in captured.out
+        assert "preprocess_checked" not in captured.out
+        for token in expected_tokens:
+            assert token in captured.out
+
+
 def test_minimal_run_config_command_smoke_uses_documented_cli(monkeypatch):
     captured: dict[str, object] = {}
 
