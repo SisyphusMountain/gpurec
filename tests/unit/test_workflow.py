@@ -7254,6 +7254,7 @@ def test_final_iteration_check_keeps_static_layout_and_clears_runtime_state(
     assert model.static_state.warm_E is None
     assert model.static_state.last_solver_stats is None
     assert metrics["optimizer/final_check_status"] == "ok"
+    assert metrics["optimizer/final_check_source"] == "configured_solver_budget"
     assert model.solver_configs == [
         {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},
         {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
@@ -7290,6 +7291,7 @@ def test_final_iteration_check_runs_for_specieswise_mode(tmp_path: Path):
     )
 
     assert metrics["optimizer/final_check_status"] == "ok"
+    assert metrics["optimizer/final_check_source"] == "configured_solver_budget"
     assert metrics["optimizer/final_check_iters"] == 32
     assert metrics["optimizer/final_check_iters_E"] == 32
     assert metrics["optimizer/final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
@@ -7298,6 +7300,51 @@ def test_final_iteration_check_runs_for_specieswise_mode(tmp_path: Path):
         {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32},
         {"fixed_iters_E": 6, "fixed_iters_Pi": 16, "neumann_terms": 16},
     ]
+
+
+def test_final_iteration_check_skipped_or_disabled_reports_reason(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        mode="genewise",
+        final_check_iters=32,
+    )
+    runner = OptimizationRunner(config)
+
+    metrics = runner._evaluate_final_iteration_check(
+        object(),
+        baseline_loss=torch.tensor(0.0),
+        baseline_grad=torch.zeros(1),
+    )
+
+    assert metrics["optimizer/final_check_status"] == "skipped"
+    assert metrics["optimizer/final_check_source"] == "not_evaluated"
+    assert (
+        metrics["optimizer/final_check_reason"]
+        == "model_has_no_solver_iteration_controls"
+    )
+
+    disabled_config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        mode="genewise",
+        final_check_iters=0,
+    )
+    disabled_runner = OptimizationRunner(disabled_config)
+    disabled_model = SimpleNamespace(configure_solver_iterations=lambda **_: None)
+
+    disabled_metrics = disabled_runner._evaluate_final_iteration_check(
+        disabled_model,
+        baseline_loss=torch.tensor(0.0),
+        baseline_grad=torch.zeros(1),
+    )
+
+    assert disabled_metrics["optimizer/final_check_status"] == "disabled"
+    assert disabled_metrics["optimizer/final_check_source"] == "not_evaluated"
+    assert (
+        disabled_metrics["optimizer/final_check_reason"]
+        == "final_check_iters_disabled"
+    )
 
 
 def test_optimization_runner_batched_lbfgs_resume_restores_state(tmp_path: Path):
@@ -7617,6 +7664,8 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.final_log_likelihood_bits == pytest.approx(-result.final_nll_bits)
     assert result.best_log_likelihood_bits == pytest.approx(-result.best_nll_bits)
     assert result.final_check_status == "ok"
+    assert result.final_check_source == "configured_solver_budget"
+    assert result.final_check_reason is None
     assert result.final_check_loss_abs_delta_bits == pytest.approx(0.0)
     assert result.final_check_grad_max_abs_delta == pytest.approx(0.0)
     assert result.final_check_grad_rel_inf_delta == pytest.approx(0.0)
@@ -7678,6 +7727,8 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
         -summary["best_nll_bits"]
     )
     assert summary["final_check_status"] == "ok"
+    assert summary["final_check_source"] == "configured_solver_budget"
+    assert "final_check_reason" not in summary
     assert summary["final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
     assert summary["final_check_grad_max_abs_delta"] == pytest.approx(0.0)
     assert summary["final_check_grad_rel_inf_delta"] == pytest.approx(0.0)

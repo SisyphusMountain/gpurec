@@ -1200,6 +1200,8 @@ def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
     assert "best_nll_bits=null" in captured.out
     assert "best_log_likelihood_bits=null" in captured.out
     assert "final_check_status=null" in captured.out
+    assert "final_check_source=null" in captured.out
+    assert "final_check_reason=null" in captured.out
     assert "final_check_loss_abs_delta_bits=null" in captured.out
     assert "final_check_grad_max_abs_delta=null" in captured.out
     assert "final_check_grad_rel_inf_delta=null" in captured.out
@@ -1223,6 +1225,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             best_nll_bits=10.25,
             best_log_likelihood_bits=-10.25,
             final_check_status="ok",
+            final_check_source="configured_solver_budget",
             final_check_loss_abs_delta_bits=0.125,
             final_check_grad_max_abs_delta=0.5,
             final_check_grad_rel_inf_delta=0.25,
@@ -1242,6 +1245,8 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "best_nll_bits=10.250000" in captured.out
     assert "best_log_likelihood_bits=-10.250000" in captured.out
     assert "final_check_status=ok" in captured.out
+    assert "final_check_source=configured_solver_budget" in captured.out
+    assert "final_check_reason=null" in captured.out
     assert "final_check_loss_abs_delta_bits=0.125000" in captured.out
     assert "final_check_grad_max_abs_delta=0.500000" in captured.out
     assert "final_check_grad_rel_inf_delta=0.250000" in captured.out
@@ -1327,6 +1332,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             final_nll_bits=12.0,
             best_nll_bits=11.0,
             final_check_status="ok",
+            final_check_source="configured_solver_budget",
             final_check_loss_abs_delta_bits=0.0,
             final_check_grad_max_abs_delta=0.0,
             final_check_grad_rel_inf_delta=0.0,
@@ -1355,6 +1361,8 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "best_nll_bits=11.000000" in captured.out
     assert "best_log_likelihood_bits=-11.000000" in captured.out
     assert "final_check_status=ok" in captured.out
+    assert "final_check_source=configured_solver_budget" in captured.out
+    assert "final_check_reason=null" in captured.out
     assert "final_check_loss_abs_delta_bits=0.000000" in captured.out
     assert "final_check_grad_max_abs_delta=0.000000" in captured.out
     assert "final_check_grad_rel_inf_delta=0.000000" in captured.out

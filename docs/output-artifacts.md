@@ -40,13 +40,16 @@ used for the final high-fidelity likelihood/gradient validation; for
 specieswise `adagrad-restarts`, this is the resolved
 `adagrad_restart_final_check_iters` value.
 When the final validation runs, `summary.json` also includes
-`final_check_status`, `final_check_loss_abs_delta_bits`,
-`final_check_grad_max_abs_delta`, and `final_check_grad_rel_inf_delta` so the
-one-file summary carries the high-fidelity likelihood/gradient agreement check.
+`final_check_status`, `final_check_source`, `final_check_reason`,
+`final_check_loss_abs_delta_bits`, `final_check_grad_max_abs_delta`, and
+`final_check_grad_rel_inf_delta` so the one-file summary carries the
+high-fidelity likelihood/gradient agreement check.  Successful checks may omit
+`final_check_reason`; skipped, disabled, failed, or fallback checks carry a
+reason when the workflow can determine one.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print `steps_completed`, `best_step`, and the same final/best NLL and
-log-likelihood fields, plus the final validation status and loss/gradient
-delta fields, for quick terminal triage.
+log-likelihood fields, plus the final validation source, reason, status, and
+loss/gradient delta fields, for quick terminal triage.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering

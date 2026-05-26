@@ -63,6 +63,8 @@ class OptimizationResult:
     final_log_likelihood_bits: float | None = None
     best_log_likelihood_bits: float | None = None
     final_check_status: str | None = None
+    final_check_source: str | None = None
+    final_check_reason: str | None = None
     final_check_loss_abs_delta_bits: float | None = None
     final_check_grad_max_abs_delta: float | None = None
     final_check_grad_rel_inf_delta: float | None = None
@@ -93,6 +95,13 @@ def _optional_result_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_result_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
 
 
 @dataclass(frozen=True)
@@ -1088,12 +1097,18 @@ class OptimizationRunner:
         if not callable(configure_solver):
             return {
                 "optimizer/final_check_status": "skipped",
+                "optimizer/final_check_source": "not_evaluated",
+                "optimizer/final_check_reason": (
+                    "model_has_no_solver_iteration_controls"
+                ),
                 "optimizer/final_check_iters": check_iters,
                 "optimizer/final_check_iters_E": check_iters_E,
             }
         if check_iters <= 0:
             return {
                 "optimizer/final_check_status": "disabled",
+                "optimizer/final_check_source": "not_evaluated",
+                "optimizer/final_check_reason": "final_check_iters_disabled",
                 "optimizer/final_check_iters": 0,
                 "optimizer/final_check_iters_E": 0,
             }
@@ -1108,6 +1123,7 @@ class OptimizationRunner:
 
         metrics: dict[str, Any] = {
             "optimizer/final_check_status": "failed",
+            "optimizer/final_check_source": "configured_solver_budget",
             "optimizer/final_check_iters": check_iters,
             "optimizer/final_check_iters_E": check_iters_E,
             "optimizer/final_check_evals": 1,
@@ -3864,9 +3880,19 @@ class OptimizationRunner:
                 final_log_likelihood_bits=final_log_likelihood_bits,
                 best_log_likelihood_bits=best_log_likelihood_bits,
                 final_check_status=(
-                    None
-                    if final_check_summary.get("final_check_status") is None
-                    else str(final_check_summary["final_check_status"])
+                    _optional_result_text(
+                        final_check_summary.get("final_check_status")
+                    )
+                ),
+                final_check_source=(
+                    _optional_result_text(
+                        final_check_summary.get("final_check_source")
+                    )
+                ),
+                final_check_reason=(
+                    _optional_result_text(
+                        final_check_summary.get("final_check_reason")
+                    )
                 ),
                 final_check_loss_abs_delta_bits=_optional_result_float(
                     final_check_summary.get("final_check_loss_abs_delta_bits")
