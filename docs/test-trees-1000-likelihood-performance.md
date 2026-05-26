@@ -614,6 +614,14 @@ Rejected follow-ups:
   targeted CUDA/kernel tests passed (`7 passed`), but fixed4 materialized timing
   regressed to `1.2981207949924283s` median and `1.2949794699670747s` minimum.
   The wave-step kernels therefore keep `num_warps=8`.
+- Unrolling the fixed4 wave self-loop in Python for the no-trace/no-convergence
+  path was also reverted.  The prototype passed targeted tests (`14 passed`) and
+  gave a small materialized fixed4 median improvement to `1.2767849509837106s`,
+  but cold end-to-end samples did not beat the current route:
+  `2.3544185089995153s`, `2.278216293954756s`,
+  `2.2834861860610545s`, `2.340617485984694s`, and
+  `2.2646979700075462s`.  The added branch complexity is not justified without a
+  cold-path win.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
