@@ -123,7 +123,9 @@ gpurec summary-info --summary output_gpurec/summary.json
 For older summaries that have `mode` and `optimizer` but predate
 `mode_default_optimizer` and `uses_mode_default_optimizer`, `summary-info`
 infers those audit fields before printing so the displayed line matches the
-route evidence used by `--require-mode-default-optimizer`.
+route evidence used by `--require-mode-default-optimizer`. If the summary is
+too old or incomplete to prove both `mode` and `optimizer`, the gate fails with
+an incomplete-evidence error instead of treating the route as accepted.
 
 Add `--require-converged` when the command should print the same summary line
 and then exit nonzero unless `summary.status` is `converged`. Add
@@ -163,7 +165,10 @@ When the checkpoint's saved last row contains final validation metrics,
 checkpoint's last row. Add `--require-final-check-ok` when
 automation should fail unless the checkpoint last row has
 `optimizer/final_check_status=ok`; add `--require-mode-default-optimizer` when
-the checkpoint route must use the production optimizer default for its mode.
+the checkpoint route must use the production optimizer default for its mode. If
+a legacy checkpoint has no `route_metadata`, `checkpoint-info` falls back to
+recoverable config `mode` and `optimizer` fields; incomplete artifacts fail the
+gate with an incomplete-evidence error.
 
 ## Sampling Artifacts
 

@@ -22,7 +22,7 @@ from gpurec.cli import (
     main,
 )
 from gpurec.workflow.config import RunConfig, SamplingConfig, effective_route_metadata
-from gpurec.workflow.checkpoint import save_checkpoint
+from gpurec.workflow.checkpoint import CHECKPOINT_VERSION, save_checkpoint
 from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
@@ -1676,6 +1676,65 @@ def test_cli_checkpoint_info_require_mode_default_optimizer_fails_after_printing
     assert "Traceback" not in captured.err
 
 
+def test_cli_checkpoint_info_require_mode_default_optimizer_reports_missing_evidence(
+    tmp_path: Path,
+    capsys,
+):
+    checkpoint = tmp_path / "legacy.pt"
+    torch.save(
+        {
+            "version": CHECKPOINT_VERSION,
+            "config": {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "mode": "genewise",
+                "start": 0,
+                "max_families": None,
+            },
+            "theta": torch.zeros(1, 3),
+            "step": 3,
+            "next_step": 4,
+            "status": {
+                "status": "running",
+                "reason": "checkpoint_interval",
+                "best_step": 3,
+                "best_nll_bits": 10.0,
+            },
+            "last_row": {
+                "optimizer/phase": "unknown",
+                "likelihood/data_nll_bits": 10.0,
+                "grad/inf": 0.1,
+            },
+            "family_names": ["fam0"],
+            "species_names": ["sp0", "sp1"],
+        },
+        checkpoint,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "checkpoint-info",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "mode=genewise" in captured.out
+    assert "optimizer=null" in captured.out
+    assert "mode_default_optimizer=hessian-sgd" in captured.out
+    assert "uses_mode_default_optimizer=null" in captured.out
+    assert "route_metadata_source=config" in captured.out
+    assert "checkpoint mode default optimizer evidence is incomplete" in captured.err
+    assert "missing optimizer" in captured.err
+    assert "mode='genewise', optimizer=None" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_checkpoint_info_raw_theta_error_suggests_real_checkpoints(
     tmp_path: Path,
     capsys,
@@ -1924,6 +1983,46 @@ def test_cli_summary_info_require_mode_default_optimizer_fails_after_printing(
     assert "uses_mode_default_optimizer=false" in captured.out
     assert "summary optimizer is 'adam'" in captured.err
     assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_summary_info_require_mode_default_optimizer_reports_missing_evidence(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "loss_change_patience",
+                "mode": "genewise",
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "summary-info",
+                "--summary",
+                str(summary),
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "mode=genewise" in captured.out
+    assert "optimizer=null" in captured.out
+    assert "mode_default_optimizer=hessian-sgd" in captured.out
+    assert "uses_mode_default_optimizer=null" in captured.out
+    assert "summary mode default optimizer evidence is incomplete" in captured.err
+    assert "missing optimizer" in captured.err
+    assert "mode='genewise', optimizer=None" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 

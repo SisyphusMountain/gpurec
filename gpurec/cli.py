@@ -102,11 +102,27 @@ def _mode_default_optimizer_gate_message(
     action: str | None = None,
 ) -> str:
     audited = _route_with_mode_default_audit_fields(route)
-    message = (
-        f"{subject} optimizer is {audited.get('optimizer')!r}; expected mode "
-        f"default {audited.get('mode_default_optimizer')!r} for mode "
-        f"{audited.get('mode')!r}"
-    )
+    missing = [
+        name
+        for name in ("mode", "optimizer", "mode_default_optimizer")
+        if audited.get(name) is None
+    ]
+    if missing:
+        message = (
+            f"{subject} mode default optimizer evidence is incomplete; "
+            f"missing {', '.join(missing)}"
+        )
+        if audited.get("mode") is not None or audited.get("optimizer") is not None:
+            message = (
+                f"{message} (mode={audited.get('mode')!r}, "
+                f"optimizer={audited.get('optimizer')!r})"
+            )
+    else:
+        message = (
+            f"{subject} optimizer is {audited.get('optimizer')!r}; expected mode "
+            f"default {audited.get('mode_default_optimizer')!r} for mode "
+            f"{audited.get('mode')!r}"
+        )
     if action is not None:
         message = f"{message}; {action}"
     return message
@@ -631,6 +647,17 @@ def _validate_summary_path(summary: Path) -> None:
         )
 
 
+def _partial_route_metadata_from_config_data(
+    config_data: dict[str, Any],
+) -> dict[str, Any]:
+    route = {
+        key: config_data[key]
+        for key in ("mode", "optimizer")
+        if config_data.get(key) is not None
+    }
+    return _route_with_mode_default_audit_fields(route)
+
+
 def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     route = payload.get("route_metadata")
     if isinstance(route, dict):
@@ -648,6 +675,9 @@ def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any],
             "config",
         )
     except _EXPECTED_WORKFLOW_ERRORS:
+        partial_route = _partial_route_metadata_from_config_data(config_data)
+        if partial_route:
+            return partial_route, "config"
         return {}, "missing"
 
 
