@@ -144,6 +144,23 @@ def test_gene_recon_model_rejects_invalid_theta_init_shape_before_device_check(
         )
 
 
+def test_gene_recon_model_rejects_invalid_theta_init_values_before_device_check() -> None:
+    dataset = _fake_dataset_for_mode("global")
+
+    with pytest.raises(ValueError, match="theta_init.*floating-point"):
+        GeneReconModel(
+            dataset=dataset,  # type: ignore[arg-type]
+            mode="global",
+            theta_init=torch.tensor([1, 2, 3], dtype=torch.int64),
+        )
+    with pytest.raises(ValueError, match="theta_init.*finite"):
+        GeneReconModel(
+            dataset=dataset,  # type: ignore[arg-type]
+            mode="global",
+            theta_init=torch.tensor([0.0, math.nan, 0.0], dtype=torch.float64),
+        )
+
+
 @pytest.mark.parametrize(
     ("mode", "theta"),
     [
@@ -166,6 +183,30 @@ def test_full_loss_for_theta_rejects_invalid_explicit_theta_shape_before_streami
     model._stream_full_batches = unexpected_stream  # type: ignore[method-assign]
 
     with pytest.raises(ValueError, match="theta.*shape"):
+        model.full_loss_for_theta(theta)
+
+
+@pytest.mark.parametrize(
+    ("theta", "message"),
+    [
+        (torch.tensor([1, 2, 3], dtype=torch.int64), "theta.*floating-point"),
+        (torch.tensor([0.0, math.inf, 0.0], dtype=torch.float64), "theta.*finite"),
+    ],
+)
+def test_full_loss_for_theta_rejects_invalid_explicit_theta_values_before_streaming(
+    theta: torch.Tensor,
+    message: str,
+) -> None:
+    model = object.__new__(GeneReconModel)
+    model._mode = "global"
+    model._dataset = _fake_dataset_for_mode("global")
+
+    def unexpected_stream(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("streaming should not run for invalid theta values")
+
+    model._stream_full_batches = unexpected_stream  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match=message):
         model.full_loss_for_theta(theta)
 
 

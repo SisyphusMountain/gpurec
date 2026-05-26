@@ -216,7 +216,7 @@ def validate_theta_shape(
     species_count: int,
     family_count: int,
 ) -> torch.Tensor:
-    """Validate the raw theta tensor shape for the active sharing mode."""
+    """Validate the raw theta tensor for the active sharing mode."""
     if not torch.is_tensor(theta):
         raise ValueError(f"{name} must be a torch.Tensor")
     if mode == "global":
@@ -233,4 +233,8 @@ def validate_theta_shape(
             f"{name} shape for {mode} mode must be {expected_shape}, "
             f"got {actual_shape}"
         )
+    if not torch.is_floating_point(theta):
+        raise ValueError(f"{name} must be a floating-point theta tensor")
+    if not bool(torch.isfinite(theta.detach()).all().item()):
+        raise ValueError(f"{name} must contain only finite values")
     return theta

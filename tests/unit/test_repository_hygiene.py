@@ -3389,6 +3389,8 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "Explicit theta tensors in `gpurec/api/model.py`",
         "Shared `validate_theta_shape()`",
         "wrong row counts now fail before CUDA checks",
+        "rejects non-floating or nonfinite theta values before CUDA work",
+        "invalid `theta_init` shapes/values and invalid explicit `theta` shapes/values",
         "`collate_gene_families()` docstring",
         "instead of removed `preprocess_gene_with_species`",
         "Workflow/Backtracking Refresh Findings",
