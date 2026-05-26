@@ -48,14 +48,17 @@ on `examples/minimal-run-config.json` and
 `gpurec validate-config --help` so the installed template/preflight surface
 remains part of the command surface, including genewise Hessian-SGD route knobs
 and the specieswise Adagrad restart schedule, and verifies the
-`--require-cuda-backward-ready` preflight gate is exposed. It also smokes
+`--require-cuda-backward-ready` and `--require-mode-default-optimizer`
+preflight gates are exposed. It also smokes
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
 `--require-converged` and `--require-final-check-ok` summary gates for
-automation and the checkpoint final-check gate for direct artifact inspection.
+automation, the default-optimizer audit gate, and the checkpoint final-check
+gate for direct artifact inspection.
 The same package job checks `gpurec optimize --help` for the direct
-optimization convergence and final-check gates and `gpurec run --help` for the
-matching pre-sampling convergence and final-check gates, keeps
+optimization convergence, final-check, and default-optimizer gates and
+`gpurec run --help` for the matching pre-sampling convergence, final-check, and
+default-optimizer gates, keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 checks source-archive preprocessing reports the tiny fixtures as

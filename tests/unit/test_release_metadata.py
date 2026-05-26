@@ -570,22 +570,27 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "gpurec optimize --help",
         "optimize-help.txt",
         'grep -q -- "--require-final-check-ok" optimize-help.txt',
+        'grep -q -- "--require-mode-default-optimizer" optimize-help.txt',
         "gpurec validate-config --help",
         "validate-config-help.txt",
         "--require-cuda-backward-ready",
+        'grep -q -- "--require-mode-default-optimizer" validate-config-help.txt',
         "gpurec summary-info --help",
         "summary-info-help.txt",
         "--summary",
         "--require-converged",
         'grep -q -- "--require-final-check-ok" summary-info-help.txt',
+        'grep -q -- "--require-mode-default-optimizer" summary-info-help.txt',
         "summary.json",
         "gpurec checkpoint-info --help",
         "checkpoint-info-help.txt",
         'grep -q -- "--require-final-check-ok" checkpoint-info-help.txt',
+        'grep -q -- "--require-mode-default-optimizer" checkpoint-info-help.txt',
         "gpurec sample --help",
         "gpurec run --help",
         "run-help.txt",
         'grep -q -- "--require-final-check-ok" run-help.txt',
+        'grep -q -- "--require-mode-default-optimizer" run-help.txt',
         "gpurec backtrack-check --help",
         "--backtrack-binary",
         "GPUREC_BACKTRACK_BIN",
@@ -1040,6 +1045,7 @@ def test_release_readiness_smokes_top_level_exports():
 
 def test_release_readiness_documents_installed_wheel_smoke():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+    normalized = " ".join(guide.split())
 
     for expected in (
         "python -m pip install --no-deps dist/*.whl",
@@ -1048,10 +1054,11 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "gpurec config-template --mode genewise",
         "gpurec config-template --mode specieswise",
         "gpurec optimize --help",
-        "optimization convergence and final-check gates",
-        "final-check gates",
+        "optimization convergence, final-check, and default-optimizer gates",
+        "default-optimizer gates",
         "gpurec validate-config --help",
         "--require-cuda-backward-ready",
+        "--require-mode-default-optimizer",
         "gpurec summary-info --help",
         "--require-converged",
         "--require-final-check-ok",
@@ -1059,7 +1066,7 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "checkpoint final-check gate",
         "gpurec sample --help",
         "gpurec run --help",
-        "pre-sampling convergence and final-check gates",
+        "pre-sampling convergence, final-check, and default-optimizer gates",
         "gpurec backtrack-check --help",
         "package_path = Path(gpurec.__file__).resolve()",
         "package_path.is_relative_to(repo_root)",
@@ -1073,7 +1080,7 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "workflow wildcard mismatch",
         "exports_ok",
     ):
-        assert expected in guide
+        assert expected in normalized
 
 
 def test_release_readiness_documents_source_archive_preprocess_smoke():

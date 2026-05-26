@@ -296,16 +296,20 @@ jobs:
           gpurec optimize --help | tee optimize-help.txt
           grep -q -- "--require-converged" optimize-help.txt
           grep -q -- "--require-final-check-ok" optimize-help.txt
+          grep -q -- "--require-mode-default-optimizer" optimize-help.txt
           gpurec validate-config --help | tee validate-config-help.txt
           grep -q -- "--require-cuda-backward-ready" validate-config-help.txt
+          grep -q -- "--require-mode-default-optimizer" validate-config-help.txt
           gpurec summary-info --help | tee summary-info-help.txt
           grep -q -- "--summary" summary-info-help.txt
           grep -q -- "--require-converged" summary-info-help.txt
           grep -q -- "--require-final-check-ok" summary-info-help.txt
+          grep -q -- "--require-mode-default-optimizer" summary-info-help.txt
           grep -q -- "summary.json" summary-info-help.txt
           gpurec checkpoint-info --help | tee checkpoint-info-help.txt
           grep -q -- "--checkpoint" checkpoint-info-help.txt
           grep -q -- "--require-final-check-ok" checkpoint-info-help.txt
+          grep -q -- "--require-mode-default-optimizer" checkpoint-info-help.txt
           grep -q -- "checkpoint" checkpoint-info-help.txt
           gpurec sample --help | tee sample-help.txt
           grep -q -- "--backtrack-binary" sample-help.txt
@@ -315,6 +319,7 @@ jobs:
           gpurec run --help | tee run-help.txt
           grep -q -- "--require-converged" run-help.txt
           grep -q -- "--require-final-check-ok" run-help.txt
+          grep -q -- "--require-mode-default-optimizer" run-help.txt
           grep -q -- "--backtrack-binary" run-help.txt
           grep -q -- "GPUREC_BACKTRACK_BIN" run-help.txt
           gpurec backtrack-check --help | tee backtrack-check-help.txt
