@@ -225,13 +225,18 @@ Gates:
 
 ### Step 5: Build The Shared Evaluator
 
-Move the current sequence from `_evaluate_static_state()` into a new evaluator:
+Move the current sequence from `_evaluate_static_state()` into the shared
+resident evaluator. Current resident no-grad and gradient-forward E/Pi/NLL
+evaluation live in `gpurec/api/_uniform_evaluator.py`; the implicit-gradient
+backward call still lives in the autograd bridge.
+
+The evaluator owns:
 
 1. extract rates;
 2. solve E;
 3. solve Pi according to output intent;
 4. compute NLL;
-5. if requested, run gradient.
+5. if requested, provide saved state for the autograd bridge to run gradient.
 
 Then route call sites incrementally:
 

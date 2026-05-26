@@ -7,6 +7,7 @@ import torch
 
 import gpurec.api.autograd as api_autograd
 import gpurec.api.model as api_model
+import gpurec.api._uniform_evaluator as api_evaluator
 
 
 def _implicit_gradient_static(
@@ -376,7 +377,7 @@ def test_evaluate_static_state_grad_uses_resident_gradient_boundary(monkeypatch)
                 "warm_start_E": warm_start_E,
             }
         )
-        return api_autograd.ResidentGradientForwardResult(
+        return api_evaluator.ResidentGradientForwardResult(
             solve=solve,
             loss_vec=loss_vec,
         )
@@ -490,7 +491,7 @@ def test_evaluate_static_state_keeps_staged_pi_adjoint_for_workflow_commit(
     monkeypatch.setattr(
         api_model,
         "evaluate_resident_gradient_forward",
-        lambda *_args, **_kwargs: api_autograd.ResidentGradientForwardResult(
+        lambda *_args, **_kwargs: api_evaluator.ResidentGradientForwardResult(
             solve=solve,
             loss_vec=torch.ones(2, dtype=theta.dtype),
         ),
@@ -546,7 +547,7 @@ def test_evaluate_static_state_clears_immediate_pi_adjoint_runtime_cache(
     monkeypatch.setattr(
         api_model,
         "evaluate_resident_gradient_forward",
-        lambda *_args, **_kwargs: api_autograd.ResidentGradientForwardResult(
+        lambda *_args, **_kwargs: api_evaluator.ResidentGradientForwardResult(
             solve=solve,
             loss_vec=torch.ones(2, dtype=theta.dtype),
         ),
@@ -890,12 +891,12 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
         return torch.tensor([1.25, 2.5], dtype=theta.dtype)
 
     monkeypatch.setattr(
-        api_autograd,
+        api_evaluator,
         "solve_resident_e_pi",
         fake_solve_resident_e_pi,
     )
     monkeypatch.setattr(
-        api_autograd,
+        api_evaluator,
         "compute_nll_root_rows",
         fake_compute_nll_root_rows,
     )

@@ -79,7 +79,9 @@ Plan:
 
 - Add a model-internal evaluator module, for example
   `gpurec/api/_uniform_evaluator.py`.
-- Move common E/Pi/root-likelihood logic behind one request object.
+- Move common E/Pi/root-likelihood logic behind one request object. Resident
+  no-grad and gradient-forward evaluation now share `_uniform_evaluator.py`;
+  the autograd bridge still owns the implicit-gradient backward call.
 - Make `_GeneReconFunction`, `_GeneReconFullLossFunction`, and
   `_UniformChunkedFunction` call the evaluator instead of open-coding the
   pipeline.

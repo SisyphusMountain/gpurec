@@ -2005,6 +2005,32 @@ def test_api_runtime_uses_root_row_likelihood_contract():
     assert offenders == []
 
 
+def test_resident_gradient_forward_lives_in_uniform_evaluator():
+    root = Path(__file__).resolve().parents[2]
+    evaluator_module = ast.parse(
+        (root / "gpurec" / "api" / "_uniform_evaluator.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    autograd_module = ast.parse(
+        (root / "gpurec" / "api" / "autograd.py").read_text(encoding="utf-8")
+    )
+    evaluator_defs = {
+        node.name
+        for node in evaluator_module.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+    }
+    autograd_defs = {
+        node.name
+        for node in autograd_module.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+    }
+
+    for name in ("ResidentGradientForwardResult", "evaluate_resident_gradient_forward"):
+        assert name in evaluator_defs
+        assert name not in autograd_defs
+
+
 def test_api_uses_named_pi_forward_request_contract():
     root = Path(__file__).resolve().parents[2]
     offenders: list[str] = []

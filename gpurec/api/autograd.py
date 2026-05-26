@@ -18,14 +18,9 @@ from typing import Any, Optional
 
 import torch
 
-from gpurec.core.likelihood import (
-    E_fixed_point,
-    compute_nll_root_rows,
-    gather_root_rows,
-)
+from gpurec.core.likelihood import E_fixed_point
 from gpurec.core.forward import (
     PiForwardRequest,
-    pi_training_state_request,
 )
 from gpurec.core._helpers import _nvtx_range
 from gpurec.core.extract_parameters import extract_parameters_uniform
@@ -107,12 +102,6 @@ class ResidentSolveResult:
     log_p_d: torch.Tensor
     log_p_l: torch.Tensor
     max_transfer: torch.Tensor
-
-
-@dataclass(frozen=True)
-class ResidentGradientForwardResult:
-    solve: ResidentSolveResult
-    loss_vec: torch.Tensor
 
 
 def _origination_probs_for_static(static: ReconStaticState) -> torch.Tensor | None:
@@ -420,34 +409,6 @@ def solve_resident_e_pi(
     )
 
 
-def evaluate_resident_gradient_forward(
-    static: ReconStaticState,
-    theta: torch.Tensor,
-    *,
-    warm_start_E: torch.Tensor | None = None,
-) -> ResidentGradientForwardResult:
-    """Return the shared resident forward solve used by gradient paths."""
-    require_default_objective("GeneReconModel")
-    with _nvtx_range("resident E/Pi solve"):
-        solve = solve_resident_e_pi(
-            static,
-            theta,
-            pi_request=pi_training_state_request(),
-            warm_start_E=warm_start_E,
-        )
-        _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
-
-    with _nvtx_range("resident root likelihood"):
-        root_clade_ids = static.wave_layout["root_clade_ids"]
-        loss_vec = compute_nll_root_rows(
-            gather_root_rows(solve.pi_out["Pi_wave_ordered"], root_clade_ids),
-            solve.e_out["E"],
-            _origination_probs_for_static(static),
-            origination_probs_prepared=True,
-        )
-    return ResidentGradientForwardResult(solve=solve, loss_vec=loss_vec)
-
-
 def compute_resident_implicit_gradient(
     static: ReconStaticState,
     *,
@@ -545,6 +506,8 @@ class _GeneReconFunction(torch.autograd.Function):
         with torch.no_grad():
             # 1. Resident E/Pi solve with the autograd warm-start policy.
             with _nvtx_range("forward resident gradient evaluation"):
+                from ._uniform_evaluator import evaluate_resident_gradient_forward
+
                 gradient_forward = evaluate_resident_gradient_forward(
                     static,
                     theta,

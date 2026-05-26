@@ -58,7 +58,6 @@ from .autograd import (
     _clear_pi_adjoint_runtime_cache,
     _clear_post_gradient_runtime_cache,
     compute_resident_implicit_gradient,
-    evaluate_resident_gradient_forward,
 )
 from ._family_layout import (
     FamilyWaveInputs,
@@ -68,6 +67,7 @@ from ._family_layout import (
     schedule_family_waves,
 )
 from ._uniform_evaluator import (
+    evaluate_resident_gradient_forward,
     evaluate_resident_no_grad,
     evaluate_resident_no_grad_with_solved_e,
     solve_resident_e,
