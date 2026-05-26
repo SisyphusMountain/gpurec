@@ -109,6 +109,31 @@ def pi_export_state_request(*, original_order: bool) -> PiForwardRequest:
     )
 
 
+def _carry_forward_converged_root_trace(
+    root_logsumexp_trace: torch.Tensor | None,
+    roots_by_wave: list[tuple[torch.Tensor, torch.Tensor] | None] | None,
+    pi_wave_iterations: list[int],
+    fixed_iters: int,
+) -> torch.Tensor | None:
+    """Fill adaptive trace tails with each root wave's last computed value."""
+    if root_logsumexp_trace is None or roots_by_wave is None:
+        return root_logsumexp_trace
+
+    for wave_index, root_entry in enumerate(roots_by_wave):
+        if root_entry is None or wave_index >= len(pi_wave_iterations):
+            continue
+        valid_iters = int(pi_wave_iterations[wave_index])
+        if valid_iters <= 0 or valid_iters >= fixed_iters:
+            continue
+        _, root_positions = root_entry
+        final_values = root_logsumexp_trace[
+            valid_iters - 1,
+            root_positions,
+        ].unsqueeze(0)
+        root_logsumexp_trace[valid_iters:, root_positions] = final_values
+    return root_logsumexp_trace
+
+
 # ---------------------------------------------------------------------------
 # Cross-clade DTS
 # ---------------------------------------------------------------------------
@@ -202,7 +227,9 @@ def Pi_wave_forward(
                           likelihood callers and skips saved Pibar state.
         trace_root_logsumexp: if True, record a GPU-resident
                               ``[fixed_iters, n_roots]`` trace of base-2
-                              logsumexp values for root rows.
+                              logsumexp values for root rows. Adaptive early
+                              stops carry the last computed root value through
+                              the unused tail rows for that root wave.
         convergence_tolerance: when non-negative, treat ``fixed_iters`` as a
                                maximum and stop a wave early when the max row
                                update changes by less than this value at a
@@ -578,6 +605,13 @@ def Pi_wave_forward(
             )
         if emit_progress:
             _progress("done")
+
+    root_logsumexp_trace = _carry_forward_converged_root_trace(
+        root_logsumexp_trace,
+        roots_by_wave,
+        pi_wave_iterations,
+        fixed_iters,
+    )
 
     with _nvtx_range("Pi finalize permute"):
         if output_intent.emit_root_rows:

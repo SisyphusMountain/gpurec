@@ -79,12 +79,12 @@ evidence is thin.
    `gpurec/core/batch_planning.py:287`.  Tests cover under-budget fixtures, but
    not oversized-family semantics.
 
-5. Adaptive root trace behavior is under-specified.  `Pi_wave_forward`
-   preallocates `root_logsumexp_trace` for all fixed iterations at
-   `gpurec/core/forward.py:223`, can return early at
-   `gpurec/core/forward.py:329`, and returns the full trace at
-   `gpurec/core/forward.py:392`.  Current tests cover fixed-iteration trace
-   behavior, not early convergence.
+5. Adaptive root trace behavior is now specified and guarded.  `Pi_wave_forward`
+   keeps the existing fixed `[fixed_iters, n_roots]` trace shape and carries
+   each early-converged root wave's last computed value through its unused tail
+   rows, so consumers do not see preallocation sentinels after adaptive stops.
+   Unit coverage checks the carry-forward helper on CPU and the CUDA trace
+   parity test covers the early-stop path when CUDA fixtures are available.
 
 6. DTS parameter shape semantics when `G == S` are now documented before any
    runtime unification.  Public model paths use unambiguous theta shapes and

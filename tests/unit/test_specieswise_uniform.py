@@ -373,6 +373,42 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100, tmp_path):
         rtol=1e-5,
     )
 
+    adaptive_pi_out = pi_root_row_loss_request().run(
+        wave_layout=static.wave_layout,
+        species_helpers=static.species_helpers,
+        E=E_out["E"],
+        Ebar=E_out["E_bar"],
+        E_s1=E_out["E_s1"],
+        E_s2=E_out["E_s2"],
+        log_pS=log_pS,
+        log_pD=log_pD,
+        max_transfer_mat=max_transfer_vec,
+        device=static.device,
+        dtype=static.dtype,
+        fixed_iters=static.fixed_iters_Pi,
+        family_idx=static.wave_layout["family_idx"],
+        trace_root_logsumexp=True,
+        convergence_tolerance=1e30,
+        convergence_check_interval=2,
+    )
+    torch.cuda.synchronize()
+
+    adaptive_trace = adaptive_pi_out["root_logsumexp_trace"]
+    assert adaptive_trace.shape == (4, len(genes))
+    assert adaptive_pi_out["Pi_max_iterations"] < static.fixed_iters_Pi
+    torch.testing.assert_close(
+        adaptive_trace[-1],
+        logsumexp2(adaptive_pi_out["Pi_root_rows"], dim=-1),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    torch.testing.assert_close(
+        adaptive_trace[2:],
+        adaptive_trace[1].unsqueeze(0).expand_as(adaptive_trace[2:]),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+
 
 @pytest.mark.slow
 def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, tmp_path):

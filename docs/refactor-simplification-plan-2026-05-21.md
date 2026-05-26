@@ -196,7 +196,9 @@ Expected simplification:
 
 Risk:
 
-- Adaptive iteration and root trace behavior need focused parity tests.
+- Adaptive iteration parity still needs end-to-end CUDA coverage before a larger
+  evaluator split. Root trace early-stop carry-forward behavior is now specified
+  and guarded by focused unit coverage.
 
 ### 4. Prune Backward Runtime Alternatives
 

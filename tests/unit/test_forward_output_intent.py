@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
 from gpurec.core.forward import (
     PiForwardRequest,
     PiOutputIntent,
+    _carry_forward_converged_root_trace,
     pi_export_state_request,
     pi_output_intent,
     pi_root_row_loss_request,
@@ -97,3 +99,59 @@ def test_pi_forward_requests_name_internal_output_intent():
     assert root_rows.intent.name == "root_row_loss_only"
     assert export_original.intent.name == "export_original_and_wave_rows"
     assert export_wave.intent.name == "training_or_wave_export_state"
+
+
+def test_converged_root_trace_carries_last_value_through_tail_rows():
+    trace = torch.tensor(
+        [
+            [1.0, 10.0, 100.0],
+            [2.0, 20.0, 200.0],
+            [-torch.inf, 30.0, 300.0],
+            [-torch.inf, -torch.inf, -torch.inf],
+        ]
+    )
+    roots_by_wave = [
+        (torch.tensor([4]), torch.tensor([0])),
+        (torch.tensor([8, 9]), torch.tensor([1, 2])),
+    ]
+
+    result = _carry_forward_converged_root_trace(
+        trace,
+        roots_by_wave,
+        pi_wave_iterations=[2, 3],
+        fixed_iters=4,
+    )
+
+    assert result is trace
+    torch.testing.assert_close(
+        result,
+        torch.tensor(
+            [
+                [1.0, 10.0, 100.0],
+                [2.0, 20.0, 200.0],
+                [2.0, 30.0, 300.0],
+                [2.0, 30.0, 300.0],
+            ]
+        ),
+    )
+
+
+def test_converged_root_trace_leaves_full_iteration_columns_unchanged():
+    trace = torch.tensor(
+        [
+            [1.0, 10.0],
+            [2.0, 20.0],
+            [3.0, 30.0],
+            [4.0, 40.0],
+        ]
+    )
+    roots_by_wave = [(torch.tensor([3, 4]), torch.tensor([0, 1]))]
+
+    result = _carry_forward_converged_root_trace(
+        trace.clone(),
+        roots_by_wave,
+        pi_wave_iterations=[4],
+        fixed_iters=4,
+    )
+
+    torch.testing.assert_close(result, trace)
