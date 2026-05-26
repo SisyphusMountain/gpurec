@@ -267,6 +267,15 @@ def _loss_and_grad(
     return loss.detach().clone(), model.theta.grad.detach().clone()
 
 
+def _loss_at_theta(model: GeneReconModel, theta: torch.Tensor) -> torch.Tensor:
+    with torch.no_grad():
+        model.theta.copy_(theta)
+        model.static.warm_E = None
+        loss = model()
+    torch.cuda.synchronize()
+    return loss.detach().clone()
+
+
 def test_specieswise_uniform_forward_root_rows_match_saved_state(data_dir_100, tmp_path):
     """Full saved-state likelihood agrees with the root-row output mode."""
     device = torch.device("cuda")
@@ -412,9 +421,9 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100, tmp_path):
 
 @pytest.mark.slow
 def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, tmp_path):
-    """Specieswise uniform backward runs through the retained fast path."""
+    """Specieswise uniform backward matches a directional finite difference."""
     device = torch.device("cuda")
-    dtype = torch.float32
+    dtype = torch.float64
     genes = _genes(data_dir_1000, 2)
     model = _make_model(
         data_dir_1000,
@@ -432,6 +441,22 @@ def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, tmp_path):
     assert torch.isfinite(loss)
     assert grad.shape == model.theta.shape
     assert torch.isfinite(grad).all()
+
+    direction = grad / torch.linalg.vector_norm(grad).clamp_min(1e-12)
+    step = torch.as_tensor(1e-3, device=device, dtype=dtype)
+    plus_loss = _loss_at_theta(model, theta + step * direction)
+    minus_loss = _loss_at_theta(model, theta - step * direction)
+    finite_difference_slope = (plus_loss - minus_loss) / (2.0 * step)
+    backward_slope = (grad * direction).sum()
+
+    assert torch.isfinite(finite_difference_slope)
+    assert finite_difference_slope > 0.0
+    torch.testing.assert_close(
+        backward_slope,
+        finite_difference_slope,
+        rtol=5e-2,
+        atol=5e-2,
+    )
 
 
 @pytest.mark.slow

@@ -335,9 +335,9 @@ removed and are guarded against returning.
 - Several GPU tests are still smoke-heavy: Adam/LBFGS integration checks now
   require post-step NLL non-increase, and the HOGENOM unrooted parsing check now
   asserts per-family likelihood plus direct/PyTorch gradient consistency.  The
-  specieswise backward check still asserts finite values.  Prefer before/after
-  NLL decrease or reference-close assertions when local data makes that
-  practical.
+  specieswise backward check now compares the retained backward gradient against
+  a directional finite difference.  Prefer before/after NLL decrease or
+  reference-close assertions when local data makes that practical.
 - Adaptive iteration coverage now includes forced-max parity and a slow GPU
   loose-tolerance guard that asserts E/Pi solver iterations stop before the
   configured maximum.  Broaden it with more data-backed close-reference cases
