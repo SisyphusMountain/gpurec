@@ -151,6 +151,10 @@ gate is intentionally scoped to the retained genewise `hessian-sgd` and
 specieswise `adagrad-restarts` HOGENOM/`test_trees_1000` profiles; `mode=global`
 can still satisfy `--require-mode-default-optimizer`, but it fails
 `--require-production-default-route` with a `mode` mismatch.
+That strict route audit requires typed step-cap evidence too:
+`configured_steps` and `optimizer_step_cap` must be positive JSON integers,
+`optimizer_step_cap_reason` must be a valid string reason, and a
+configured-step cap must equal the configured step count.
 
 ### Genewise `hessian-sgd`
 

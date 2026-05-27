@@ -154,7 +154,10 @@ optimizer profile. They also include `uses_production_default_route` and
 `production_default_route_mismatches`, which combine those optimizer-specific
 checks with the shipped objective, gradient route, rate parameterization, and
 production default basis metadata enforced by
-`--require-production-default-route`.
+`--require-production-default-route`. The production-route audit also requires
+typed step-cap evidence: `configured_steps` and `optimizer_step_cap` must be
+positive JSON integers, `optimizer_step_cap_reason` must be a valid string
+reason, and a normal configured-step cap must equal `configured_steps`.
 
 For automation, `gpurec optimize`, `gpurec run`, and `gpurec summary-info`
 support `--require-converged`. Add `--require-final-check-ok` when the command

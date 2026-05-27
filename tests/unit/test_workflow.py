@@ -99,6 +99,47 @@ optimize_workflow = importlib.import_module("gpurec.workflow.optimize")
 SUBPROCESS_TIMEOUT = 30
 
 
+def _genewise_production_route_dict(**overrides: object) -> dict[str, object]:
+    route: dict[str, object] = {
+        "mode": "genewise",
+        "optimizer": "hessian-sgd",
+        "configured_steps": 5000,
+        "optimizer_step_cap": 5000,
+        "optimizer_step_cap_reason": "configured_steps",
+        "final_check_iters": 32,
+        "final_check_iters_e": None,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "hessian_sgd_normal_fixed_iters_pi": None,
+        "hessian_sgd_normal_neumann_terms": None,
+        "hessian_sgd_pi_adjoint_warmstart": False,
+        "pi_fixed_point_relaxation": 1.0,
+        "hessian_sgd_validation_interval": 0,
+        "hessian_sgd_validation_fixed_iters_pi": None,
+        "hessian_sgd_validation_neumann_terms": None,
+    }
+    route.update(overrides)
+    return route
+
+
+def _specieswise_production_route_dict(**overrides: object) -> dict[str, object]:
+    route: dict[str, object] = {
+        "mode": "specieswise",
+        "optimizer": "adagrad-restarts",
+        "configured_steps": 5000,
+        "final_check_iters": 128,
+        "final_check_iters_e": 128,
+        "optimizer_step_cap": 125,
+        "optimizer_step_cap_reason": "adagrad_restart_schedule",
+        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+        "adagrad_restart_total_steps": 125,
+        "adagrad_restart_final_check_iters": 128,
+    }
+    route.update(overrides)
+    return route
+
+
 def _wildcard_export_names(import_statement: str) -> set[str]:
     namespace: dict[str, object] = {}
     exec(import_statement, namespace)
@@ -1510,19 +1551,11 @@ def test_effective_route_metadata_marks_global_outside_production_route(
 
 def test_route_audit_infers_production_default_settings_from_route_dict():
     route = {
+        **_specieswise_production_route_dict(),
         "objective": "negative_log_likelihood_bits",
         "gradient_route": "implicit_first_order_adjoint",
         "rate_parameterization": "base2_log_dlt_rates",
         "production_default_basis": "hogenom_and_" + "test_trees_" + "1000",
-        "mode": "specieswise",
-        "optimizer": "adagrad-restarts",
-        "final_check_iters": 128,
-        "final_check_iters_e": 128,
-        "optimizer_step_cap": 125,
-        "optimizer_step_cap_reason": "adagrad_restart_schedule",
-        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
-        "adagrad_restart_total_steps": 125,
-        "adagrad_restart_final_check_iters": 128,
     }
 
     missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
@@ -1535,24 +1568,11 @@ def test_route_audit_infers_production_default_settings_from_route_dict():
 
 def test_production_route_audit_requires_likelihood_gradient_contract_fields():
     route = {
+        **_genewise_production_route_dict(),
         "objective": "negative_log_likelihood_bits",
         "gradient_route": "legacy_autograd",
         "rate_parameterization": "base2_log_dlt_rates",
         "production_default_basis": "hogenom_and_" + "test_trees_" + "1000",
-        "mode": "genewise",
-        "optimizer": "hessian-sgd",
-        "final_check_iters": 32,
-        "final_check_iters_e": None,
-        "solver_warmup_iters": 4,
-        "fd_adam_warmup_steps": 3,
-        "fd_hessian_refresh_steps": 16,
-        "hessian_sgd_normal_fixed_iters_pi": None,
-        "hessian_sgd_normal_neumann_terms": None,
-        "hessian_sgd_pi_adjoint_warmstart": False,
-        "pi_fixed_point_relaxation": 1.0,
-        "hessian_sgd_validation_interval": 0,
-        "hessian_sgd_validation_fixed_iters_pi": None,
-        "hessian_sgd_validation_neumann_terms": None,
     }
 
     missing, mismatches = production_default_route_mismatches_from_route(route)
@@ -1568,17 +1588,7 @@ def test_production_route_audit_requires_likelihood_gradient_contract_fields():
 
 
 def test_route_audit_normalizes_checkpoint_mode_strings():
-    route = {
-        "mode": " SpeciesWise ",
-        "optimizer": "adagrad-restarts",
-        "final_check_iters": 128,
-        "final_check_iters_e": 128,
-        "optimizer_step_cap": 125,
-        "optimizer_step_cap_reason": "adagrad_restart_schedule",
-        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
-        "adagrad_restart_total_steps": 125,
-        "adagrad_restart_final_check_iters": 128,
-    }
+    route = _specieswise_production_route_dict(mode=" SpeciesWise ")
 
     missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
         route
@@ -1589,16 +1599,8 @@ def test_route_audit_normalizes_checkpoint_mode_strings():
 
 
 def test_route_audit_requires_final_check_e_budget_evidence():
-    route = {
-        "mode": "specieswise",
-        "optimizer": "adagrad-restarts",
-        "final_check_iters": 128,
-        "optimizer_step_cap": 125,
-        "optimizer_step_cap_reason": "adagrad_restart_schedule",
-        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
-        "adagrad_restart_total_steps": 125,
-        "adagrad_restart_final_check_iters": 128,
-    }
+    route = _specieswise_production_route_dict()
+    route.pop("final_check_iters_e")
 
     missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
         route
@@ -1627,17 +1629,7 @@ def test_route_audit_requires_final_check_e_budget_evidence():
     ],
 )
 def test_route_audit_requires_typed_integer_evidence(field: str, value: object):
-    route = {
-        "mode": "specieswise",
-        "optimizer": "adagrad-restarts",
-        "final_check_iters": 128,
-        "final_check_iters_e": 128,
-        "optimizer_step_cap": 125,
-        "optimizer_step_cap_reason": "adagrad_restart_schedule",
-        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
-        "adagrad_restart_total_steps": 125,
-        "adagrad_restart_final_check_iters": 128,
-    }
+    route = _specieswise_production_route_dict()
     route[field] = value
 
     missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
@@ -1646,6 +1638,74 @@ def test_route_audit_requires_typed_integer_evidence(field: str, value: object):
 
     assert missing == ()
     assert mismatches == (field,)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["configured_steps", "optimizer_step_cap", "optimizer_step_cap_reason"],
+)
+def test_route_audit_requires_step_cap_evidence(field: str):
+    route = _genewise_production_route_dict()
+    route.pop(field)
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == (field,)
+    assert mismatches == ()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("configured_steps", "5000"),
+        ("configured_steps", 5000.0),
+        ("configured_steps", True),
+        ("configured_steps", 0),
+        ("optimizer_step_cap", "5000"),
+        ("optimizer_step_cap", 5000.0),
+        ("optimizer_step_cap", False),
+        ("optimizer_step_cap", 0),
+        ("optimizer_step_cap_reason", 1),
+        ("optimizer_step_cap_reason", "other"),
+    ],
+)
+def test_route_audit_requires_typed_step_cap_evidence(
+    field: str,
+    value: object,
+):
+    route = _genewise_production_route_dict()
+    route[field] = value
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == (field,)
+
+
+def test_route_audit_requires_genewise_step_cap_to_match_configured_steps():
+    route = _genewise_production_route_dict(optimizer_step_cap=100)
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == ("optimizer_step_cap",)
+
+
+def test_route_audit_requires_adagrad_schedule_cap_to_fit_configured_steps():
+    route = _specieswise_production_route_dict(configured_steps=100)
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == ("configured_steps",)
 
 
 @pytest.mark.parametrize(
@@ -1659,22 +1719,7 @@ def test_route_audit_requires_typed_boolean_and_float_evidence(
     field: str,
     value: object,
 ):
-    route = {
-        "mode": "genewise",
-        "optimizer": "hessian-sgd",
-        "final_check_iters": 32,
-        "final_check_iters_e": None,
-        "solver_warmup_iters": 4,
-        "fd_adam_warmup_steps": 3,
-        "fd_hessian_refresh_steps": 16,
-        "hessian_sgd_normal_fixed_iters_pi": None,
-        "hessian_sgd_normal_neumann_terms": None,
-        "hessian_sgd_pi_adjoint_warmstart": False,
-        "pi_fixed_point_relaxation": 1.0,
-        "hessian_sgd_validation_interval": 0,
-        "hessian_sgd_validation_fixed_iters_pi": None,
-        "hessian_sgd_validation_neumann_terms": None,
-    }
+    route = _genewise_production_route_dict()
     route[field] = value
 
     missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
@@ -1687,22 +1732,7 @@ def test_route_audit_requires_typed_boolean_and_float_evidence(
 
 @pytest.mark.parametrize("optimizer", ["Hessian_SGD", "AUTO"])
 def test_route_audit_normalizes_optimizer_alias_strings(optimizer: str):
-    route = {
-        "mode": " GeneWise ",
-        "optimizer": optimizer,
-        "final_check_iters": 32,
-        "final_check_iters_e": None,
-        "solver_warmup_iters": 4,
-        "fd_adam_warmup_steps": 3,
-        "fd_hessian_refresh_steps": 16,
-        "hessian_sgd_normal_fixed_iters_pi": None,
-        "hessian_sgd_normal_neumann_terms": None,
-        "hessian_sgd_pi_adjoint_warmstart": False,
-        "pi_fixed_point_relaxation": 1.0,
-        "hessian_sgd_validation_interval": 0,
-        "hessian_sgd_validation_fixed_iters_pi": None,
-        "hessian_sgd_validation_neumann_terms": None,
-    }
+    route = _genewise_production_route_dict(mode=" GeneWise ", optimizer=optimizer)
 
     missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
         route
@@ -1713,21 +1743,8 @@ def test_route_audit_normalizes_optimizer_alias_strings(optimizer: str):
 
 
 def test_route_audit_reports_missing_and_custom_optimizer_settings():
-    route = {
-        "mode": "genewise",
-        "optimizer": "hessian-sgd",
-        "final_check_iters": 32,
-        "final_check_iters_e": None,
-        "solver_warmup_iters": 4,
-        "fd_adam_warmup_steps": 3,
-        "fd_hessian_refresh_steps": 8,
-        "hessian_sgd_normal_fixed_iters_pi": None,
-        "hessian_sgd_normal_neumann_terms": None,
-        "hessian_sgd_pi_adjoint_warmstart": False,
-        "pi_fixed_point_relaxation": 1.0,
-        "hessian_sgd_validation_interval": 0,
-        "hessian_sgd_validation_fixed_iters_pi": None,
-    }
+    route = _genewise_production_route_dict(fd_hessian_refresh_steps=8)
+    route.pop("hessian_sgd_validation_neumann_terms")
 
     missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
         route

@@ -2248,7 +2248,10 @@ def test_cli_checkpoint_info_treats_malformed_numeric_fields_as_null(
     assert captured.err == ""
     assert "route_metadata_source=checkpoint" in tokens
     assert "uses_production_default_optimizer_settings=false" in tokens
-    assert "production_default_optimizer_setting_mismatches=solver_warmup_iters" in tokens
+    assert (
+        "production_default_optimizer_setting_mismatches="
+        "optimizer_step_cap,solver_warmup_iters"
+    ) in tokens
     assert "optimizer_step_cap=null" in tokens
     assert "solver_warmup_iters=null" in tokens
     assert "best_step=null" in tokens
@@ -2600,6 +2603,9 @@ def test_cli_checkpoint_info_require_production_default_route_recomputes_stale_a
         {
             "mode": "genewise",
             "optimizer": "hessian-sgd",
+            "configured_steps": 5000,
+            "optimizer_step_cap": 5000,
+            "optimizer_step_cap_reason": "configured_steps",
             "uses_production_default_optimizer_settings": True,
             "production_default_optimizer_setting_mismatches": [],
             "final_check_iters": 32,
@@ -2653,6 +2659,9 @@ def test_cli_checkpoint_info_require_production_default_route_requires_settings_
         {
             "mode": "genewise",
             "optimizer": "hessian-sgd",
+            "configured_steps": 5000,
+            "optimizer_step_cap": 5000,
+            "optimizer_step_cap_reason": "configured_steps",
             "uses_production_default_optimizer_settings": True,
             "production_default_optimizer_setting_mismatches": [],
         },
@@ -2692,6 +2701,9 @@ def test_cli_checkpoint_info_production_route_rejects_float_integer_evidence(
         {
             "mode": "genewise",
             "optimizer": "hessian-sgd",
+            "configured_steps": 5000,
+            "optimizer_step_cap": 5000,
+            "optimizer_step_cap_reason": "configured_steps",
             "final_check_iters": 32,
             "final_check_iters_e": None,
             "solver_warmup_iters": 4,
@@ -2954,6 +2966,7 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
                 "optimizer": "adagrad-restarts",
                 "mode_default_optimizer": "adagrad-restarts",
                 "uses_mode_default_optimizer": True,
+                "configured_steps": 5000,
                 "final_check_iters": 128,
                 "optimizer_step_cap": 125,
                 "optimizer_step_cap_reason": "adagrad_restart_schedule",
@@ -3031,6 +3044,7 @@ def test_cli_summary_info_normalizes_route_mode_and_optimizer_aliases(
                 **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": " SpeciesWise ",
                 "optimizer": "ADAGRAD_RESTARTS",
+                "configured_steps": 5000,
                 "final_check_iters": 128,
                 "final_check_iters_e": 128,
                 "optimizer_step_cap": 125,
@@ -3302,6 +3316,9 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
                 **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
+                "configured_steps": 5000,
+                "optimizer_step_cap": 5000,
+                "optimizer_step_cap_reason": "configured_steps",
                 "final_check_iters": 32,
                 "final_check_iters_e": None,
                 "solver_warmup_iters": 4,
@@ -3365,6 +3382,9 @@ def test_cli_summary_info_require_production_default_route_recomputes_stale_audi
                 **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
+                "configured_steps": 5000,
+                "optimizer_step_cap": 5000,
+                "optimizer_step_cap_reason": "configured_steps",
                 "uses_production_default_optimizer_settings": True,
                 "production_default_optimizer_setting_mismatches": [],
                 "final_check_iters": 32,
@@ -3424,6 +3444,9 @@ def test_cli_summary_info_require_production_default_route_rejects_stale_gradien
                 "reason": "loss_change_patience",
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
+                "configured_steps": 5000,
+                "optimizer_step_cap": 5000,
+                "optimizer_step_cap_reason": "configured_steps",
                 "final_check_iters": 32,
                 "final_check_iters_e": None,
                 "solver_warmup_iters": 4,
@@ -3480,6 +3503,9 @@ def test_cli_summary_info_require_production_default_route_requires_settings_evi
                 **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
+                "configured_steps": 5000,
+                "optimizer_step_cap": 5000,
+                "optimizer_step_cap_reason": "configured_steps",
                 "uses_production_default_optimizer_settings": True,
                 "production_default_optimizer_setting_mismatches": [],
                 "steps_completed": 4,
@@ -3525,6 +3551,7 @@ def test_cli_summary_info_production_route_rejects_float_integer_evidence(
                 **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": "specieswise",
                 "optimizer": "adagrad-restarts",
+                "configured_steps": 5000,
                 "final_check_iters": 128,
                 "final_check_iters_e": 128,
                 "optimizer_step_cap": 125.0,

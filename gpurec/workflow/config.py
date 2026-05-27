@@ -1054,6 +1054,11 @@ _PRODUCTION_DEFAULT_ROUTE_CONTRACT = {
     "rate_parameterization": "base2_log_dlt_rates",
     "production_default_basis": "hogenom_and_test_trees_1000",
 }
+_PRODUCTION_ROUTE_STEP_CAP_FIELDS = (
+    "configured_steps",
+    "optimizer_step_cap",
+    "optimizer_step_cap_reason",
+)
 
 
 def production_default_route_contract() -> dict[str, Any]:
@@ -1120,6 +1125,53 @@ def _route_setting_matches(name: str, actual: Any, expected: Any) -> bool:
     return actual == expected
 
 
+def _append_route_step_cap_evidence_mismatches(
+    route: dict[str, Any],
+    *,
+    mode: str,
+    missing: list[str],
+    mismatched: list[str],
+) -> None:
+    def append_mismatch(name: str) -> None:
+        if name not in mismatched:
+            mismatched.append(name)
+
+    def append_missing(name: str) -> None:
+        if name not in missing:
+            missing.append(name)
+
+    typed_ints: dict[str, int] = {}
+    for name in _PRODUCTION_ROUTE_STEP_CAP_FIELDS[:2]:
+        if name not in route:
+            append_missing(name)
+            continue
+        value = route[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            append_mismatch(name)
+            continue
+        typed_ints[name] = int(value)
+    reason_name = _PRODUCTION_ROUTE_STEP_CAP_FIELDS[2]
+    if reason_name not in route:
+        append_missing(reason_name)
+        reason: str | None = None
+    else:
+        reason_value = route[reason_name]
+        reason = reason_value if isinstance(reason_value, str) else None
+        if reason not in {"configured_steps", "adagrad_restart_schedule"}:
+            append_mismatch(reason_name)
+    if set(typed_ints) != {"configured_steps", "optimizer_step_cap"} or reason is None:
+        return
+    configured_steps = typed_ints["configured_steps"]
+    optimizer_step_cap = typed_ints["optimizer_step_cap"]
+    if reason == "configured_steps":
+        if optimizer_step_cap != configured_steps:
+            append_mismatch("optimizer_step_cap")
+    elif mode != "specieswise":
+        append_mismatch(reason_name)
+    elif configured_steps < optimizer_step_cap:
+        append_mismatch("configured_steps")
+
+
 def production_default_optimizer_setting_mismatches_from_route(
     route: dict[str, Any],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -1151,13 +1203,21 @@ def production_default_optimizer_setting_mismatches_from_route(
     if mode_text == "global":
         mismatched.append("mode")
         return tuple(missing), tuple(mismatched)
+    _append_route_step_cap_evidence_mismatches(
+        route,
+        mode=mode_text,
+        missing=missing,
+        mismatched=mismatched,
+    )
     expected_settings = _production_default_optimizer_expected_settings(mode_text)
     for name, expected in expected_settings.items():
         if name not in route:
-            missing.append(name)
+            if name not in missing:
+                missing.append(name)
             continue
         if not _route_setting_matches(name, route[name], expected):
-            mismatched.append(name)
+            if name not in mismatched:
+                mismatched.append(name)
     return tuple(missing), tuple(mismatched)
 
 
@@ -1192,6 +1252,7 @@ def production_default_optimizer_setting_mismatches(
     route = {
         "mode": config.mode,
         "optimizer": config.optimizer,
+        "configured_steps": config.steps,
         "final_check_iters": effective_final_check_iters(config),
         "final_check_iters_e": effective_final_check_iters_e(config),
         "optimizer_step_cap": optimizer_step_cap,

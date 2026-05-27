@@ -1006,6 +1006,11 @@ def test_run_config_reference_covers_current_config_surface():
         "`--require-final-check-ok`",
         "`uses_production_default_route`",
         "`production_default_route_mismatches`",
+        "typed step-cap evidence",
+        "`configured_steps` and `optimizer_step_cap`",
+        "positive JSON integers",
+        "`optimizer_step_cap_reason`",
+        "valid string",
     ):
         assert token in reference
     assert "docs/run-config-reference.md" in project_readme
@@ -1692,6 +1697,8 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "`adagrad_restart_total_steps=125`",
         "`optimizer_step_cap=125`",
         "`optimizer_step_cap_reason=adagrad_restart_schedule`",
+        "`configured_steps` and `optimizer_step_cap` must be positive JSON integers",
+        "`optimizer_step_cap_reason` must be a valid string reason",
         "`adagrad_restart_final_check_iters=128`",
         "`final_check_iters_e=128`",
         "same solver budget with a new LR",
@@ -1883,6 +1890,8 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`likelihood/data_nll_bits`",
         "`grad/projected_inf`",
         "`optimizer/adagrad_restart_*`",
+        "`configured_steps` and `optimizer_step_cap` must decode as positive JSON integers",
+        "`optimizer_step_cap_reason` must be a valid string reason",
         "phase indexes, phase steps, phase lengths, and E/Pi/Neumann budget fields are typed JSON integers",
         "the learning rate is numeric",
         "the restart marker is boolean",

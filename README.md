@@ -439,6 +439,10 @@ optimizer-specific route fields,
 failed/success batch fields are typed integer counts; malformed external
 artifacts display them as `null` instead of coercing strings, floats, or
 booleans.
+The strict production-route audit treats `configured_steps` and
+`optimizer_step_cap` as positive JSON integers and
+`optimizer_step_cap_reason` as a string reason, so incomplete or stringified
+step-cap evidence cannot pass as a shipped optimization route.
 Add `--require-converged` to `gpurec optimize` when a
 shell pipeline should print the same optimization status line and then exit
 nonzero unless the run reached `status=converged`. Add
