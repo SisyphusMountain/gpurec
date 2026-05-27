@@ -1400,10 +1400,11 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--config",
         type=Path,
         help=(
-            "Flat JSON RunConfig file, or '-' to read JSON from stdin; "
-            "relative config paths resolve from the config file or current "
-            "working directory for stdin, and explicit CLI flags override "
-            "matching fields."
+            "relative config paths resolve from the config file. "
+            "Use '-' as --config to read JSON from stdin; in that mode, "
+            "relative paths resolve from stdin's current directory. "
+            "Explicit CLI flags override matching fields. "
+            "Flat JSON RunConfig file may also be provided."
         ),
     )
     parser.add_argument(

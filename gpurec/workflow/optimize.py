@@ -3224,7 +3224,7 @@ class OptimizationRunner:
                 current_phase = "lbfgsb"
             elif start_step >= optimization_stop_step:
                 current_phase = self._phase_for_step(
-                    max(0, optimization_stop_step - 1)
+                    start_step
                 )
             else:
                 current_phase = self._phase_for_step(start_step)
