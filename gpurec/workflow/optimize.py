@@ -697,10 +697,41 @@ def _parameter_labels(
     return labels[:theta_rows]
 
 
+def _rate_table_theta(model: GeneReconModel, mode: str) -> torch.Tensor:
+    theta = model.theta.detach()
+    theta_shape = _tensor_shape(theta)
+    if mode == "global":
+        if theta_shape == (3,):
+            theta = theta.reshape(1, 3)
+        elif theta.ndim == 2 and int(theta.shape[1]) == 3:
+            pass
+        else:
+            raise RuntimeError(
+                "global rate table theta has shape "
+                f"{theta_shape}; expected (3,) or a two-dimensional [rows, 3] tensor"
+            )
+    elif mode in {"genewise", "specieswise"}:
+        if theta.ndim != 2 or int(theta.shape[1]) != 3:
+            raise RuntimeError(
+                f"{mode} rate table theta has shape {theta_shape}; "
+                "expected a two-dimensional [rows, 3] tensor"
+            )
+    else:
+        raise RuntimeError(f"unsupported rate-table mode {mode!r}")
+    theta = theta.to(device="cpu", dtype=torch.float64)
+    if not bool(torch.isfinite(theta).all().item()):
+        raise RuntimeError(f"{mode} rate table theta contains nonfinite values")
+    return theta
+
+
 def _write_rate_table(path: Path, model: GeneReconModel, mode: str) -> None:
-    theta = model.theta.detach().reshape(-1, 3).to(device="cpu", dtype=torch.float64)
+    theta = _rate_table_theta(model, mode)
     labels = _parameter_labels(model, mode, theta_rows=int(theta.shape[0]))
     rates, p_s = rates_and_survival_probability(theta)
+    if not bool(torch.isfinite(rates).all().item()) or not bool(
+        torch.isfinite(p_s).all().item()
+    ):
+        raise RuntimeError(f"{mode} rate table contains nonfinite rates")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")

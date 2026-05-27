@@ -4377,6 +4377,50 @@ def test_workflow_rate_table_rejects_label_theta_mismatches(tmp_path: Path):
         _write_rate_table(tmp_path / "global.tsv", global_model, "global")
 
 
+def test_workflow_rate_table_rejects_malformed_theta_shapes(tmp_path: Path):
+    genewise_model = SimpleNamespace(
+        theta=torch.nn.Parameter(torch.zeros((2, 1, 3), dtype=torch.float64)),
+        family_names=["fam0", "fam1"],
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=r"genewise rate table theta has shape \(2, 1, 3\)",
+    ):
+        _write_rate_table(tmp_path / "families.tsv", genewise_model, "genewise")
+
+    specieswise_model = SimpleNamespace(
+        theta=torch.nn.Parameter(torch.zeros(6, dtype=torch.float64)),
+        species_names=["sp0", "sp1"],
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=r"specieswise rate table theta has shape \(6,\)",
+    ):
+        _write_rate_table(tmp_path / "species.tsv", specieswise_model, "specieswise")
+
+
+def test_workflow_rate_table_rejects_nonfinite_theta(tmp_path: Path):
+    model = SimpleNamespace(
+        theta=torch.nn.Parameter(
+            torch.tensor([0.0, math.nan, 0.0], dtype=torch.float64)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="rate table theta contains nonfinite"):
+        _write_rate_table(tmp_path / "global.tsv", model, "global")
+
+
+def test_workflow_rate_table_rejects_nonfinite_rates(tmp_path: Path):
+    model = SimpleNamespace(
+        theta=torch.nn.Parameter(
+            torch.tensor([2048.0, 0.0, 0.0], dtype=torch.float64)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="rate table contains nonfinite rates"):
+        _write_rate_table(tmp_path / "global.tsv", model, "global")
+
+
 def test_workflow_jsonl_diagnostics_sanitize_nonfinite_values(tmp_path: Path):
     path = tmp_path / "history.jsonl"
     row = {
