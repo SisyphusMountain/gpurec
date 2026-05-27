@@ -1221,6 +1221,31 @@ def _validate_genewise_gradient_matrix(
     return value
 
 
+def _validate_scalar_loss(name: str, value: torch.Tensor) -> torch.Tensor:
+    if not torch.is_tensor(value):
+        raise TypeError(f"{name} must be a torch.Tensor")
+    actual_shape = tuple(int(dim) for dim in value.shape)
+    if actual_shape != ():
+        raise ValueError(f"{name} must be scalar, got shape {actual_shape}")
+    return value
+
+
+def _validate_gradient_shape(
+    name: str,
+    value: torch.Tensor,
+    *,
+    expected_shape: tuple[int, ...],
+) -> torch.Tensor:
+    if not torch.is_tensor(value):
+        raise TypeError(f"{name} must be a torch.Tensor")
+    actual_shape = tuple(int(dim) for dim in value.shape)
+    if actual_shape != expected_shape:
+        raise ValueError(
+            f"{name} must have shape {expected_shape}, got {actual_shape}"
+        )
+    return value
+
+
 class _GeneReconFullLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, theta: torch.Tensor, model: "GeneReconModel"):
@@ -1917,6 +1942,15 @@ class GeneReconModel(torch.nn.Module):
                 theta,
                 need_grad=need_grad,
             )
+            loss = _validate_scalar_loss("full-batch NLL", loss)
+            if need_grad:
+                if grad is None:
+                    raise RuntimeError("internal error: missing full-batch gradient")
+                grad = _validate_gradient_shape(
+                    "full-batch gradient",
+                    grad,
+                    expected_shape=tuple(int(dim) for dim in theta.shape),
+                )
             return loss, grad
 
         if not need_grad and self._mode != "genewise":
@@ -1960,6 +1994,7 @@ class GeneReconModel(torch.nn.Module):
                     scratch_tensors=scratch_tensors,
                     origination_denominator=origination_denominator,
                 )
+                loss_i = _validate_scalar_loss("full-batch NLL", loss_i)
                 total_loss = total_loss + loss_i.to(
                     device=total_loss.device,
                     dtype=total_loss.dtype,
@@ -1987,6 +2022,7 @@ class GeneReconModel(torch.nn.Module):
                 theta_batch,
                 need_grad=need_grad,
             )
+            loss_i = _validate_scalar_loss("batch NLL", loss_i)
             total_loss = total_loss + loss_i.to(device=total_loss.device, dtype=total_loss.dtype)
             if need_grad:
                 if grad_i is None or grad_accumulator is None:

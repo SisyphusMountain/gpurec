@@ -405,6 +405,49 @@ def test_full_genewise_nll_and_grad_rejects_bad_batch_gradient_shape(
     assert model.current_batch_index == 1
 
 
+def test_stream_full_batches_rejects_non_scalar_single_static_loss(monkeypatch):
+    model = _genewise_stream_model(family_count=2)
+
+    def fake_evaluate_static_state(
+        static_arg,
+        theta_arg,
+        *,
+        need_grad,
+        per_family=False,
+    ):
+        assert need_grad is False
+        assert per_family is False
+        return torch.ones((2,), dtype=theta_arg.dtype), None
+
+    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+
+    with pytest.raises(ValueError, match="full-batch NLL.*scalar"):
+        model._stream_full_batches(model.theta, need_grad=False)
+
+
+def test_stream_full_batches_rejects_bad_single_static_gradient_shape(monkeypatch):
+    model = _genewise_stream_model(family_count=2)
+
+    def fake_evaluate_static_state(
+        static_arg,
+        theta_arg,
+        *,
+        need_grad,
+        per_family=False,
+    ):
+        assert need_grad is True
+        assert per_family is False
+        return (
+            torch.tensor(3.0, dtype=theta_arg.dtype),
+            torch.zeros((1, theta_arg.shape[1]), dtype=theta_arg.dtype),
+        )
+
+    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+
+    with pytest.raises(ValueError, match="full-batch gradient.*shape"):
+        model._stream_full_batches(model.theta, need_grad=True)
+
+
 def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypatch):
     static = object()
     theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
@@ -748,6 +791,38 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
     assert calls[1]["scratch_tensors"] is first_scratch
     assert calls[0]["origination_denominator"] is calls[1]["origination_denominator"]
     assert torch.is_tensor(calls[0]["origination_denominator"])
+
+
+def test_shared_no_grad_full_loss_rejects_vector_batch_loss(monkeypatch):
+    model = api_model.GeneReconModel.__new__(api_model.GeneReconModel)
+    torch.nn.Module.__init__(model)
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    model._batched_resident = True
+    model._mode = "specieswise"
+    model._batch_specs = [object()]
+    model.batch_metadata = [SimpleNamespace(clade_count=3)]
+    model._dataset = SimpleNamespace(
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        S=7,
+    )
+    model._origination_prior = SimpleNamespace(is_shared=False, probs=None)
+    model._ensure_batch_static = lambda batch_idx: object()
+    e_solve = SimpleNamespace(e_out={"E": torch.full((7,), -3.0)})
+
+    monkeypatch.setattr(
+        api_model,
+        "solve_resident_e",
+        lambda static_arg, theta_arg: e_solve,
+    )
+    monkeypatch.setattr(
+        api_model,
+        "evaluate_resident_no_grad_with_solved_e",
+        lambda *args, **kwargs: torch.ones((1,), dtype=torch.float32),
+    )
+
+    with pytest.raises(ValueError, match="full-batch NLL.*scalar"):
+        model._stream_full_batches(theta, need_grad=False)
 
 
 def test_evaluate_static_state_grad_uses_resident_gradient_boundary(monkeypatch):
