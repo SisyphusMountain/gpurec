@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+title: "gpurec"
+message: "If you use this software, please cite the project and include the repository URL."
+type: software
+authors:
+  - name: "SisyphusMountain"
+date-released: "2026-05-27"
+license: "MIT"
+repository-code: "https://github.com/SisyphusMountain/gpurec"
+url: "https://github.com/SisyphusMountain/gpurec#readme"
+abstract: >
+  gpurec provides CUDA-accelerated gene/species tree reconciliation workflows for
+  ALE-style input families, checkpointed optimization, and stochastic
+  RecPhyloXML sampling.
+version: "0.1.0"
+preferred-citation:
+  authors:
+    - name: "SisyphusMountain"
+  title: "gpurec"
+  version: "0.1.0"
+  type: software
+

@@ -23,6 +23,13 @@ REQUIRED_CLASSIFIERS = {
 REQUIRED_URLS = {"Repository", "Issues", "Documentation"}
 REQUIRED_CONSOLE_SCRIPTS = {"gpurec": "gpurec.cli:main"}
 _URL_PATTERN = re.compile(r"^https?://\S+$")
+REQUIRED_RELEASE_ARTIFACTS = (
+    "LICENSE",
+    "CHANGELOG.md",
+    "CITATION.cff",
+    "Dockerfile",
+    "docs/release-notes.md",
+)
 
 
 def _readme_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
@@ -74,6 +81,14 @@ def _license_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
     return [
         "pyproject.toml [project] license must be a string, file table, or text table"
     ]
+
+
+def _release_artifact_issues(root: Path) -> list[str]:
+    issues: list[str] = []
+    for name in REQUIRED_RELEASE_ARTIFACTS:
+        if not (root / name).is_file():
+            issues.append(f"missing required release artifact: {name}")
+    return issues
 
 
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
@@ -206,6 +221,7 @@ def release_metadata_issues(root: Path) -> list[str]:
 
     issues.extend(_url_metadata_issues(project))
     issues.extend(_script_metadata_issues(project))
+    issues.extend(_release_artifact_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)

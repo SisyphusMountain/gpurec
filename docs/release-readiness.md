@@ -1,13 +1,14 @@
 # Release Readiness
 
-This checklist records remaining release blockers, manual release decisions,
-and the packaging assumptions covered by current automated build steps.
+This checklist records release requirements, manual release decisions, and the
+packaging assumptions covered by current automated build steps.
 
 ## Required Before Redistribution
 
-- Choose and add a project license.  After a `LICENSE` file exists, add matching
-  `pyproject.toml` license metadata and a license classifier.  Project URLs and
-  non-license classifiers are already present.
+- The project license requirements are in place: top-level `LICENSE`, matching
+  `pyproject.toml` license metadata, and an OSI MIT license classifier.
+- Governance artifacts are present and current: `CHANGELOG.md`, `CITATION.cff`,
+  `docs/release-notes.md`, and a CUDA-capable deployment recipe (`Dockerfile`).
 - Build source and wheel artifacts from a clean checkout and install them in a
   fresh environment with a PyTorch build that matches the target CUDA runtime.
 
@@ -134,13 +135,9 @@ python scripts/check_release_metadata.py
 The checker validates required project metadata, required URLs and
 classifiers, the `gpurec = "gpurec.cli:main"` console-script entry point,
 declared README files, and declared license metadata.  License metadata may
-point at a file or provide inline text, but redistribution still requires the
-top-level license file called out in the blocker list.
-
-This check is currently expected to fail on the unresolved license blockers
-listed above.  Do not bypass it for redistribution; choose a license, add the
-top-level `LICENSE` file, and add matching `pyproject.toml` license metadata and
-classifier first.
+point at a file or provide inline text.  With the blocker list requirements
+met, this check should pass for redistribution with a complete license, project
+URL, and script configuration before building public artifacts.
 
 Build and inspect distribution artifacts from a clean checkout:
 
@@ -295,9 +292,9 @@ print("exports_ok")
 PY
 ```
 
-Do not publish artifacts until the license blocker above is resolved.  The
-sampling binary expectation above is the current release contract, not a
-separate no-publish blocker.
+Do not publish artifacts until the license and all command-surface checks in this
+document are satisfied.  The sampling binary expectation above is the current
+release contract, not a separate no-publish blocker.
 
 ## Lightweight Verification
 

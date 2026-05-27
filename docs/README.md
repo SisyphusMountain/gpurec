@@ -55,10 +55,14 @@ file as the map for deeper context.
   cleanup and verification work.
 - `release-readiness.md`: release blockers, clean-checkout hygiene, and
   packaging verification gates.
+- `release-notes.md`: release note template with migration notes and release
+  limitation blocks.
 - `../examples/README.md`: source-checkout/source-archive CUDA flat JSON
   config/parser fixtures for the genewise `hessian-sgd` and specieswise
   `adagrad-restarts` production defaults. This example directory is not a CPU fallback
   and not an end-to-end optimizer smoke while Pi backward requires `S > 256`.
+- `../Dockerfile`: minimal CUDA runtime/deployment image with native artifact
+  build and environment defaults.
 - `../configs/hogenom_ccp_wandb.yaml`: checkout-local HOGENOM Hydra/W&B
   experiment config, not a portable example.
 - `../configs/README.md`: config ownership note separating installed flat JSON

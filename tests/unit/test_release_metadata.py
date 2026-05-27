@@ -77,6 +77,10 @@ def _write_complete_release_metadata_fixture(
     readme_line: str = 'readme = "README.md"',
     license_line: str = 'license = { file = "LICENSE" }',
     create_readme: bool = True,
+    create_changelog: bool = True,
+    create_citation: bool = True,
+    create_dockerfile: bool = True,
+    create_release_notes: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -84,6 +88,19 @@ def _write_complete_release_metadata_fixture(
     (root / "LICENSE").write_text("fixture license\n", encoding="utf-8")
     if create_readme:
         (root / "README.md").write_text("# fixture\n", encoding="utf-8")
+    if create_changelog:
+        (root / "CHANGELOG.md").write_text("# Changelog\n", encoding="utf-8")
+    if create_citation:
+        (root / "CITATION.cff").write_text("cff-version: 1.2.0\n", encoding="utf-8")
+    if create_release_notes:
+        (root / "docs" / "release-notes.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "release-notes.md").write_text(
+            "# Release Notes\n", encoding="utf-8"
+        )
+    if create_dockerfile:
+        (root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
         urls_block = """
@@ -135,15 +152,9 @@ def test_release_metadata_check_reports_only_current_license_blockers():
         timeout=SUBPROCESS_TIMEOUT,
     )
 
-    assert result.returncode == 1
-    assert "missing top-level LICENSE file" in result.stdout
-    assert "license metadata" in result.stdout
-    assert "license classifier" in result.stdout
-    assert "authors" not in result.stdout
-    assert "classifier(s)" not in result.stdout
-    assert "project.urls" not in result.stdout
-    assert "project.scripts" not in result.stdout
-    assert "readme" not in result.stdout.lower()
+    assert result.returncode == 0
+    assert "release metadata check passed" in result.stdout
+    assert result.stderr == ""
     assert "Traceback" not in result.stderr
 
 
@@ -168,6 +179,22 @@ def test_release_metadata_check_accepts_complete_metadata_fixture(tmp_path: Path
 
     assert result.returncode == 0
     assert "release metadata check passed" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_governance_artifacts(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path, create_changelog=False)
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: CHANGELOG.md" in result.stdout
     assert result.stderr == ""
 
 
@@ -466,6 +493,7 @@ def test_minimal_pyproject_parser_supports_current_project_release_fields():
 
     project = parsed["project"]
     assert project["readme"] == "README.md"
+    assert project["license"] == {"file": "LICENSE"}
     assert project["authors"] == '[{ name = "SisyphusMountain" }]'
     assert project["urls"]["Repository"] == "https://github.com/SisyphusMountain/gpurec"
     assert project["urls"]["Issues"] == (
@@ -482,7 +510,6 @@ def test_minimal_pyproject_parser_supports_current_project_release_fields():
         "Programming Language :: Python :: 3.12",
     ):
         assert required in project["classifiers"]
-    assert "license" not in project
 
 
 def test_cpu_ci_builds_and_smokes_release_artifacts():
@@ -1158,23 +1185,20 @@ def test_release_readiness_orders_clean_checkout_before_build():
     assert "pytest -q tests/integration/test_rust_backtracking_fixture.py" in guide
 
 
-def test_release_readiness_preserves_license_no_publish_blocker():
+def test_release_readiness_documents_resolved_license_readiness():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
 
     for token in (
         "Required Before Redistribution",
-        "Choose and add a project license",
-        "top-level `LICENSE` file",
-        "matching `pyproject.toml` license metadata",
+        "top-level `LICENSE`",
+        "pyproject.toml` license metadata",
         "license classifier",
         "`gpurec = \"gpurec.cli:main\"` console-script entry point",
-        "currently expected to fail",
-        "Do not bypass it for redistribution",
-        "Do not publish artifacts until the license",
+        "check should pass for redistribution",
+        "Do not publish artifacts until the license and all command-surface checks",
     ):
         assert token in guide
     assert "Decide the Rust backtracking binary distribution model" not in guide
-    assert "license and binary distribution expectation" not in guide
 
 
 def test_release_readiness_documents_sampling_binary_distribution_contract():
@@ -1196,7 +1220,7 @@ def test_release_readiness_documents_sampling_binary_distribution_contract():
         "does not replace the CLI binary requirement",
         "Release notes and deployment docs must state the wheel-only",
         "update the README, package-data checks,\n  installed-wheel smoke, and source-archive smoke together",
-        "current release contract, not a\nseparate no-publish blocker",
+        "release contract, not a separate no-publish blocker.",
     ):
         assert token in guide
 

@@ -60,6 +60,23 @@ For the checkout-local HOGENOM experiment scripts:
 pip install -e ".[hogenom,dev]"
 ```
 
+Container image (CUDA-enabled):
+
+```bash
+docker build -t gpurec .
+docker run --gpus all -it --rm gpurec bash
+```
+
+The image installs `gpurec` from source and prebuilds:
+
+- `crates/gpurec-preprocess` shared library
+- `gpurec-backtrack` CLI binary
+
+When using release wheels, set `GPUREC_PREPROCESS_NATIVE_LIB` and
+`GPUREC_BACKTRACK_BIN` to the deployed artifact paths in the runtime container.
+The image is a starting point only; adjust base images and pinned runtime
+dependencies for your cluster policy.
+
 ## Basic Optimization
 
 ```python
@@ -794,6 +811,10 @@ strict_optimized_verdict pass
 
 See `docs/README.md` for the current documentation map.  It separates current
 operating notes from historical performance and research logs.
+Use `docs/production-grade-roadmap.md` and `docs/release-readiness.md` when
+checking release readiness.
 For source data layout and preflight validation, see
 [`docs/input-preparation.md`](docs/input-preparation.md).
 For run triage, see [`docs/troubleshooting.md`](docs/troubleshooting.md).
+Project governance files are: `CHANGELOG.md`, `CITATION.cff`,
+`docs/release-notes.md`, and top-level `LICENSE`.
