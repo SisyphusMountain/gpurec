@@ -437,6 +437,7 @@ Measured routes:
 | Composite scheduled fallback-budget default factor rerun | Same scheduled route after making `lbfgsb_fallback_resolution_competition_factor=0` the default | `1304.67s` process wall | `1699458.625` fixed32 validated | `2.8339502811431885` | Faster clean current-HEAD route, but `2.375` bits above the best clean scheduled endpoint. It used one accepted fallback row at step 68, reached best step 82, and stopped by high-KKT tiny-progress patience. Same-control, factor-16, and no-high-KKT resumes from the best checkpoint did not improve beyond `1699458.625`, so this is a real fast plateau rather than just an early-stop artifact. |
 | Composite scheduled fallback-budget, forced schedule fallback plus resolution factor 16 | Same scheduled route with `lbfgsb_loss_schedule_force_fallback=true` and `lbfgsb_fallback_resolution_competition_factor=16` | `1295.63s` process wall | `1699458.25` fixed32 validated | `3.2605791091918945` | New best current fast clean route. It is `9.04s` faster and `0.375` bits lower than the factor-0 fast rerun, while still `2.25` bits above the plain factor-16 quality endpoint. The route accepted only two fallback rows: one before the schedule advance and the forced projected-gradient fallback immediately after it. That handoff reached `1699462.25` by step 70, then ordinary L-BFGS-B continued to best step 79 before two no-move fallback-budget rows triggered the high-KKT stop. |
 | Composite scheduled fallback-budget, early forced factor-16 handoff | Same forced factor-16 route, but `lbfgsb_loss_change_tol_schedule=0.25:1,0.1:2` and `lbfgsb_high_kkt_stop_patience=1` | `1365.06s` process wall | `1699456.625` fixed32 validated | `1.1504769325256348` | New best current near-quality clean route. It is `126.78s` faster than the old scheduled route and only `0.375` bits higher, and it is `342.35s` faster than the plain factor-16 quality route while `0.625` bits higher. The first coarse `0.25`-bit plateau row advanced the schedule at step 64; the forced fallback at step 65 handed off to a productive ordinary L-BFGS-B tail that reached best step 85 before one no-move fallback row stopped the run. |
+| Composite early handoff with one E16/Pi8 repair row | Same early forced factor-16 route, but `adagrad_restart_schedule=7/4:1:12,8:0.5:8,16/8:0.5:1` | `1344.25s` process wall (`1341.9963959879242s` optimizer elapsed) | `1699449.375` fixed32 validated | `1.2676200866699219` | New lowest clean one-command endpoint. Capping the E16/Pi8 repair to one row avoids the second repair row from route A and changes the L-BFGS-B basin: best step 83 reached `1699449.375`, then two no-move final-phase rows stopped by `loss_change_patience`. It is `6.625` bits lower and `363.16s` faster than the prior clean factor-16 quality endpoint, and `6.5` bits lower and `218.43s` faster than the best segmented endpoint. |
 | Early forced factor-16 handoff, preserved-state no-high-KKT resume | Resume the early-handoff best checkpoint with `lbfgsb_high_kkt_stop_patience=0` and the same loss schedule | `57.55s` process wall for the resume | `1699456.625` fixed32 validated | `1.1504745483398438` | Rejected as a segmented polish route. The resumed optimizer restored the L-BFGS-B state, tried two no-move fallback rows, and stopped by ordinary loss-change patience at the same objective, so the clean early-handoff endpoint is a real plateau rather than just an over-eager high-KKT stop. |
 | Composite scheduled fallback-budget, half-bit forced handoff | Same forced factor-16 route, but `lbfgsb_loss_change_tol_schedule=0.5:1,0.1:2` and `lbfgsb_high_kkt_stop_patience=1` | `911.00s` process wall | `1699473.25` fixed32 validated | `4.08726692199707` | Rejected as too early. The first half-bit plateau advanced the schedule at step 60, then the forced fallback found no move and ordinary loss-change patience stopped at step 62. This confirms that the useful early handoff is the first `0.25`-bit plateau, not the first `0.5`-bit plateau. |
 | Composite scheduled fallback-budget, early factor-16 handoff without force | Same early `0.25:1,0.1:2` schedule and factor `16`, but with `lbfgsb_loss_schedule_force_fallback=false` | `1158.78s` process wall | `1699463.5` fixed32 validated | `2.2710440158843994` | Rejected as a higher plateau. The normal L-BFGS-B row after schedule advance moved, but the run accepted no fallback rows and stopped by ordinary loss-change patience at best step 73. The accepted early-handoff route therefore needs the forced fallback at the schedule transition. |
@@ -1307,17 +1308,19 @@ Differences from HOGENOM:
   HOGENOM did not show the same behavior: fixed4/Pi4 starts there saved time
   but reached a materially worse basin unless the run was allowed a longer
   fixed32 repair phase.
-- The best `test_trees_1000` outer route now switches early from the short
-  E7/Pi4-start Adagrad route into L-BFGS-B with a larger step scale (`lr=0.6`).
-  That differs from HOGENOM's accepted pattern, where the useful basin came
-  from a longer tied-budget ladder and high-fidelity polish rather than an early
-  aggressive L-BFGS-B tail.
+- The best `test_trees_1000` outer route now switches from the short E7/Pi4
+  Adagrad warmup through a fixed8 bridge and exactly one E16/Pi8 repair row into
+  L-BFGS-B with a larger step scale (`lr=0.6`).  That differs from HOGENOM's
+  accepted pattern, where the useful basin came from a longer tied-budget ladder
+  and high-fidelity polish rather than an early aggressive L-BFGS-B tail.
 - For specieswise use across datasets, `test_trees_1000` now has a working
   staged likelihood-stall route: the early L-BFGS-B tail can use
-  `lbfgsb_loss_change_tol_schedule=0.25:2,0.1:2` with a relaxed
-  projected-gradient guard instead of a hand-counted number of tail steps.  That
-  is again different from HOGENOM's route, where fixed high-fidelity phase
-  lengths were the accepted tuning handle.
+  `lbfgsb_loss_change_tol_schedule=0.25:1,0.1:2` with a relaxed
+  projected-gradient guard instead of a hand-counted number of tail steps.  The
+  fidelity prefix is still explicit, but the successful promotion is intentionally
+  short: one E16/Pi8 row was better than continuing the repair phase.  That is
+  again different from HOGENOM's route, where fixed high-fidelity phase lengths
+  were the accepted tuning handle.
 - The route is now implemented as `adagrad-restarts-lbfgsb`, so
   `test_trees_1000` no longer needs a manual checkpoint resume between the
   Adagrad prefix and L-BFGS-B tail.  HOGENOM keeps plain `adagrad-restarts` as
@@ -1337,19 +1340,23 @@ Differences from HOGENOM:
   resolution-competition factor restored to `0`, a current-HEAD rerun gives a
   faster `1304.67s` endpoint but stops at `1699458.625` bits; short resumes
   from that checkpoint did not improve it.  Pairing the schedule-transition
-  forced fallback with resolution factor `16` is now the best current fast
-  clean route, at `1295.63s` and `1699458.25` bits: it used only two accepted
-  fallback rows and reached a slightly lower basin earlier than the factor-`0`
-  route.  Advancing from the coarse `0.25`-bit phase after one plateau row
-  instead of two is the best near-quality route so far: `1365.06s` and
-  `1699456.625` bits, only `0.375` bits above the older `1491.84s` scheduled
-  endpoint.  A more aggressive `0.5:1,0.1:2` handoff stopped much earlier at
-  `1699473.25` bits, so the first `0.25`-bit plateau is the useful transition
-  point.  Removing the schedule-transition forced fallback from that early
-  handoff stopped at `1699463.5` bits, so the fallback is not just overhead; it
-  changes the basin.  A one-row high-KKT terminal stop on the same forced factor-`16`
-  policy reached a lower `1699457.75` bits in `1345.31s`, so it is a middle
-  time/objective point rather than the fastest route.  Making accepted
+  forced fallback with resolution factor `16` remains the fastest current
+  high-quality clean route, at `1295.63s` and `1699458.25` bits: it used only
+  two accepted fallback rows and reached a slightly lower basin earlier than the
+  factor-`0` route.  The current lowest clean one-command endpoint comes from
+  shortening the prefix instead of doing more fallback polish: `7/4:1:12`,
+  `8:0.5:8`, and one `16/8:0.5` repair row, followed by the early
+  `0.25:1,0.1:2` L-BFGS-B schedule, reached `1699449.375` bits in `1344.25s`.
+  It accepted no fallback rows; the important change was the one-row E16/Pi8
+  handoff, which avoided the second repair row and let the ordinary L-BFGS-B
+  tail reach a lower basin by step 83.  A more aggressive `0.5:1,0.1:2` handoff
+  stopped much earlier at `1699473.25` bits, so the first `0.25`-bit plateau is
+  the useful transition point.  Removing the schedule-transition forced fallback
+  from the earlier two-repair-row handoff stopped at `1699463.5` bits, so the
+  fallback is not just overhead on that trajectory; it changes the basin.  A
+  one-row high-KKT terminal stop on the same forced factor-`16` policy reached a
+  lower `1699457.75` bits in `1345.31s`, so it is a middle time/objective point
+  rather than the fastest route.  Making accepted
   fallback moves compete when their decrease is only fp32-resolution-scale
   reached a lower clean endpoint (`1699456.0` bits), but it did so by spending
   many fallback rows and raised wall time to `1707.41s`; this is now controlled

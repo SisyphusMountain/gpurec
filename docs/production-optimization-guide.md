@@ -239,15 +239,19 @@ projected-gradient fallback polishing after L-BFGS-B reaches tiny objective
 movements. `lbfgsb_fallback_resolution_competition_factor` can spend that
 budget challenging accepted fallback moves whose decrease is only a small
 multiple of the floating-point loss resolution. On `test_trees_1000`, the
-current fast route pairs factor `16` with `lbfgsb_loss_schedule_force_fallback`
-so the fallback work is spent at the schedule transition. An earlier
-`0.25:1,0.1:2` handoff is the current near-quality route on that dataset,
-while plain factor `16` remains a slower quality-polish setting. Intermediate
-probes at factors `4` and `8` did not preserve the lower objective basin, so
-this is not currently a smooth time/quality dial. The schedule-forced fallback
-and best-checkpoint retry controls are also dataset-specific tail escape
-hatches. They are not part of the retained HOGENOM default; validate them per
-dataset before promoting them to a production preset.
+current fastest high-quality route pairs factor `16` with
+`lbfgsb_loss_schedule_force_fallback` so fallback work is spent at the schedule
+transition. The lowest clean endpoint currently uses an even shorter prefix:
+E7/Pi4 warmup, a fixed8 bridge, one E16/Pi8 repair row, then the
+`0.25:1,0.1:2` L-BFGS-B schedule. That route reached `1699449.375` bits in
+`1344.25s`, and its important feature was avoiding extra high-fidelity prefix
+rows rather than harder Pi/E polishing. Plain factor `16` remains a slower
+quality-polish setting. Intermediate probes at factors `4` and `8` did not
+preserve the lower objective basin, so this is not currently a smooth
+time/quality dial. The schedule-forced fallback and best-checkpoint retry
+controls are also dataset-specific tail escape hatches. They are not part of
+the retained HOGENOM default; validate them per dataset before promoting them to
+a production preset.
 
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,
