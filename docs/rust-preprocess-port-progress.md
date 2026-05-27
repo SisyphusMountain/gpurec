@@ -29,8 +29,9 @@ Current Rust slice:
 - `tests/integration/test_rust_preprocess_parity.py` compares Rust CLI JSON
   output with the native adapter for a binary multi-record family, a
   multifurcating gene-tree family with species matrices enabled, and a
-  multi-family request with branch lengths. It also covers native-vs-subprocess
-  adapter raw output parity.
+  multi-family request with signed, decimal, and exponent branch-length
+  spellings. It also covers native-vs-subprocess adapter raw output parity plus
+  mapping-error and malformed-Newick error behavior.
 
 Latest local timing from the preprocessing benchmark on `tests/data/hogenom_bench`
 (1,055 families, 8 threads, 9 repeats, species matrices disabled):
@@ -54,6 +55,5 @@ for CLI experiments but is not the production-performance path.
 
 Known remaining work before replacement:
 
-- Add parity coverage for mapping error behavior, malformed inputs, broader
-  branch-length edge cases, and HOGENOM-style fixtures.
+- Add parity coverage for HOGENOM-style fixtures.
 - Add packaging/install integration for prebuilt Rust extension artifacts.

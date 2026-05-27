@@ -173,6 +173,26 @@ def _run_rust_preprocess(request_path: Path) -> dict[str, Any]:
     return json.loads(result.stdout)
 
 
+def _preprocess_with_adapter(
+    adapter: RustPreprocessExtension | RustPreprocessSubprocessExtension,
+    species: Path,
+    families: dict[str, list[str]],
+    *,
+    leaf_species_maps: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    return adapter.preprocess_multiple_families(
+        str(species),
+        families,
+        leaf_species_maps=leaf_species_maps,
+        include_details=True,
+        include_species_matrices=False,
+        include_debug_details=False,
+        include_scheduler_details=False,
+        include_legacy_ccp_details=False,
+        num_threads=1,
+    )
+
+
 def test_rust_preprocess_cli_matches_native_adapter_compact_arrays(tmp_path: Path):
     species = tmp_path / "species.nwk"
     gene = tmp_path / "gene.nwk"
@@ -268,11 +288,17 @@ def test_rust_preprocess_cli_matches_native_adapter_multiple_families_and_branch
     gene_two = tmp_path / "gene_two.nwk"
     request_path = tmp_path / "request.json"
     species.write_text(
-        "((A:0.1,B:0.2)AB:0.3,(C:0.4,D:0.5)CD:0.6)Root;\n",
+        "((A:1e-3,B:+2.0E+1)AB:-0.3,(C:.4,D:5e-1)CD:6E-2)Root;\n",
         encoding="utf-8",
     )
-    gene_one.write_text("((a:0.1,b:0.2)x:0.3,(c:0.4,d:0.5)y)r;\n", encoding="utf-8")
-    gene_two.write_text("(a:1.0,c:2.0,d:3.0)r:4.0;((a,d)ad,c)r\n", encoding="utf-8")
+    gene_one.write_text(
+        "((a:1e-3,b:+2.0E+1)x:-0.3,(c:.4,d:5e-1)y)r;\n",
+        encoding="utf-8",
+    )
+    gene_two.write_text(
+        "(a:1.0e0,c:+2.0,d:-3.0E-1)r:4.0;((a,d:1e+0)ad,c:.25)r\n",
+        encoding="utf-8",
+    )
     leaf_maps = {
         "fam1": {"a": "A", "b": "B", "c": "C", "d": "D"},
         "fam2": {"a": "A", "c": "C", "d": "D"},
@@ -318,6 +344,61 @@ def test_rust_preprocess_cli_matches_native_adapter_multiple_families_and_branch
         family_name="fam2",
         include_species_matrices=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("leaf_map", "expected"),
+    [
+        (
+            {"a": "A", "b": "B"},
+            "Gene leaf c is missing from mapping for family fam",
+        ),
+        (
+            {"a": "A", "b": "B", "c": "Z"},
+            "Species Z not found for gene leaf c",
+        ),
+    ],
+)
+def test_rust_preprocess_adapters_report_mapping_errors_consistently(
+    tmp_path: Path,
+    leaf_map: dict[str, str],
+    expected: str,
+):
+    species = tmp_path / "species.nwk"
+    gene = tmp_path / "gene.nwk"
+    species.write_text("((A,B)AB,C)Root;\n", encoding="utf-8")
+    gene.write_text("((a,b),c);\n", encoding="utf-8")
+    families = {"fam": [str(gene)]}
+
+    for adapter in (RustPreprocessExtension(), RustPreprocessSubprocessExtension()):
+        with pytest.raises(RuntimeError) as exc_info:
+            _preprocess_with_adapter(
+                adapter,
+                species,
+                families,
+                leaf_species_maps={"fam": leaf_map},
+            )
+        assert expected in str(exc_info.value)
+
+
+def test_rust_preprocess_adapters_report_malformed_newick_consistently(tmp_path: Path):
+    species = tmp_path / "species.nwk"
+    gene = tmp_path / "gene.nwk"
+    species.write_text("((A,B)AB,C)Root;\n", encoding="utf-8")
+    gene.write_text("((a,b),c\n", encoding="utf-8")
+    families = {"fam": [str(gene)]}
+    leaf_map = {"a": "A", "b": "B", "c": "C"}
+
+    for adapter in (RustPreprocessExtension(), RustPreprocessSubprocessExtension()):
+        with pytest.raises(RuntimeError) as exc_info:
+            _preprocess_with_adapter(
+                adapter,
+                species,
+                families,
+                leaf_species_maps={"fam": leaf_map},
+            )
+        assert "Unexpected end while parsing children" in str(exc_info.value)
+        assert str(gene) in str(exc_info.value)
 
 
 def test_rust_preprocess_native_adapter_matches_subprocess_adapter_raw_contract(tmp_path: Path):
