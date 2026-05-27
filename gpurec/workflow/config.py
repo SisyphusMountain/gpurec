@@ -1055,6 +1055,11 @@ _PRODUCTION_DEFAULT_ROUTE_CONTRACT = {
     "rate_parameterization": "base2_log_dlt_rates",
     "production_default_basis": "hogenom_and_test_trees_1000",
 }
+_PRODUCTION_DEFAULT_BATCH_ROUTE_SETTINGS = {
+    "batch_packing": "depth_first_fit",
+    "family_chunk_size": 0,
+    "clade_budget": DEFAULT_CLADE_BUDGET,
+}
 _PRODUCTION_ROUTE_STEP_CAP_FIELDS = (
     "configured_steps",
     "optimizer_step_cap",
@@ -1104,6 +1109,11 @@ def _route_setting_matches(name: str, actual: Any, expected: Any) -> bool:
     if name == "adagrad_restart_schedule" and actual is not None:
         try:
             actual = _normalize_adagrad_restart_schedule(str(actual))
+        except ValueError:
+            return False
+    if name == "batch_packing" and actual is not None:
+        try:
+            actual = _normalize_workflow_batch_packing(str(actual))
         except ValueError:
             return False
     if expected is None:
@@ -1227,7 +1237,8 @@ def production_default_route_mismatches_from_route(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return missing/mismatched fields for the shipped route.
 
-    The route includes likelihood/gradient fields and optimizer evidence.
+    The route includes likelihood/gradient fields, resident batch route fields,
+    and optimizer evidence.
     """
     missing: list[str] = []
     mismatched: list[str] = []
@@ -1235,6 +1246,11 @@ def production_default_route_mismatches_from_route(
         if name not in route:
             missing.append(name)
         elif route[name] != expected:
+            mismatched.append(name)
+    for name, expected in _PRODUCTION_DEFAULT_BATCH_ROUTE_SETTINGS.items():
+        if name not in route:
+            missing.append(name)
+        elif not _route_setting_matches(name, route[name], expected):
             mismatched.append(name)
     setting_missing, setting_mismatches = (
         production_default_optimizer_setting_mismatches_from_route(route)

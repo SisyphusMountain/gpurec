@@ -35,6 +35,11 @@ from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
 SUBPROCESS_TIMEOUT = 30
 _PRODUCTION_ROUTE_CONTRACT: dict[str, object] = production_default_route_contract()
+_PRODUCTION_BATCH_ROUTE: dict[str, object] = {
+    "batch_packing": "depth_first_fit",
+    "family_chunk_size": 0,
+    "clade_budget": DEFAULT_CLADE_BUDGET,
+}
 
 
 def _parser_action_dests(command: str) -> set[str]:
@@ -103,7 +108,11 @@ def _checkpoint_with_route_metadata(
         },
     )
     payload = torch.load(checkpoint, weights_only=True)
-    payload["route_metadata"] = {**_PRODUCTION_ROUTE_CONTRACT, **route_metadata}
+    payload["route_metadata"] = {
+        **_PRODUCTION_ROUTE_CONTRACT,
+        **_PRODUCTION_BATCH_ROUTE,
+        **route_metadata,
+    }
     torch.save(payload, checkpoint)
     return checkpoint
 
@@ -225,10 +234,11 @@ def test_cli_production_route_help_names_final_check_evidence(command: str):
     assert "objective" in str(action.help)
     assert "likelihood/gradient route" in str(action.help)
     assert "rate parameterization" in str(action.help)
+    assert "resident batch settings" in str(action.help)
     assert "final_check_iters_e evidence" in str(action.help)
     assert (
-        "full shipped HOGENOM/" + "test_trees_" + "1000 likelihood/gradient "
-        "and optimizer route"
+        "full shipped HOGENOM/" + "test_trees_" + "1000 likelihood/gradient, "
+        "resident batch, and optimizer route"
     ) in str(action.help)
     assert "HOGENOM/" + "test_trees_" + "1000 production route" not in str(action.help)
 
@@ -1075,7 +1085,33 @@ def test_cli_validate_config_require_production_default_route_rejects_custom_set
     ) in captured.err
     assert (
         "use optimizer=auto and omit route overrides so the shipped "
-        "likelihood/gradient and optimizer defaults apply"
+        "likelihood/gradient, resident batch, and optimizer defaults apply"
+    ) in captured.err
+    assert "valid_config=true" not in captured.out
+    assert "Traceback" not in captured.err
+
+
+def test_cli_validate_config_require_production_default_route_rejects_batch_override(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("validate-config", tmp_path)
+            + [
+                "--clade-budget",
+                "500000",
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert (
+        "config production default route fields differ for mode 'genewise': "
+        "clade_budget"
     ) in captured.err
     assert "valid_config=true" not in captured.out
     assert "Traceback" not in captured.err
@@ -2788,7 +2824,7 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "batches": 2,
         "batch_packing": "depth_first_fit",
         "family_chunk_size": 0,
-        "clade_budget": 500_000,
+        "clade_budget": DEFAULT_CLADE_BUDGET,
         "fixed_iters_e": None,
         "fixed_iters_pi": 16,
         "neumann_terms": 16,
@@ -2853,7 +2889,7 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "batches=2",
         "batch_packing=depth_first_fit",
         "family_chunk_size=0",
-        "clade_budget=500000",
+        "clade_budget=315000",
         "fixed_iters_e=null",
         "fixed_iters_pi=16",
         "neumann_terms=16",
@@ -3045,6 +3081,7 @@ def test_cli_summary_info_normalizes_route_mode_and_optimizer_aliases(
                 "status": "converged",
                 "reason": "adagrad_restart_schedule_complete",
                 **_PRODUCTION_ROUTE_CONTRACT,
+                **_PRODUCTION_BATCH_ROUTE,
                 "mode": " SpeciesWise ",
                 "optimizer": "ADAGRAD_RESTARTS",
                 "configured_steps": 5000,
@@ -3317,6 +3354,7 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
                 "status": "converged",
                 "reason": "loss_change_patience",
                 **_PRODUCTION_ROUTE_CONTRACT,
+                **_PRODUCTION_BATCH_ROUTE,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
                 "configured_steps": 5000,
@@ -3365,7 +3403,7 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
         "summary production default route fields differ for mode 'genewise': "
         "fd_hessian_refresh_steps"
     ) in captured.err
-    assert "expected the shipped likelihood/gradient and optimizer route" in (
+    assert "expected the shipped likelihood/gradient, resident batch, and optimizer route" in (
         captured.err
     )
     assert "usage:" not in captured.err
@@ -3383,6 +3421,7 @@ def test_cli_summary_info_require_production_default_route_recomputes_stale_audi
                 "status": "converged",
                 "reason": "loss_change_patience",
                 **_PRODUCTION_ROUTE_CONTRACT,
+                **_PRODUCTION_BATCH_ROUTE,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
                 "configured_steps": 5000,
@@ -3442,6 +3481,7 @@ def test_cli_summary_info_require_production_default_route_rejects_stale_gradien
         json.dumps(
             {
                 **_PRODUCTION_ROUTE_CONTRACT,
+                **_PRODUCTION_BATCH_ROUTE,
                 "gradient_route": "legacy_autograd",
                 "status": "converged",
                 "reason": "loss_change_patience",
@@ -3504,6 +3544,7 @@ def test_cli_summary_info_require_production_default_route_requires_settings_evi
                 "status": "converged",
                 "reason": "loss_change_patience",
                 **_PRODUCTION_ROUTE_CONTRACT,
+                **_PRODUCTION_BATCH_ROUTE,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
                 "configured_steps": 5000,
@@ -3552,6 +3593,7 @@ def test_cli_summary_info_production_route_rejects_float_integer_evidence(
                 "status": "converged",
                 "reason": "adagrad_restart_schedule_complete",
                 **_PRODUCTION_ROUTE_CONTRACT,
+                **_PRODUCTION_BATCH_ROUTE,
                 "mode": "specieswise",
                 "optimizer": "adagrad-restarts",
                 "configured_steps": 5000,
@@ -4108,7 +4150,7 @@ def test_cli_sample_require_production_default_route_rejects_stale_route(
         "checkpoint production default route fields differ for mode 'genewise': "
         "gradient_route"
     ) in captured.err
-    assert "expected the shipped likelihood/gradient and optimizer route" in (
+    assert "expected the shipped likelihood/gradient, resident batch, and optimizer route" in (
         captured.err
     )
     assert "sampled_families" not in captured.out
@@ -4509,7 +4551,7 @@ def test_cli_optimize_require_production_default_route_rejects_custom_settings_b
     ) in captured.err
     assert (
         "use optimizer=auto and omit route overrides so the shipped "
-        "likelihood/gradient and optimizer defaults apply"
+        "likelihood/gradient, resident batch, and optimizer defaults apply"
     ) in captured.err
     assert captured.out == ""
     assert "usage:" in captured.err
@@ -5275,7 +5317,7 @@ def test_cli_run_require_production_default_route_rejects_custom_settings_before
     ) in captured.err
     assert (
         "use optimizer=auto and omit route overrides so the shipped "
-        "likelihood/gradient and optimizer defaults apply"
+        "likelihood/gradient, resident batch, and optimizer defaults apply"
     ) in captured.err
     assert captured.out == ""
     assert "sampled_families" not in captured.out

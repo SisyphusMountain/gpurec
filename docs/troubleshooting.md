@@ -63,12 +63,14 @@ Use `--require-mode-default-optimizer` with `gpurec validate-config`,
 `gpurec checkpoint-info` when a production pipeline should reject explicit
 optimizer overrides and stay on the mode default route. Use
 `--require-production-default-route` with the same commands when the pipeline
-should also reject stale likelihood/gradient route metadata or changed
-optimizer-specific settings. If an older artifact used by `sample`,
-`summary-info`, or `checkpoint-info` is missing `mode`, `optimizer`, the
-objective/gradient/parameterization metadata, or the optimizer-specific route
-fields needed by the stricter gate, the inspection command reports incomplete
-route evidence. Otherwise, inspect `uses_production_default_route` and
+should also reject stale likelihood/gradient route metadata, non-default
+resident batching, or changed optimizer-specific settings. If an older artifact
+used by `sample`, `summary-info`, or `checkpoint-info` is missing `mode`,
+`optimizer`, the objective/gradient/parameterization metadata, resident batch
+fields such as `clade_budget` and `family_chunk_size`, or the
+optimizer-specific route fields needed by the stricter gate, the inspection
+command reports incomplete route evidence. Otherwise, inspect
+`uses_production_default_route` and
 `production_default_route_mismatches` to see the exact stale or overridden
 fields; rerun from a current config or inspect an artifact that carries route
 metadata.

@@ -51,8 +51,10 @@ optimizer-name match from the full shipped HOGENOM/`test_trees_1000`
 optimizer-specific route. They additionally record
 `uses_production_default_route` and `production_default_route_mismatches`, the
 combined verdict used by `--require-production-default-route` for the objective,
-gradient route, rate parameterization, production default basis, optimizer, and
-optimizer-specific settings. Optimizer-specific route fields include the
+gradient route, rate parameterization, production default basis, resident batch
+route, optimizer, and optimizer-specific settings. Batch route fields include
+the default `batch_packing`, `family_chunk_size`, and `clade_budget`.
+Optimizer-specific route fields include the
 stored `final_check_iters_e` evidence, the specieswise restart schedule, and
 genewise Hessian-SGD normal-stage solver overrides. For specieswise
 `adagrad-restarts`, `adagrad_restart_total_steps` records the derived number of
@@ -149,8 +151,9 @@ the same status line and then exit nonzero unless the optimization status is
 `gpurec optimize`, or `gpurec run` when automation should fail unless the
 resolved optimizer matches the mode default for the selected mode. Add
 `--require-production-default-route` when automation should also reject
-stale likelihood/gradient route metadata or optimizer-specific setting
-overrides reported by `production_default_route_mismatches`.
+stale likelihood/gradient route metadata, non-default resident batching, or
+optimizer-specific setting overrides reported by
+`production_default_route_mismatches`.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.
@@ -191,9 +194,9 @@ and then exit nonzero unless `summary.status` is `converged`. Add
 `--require-mode-default-optimizer` when downstream automation should reject
 summaries that do not prove the mode default optimizer was used, or
 `--require-production-default-route` when the likelihood/gradient route
-metadata and optimizer-specific settings, including the stored
-`final_check_iters_e`, must also match the full shipped likelihood/gradient and
-optimizer route.
+metadata, resident batch defaults, and optimizer-specific settings, including
+the stored `final_check_iters_e`, must also match the full shipped
+likelihood/gradient, resident batch, and optimizer route.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering
@@ -229,10 +232,10 @@ automation should fail unless the checkpoint last row has
 `optimizer/final_check_status=ok`; add `--require-mode-default-optimizer` when
 the checkpoint route must use the mode default optimizer for its mode, or
 `--require-production-default-route` when the checkpoint route must also match
-the shipped likelihood/gradient contract and optimizer-specific route,
-including the stored `final_check_iters_e`. The displayed checkpoint route and
-any route-gate verdicts are derived from the same audited checkpoint route
-snapshot. If a legacy checkpoint has no
+the shipped likelihood/gradient contract, resident batch route, and
+optimizer-specific route, including the stored `final_check_iters_e`. The
+displayed checkpoint route and any route-gate verdicts are derived from the
+same audited checkpoint route snapshot. If a legacy checkpoint has no
 `route_metadata`, `checkpoint-info` falls back to
 recoverable config `mode` and `optimizer` fields; incomplete artifacts fail the
 gate with an incomplete-evidence error from that same fallback snapshot.
@@ -253,8 +256,8 @@ status is anything other than `converged`. With `--require-final-check-ok`, it
 also exits before sampling unless `final_check_status=ok`. With
 `--require-mode-default-optimizer`, it exits before optimization or sampling
 unless the resolved optimizer is the mode default for the selected mode.
-With `--require-production-default-route`, it also rejects changed
-optimizer-specific settings, stale `final_check_iters_e`, or stale
+With `--require-production-default-route`, it also rejects changed resident
+batching, optimizer-specific settings, stale `final_check_iters_e`, or stale
 likelihood/gradient route metadata before optimization or sampling and reports
 the offending
 `production_default_route_mismatches`.
@@ -262,9 +265,9 @@ The same `--require-mode-default-optimizer` flag is available on standalone
 `gpurec sample`; it inspects the checkpoint route and exits before sampling if
 the checkpoint cannot prove it used the mode default optimizer. Standalone
 `gpurec sample` also supports `--require-production-default-route` to require
-the full shipped likelihood/gradient and optimizer-specific route before
-sampling. When both route gates are requested, standalone sampling audits the
-checkpoint route once and reuses that verdict for both checks.
+the full shipped likelihood/gradient, resident batch, and optimizer-specific
+route before sampling. When both route gates are requested, standalone sampling
+audits the checkpoint route once and reuses that verdict for both checks.
 
 | Path | Contents |
 |---|---|

@@ -338,8 +338,9 @@ optimizer profile, including the final-check E budget reported as
 `final_check_iters_e`. The full-route verdict fields
 `uses_production_default_route` and `production_default_route_mismatches`
 combine those optimizer-setting checks with the shipped objective, gradient
-route, rate parameterization, and production default basis metadata enforced by
-`--require-production-default-route`. That strict gate is scoped to the
+route, rate parameterization, production default basis metadata, and resident
+batch defaults enforced by `--require-production-default-route`. That strict
+gate is scoped to the
 retained genewise `hessian-sgd` and specieswise `adagrad-restarts` profiles;
 `mode=global` can satisfy the mode-default optimizer check but fails the
 production-route gate with a `mode` mismatch.
@@ -455,9 +456,10 @@ final high-fidelity likelihood/gradient validation reports
 automation should fail unless the resolved optimizer is the mode default
 (`hessian-sgd` for genewise, `adagrad-restarts` for specieswise). Add
 `--require-production-default-route` when automation should also fail on
-stale likelihood/gradient route metadata or non-default optimizer-specific
-settings such as a changed Hessian-SGD refresh budget, stale
-`final_check_iters_e`, or a truncated specieswise restart ladder. When both
+stale likelihood/gradient route metadata, non-default resident batching, or
+non-default optimizer-specific settings such as a changed Hessian-SGD refresh
+budget, stale `final_check_iters_e`, or a truncated specieswise restart ladder.
+When both
 route gates are requested, config preflight resolves the route once and reuses
 that snapshot for the gate checks and `validate-config` status line.
 
@@ -473,10 +475,11 @@ add `--require-final-check-ok` when it should also require
 `final_check_status=ok`. Add `--require-mode-default-optimizer` to fail unless
 the summary proves the run used the mode default optimizer for its mode;
 add `--require-production-default-route` when it should also require the
-shipped likelihood/gradient route metadata and optimizer-specific settings
-reported by `uses_production_default_route`, including the stored
-`final_check_iters_e` evidence. When both route gates are requested, the
-printed summary line and both gates use the same audited route snapshot.
+shipped likelihood/gradient route metadata, resident batch defaults, and
+optimizer-specific settings reported by `uses_production_default_route`,
+including the stored `final_check_iters_e` evidence. When both route gates
+are requested, the printed summary line and both gates use the same audited
+route snapshot.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 to inspect checkpoint progress, status, optimizer route, and last
 likelihood/gradient diagnostics without constructing the CUDA likelihood model.
@@ -488,9 +491,9 @@ should fail unless that checkpoint row reports `optimizer/final_check_status=ok`
 add `--require-mode-default-optimizer` to require a checkpoint route whose
 optimizer matches the mode default for its mode, or
 `--require-production-default-route` to require the full shipped
-likelihood/gradient and optimizer route, including the contract fields. The
-printed checkpoint line and any route gates use the same audited checkpoint
-route snapshot, including legacy config fallback evidence.
+likelihood/gradient, resident batch, and optimizer route, including the
+contract fields. The printed checkpoint line and any route gates use the same
+audited checkpoint route snapshot, including legacy config fallback evidence.
 
 History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics. Batch/wave/count fields under `solver/*` are typed JSON
@@ -586,8 +589,9 @@ Add `--require-mode-default-optimizer` to `gpurec sample` when standalone
 sampling automation should fail unless the checkpoint route used the mode
 default optimizer for its mode; use `--require-production-default-route` when
 the checkpoint must also prove `uses_production_default_route=true` for the
-shipped likelihood/gradient route metadata and optimizer-specific settings,
-including the stored `final_check_iters_e` evidence.
+shipped likelihood/gradient route metadata, resident batch defaults, and
+optimizer-specific settings, including the stored `final_check_iters_e`
+evidence.
 When both route gates are requested, standalone sampling audits the checkpoint
 route once and reuses that verdict for both pre-sampling checks.
 Successful sampling reruns replace prior gpurec-generated reconciliation
@@ -616,9 +620,9 @@ the optimization status and exit before sampling unless the run reached
 sampling unless `final_check_status=ok`; add `--require-mode-default-optimizer`
 when it should reject optimizers that do not match the selected mode default
 before optimization or sampling; add `--require-production-default-route` when
-changed optimizer-specific settings, stale `final_check_iters_e`, or stale
-likelihood/gradient route metadata should also stop the run before optimization
-or sampling. When
+non-default resident batching, changed optimizer-specific settings, stale
+`final_check_iters_e`, or stale likelihood/gradient route metadata should also
+stop the run before optimization or sampling. When
 sampling succeeds, the final status line also reports
 `sampled_families`, `samples`, `xml`, and `sample_out_dir`. Use
 `gpurec sample --checkpoint ...` to sample an existing run.

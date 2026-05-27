@@ -104,6 +104,9 @@ def _genewise_production_route_dict(**overrides: object) -> dict[str, object]:
     route: dict[str, object] = {
         "mode": "genewise",
         "optimizer": "hessian-sgd",
+        "batch_packing": "depth_first_fit",
+        "family_chunk_size": 0,
+        "clade_budget": DEFAULT_CLADE_BUDGET,
         "configured_steps": 5000,
         "optimizer_step_cap": 5000,
         "optimizer_step_cap_reason": "configured_steps",
@@ -128,6 +131,9 @@ def _specieswise_production_route_dict(**overrides: object) -> dict[str, object]
     route: dict[str, object] = {
         "mode": "specieswise",
         "optimizer": "adagrad-restarts",
+        "batch_packing": "depth_first_fit",
+        "family_chunk_size": 0,
+        "clade_budget": DEFAULT_CLADE_BUDGET,
         "configured_steps": 5000,
         "final_check_iters": 128,
         "final_check_iters_e": 128,
@@ -1449,6 +1455,9 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["production_default_optimizer_setting_mismatches"] == []
     assert route["uses_production_default_route"] is True
     assert route["production_default_route_mismatches"] == []
+    assert route["batch_packing"] == "depth_first_fit"
+    assert route["family_chunk_size"] == 0
+    assert route["clade_budget"] == DEFAULT_CLADE_BUDGET
     assert route["configured_steps"] == 5000
     assert route["optimizer_step_cap"] == 5000
     assert route["optimizer_step_cap_reason"] == "configured_steps"
@@ -1551,6 +1560,37 @@ def test_effective_route_metadata_marks_global_outside_production_route(
     assert route["production_default_route_mismatches"] == ["mode"]
 
 
+@pytest.mark.parametrize(
+    ("override", "field"),
+    [
+        ({"batch_packing": "sequential", "clade_budget": None}, "batch_packing"),
+        ({"family_chunk_size": 16}, "family_chunk_size"),
+        ({"clade_budget": 500_000}, "clade_budget"),
+    ],
+)
+def test_effective_route_metadata_marks_nondefault_batch_route(
+    tmp_path: Path,
+    override: dict[str, object],
+    field: str,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        **override,
+    )
+
+    route = effective_route_metadata(config)
+
+    assert route["uses_mode_default_optimizer"] is True
+    assert route["uses_production_default_optimizer_settings"] is True
+    assert route["production_default_optimizer_setting_mismatches"] == []
+    assert route["uses_production_default_route"] is False
+    assert field in route["production_default_route_mismatches"]
+
+
 def test_route_audit_infers_production_default_settings_from_route_dict():
     route = {
         **_specieswise_production_route_dict(),
@@ -1587,6 +1627,61 @@ def test_production_route_audit_requires_likelihood_gradient_contract_fields():
 
     assert "objective" in missing
     assert mismatches == ("gradient_route",)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["batch_packing", "family_chunk_size", "clade_budget"],
+)
+def test_production_route_audit_requires_batch_route_evidence(field: str):
+    route = {
+        **_genewise_production_route_dict(),
+        **production_default_route_contract(),
+    }
+    route.pop(field)
+
+    missing, mismatches = production_default_route_mismatches_from_route(route)
+
+    assert missing == (field,)
+    assert mismatches == ()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("batch_packing", "sequential"),
+        ("family_chunk_size", 1),
+        ("family_chunk_size", "0"),
+        ("clade_budget", 500_000),
+        ("clade_budget", "315000"),
+    ],
+)
+def test_production_route_audit_requires_default_batch_route(
+    field: str,
+    value: object,
+):
+    route = {
+        **_genewise_production_route_dict(),
+        **production_default_route_contract(),
+        field: value,
+    }
+
+    missing, mismatches = production_default_route_mismatches_from_route(route)
+
+    assert missing == ()
+    assert mismatches == (field,)
+
+
+def test_production_route_audit_normalizes_batch_packing_aliases():
+    route = {
+        **_genewise_production_route_dict(batch_packing="depth-first-fit"),
+        **production_default_route_contract(),
+    }
+
+    missing, mismatches = production_default_route_mismatches_from_route(route)
+
+    assert missing == ()
+    assert mismatches == ()
 
 
 def test_route_audit_normalizes_checkpoint_mode_strings():

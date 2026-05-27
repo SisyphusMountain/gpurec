@@ -133,8 +133,9 @@ referenced tree, family, or mapping file before starting `gpurec optimize`.
 Use `--require-mode-default-optimizer` when automation should reject explicit
 optimizer overrides. Use `--require-production-default-route` for release or
 pipeline launch checks that should also reject changed HOGENOM/`test_trees_1000`
-route settings, stale `final_check_iters_e`, or stale likelihood/gradient route
-metadata before spending CUDA time. That stricter gate is scoped to the retained
+route settings, non-default resident batching, stale `final_check_iters_e`, or
+stale likelihood/gradient route metadata before spending CUDA time. That
+stricter gate is scoped to the retained
 genewise `hessian-sgd` and specieswise `adagrad-restarts` profiles; `mode=global`
 can pass the mode-default optimizer gate but fails the production-route gate as
 outside the shipped HOGENOM/`test_trees_1000` optimizer route.

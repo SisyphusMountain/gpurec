@@ -31,7 +31,8 @@ profile. `uses_production_default_route` and
 `production_default_route_mismatches` are the combined production verdict used
 by `--require-production-default-route`; they cover the optimizer settings plus
 the shipped objective, gradient route, rate parameterization, and production
-default basis metadata, including the stored `final_check_iters_e` evidence.
+default basis metadata, resident batch defaults, and the stored
+`final_check_iters_e` evidence.
 `final_check_iters` records the solver iteration budget
 used for the final high-fidelity likelihood/gradient validation, while
 `final_check_iters_e` records the paired E-solver budget or `null` when E stays
@@ -145,13 +146,15 @@ whether the resolved `optimizer` currently matches it as
 `production_default_optimizer_setting_mismatches` names the changed
 optimizer-specific fields. `uses_production_default_route` is stricter: when it
 is false, `production_default_route_mismatches` also names stale
-`final_check_iters_e` evidence or likelihood contract fields such as
-`gradient_route` or `production_default_basis`.  The strict production-route
+`final_check_iters_e` evidence, resident batch fields such as `clade_budget`,
+or likelihood contract fields such as `gradient_route` or
+`production_default_basis`.  The strict production-route
 gate is intentionally scoped to the retained genewise `hessian-sgd` and
 specieswise `adagrad-restarts` HOGENOM/`test_trees_1000` profiles; `mode=global`
 can still satisfy `--require-mode-default-optimizer`, but it fails
 `--require-production-default-route` with a `mode` mismatch.
-That strict route audit requires typed step-cap evidence too:
+That strict route audit requires the default `batch_packing`,
+`family_chunk_size`, and `clade_budget`, plus typed step-cap evidence:
 `configured_steps` and `optimizer_step_cap` must be positive JSON integers,
 `optimizer_step_cap_reason` must be a valid string reason, and a
 configured-step cap must equal the configured step count.
@@ -306,10 +309,10 @@ Add `--require-mode-default-optimizer` to `gpurec validate-config`,
 `gpurec checkpoint-info` when the pipeline should fail unless the resolved route
 uses the mode default optimizer for the selected mode.
 Add `--require-production-default-route` when the pipeline should also fail on
-stale likelihood/gradient route metadata or optimizer-specific setting changes,
-such as a non-default Hessian-SGD refresh budget, stale `final_check_iters_e`,
-or a specieswise restart ladder that no longer reaches the default fixed32
-phase. The same check is printed in
+stale likelihood/gradient route metadata, non-default resident batching, or
+optimizer-specific setting changes, such as a non-default Hessian-SGD refresh
+budget, stale `final_check_iters_e`, or a specieswise restart ladder that no
+longer reaches the default fixed32 phase. The same check is printed in
 `uses_production_default_route` and `production_default_route_mismatches` for
 status-line and artifact triage.
 For combined optimize-and-sample workflows, add

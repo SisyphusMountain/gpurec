@@ -23,20 +23,20 @@ _MODE_DEFAULT_OPTIMIZER_HELP = (
 )
 _PRODUCTION_DEFAULT_ROUTE_HELP = (
     "Fail unless the objective, likelihood/gradient route, rate parameterization, "
-    "resolved optimizer, final_check_iters_e evidence, and optimizer-specific "
-    "settings match the full shipped HOGENOM/test_trees_1000 likelihood/gradient "
-    "and optimizer route."
+    "resident batch settings, resolved optimizer, final_check_iters_e evidence, "
+    "and optimizer-specific settings match the full shipped "
+    "HOGENOM/test_trees_1000 likelihood/gradient, resident batch, and optimizer route."
 )
 _MODE_DEFAULT_OPTIMIZER_CONFIG_ACTION = (
     "use optimizer=auto or the mode default optimizer"
 )
 _PRODUCTION_DEFAULT_ROUTE_CONFIG_ACTION = (
     "use optimizer=auto and omit route overrides so the shipped "
-    "likelihood/gradient and optimizer defaults apply"
+    "likelihood/gradient, resident batch, and optimizer defaults apply"
 )
 _MODE_DEFAULT_OPTIMIZER_ARTIFACT_ACTION = "expected the mode default optimizer route"
 _PRODUCTION_DEFAULT_ROUTE_ARTIFACT_ACTION = (
-    "expected the shipped likelihood/gradient and optimizer route"
+    "expected the shipped likelihood/gradient, resident batch, and optimizer route"
 )
 _ProductionRouteEvidence = tuple[
     dict[str, Any],

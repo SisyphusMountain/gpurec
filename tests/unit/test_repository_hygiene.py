@@ -1934,9 +1934,9 @@ def test_operator_docs_distinguish_mode_default_from_production_route():
         "mode default optimizer for its sharing mode",
         "mode default optimizer for the selected sharing mode",
         "mode default optimizer for the selected mode",
-        "full shipped likelihood/gradient and optimizer route",
+        "full shipped likelihood/gradient, resident batch, and optimizer route",
         "shipped HOGENOM/`test_trees_1000` optimizer route",
-        "stale likelihood/gradient route metadata or changed optimizer-specific settings",
+        "stale likelihood/gradient route metadata, non-default resident batching, or non-default optimizer-specific settings",
         "global template is available for shared-rate diagnostics",
         "fails the production-route gate with a `mode` mismatch",
     ):
@@ -1954,22 +1954,22 @@ def test_cli_route_gate_wording_is_centralized():
         ),
         "_PRODUCTION_DEFAULT_ROUTE_HELP": (
             "Fail unless the objective, likelihood/gradient route, rate parameterization, "
-            "resolved optimizer, final_check_iters_e evidence, and optimizer-specific "
-            "settings match the full shipped HOGENOM/test_trees_1000 likelihood/gradient "
-            "and optimizer route."
+            "resident batch settings, resolved optimizer, final_check_iters_e evidence, "
+            "and optimizer-specific settings match the full shipped "
+            "HOGENOM/test_trees_1000 likelihood/gradient, resident batch, and optimizer route."
         ),
         "_MODE_DEFAULT_OPTIMIZER_CONFIG_ACTION": (
             "use optimizer=auto or the mode default optimizer"
         ),
         "_PRODUCTION_DEFAULT_ROUTE_CONFIG_ACTION": (
             "use optimizer=auto and omit route overrides so the shipped "
-            "likelihood/gradient and optimizer defaults apply"
+            "likelihood/gradient, resident batch, and optimizer defaults apply"
         ),
         "_MODE_DEFAULT_OPTIMIZER_ARTIFACT_ACTION": (
             "expected the mode default optimizer route"
         ),
         "_PRODUCTION_DEFAULT_ROUTE_ARTIFACT_ACTION": (
-            "expected the shipped likelihood/gradient and optimizer route"
+            "expected the shipped likelihood/gradient, resident batch, and optimizer route"
         ),
     }
     actual_constants: dict[str, str] = {}
@@ -2067,6 +2067,7 @@ def test_input_preparation_guide_documents_alerax_data_contract():
         "gpurec validate-config --config run.json --require-mode-default-optimizer",
         "gpurec validate-config --config run.json --require-production-default-route",
         "reject changed HOGENOM/`test_trees_1000` route settings",
+        "non-default resident batching",
         "stale `final_check_iters_e`",
         "stale likelihood/gradient route metadata",
         "fails the production-route gate as outside the shipped HOGENOM/`test_trees_1000` optimizer route",

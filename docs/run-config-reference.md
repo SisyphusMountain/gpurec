@@ -152,9 +152,10 @@ the mode default optimizer for the selected sharing mode. They also include
 optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
 optimizer profile. They also include `uses_production_default_route` and
 `production_default_route_mismatches`, which combine those optimizer-specific
-checks with the shipped objective, gradient route, rate parameterization, and
-production default basis metadata enforced by
+checks with the shipped objective, gradient route, rate parameterization,
+production default basis metadata, and resident-batch route enforced by
 `--require-production-default-route`. The production-route audit also requires
+the default `batch_packing`, `family_chunk_size`, and `clade_budget`, plus
 typed step-cap evidence: `configured_steps` and `optimizer_step_cap` must be
 positive JSON integers, `optimizer_step_cap_reason` must be a valid string
 reason, and a normal configured-step cap must equal `configured_steps`.
@@ -166,8 +167,8 @@ reports `final_check_status=ok`. Add `--require-mode-default-optimizer` to
 preflight, run, standalone sampling, or artifact-inspection commands when
 production automation must reject optimizers that do not match the selected
 mode default. Add `--require-production-default-route` when stale
-likelihood/gradient route metadata or changed optimizer-specific settings should
-also fail those gates and be reported in
+likelihood/gradient route metadata, changed resident batching, or changed
+optimizer-specific settings should also fail those gates and be reported in
 `production_default_route_mismatches`. When both route gates are requested, the
 config route is resolved once and reused for both gates; `validate-config`
 prints that same route snapshot in its status line. The strict production-route
