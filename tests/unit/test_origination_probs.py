@@ -4,6 +4,7 @@ import torch
 from gpurec.core.likelihood import (
     E_fixed_point,
     E_step,
+    compute_origination_denominator,
     compute_nll,
     compute_nll_root_rows,
     gather_root_rows,
@@ -107,6 +108,106 @@ def test_root_row_nll_accepts_precomputed_denominator():
     actual = compute_nll_root_rows(root_rows, E, denominator=denominator)
 
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_origination_denominator_accepts_shared_and_family_specific_shapes():
+    dtype = torch.float64
+    shared_E = torch.tensor([-3.0, -2.0, -4.0], dtype=dtype)
+    family_E = torch.tensor(
+        [[-3.0, -2.0, -4.0], [-2.5, -2.25, -3.25]],
+        dtype=dtype,
+    )
+    shared_weights = torch.tensor([2.0, 5.0, 1.0], dtype=dtype)
+    family_weights = torch.tensor(
+        [[2.0, 5.0, 1.0], [1.0, 4.0, 2.0]],
+        dtype=dtype,
+    )
+
+    shared_denominator = compute_origination_denominator(shared_E, shared_weights)
+    broadcast_denominator = compute_origination_denominator(
+        shared_E,
+        family_weights,
+        family_count=2,
+    )
+    family_denominator = compute_origination_denominator(
+        family_E,
+        family_weights,
+        family_count=2,
+    )
+
+    assert shared_denominator.shape == ()
+    assert broadcast_denominator.shape == (2,)
+    assert family_denominator.shape == (2,)
+    torch.testing.assert_close(
+        shared_denominator,
+        torch.log2(
+            (
+                (shared_weights / shared_weights.sum(dim=-1, keepdim=True))
+                * (1.0 - torch.exp2(shared_E))
+            ).sum(dim=-1)
+        ),
+    )
+    torch.testing.assert_close(
+        broadcast_denominator,
+        torch.log2(
+            (
+                (family_weights / family_weights.sum(dim=-1, keepdim=True))
+                * (1.0 - torch.exp2(shared_E))
+            ).sum(dim=-1)
+        ),
+    )
+    torch.testing.assert_close(
+        family_denominator,
+        torch.log2(
+            (
+                (family_weights / family_weights.sum(dim=-1, keepdim=True))
+                * (1.0 - torch.exp2(family_E))
+            ).sum(dim=-1)
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("E", "weights", "family_count", "message"),
+    [
+        (
+            torch.zeros(1, 2, 3, dtype=torch.float64),
+            None,
+            None,
+            "E must have shape",
+        ),
+        (
+            torch.zeros(3, 3, dtype=torch.float64),
+            None,
+            2,
+            "E family dimension",
+        ),
+        (
+            torch.zeros(2, 3, dtype=torch.float64),
+            torch.ones(1, 3, dtype=torch.float64),
+            None,
+            "origination_probs.*E family dimension",
+        ),
+        (
+            torch.zeros(3, dtype=torch.float64),
+            torch.ones(3, 3, dtype=torch.float64),
+            2,
+            "one row per family",
+        ),
+    ],
+)
+def test_origination_denominator_rejects_ambiguous_family_shapes(
+    E,
+    weights,
+    family_count,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        compute_origination_denominator(
+            E,
+            weights,
+            family_count=family_count,
+        )
 
 
 def test_root_row_nll_accepts_vector_precomputed_denominator():

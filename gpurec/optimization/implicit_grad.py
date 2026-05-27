@@ -301,6 +301,11 @@ def _e_adjoint_and_theta_vjp(
             E_req_d,
             origin_probs,
             origination_probs_prepared=True,
+            family_count=(
+                int(n_fam)
+                if origin_probs is not None and origin_probs.ndim == 2
+                else None
+            ),
         )
         # Shared-E mode: denominator contributes once per family => n_fam * denom.
         # Genewise mode: E is per-family [G, S], so each row contributes once.

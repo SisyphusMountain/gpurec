@@ -380,8 +380,29 @@ def compute_origination_denominator(
     origination_probs=None,
     *,
     origination_probs_prepared: bool = False,
+    family_count: int | None = None,
 ):
-    """Return the log2 denominator for the root origination distribution."""
+    """Return the log2 denominator for the root origination distribution.
+
+    ``E`` must be a shared ``[S]`` vector or matching family-specific ``[G, S]``
+    rows.  Family-specific origination probabilities may pair with shared or
+    matching family-specific ``E`` rows; ambiguous broadcasting such as
+    ``origination_probs=[1, S]`` against ``E=[G, S]`` is rejected.
+    """
+    if E.ndim not in (1, 2):
+        raise ValueError(
+            "E must have shape [S] or [families, S], "
+            f"got {_tensor_shape(E)}"
+        )
+    if (
+        family_count is not None
+        and E.ndim == 2
+        and int(E.shape[0]) != int(family_count)
+    ):
+        raise ValueError(
+            "E family dimension must match family_count; "
+            f"expected {int(family_count)}, got {int(E.shape[0])}"
+        )
     if origination_probs is None:
         return torch.log2(1 - torch.exp2(E).mean(dim=-1))
     probs = prepare_origination_probs(
@@ -389,8 +410,14 @@ def compute_origination_denominator(
         S=int(E.shape[-1]),
         device=E.device,
         dtype=E.dtype,
+        family_count=family_count,
         assume_prepared=origination_probs_prepared,
     )
+    if probs.ndim == 2 and E.ndim == 2 and int(probs.shape[0]) != int(E.shape[0]):
+        raise ValueError(
+            "family-specific origination_probs must match E family dimension; "
+            f"expected {int(E.shape[0])}, got {int(probs.shape[0])}"
+        )
     return torch.log2((probs * (1 - torch.exp2(E))).sum(dim=-1))
 
 
