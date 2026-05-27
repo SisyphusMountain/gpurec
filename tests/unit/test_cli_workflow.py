@@ -140,8 +140,20 @@ def test_run_config_cli_surface_matches_dataclass_fields():
             "require_cuda_backward_ready",
             "require_mode_default_optimizer",
             "require_production_default_route",
+            "json",
         }
     )
+    assert _parser_action_dests("validate-inputs") == {
+        "species_tree",
+        "families_file",
+        "start",
+        "max_families",
+        "mode",
+        "preprocess_cpu_cores",
+        "json",
+        "check_preprocess",
+        "require_cuda_backward_ready",
+    }
     assert _parser_action_dests("run") == expected_parser_dests | {
         "sample_out_dir",
         "samples",
@@ -155,13 +167,26 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "require_mode_default_optimizer",
         "require_production_default_route",
     }
-    assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
-    assert _parser_action_dests("preprocess-check") == {"preprocess_native_lib"}
+    assert _parser_action_dests("backtrack-check") == {
+        "backtrack_binary",
+        "json",
+    }
+    assert _parser_action_dests("preprocess-check") == {
+        "preprocess_native_lib",
+        "json",
+    }
+    assert _parser_action_dests("doctor") == {
+        "json",
+        "preprocess_native_lib",
+        "backtrack_binary",
+        "out_dir",
+    }
     assert _parser_action_dests("checkpoint-info") == {
         "checkpoint",
         "require_final_check_ok",
         "require_mode_default_optimizer",
         "require_production_default_route",
+        "json",
     }
     assert _parser_action_dests("summary-info") == {
         "summary",
@@ -169,6 +194,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "require_final_check_ok",
         "require_mode_default_optimizer",
         "require_production_default_route",
+        "json",
     }
     assert _parser_action_dests("config-template") == {
         "mode",
@@ -1216,6 +1242,188 @@ def test_cli_validate_config_require_production_default_route_rejects_batch_over
         "clade_budget"
     ) in captured.err
     assert "valid_config=true" not in captured.out
+    assert "Traceback" not in captured.err
+
+
+def test_cli_validate_config_emits_json_report(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    main(
+        [
+            "validate-config",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--device",
+            "cuda",
+            "--check-preprocess",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["valid_config"] is True
+    assert payload["mode"] == "genewise"
+    assert payload["optimizer"] == "hessian-sgd"
+    assert payload["preprocess_checked"] is True
+    assert payload["preprocessed_families"] == 1
+    assert payload["preprocessed_species_nodes"] == 3
+    assert payload["cuda_backward_ready"] is False
+    assert payload["cuda_backward_ready_reason"] == "requires_s_gt_256"
+    assert payload["out_dir"] == str((tmp_path / "out").resolve())
+    assert "route" in payload
+
+
+def test_cli_validate_config_emits_json_without_preprocess(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    main(
+        [
+            "validate-config",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--device",
+            "cpu",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["valid_config"] is True
+    assert payload["preprocess_checked"] is False
+    assert "preprocessed_families" not in payload
+    assert "preprocessed_species_nodes" not in payload
+
+
+def test_cli_validate_inputs_emits_json_report(tmp_path: Path, capsys):
+    write_tiny_alerax_inputs(tmp_path)
+
+    main(
+        [
+            "validate-inputs",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--check-preprocess",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["valid_inputs"] is True
+    assert payload["species_tree"] == str((tmp_path / "sp.nwk").resolve())
+    assert payload["families_file"] == str((tmp_path / "families.txt").resolve())
+    assert payload["start"] == 0
+    assert payload["max_families"] is None
+    assert payload["families"] == 1
+    assert payload["gene_tree_files"] == 1
+    assert payload["mapped_families"] == 1
+    assert payload["preprocess_checked"] is True
+    assert payload["preprocessed_families"] == 1
+    assert payload["preprocessed_species_nodes"] == 3
+    assert payload["cuda_backward_ready"] is False
+    assert payload["cuda_backward_ready_reason"] == "requires_s_gt_256"
+    assert payload["issues"] == []
+
+
+def test_cli_validate_inputs_rejects_missing_gene_tree(tmp_path: Path, capsys):
+    write_tiny_alerax_inputs(
+        tmp_path,
+        family_lines=("starting_gene_tree = missing_gene.nwk", "mapping = gene.map"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert any(
+        issue["code"] == "missing_gene_tree" for issue in payload["issues"]
+    )
+    assert any(
+        issue["code"] == "missing_gene_tree"
+        and "missing_gene.nwk" in issue["path"]
+        for issue in payload["issues"]
+    )
+    assert captured.err == ""
+
+
+def test_cli_validate_inputs_rejects_invalid_mapping_file(tmp_path: Path, capsys):
+    write_tiny_alerax_inputs(tmp_path, mapping="A,a\nB b\n")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert any(
+        issue["code"] == "invalid_mapping_file" for issue in payload["issues"]
+    )
+    assert captured.err == ""
+
+
+def test_cli_validate_inputs_can_require_cuda_backward_ready(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--check-preprocess",
+                "--require-cuda-backward-ready",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "cuda_backward_ready=false" in captured.err
+    assert "more than 256 postorder species nodes" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -2328,6 +2536,107 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "last_solver_e_adjoint_rel_res_max=0.125000",
     ):
         assert token in captured.out
+
+
+def test_cli_checkpoint_info_emits_json_payload(
+    tmp_path: Path,
+    capsys,
+):
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        route_metadata={},
+    )
+
+    main(["checkpoint-info", "--checkpoint", str(checkpoint), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["checkpoint"] == str(checkpoint.resolve())
+    assert payload["mode"] == "genewise"
+    assert payload["optimizer"] == "hessian-sgd"
+    assert payload["status"]["status"] == "running"
+    assert payload["status"]["reason"] == "checkpoint_interval"
+    assert payload["best_step"] == 3
+    assert payload["best_nll_bits"] == 10.0
+    assert payload["last_nll_bits"] == 10.0
+    assert payload["route_metadata_source"] == "checkpoint"
+
+
+def test_cli_summary_info_emits_json_payload(
+    tmp_path: Path,
+    capsys,
+):
+    basis = "hogenom_and_" + "test_trees_" + "1000"
+    summary = tmp_path / "summary.json"
+    payload = {
+        "status": "converged",
+        "reason": "max_steps",
+        "mode": "genewise",
+        "optimizer": "hessian-sgd",
+        "mode_default_optimizer": "hessian-sgd",
+        "uses_mode_default_optimizer": True,
+        "families": 3,
+        "species": 4,
+        "batches": 2,
+        "batch_packing": "depth_first_fit",
+        "family_chunk_size": 0,
+        "clade_budget": DEFAULT_CLADE_BUDGET,
+        "fixed_iters_e": None,
+        "fixed_iters_pi": 16,
+        "neumann_terms": 16,
+        "objective": "negative_log_likelihood_bits",
+        "gradient_route": "implicit_first_order_adjoint",
+        "rate_parameterization": "base2_log_dlt_rates",
+        "production_default_basis": basis,
+        "configured_steps": 5000,
+        "optimizer_step_cap": 5000,
+        "optimizer_step_cap_reason": "configured_steps",
+        "final_check_iters": 32,
+        "final_check_iters_e": None,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "steps_completed": 7,
+        "elapsed_s": 3.25,
+        "best_step": 5,
+        "final_nll_bits": 12.5,
+        "final_log_likelihood_bits": -12.5,
+        "final_grad_inf": 0.75,
+        "final_projected_grad_inf": 0.625,
+        "best_nll_bits": 10.25,
+        "best_log_likelihood_bits": -10.25,
+        "final_check_status": "ok",
+        "final_check_source": "configured_solver_budget",
+        "final_check_loss_abs_delta_bits": 0.0,
+        "final_check_grad_max_abs_delta": 0.0,
+        "final_check_grad_rel_inf_delta": 0.0,
+        "final_solver_e_adjoint_failed_batches": 1,
+        "final_solver_e_adjoint_success_batches": 0,
+        "final_solver_e_adjoint_rel_res_max": 0.125,
+        "route": {
+            "mode": "genewise",
+            "mode_default_optimizer": "hessian-sgd",
+            "uses_mode_default_optimizer": True,
+            "uses_production_default_optimizer_settings": True,
+            "uses_production_default_route": True,
+            "production_default_optimizer_setting_mismatches": [],
+            "production_default_route_mismatches": [],
+        },
+    }
+    summary.write_text(json.dumps(payload), encoding="utf-8")
+
+    main(["summary-info", "--summary", str(summary), "--json"])
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert output["summary"] == str(summary.resolve())
+    assert output["status"] == "converged"
+    assert output["mode"] == "genewise"
+    assert output["optimizer"] == "hessian-sgd"
+    assert output["families"] == 3
+    assert output["route"]["mode"] == "genewise"
+    assert output["route"]["uses_mode_default_optimizer"] is True
+    assert output["route"]["uses_production_default_route"] is True
 
 
 def test_cli_checkpoint_info_treats_malformed_numeric_fields_as_null(
@@ -4280,6 +4589,49 @@ def test_cli_optimize_reports_workflow_errors_without_traceback(
     assert "Traceback" not in captured.err
 
 
+def test_cli_optimize_passes_invocation_argv_to_optimizer(
+    tmp_path: Path,
+    monkeypatch,
+):
+    args = _minimal_workflow_cli_args("optimize", tmp_path) + [
+        "--mode",
+        "specieswise",
+        "--optimizer",
+        "adagrad-restarts",
+    ]
+    captured: dict[str, object] = {}
+
+    def successful_optimize(
+        config,
+        *,
+        command_argv: tuple[str, ...] | list[str] | None = None,
+    ) -> SimpleNamespace:
+        captured["command_argv"] = (
+            list(command_argv)
+            if command_argv is not None
+            else None
+        )
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="not_converged",
+            reason="max_steps",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            final_nll_bits=12.5,
+            final_grad_inf=0.75,
+            final_projected_grad_inf=0.5,
+            best_nll_bits=11.0,
+            steps_completed=1,
+            elapsed_s=0.5,
+            best_step=0,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+
+    main(args)
+    assert captured["command_argv"] == args
+
+
 def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
     tmp_path: Path,
     capsys,
@@ -5049,6 +5401,66 @@ def test_cli_run_preflights_backtracking_before_optimization(
     assert calls == [None]
 
 
+def test_cli_run_passes_invocation_argv_to_optimizer(
+    tmp_path: Path,
+    monkeypatch,
+):
+    args = _minimal_workflow_cli_args("run", tmp_path) + [
+        "--samples",
+        "3",
+        "--seed",
+        "2",
+    ]
+    captured: dict[str, object] = {}
+    checkpoint_dir = tmp_path / "out" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint = checkpoint_dir / "latest.pt"
+    checkpoint.write_bytes(b"checkpoint")
+
+    def successful_optimize(
+        config,
+        *,
+        command_argv: tuple[str, ...] | list[str] | None = None,
+    ) -> SimpleNamespace:
+        captured["command_argv"] = (
+            list(command_argv)
+            if command_argv is not None
+            else None
+        )
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="converged",
+            reason="best_likelihood_patience",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            sampling_checkpoint=checkpoint,
+            final_nll_bits=12.0,
+            final_grad_inf=0.25,
+            final_projected_grad_inf=0.125,
+            best_nll_bits=11.0,
+            final_check_status="ok",
+            final_check_source="configured_solver_budget",
+            steps_completed=10,
+            elapsed_s=0.5,
+            best_step=10,
+        )
+
+    def successful_sample(config) -> SimpleNamespace:
+        return SimpleNamespace(
+            families_sampled=1,
+            samples_per_family=config.samples,
+            xml_files=2,
+            out_dir=config.out_dir,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", successful_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
+
+    main(args)
+    assert captured["command_argv"] == args
+
+
 def test_cli_run_refuses_sampling_after_failed_optimization(
     tmp_path: Path,
     capsys,
@@ -5545,6 +5957,160 @@ def test_cli_preprocess_check_reports_missing_native_without_traceback(
     assert "GPUREC_PREPROCESS_NATIVE_LIB" in captured.err
     assert "--preprocess-native-lib" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_cli_backtrack_check_delegates_binary_preflight_json(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    calls: list[Path | None] = []
+    binary = tmp_path / "gpurec-backtrack"
+
+    def fake_preflight(backtrack_binary: Path | None) -> None:
+        calls.append(backtrack_binary)
+
+    monkeypatch.setattr(
+        "gpurec.cli._ensure_backtracking_available",
+        fake_preflight,
+    )
+
+    main(["backtrack-check", "--backtrack-binary", str(binary), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["backtracking_available"] is True
+    assert payload["backtrack_binary"] == str(binary)
+    assert calls == [binary]
+    assert captured.err == ""
+
+
+def test_cli_preprocess_check_delegates_native_preflight_json(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    calls: list[Path | None] = []
+    native_lib = tmp_path / "libgpurec_preprocess.so"
+
+    def fake_preflight(preprocess_native_lib: Path | None) -> Path:
+        calls.append(preprocess_native_lib)
+        return native_lib
+
+    monkeypatch.setattr("gpurec.cli._ensure_preprocessing_available", fake_preflight)
+
+    main(["preprocess-check", "--preprocess-native-lib", str(native_lib), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["preprocessing_available"] is True
+    assert payload["preprocess_native_lib"] == str(native_lib)
+    assert calls == [native_lib]
+    assert captured.err == ""
+
+
+def test_cli_doctor_reports_ready_json(tmp_path: Path, capsys, monkeypatch):
+    def fake_report(
+        out_dir: Path | None,
+        preprocess_native_lib: Path | None,
+        backtrack_binary: Path | None,
+    ) -> dict[str, object]:
+        return {
+            "ready": True,
+            "package_version": "0.0.0-test",
+            "checks": {
+                "python": {
+                    "ok": True,
+                    "version": "3.11.8",
+                    "platform": "linux",
+                    "executable": "/usr/bin/python",
+                    "implementation": "cpython",
+                },
+                "torch": {
+                    "ok": True,
+                    "version": "2.2.0",
+                    "cuda_build": "12.0",
+                    "cuda_available": True,
+                    "cuda_device_count": 2,
+                },
+                "triton": {"ok": True, "version": "2.1.0"},
+                "preprocess": {"ok": True, "path": str(preprocess_native_lib)},
+                "backtracking": {"ok": True, "path": str(backtrack_binary)},
+                "out_dir": {
+                    "ok": True,
+                    "path": str((tmp_path / "doctordir").resolve()),
+                },
+            },
+        }
+
+    monkeypatch.setattr(gpurec_cli, "_doctor_readiness_report", fake_report)
+    main(
+        [
+            "doctor",
+            "--json",
+            "--preprocess-native-lib",
+            "pre.so",
+            "--backtrack-binary",
+            "track",
+            "--out-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ready"] is True
+    assert payload["package_version"] == "0.0.0-test"
+    assert payload["checks"]["torch"]["cuda_available"] is True
+    assert payload["checks"]["preprocess"]["path"] == str(Path("pre.so"))
+    assert payload["checks"]["backtracking"]["path"] == str(Path("track"))
+
+
+def test_cli_doctor_reports_unready_text_and_exits(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def fake_report(
+        out_dir: Path | None,
+        preprocess_native_lib: Path | None,
+        backtrack_binary: Path | None,
+    ) -> dict[str, object]:
+        return {
+            "ready": False,
+            "package_version": "0.0.0-test",
+            "checks": {
+                "python": {"ok": True, "version": "3.11.8"},
+                "torch": {"ok": False, "error": "no cuda"},
+                "triton": {"ok": True, "version": "2.1.0"},
+                "preprocess": {"ok": False, "error": "missing preprocess"},
+                "backtracking": {"ok": False, "error": "missing backtrack"},
+                "out_dir": {
+                    "ok": True,
+                    "path": str((tmp_path / "doctordir").resolve()),
+                },
+            },
+        }
+
+    monkeypatch.setattr(gpurec_cli, "_doctor_readiness_report", fake_report)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "doctor",
+                "--preprocess-native-lib",
+                str(tmp_path / "missing-preprocess"),
+                "--backtrack-binary",
+                str(tmp_path / "missing-track"),
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "doctor_ready=false" in captured.out
+    assert 'torch_error="no\\u0020cuda"' in captured.out
+    assert 'preprocess_error="missing\\u0020preprocess"' in captured.out
+    assert 'backtracking_error="missing\\u0020backtrack"' in captured.out
 
 
 def test_cli_optimize_help_describes_config_and_path_inputs(capsys):

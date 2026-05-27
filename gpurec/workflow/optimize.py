@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import datetime
+import hashlib
 import csv
+import json
+import os
 import math
+import platform
+import sys
 import time
 from dataclasses import dataclass, replace
 from numbers import Integral, Real
@@ -386,8 +392,10 @@ _FINAL_ARTIFACT_FILES = (
     "theta_final.pt",
     "optimization_history.csv",
     "summary.json",
+    "run_manifest.json",
 )
 _RUN_CONFIG_ARTIFACT_FILE = "run_config.json"
+_RUN_MANIFEST_ARTIFACT_FILE = "run_manifest.json"
 _ACTIVE_BATCH_LBFGS_STALL_PATIENCE = 3
 _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
 _FD_NEWTON_LARGE_BATCH_MAX_LS = 8
@@ -840,6 +848,136 @@ def _write_per_family_likelihoods(
             writer.writerow((family, f"{nll:.12g}", f"{-nll:.12g}"))
 
 
+def _readiness_text(value: Any, fallback: Any) -> Any:
+    return fallback if value is None else value
+
+
+def _run_manifest_runtime_info(start_time_s: float) -> dict[str, Any]:
+    created_utc = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        import torch
+    except Exception:  # pragma: no cover - exercised in integration and guarded by monkeypatches
+        torch = None
+
+    try:
+        import triton
+    except Exception:  # pragma: no cover - exercised in integration and guarded by monkeypatches
+        triton = None
+
+    artifact_paths = {
+        "preprocess_native_lib": os.environ.get("GPUREC_PREPROCESS_NATIVE_LIB"),
+        "backtrack_binary": os.environ.get("GPUREC_BACKTRACK_BIN"),
+    }
+    artifact_readiness = {
+        name: None if path is None else str(path)
+        for name, path in artifact_paths.items()
+    }
+
+    torch_info: dict[str, Any] = {
+        "version": _readiness_text(torch.__version__, None) if torch is not None else None,
+        "cuda": _readiness_text(torch.version.cuda if torch is not None else None, None),
+        "devices": None if torch is None else int(torch.cuda.device_count()),
+        "current_device": (
+            None
+            if torch is None
+            or not torch.cuda.is_available()
+            else int(torch.cuda.current_device())
+        ),
+    }
+    if torch_info["current_device"] is not None:
+        torch_info["current_device_name"] = _readiness_text(
+            torch.cuda.get_device_name(torch.cuda.current_device()),
+            "",
+        )
+
+    triton_info: dict[str, Any] = {
+        "version": getattr(triton, "__version__", None)
+        if triton is not None
+        else None,
+    }
+    uname = platform.uname()
+
+    return {
+        "created_utc": created_utc.isoformat().replace("+00:00", "Z"),
+        "package_version": __import__("gpurec", fromlist=["__version__"]).__version__,
+        "started_s": float(start_time_s),
+        "started_dt_utc": datetime.datetime.fromtimestamp(
+            start_time_s,
+            tz=datetime.timezone.utc,
+        ).isoformat().replace("+00:00", "Z"),
+        "platform": {
+            "name": uname.system,
+            "node": uname.node,
+            "release": uname.release,
+            "machine": platform.machine(),
+            "processor": platform.processor(),
+        },
+        "python": {
+            "version": platform.python_version(),
+            "implementation": platform.python_implementation(),
+            "executable": getattr(platform, "python_executable", lambda: sys.executable)(),
+        },
+        "torch": torch_info,
+        "triton": triton_info,
+        "native_artifacts": artifact_readiness,
+    }
+
+
+def _run_manifest_hash(config: RunConfig) -> str:
+    payload = json.dumps(config.to_dict(), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _build_run_manifest(
+    config: RunConfig,
+    *,
+    command: str | None,
+    command_argv: tuple[str, ...] | list[str] | None,
+    route_metadata: dict[str, Any],
+    summary: dict[str, Any],
+    started_wall_time: float,
+    elapsed_wall_s: float,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "schema_name": "gpurec optimization run manifest",
+        "out_dir": str(config.out_dir),
+        "command": command,
+        "command_argv": None if command_argv is None else list(command_argv),
+        "run_config": {
+            "path": str(config.out_dir / _RUN_CONFIG_ARTIFACT_FILE),
+            "hash_sha256": _run_manifest_hash(config),
+            "version": "1",
+        },
+        "runtime": _run_manifest_runtime_info(started_wall_time),
+        "elapsed_s": elapsed_wall_s,
+        "route": route_metadata,
+        "optimization": {
+            "mode": summary.get("mode"),
+            "optimizer": summary.get("optimizer"),
+            "status": summary.get("status"),
+            "reason": summary.get("reason"),
+            "steps_completed": summary.get("steps_completed"),
+            "families": summary.get("families"),
+            "species": summary.get("species"),
+            "batches": summary.get("batches"),
+            "final_nll_bits": summary.get("final_nll_bits"),
+            "final_log_likelihood_bits": summary.get("final_log_likelihood_bits"),
+            "best_nll_bits": summary.get("best_nll_bits"),
+            "sampling_checkpoint": summary.get("sampling_checkpoint"),
+            "final_check_status": summary.get("final_check_status"),
+        },
+        "reproducibility": {
+            "torch_seed": int(torch.initial_seed()),
+            "seeded": False,
+        },
+        "selections": {
+            "families": summary.get("families"),
+            "species": summary.get("species"),
+        },
+    }
+
+
 def _write_history_jsonl_with_final_row(
     path: Path,
     current_history_path: Path,
@@ -888,6 +1026,7 @@ def _write_final_artifacts(
     history: list[dict[str, Any]],
     final_row: dict[str, Any],
     summary: dict[str, Any],
+    run_manifest: dict[str, Any] | None = None,
     history_jsonl: Path,
     per_family_nll: torch.Tensor | None = None,
     include_per_family_likelihoods: bool = True,
@@ -940,6 +1079,15 @@ def _write_final_artifacts(
         write_json_strict(summary_stage_path, summary)
         staged_outputs.append(history_jsonl_output)
         staged_outputs.append((summary_stage_path, config.out_dir / "summary.json"))
+        if run_manifest is not None:
+            manifest_stage_path = stage_dir / _RUN_MANIFEST_ARTIFACT_FILE
+            write_json_strict(manifest_stage_path, run_manifest)
+            staged_outputs.append(
+                (
+                    manifest_stage_path,
+                    config.out_dir / _RUN_MANIFEST_ARTIFACT_FILE,
+                )
+            )
 
         _publish_final_artifacts(config.out_dir, staged_outputs)
     except BaseException as exc:
@@ -1040,10 +1188,20 @@ def _adagrad_restart_phase_by_index(
 
 
 class OptimizationRunner:
-    def __init__(self, config: RunConfig):
+    def __init__(
+        self,
+        config: RunConfig,
+        *,
+        command_argv: tuple[str, ...] | list[str] | None = None,
+    ):
         self.config = config
         self.history: list[dict[str, Any]] = []
         self.history_jsonl = config.out_dir / "history.jsonl"
+        self.command_argv = (
+            tuple(command_argv)
+            if command_argv is not None
+            else None
+        )
 
     def build_model(self) -> GeneReconModel:
         config = self.config
@@ -5284,12 +5442,26 @@ class OptimizationRunner:
                 **final_check_summary,
                 **final_solver_summary,
             }
+            run_manifest = _build_run_manifest(
+                config,
+                command=(
+                    " ".join(str(item) for item in self.command_argv)
+                    if self.command_argv is not None
+                    else None
+                ),
+                command_argv=self.command_argv,
+                route_metadata=route_metadata,
+                summary=summary,
+                started_wall_time=started,
+                elapsed_wall_s=final_status["elapsed_s"],
+            )
             _write_final_artifacts(
                 config,
                 model=model,
                 history=self.history,
                 final_row=final_row,
                 summary=summary,
+                run_manifest=run_manifest,
                 history_jsonl=self.history_jsonl,
                 per_family_nll=final_per_family_nll,
                 include_per_family_likelihoods=not final_eval_failed,
@@ -5303,5 +5475,11 @@ class OptimizationRunner:
             return result
 
 
-def optimize(config: RunConfig) -> OptimizationResult:
-    return OptimizationRunner(config).run()
+def optimize(
+    config: RunConfig,
+    command_argv: tuple[str, ...] | list[str] | None = None,
+) -> OptimizationResult:
+    return OptimizationRunner(
+        config,
+        command_argv=command_argv,
+    ).run()

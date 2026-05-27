@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import inspect
+import os
 import json
 import math
 import sys
@@ -50,6 +52,191 @@ _SAFE_STATUS_TEXT_CHARS = frozenset(
     "0123456789"
     "._:/+-,"
 )
+
+
+def _ensure_json_ready(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple):
+        return [_ensure_json_ready(item) for item in value]
+    if isinstance(value, set):
+        return [_ensure_json_ready(item) for item in sorted(value)]
+    if isinstance(value, dict):
+        return {str(key): _ensure_json_ready(item) for key, item in value.items()}
+    return value
+
+
+def _add_json_output_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON report instead of a status text line.",
+    )
+
+
+def _doctor_torch_readiness() -> dict[str, Any]:
+    check: dict[str, Any] = {"ok": False}
+    try:
+        import torch
+
+        check["ok"] = True
+        check["version"] = torch.__version__
+        check["cuda_build"] = torch.version.cuda
+        check["cuda_available"] = bool(torch.cuda.is_available())
+        check["cuda_device_count"] = int(torch.cuda.device_count())
+        if check["cuda_available"] and check["cuda_device_count"] > 0:
+            current = int(torch.cuda.current_device())
+            check["cuda_current_device"] = current
+            check["cuda_current_device_name"] = torch.cuda.get_device_name(current)
+    except Exception as exc:  # pragma: no cover - exercised via monkeypatch in tests
+        check["error"] = str(exc)
+    return check
+
+
+def _doctor_triton_readiness() -> dict[str, Any]:
+    check: dict[str, Any] = {"ok": False}
+    try:
+        import triton as triton
+
+        check["ok"] = True
+        check["version"] = getattr(triton, "__version__", None)
+    except Exception as exc:
+        check["error"] = str(exc)
+    return check
+
+
+def _doctor_preprocessing_readiness(
+    preprocess_native_lib: Path | None,
+) -> dict[str, Any]:
+    check: dict[str, Any] = {"ok": False}
+    try:
+        path = _ensure_preprocessing_available(preprocess_native_lib)
+        check["ok"] = True
+        check["path"] = str(path)
+    except Exception as exc:
+        check["error"] = str(exc)
+    return check
+
+
+def _doctor_backtracking_readiness(
+    backtrack_binary: Path | None,
+) -> dict[str, Any]:
+    check: dict[str, Any] = {"ok": False}
+    try:
+        _ensure_backtracking_available(backtrack_binary)
+        check["ok"] = True
+        check["path"] = str(backtrack_binary) if backtrack_binary is not None else None
+    except Exception as exc:
+        check["error"] = str(exc)
+    return check
+
+
+def _doctor_output_dir_readiness(out_dir: Path | None) -> dict[str, Any]:
+    check: dict[str, Any] = {"ok": False}
+    target = Path.cwd() if out_dir is None else out_dir.expanduser().resolve()
+    check["path"] = str(target)
+    try:
+        import tempfile
+
+        target.mkdir(parents=True, exist_ok=True)
+        if not target.is_dir():
+            check["error"] = "resolved path is not a directory"
+            return check
+        fd, probe = tempfile.mkstemp(prefix=".gpurec-doctor-", dir=str(target))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("ok")
+        finally:
+            os.unlink(probe)
+        check["ok"] = True
+    except Exception as exc:
+        check["error"] = str(exc)
+    return check
+
+
+def _doctor_readiness_report(
+    out_dir: Path | None,
+    preprocess_native_lib: Path | None,
+    backtrack_binary: Path | None,
+) -> dict[str, Any]:
+    from gpurec import __version__
+
+    checks: dict[str, Any] = {
+        "python": {
+            "ok": True,
+            "version": sys.version,
+            "platform": sys.platform,
+            "executable": sys.executable,
+            "implementation": sys.implementation.name,
+        },
+        "torch": _doctor_torch_readiness(),
+        "triton": _doctor_triton_readiness(),
+        "preprocess": _doctor_preprocessing_readiness(preprocess_native_lib),
+        "backtracking": _doctor_backtracking_readiness(backtrack_binary),
+        "out_dir": _doctor_output_dir_readiness(out_dir),
+    }
+    ready = all(check["ok"] for check in checks.values())
+    return {
+        "ready": ready,
+        "package_version": __version__,
+        "checks": checks,
+    }
+
+
+def _doctor_readiness_text(report: dict[str, Any]) -> str:
+    checks = report["checks"]
+    torch_check = checks["torch"]
+    triton_check = checks["triton"]
+    preprocess_check = checks["preprocess"]
+    backtrack_check = checks["backtracking"]
+    out_dir_check = checks["out_dir"]
+    python_check = checks["python"]
+    return " ".join(
+        [
+            f"doctor_ready={'true' if report['ready'] else 'false'}",
+            _optional_text("package_version", report.get("package_version")),
+            _optional_text("python_version", python_check.get("version")),
+            _optional_text("python_platform", python_check.get("platform")),
+            _optional_text("python_executable", python_check.get("executable")),
+            _optional_text("torch_version", torch_check.get("version")),
+            _optional_bool_text("torch_cuda_available", torch_check.get("cuda_available")),
+            _optional_int_text("torch_cuda_devices", torch_check.get("cuda_device_count")),
+            _optional_text("torch_cuda_build", torch_check.get("cuda_build")),
+            _optional_text(
+                "torch_error",
+                torch_check.get("error") if not torch_check.get("ok") else None,
+            ),
+            _optional_text("triton_version", triton_check.get("version")),
+            _optional_text(
+                "triton_error",
+                triton_check.get("error") if not triton_check.get("ok") else None,
+            ),
+            _optional_bool_text(
+                "preprocess_available",
+                preprocess_check.get("ok"),
+            ),
+            _optional_text("preprocess_path", preprocess_check.get("path")),
+            _optional_text(
+                "preprocess_error",
+                preprocess_check.get("error") if not preprocess_check.get("ok") else None,
+            ),
+            _optional_bool_text(
+                "backtracking_available",
+                backtrack_check.get("ok"),
+            ),
+            _optional_text("backtracking_path", backtrack_check.get("path")),
+            _optional_text(
+                "backtracking_error",
+                backtrack_check.get("error") if not backtrack_check.get("ok") else None,
+            ),
+            _optional_bool_text("out_dir_writable", out_dir_check.get("ok")),
+            _optional_text("out_dir", out_dir_check.get("path")),
+            _optional_text(
+                "out_dir_error",
+                out_dir_check.get("error") if not out_dir_check.get("ok") else None,
+            ),
+        ]
+    )
 
 
 def _run_config_cli_override_fields() -> tuple[str, ...]:
@@ -787,10 +974,33 @@ def _summary_info_text(
     )
 
 
-def optimize(config: Any) -> Any:
+def optimize(
+    config: Any,
+    *,
+    command_argv: tuple[str, ...] | list[str] | None = None,
+) -> Any:
     from gpurec.workflow.optimize import optimize as _optimize
 
-    return _optimize(config)
+    if command_argv is None:
+        return _optimize(config)
+    return _optimize(config, command_argv=command_argv)
+
+
+def _run_optimize_command(config: Any, command_argv: list[str]) -> Any:
+    """Run optimization while preserving test monkeypatch compatibility."""
+    try:
+        parameters = inspect.signature(optimize).parameters
+    except TypeError:
+        return optimize(config)
+
+    accepts_var_keyword = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    has_command_argv = "command_argv" in parameters
+    if accepts_var_keyword or has_command_argv:
+        return optimize(config, command_argv=command_argv)
+    return optimize(config)
 
 
 def sample(config: Any) -> Any:
@@ -912,6 +1122,301 @@ def _validate_run_config_family_references(config: RunConfig) -> dict[str, int]:
         "gene_tree_files": gene_tree_files,
         "mapped_families": sum(1 for mapping in leaf_species_maps if mapping),
     }
+
+
+def _input_issue(
+    code: str,
+    *,
+    family: str | None = None,
+    index: int | None = None,
+    path: str | None = None,
+    gene: str | None = None,
+    species: str | None = None,
+    message: str,
+    action: str,
+) -> dict[str, Any]:
+    issue: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "action": action,
+    }
+    if family is not None:
+        issue["family"] = family
+    if index is not None:
+        issue["index"] = index
+    if path is not None:
+        issue["path"] = path
+    if gene is not None:
+        issue["gene"] = gene
+    if species is not None:
+        issue["species"] = species
+    return issue
+
+
+def _summarize_alerax_family_inputs(config: RunConfig) -> dict[str, Any]:
+    from gpurec.core.model import (
+        parse_alerax_family_file_with_paths,
+        parse_alerax_mapping_file,
+    )
+
+    summary: dict[str, Any] = {
+        "valid_inputs": True,
+        "preprocess_checked": False,
+        "species_tree": str(config.species_tree),
+        "families_file": str(config.families_file),
+        "start": config.start,
+        "max_families": config.max_families,
+        "families": 0,
+        "mapped_families": 0,
+        "gene_tree_files": 0,
+        "issues": [],
+        "family_reports": [],
+        "family_names": [],
+        "tree_paths": [],
+        "mapping_paths": [],
+        "parsed_leaf_species_maps": [],
+    }
+
+    if not config.species_tree.is_file():
+        summary["valid_inputs"] = False
+        summary["issues"].append(
+            _input_issue(
+                "missing_species_tree",
+                path=str(config.species_tree),
+                message=(
+                    "species-tree path does not exist or is not a file: "
+                    f"{config.species_tree}"
+                ),
+                action=(
+                    "Create the species tree file or fix --species-tree to "
+                    "point at an existing file."
+                ),
+            )
+        )
+
+    try:
+        family_names, tree_paths, mapping_paths = parse_alerax_family_file_with_paths(
+            config.families_file,
+            start=config.start,
+            max_families=config.max_families,
+        )
+    except _EXPECTED_WORKFLOW_ERRORS as exc:
+        summary["valid_inputs"] = False
+        summary["issues"].append(
+            _input_issue(
+                "families_file_parse_error",
+                path=str(config.families_file),
+                message=str(exc),
+                action="Fix the families file syntax and retry.",
+            )
+        )
+        return summary
+
+    summary["family_names"] = family_names
+    summary["tree_paths"] = tree_paths
+    summary["mapping_paths"] = mapping_paths
+
+    for family_index, (name, paths, mapping_path) in enumerate(
+        zip(family_names, tree_paths, mapping_paths)
+    ):
+        family: dict[str, Any] = {
+            "index": family_index,
+            "name": name,
+            "status": "ok",
+            "issues": [],
+            "tree_paths": list(paths),
+            "tree_path_count": len(paths),
+            "mapping_path": mapping_path,
+            "mapping_size": 0,
+        }
+        mapping: dict[str, str] = {}
+        if mapping_path is not None:
+            mapping_file = Path(mapping_path)
+            if not mapping_file.is_file():
+                family["status"] = "error"
+                family["issues"].append(
+                    _input_issue(
+                        "missing_mapping_file",
+                        family=name,
+                        index=family_index,
+                        path=str(mapping_file),
+                        message=(
+                            "mapping file path does not exist or is not a "
+                            f"file for family {name!r}: {mapping_file}"
+                        ),
+                        action="Create the mapping file or remove mapping= from this family.",
+                    )
+                )
+            else:
+                try:
+                    mapping = parse_alerax_mapping_file(mapping_file)
+                except _EXPECTED_WORKFLOW_ERRORS as exc:
+                    family["status"] = "error"
+                    family["issues"].append(
+                        _input_issue(
+                            "invalid_mapping_file",
+                            family=name,
+                            index=family_index,
+                            path=str(mapping_file),
+                            message=f"invalid mapping file for family {name!r}: {exc}",
+                            action="Fix the mapping file format and retry.",
+                        )
+                    )
+                else:
+                    family["mapping_size"] = len(mapping)
+        summary["parsed_leaf_species_maps"].append(mapping)
+
+        for raw_path in paths:
+            path = Path(raw_path)
+            summary["gene_tree_files"] += 1
+            if not path.is_file():
+                family["status"] = "error"
+                family["issues"].append(
+                    _input_issue(
+                        "missing_gene_tree",
+                        family=name,
+                        index=family_index,
+                        path=str(path),
+                        message=(
+                            "gene-tree file path does not exist or is not a "
+                            f"file for family {name!r}: {path}"
+                        ),
+                        action=(
+                            "Add this file or fix the family tree path in the"
+                            " families file."
+                        ),
+                    )
+                )
+
+        if family["status"] == "error":
+            summary["valid_inputs"] = False
+        summary["family_reports"].append(family)
+
+    summary["families"] = len(family_names)
+    summary["mapped_families"] = sum(
+        1 for path in mapping_paths if path is not None
+    )
+
+    summary["issues"] = [
+        *summary["issues"],
+        *[
+            issue
+            for family in summary["family_reports"]
+            for issue in family["issues"]
+        ],
+    ]
+
+    return summary
+
+
+def _validate_run_config_preprocess_inputs(config: RunConfig, summary: dict[str, Any]) -> dict[str, Any]:
+    import torch
+
+    from gpurec.core.model import GeneDataset
+
+    if not summary.get("valid_inputs", True):
+        return summary
+
+    family_names = summary["family_names"]
+    tree_paths = summary["tree_paths"]
+    leaf_species_maps = summary["parsed_leaf_species_maps"]
+    report = summary
+    try:
+        dataset = GeneDataset(
+            config.species_tree,
+            tree_paths,
+            genewise=config.mode == "genewise",
+            specieswise=config.mode == "specieswise",
+            dtype=torch.float32,
+            device="cpu",
+            preprocess_cpu_cores=config.preprocess_cpu_cores,
+            family_names=family_names,
+            leaf_species_maps=leaf_species_maps,
+        )
+    except _EXPECTED_WORKFLOW_ERRORS as exc:
+        report["preprocess_checked"] = True
+        report["preprocess_error"] = str(exc)
+        report["valid_inputs"] = False
+        for family in report["family_reports"]:
+            if family["status"] == "error":
+                continue
+            family_index = int(family["index"])
+            family_name = family["name"]
+            try:
+                _ = GeneDataset(
+                    config.species_tree,
+                    [family["tree_paths"]],
+                    genewise=config.mode == "genewise",
+                    specieswise=config.mode == "specieswise",
+                    dtype=torch.float32,
+                    device="cpu",
+                    preprocess_cpu_cores=config.preprocess_cpu_cores,
+                    family_names=[family_name],
+                    leaf_species_maps=[
+                        report["parsed_leaf_species_maps"][family_index]
+                    ],
+                )
+            except _EXPECTED_WORKFLOW_ERRORS as family_exc:
+                family["status"] = "error"
+                family["issues"].append(
+                    _input_issue(
+                        "preprocess_error",
+                        family=family_name,
+                        index=family_index,
+                        path=(
+                            family["tree_paths"][0]
+                            if family["tree_paths"]
+                            else None
+                        ),
+                        message=(
+                            f"preprocessing failed for family {family_name!r}: "
+                            f"{family_exc}"
+                        ),
+                        action="Fix this family data in the families file.",
+                    )
+                )
+                report["issues"].append(family["issues"][-1])
+        return report
+
+    report["preprocess_checked"] = True
+    report["preprocessed_families"] = int(dataset.num_families)
+    report["preprocessed_species_nodes"] = int(dataset.S)
+    report["cuda_backward_ready"] = int(dataset.S) > _CUDA_BACKWARD_MIN_SPECIES_NODES_EXCLUSIVE
+    report["cuda_backward_ready_reason"] = (
+        None
+        if report["preprocessed_species_nodes"]
+        > _CUDA_BACKWARD_MIN_SPECIES_NODES_EXCLUSIVE
+        else "requires_s_gt_256"
+    )
+    report["species_names"] = [str(name) for name in dataset.species_helpers["names"]]
+
+    species_set = set(report["species_names"])
+    for family, mapping in zip(
+        report["family_reports"], report["parsed_leaf_species_maps"]
+    ):
+        if not mapping:
+            continue
+        unknown = sorted({species for species in mapping.values() if species not in species_set})
+        if unknown:
+            family["status"] = "error"
+            family["issues"].append(
+                _input_issue(
+                    "unknown_mapping_species",
+                    family=family.get("name"),
+                    index=family.get("index"),
+                    message=(
+                        f"mapping references unknown species for family "
+                        f"{family.get('name')!r}: {', '.join(unknown)}"
+                    ),
+                    action=(
+                        "Update the mapping file to use only species present "
+                        "in the species tree."
+                    ),
+                )
+            )
+            report["valid_inputs"] = False
+
+    return report
 
 
 def _validate_run_config_preprocess(config: RunConfig) -> dict[str, int]:
@@ -2034,6 +2539,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_run_config_args(validate_parser)
+    _add_json_output_arg(validate_parser)
     _add_require_mode_default_optimizer_arg(validate_parser)
     _add_require_production_default_route_arg(validate_parser)
     validate_parser.add_argument(
@@ -2054,6 +2560,76 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     validate_parser.set_defaults(_command_parser=validate_parser)
+
+    validate_inputs_parser = sub.add_parser(
+        "validate-inputs",
+        help="Validate AleRax input files and references without CUDA.",
+        description=(
+            "Validate species tree and AleRax family declarations, optionally "+
+            "running CPU preprocessing to validate Newick parsing and mapping "
+            "coverage."
+        ),
+    )
+    validate_inputs_parser.add_argument(
+        "--species-tree",
+        type=Path,
+        required=True,
+        help="Species-tree Newick path.",
+    )
+    validate_inputs_parser.add_argument(
+        "--families-file",
+        type=Path,
+        required=True,
+        help="AleRax [FAMILIES] file path.",
+    )
+    validate_inputs_parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="First family index to validate.",
+    )
+    validate_inputs_parser.add_argument(
+        "--max-families",
+        type=int,
+        help="Maximum number of families to validate.",
+    )
+    validate_inputs_parser.add_argument(
+        "--mode",
+        type=_mode_name,
+        choices=("genewise", "global", "specieswise"),
+        default="genewise",
+        help=(
+            "Parameter-sharing mode used during preprocessing. Workflow "
+            "default: genewise."
+        ),
+    )
+    validate_inputs_parser.add_argument(
+        "--preprocess-cpu-cores",
+        type=int,
+        help=(
+            "Worker thread count for CPU preprocessing. Workflow default uses "
+            "Rust preprocessing's runtime default."
+        ),
+    )
+    _add_json_output_arg(validate_inputs_parser)
+    validate_inputs_parser.add_argument(
+        "--check-preprocess",
+        action="store_true",
+        help=(
+            "Also run CPU preprocessing with the retained Rust parser to check "
+            "selected Newick trees and leaf/species mappings, then report "
+            "whether the species-node count passes the CUDA backward S > 256 gate."
+        ),
+    )
+    validate_inputs_parser.add_argument(
+        "--require-cuda-backward-ready",
+        action="store_true",
+        help=(
+            "With --check-preprocess, fail unless the species-node count "
+            "passes the retained CUDA backward S > 256 gate."
+        ),
+    )
+    validate_inputs_parser.set_defaults(_command_parser=validate_inputs_parser)
 
     sample_parser = sub.add_parser(
         "sample",
@@ -2101,6 +2677,7 @@ def build_parser() -> argparse.ArgumentParser:
             "by running --help without loading a checkpoint."
         ),
     )
+    _add_json_output_arg(backtrack_check_parser)
     _add_backtrack_binary_arg(backtrack_check_parser)
     backtrack_check_parser.set_defaults(_command_parser=backtrack_check_parser)
 
@@ -2112,8 +2689,28 @@ def build_parser() -> argparse.ArgumentParser:
             "Cargo build fallback without reading dataset files."
         ),
     )
+    _add_json_output_arg(preprocess_check_parser)
     _add_preprocess_native_lib_arg(preprocess_check_parser)
     preprocess_check_parser.set_defaults(_command_parser=preprocess_check_parser)
+
+    doctor_parser = sub.add_parser(
+        "doctor",
+        help="Print workflow readiness checks before running optimization.",
+        description=(
+            "Collect installation and runtime readiness for Python runtime, "
+            "PyTorch, Triton, native preprocessing, backtracking binary, "
+            "and a writable output directory."
+        ),
+    )
+    _add_json_output_arg(doctor_parser)
+    _add_preprocess_native_lib_arg(doctor_parser)
+    _add_backtrack_binary_arg(doctor_parser)
+    doctor_parser.add_argument(
+        "--out-dir",
+        type=Path,
+        help="Directory to probe for writable tempfile checks when validating out-dir readiness.",
+    )
+    doctor_parser.set_defaults(_command_parser=doctor_parser)
 
     checkpoint_info_parser = sub.add_parser(
         "checkpoint-info",
@@ -2123,6 +2720,7 @@ def build_parser() -> argparse.ArgumentParser:
             "the CUDA likelihood model."
         ),
     )
+    _add_json_output_arg(checkpoint_info_parser)
     checkpoint_info_parser.add_argument(
         "--checkpoint",
         type=Path,
@@ -2149,6 +2747,7 @@ def build_parser() -> argparse.ArgumentParser:
             "the CUDA likelihood model."
         ),
     )
+    _add_json_output_arg(summary_info_parser)
     summary_info_parser.add_argument(
         "--summary",
         type=Path,
@@ -2232,6 +2831,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
+    invocation_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
     command_parser = getattr(args, "_command_parser", parser)
     if args.command == "config-template":
@@ -2256,7 +2856,7 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
         try:
-            result = optimize(config)
+            result = _run_optimize_command(config, invocation_argv)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
         print(
@@ -2302,6 +2902,11 @@ def main(argv: list[str] | None = None) -> None:
             )
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
+        route_metadata_for_report = (
+            route_metadata
+            if route_metadata is not None
+            else _config_route_metadata(config)
+        )
         preprocess_text = ""
         if args.check_preprocess:
             cuda_backward_ready = (
@@ -2327,17 +2932,106 @@ def main(argv: list[str] | None = None) -> None:
                     f"{cuda_backward_reason}; retained CUDA backward requires "
                     "more than 256 postorder species nodes"
                 )
-        print(
-            "valid_config=true "
-            f"mode={config.mode} optimizer={config.optimizer} "
-            f"families={summary['families']} "
-            f"gene_tree_files={summary['gene_tree_files']} "
-            f"mapped_families={summary['mapped_families']} "
-            f"{_validate_config_route_text(config, route_metadata=route_metadata)} "
-            f"device={config.device} {_optional_text('out_dir', config.out_dir)}"
-            f"{preprocess_text}",
-            flush=True,
+        if args.json:
+            payload: dict[str, Any] = {
+                "valid_config": True,
+                "mode": config.mode,
+                "optimizer": config.optimizer,
+                "families": summary["families"],
+                "gene_tree_files": summary["gene_tree_files"],
+                "mapped_families": summary["mapped_families"],
+                "device": config.device,
+                "out_dir": config.out_dir,
+            }
+            if args.check_preprocess:
+                payload["preprocess_checked"] = True
+                payload["preprocessed_families"] = summary[
+                    "preprocessed_families"
+                ]
+                payload["preprocessed_species_nodes"] = summary[
+                    "preprocessed_species_nodes"
+                ]
+                payload["cuda_backward_ready"] = summary["cuda_backward_ready"]
+                payload["cuda_backward_ready_reason"] = summary[
+                    "cuda_backward_ready_reason"
+                ]
+            else:
+                payload["preprocess_checked"] = False
+            payload["route"] = _ensure_json_ready(route_metadata_for_report)
+            print(json.dumps(_ensure_json_ready(payload), indent=2), flush=True)
+        else:
+            print(
+                "valid_config=true "
+                f"mode={config.mode} optimizer={config.optimizer} "
+                f"families={summary['families']} "
+                f"gene_tree_files={summary['gene_tree_files']} "
+                f"mapped_families={summary['mapped_families']} "
+                f"{_validate_config_route_text(config, route_metadata=route_metadata)} "
+                f"device={config.device} {_optional_text('out_dir', config.out_dir)}"
+                f"{preprocess_text}",
+                flush=True,
+            )
+        return
+    if args.command == "validate-inputs":
+        if args.require_cuda_backward_ready and not args.check_preprocess:
+            command_parser.error(
+                "--require-cuda-backward-ready requires --check-preprocess"
+            )
+        config = SimpleNamespace(
+            species_tree=args.species_tree.expanduser().resolve(),
+            families_file=args.families_file.expanduser().resolve(),
+            start=args.start,
+            max_families=args.max_families,
+            mode=args.mode,
+            preprocess_cpu_cores=args.preprocess_cpu_cores,
         )
+        try:
+            summary = _summarize_alerax_family_inputs(config)
+            if args.check_preprocess:
+                summary = _validate_run_config_preprocess_inputs(config, summary)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            command_parser.error(str(exc))
+        preprocess_text = ""
+        if args.check_preprocess:
+            if args.require_cuda_backward_ready and not summary["valid_inputs"]:
+                command_parser.error(
+                    "input validation failed; fix input issues before checking "
+                    "CUDA backward readiness"
+                )
+            preprocess_text = (
+                f" preprocess_checked={summary.get('preprocess_checked', False)}"
+                f" preprocessed_families={summary.get('preprocessed_families', 0)}"
+                f" preprocessed_species_nodes={summary.get('preprocessed_species_nodes', 0)}"
+                f" cuda_backward_ready={summary.get('cuda_backward_ready', False)}"
+                f" {_optional_text('cuda_backward_ready_reason', summary.get('cuda_backward_ready_reason'))}"
+            )
+            if args.require_cuda_backward_ready and (
+                not summary.get("cuda_backward_ready", False)
+            ):
+                reason = (
+                    summary.get("cuda_backward_ready_reason")
+                    or summary.get("preprocess_error")
+                )
+                command_parser.error(
+                    "cuda_backward_ready=false "
+                    f"{_optional_text('cuda_backward_ready_reason', reason)}; "
+                    "retained CUDA backward requires more than 256 postorder species nodes"
+                )
+        if args.json:
+            print(json.dumps(_ensure_json_ready(summary), indent=2), flush=True)
+        else:
+            print(
+                f"valid_inputs={str(summary['valid_inputs']).lower()} "
+                f"families={summary['families']} "
+                f"gene_tree_files={summary['gene_tree_files']} "
+                f"mapped_families={summary['mapped_families']} "
+                f"issues={len(summary['issues'])} "
+                f"mode={config.mode}"
+                f"{preprocess_text}",
+                flush=True,
+            )
+        if not summary["valid_inputs"]:
+            command_parser.exit(status=1)
         return
     if args.command == "sample":
         try:
@@ -2402,24 +3096,110 @@ def main(argv: list[str] | None = None) -> None:
             args.require_mode_default_optimizer
             or args.require_production_default_route
         )
-        route_metadata: tuple[dict[str, Any], str] | None = None
-        checkpoint_route_evidence: _ProductionRouteEvidence | None = None
-        if route_gate_required:
-            route, route_source, checkpoint_route_evidence = (
-                _checkpoint_route_metadata_evidence(payload)
-            )
-            route_metadata = (route, route_source)
-        print(
-            _checkpoint_info_text(
-                checkpoint,
-                payload,
-                route_metadata=route_metadata,
-                production_route_evidence=checkpoint_route_evidence,
-            ),
-            flush=True,
+        route_for_report, route_source_for_report, checkpoint_route_evidence = (
+            _checkpoint_route_metadata_evidence(payload)
         )
+        status = payload.get("status")
+        if not isinstance(status, dict):
+            status = {}
+        last_row = payload.get("last_row")
+        if not isinstance(last_row, dict):
+            last_row = {}
+        config_data = payload.get("config")
+        if not isinstance(config_data, dict):
+            config_data = {}
+        family_names = payload.get("family_names")
+        species_names = payload.get("species_names")
+        if args.json:
+            print(
+                json.dumps(
+                    _ensure_json_ready(
+                        {
+                            "checkpoint": checkpoint,
+                            "version": payload.get("version"),
+                            "step": payload.get("step"),
+                            "next_step": payload.get("next_step"),
+                            "status": {
+                                "status": status.get("status"),
+                                "reason": status.get("reason"),
+                            },
+                            "mode": route_for_report.get(
+                                "mode", config_data.get("mode")
+                            ),
+                            "optimizer": route_for_report.get(
+                                "optimizer", config_data.get("optimizer")
+                            ),
+                            "route": route_for_report,
+                            "route_metadata_source": route_source_for_report,
+                            "optimizer_phase": payload.get("optimizer_phase"),
+                            "last_phase": last_row.get("optimizer/phase"),
+                            "families": None
+                            if not isinstance(family_names, list)
+                            else len(family_names),
+                            "species": None
+                            if not isinstance(species_names, list)
+                            else len(species_names),
+                            "best_step": status.get("best_step"),
+                            "best_nll_bits": status.get("best_nll_bits"),
+                            "last_nll_bits": last_row.get("likelihood/data_nll_bits"),
+                            "last_log_likelihood_bits": last_row.get(
+                                "likelihood/log_likelihood_bits"
+                            ),
+                            "last_grad_inf": last_row.get("grad/inf"),
+                            "last_projected_grad_inf": last_row.get(
+                                "grad/projected_inf"
+                            ),
+                            "last_final_check_iters": last_row.get(
+                                "optimizer/final_check_iters"
+                            ),
+                            "last_final_check_status": last_row.get(
+                                "optimizer/final_check_status"
+                            ),
+                            "last_final_check_source": last_row.get(
+                                "optimizer/final_check_source"
+                            ),
+                            "last_final_check_reason": last_row.get(
+                                "optimizer/final_check_reason"
+                            ),
+                            "last_final_check_fallback_clade_budget": last_row.get(
+                                "optimizer/final_check_fallback_clade_budget"
+                            ),
+                            "last_final_check_loss_abs_delta_bits": last_row.get(
+                                "optimizer/final_check_loss_abs_delta_bits"
+                            ),
+                            "last_final_check_grad_max_abs_delta": last_row.get(
+                                "optimizer/final_check_grad_max_abs_delta"
+                            ),
+                            "last_final_check_grad_rel_inf_delta": last_row.get(
+                                "optimizer/final_check_grad_rel_inf_delta"
+                            ),
+                            "last_solver_e_adjoint_failed_batches": last_row.get(
+                                "solver/e_adjoint_failed_batches"
+                            ),
+                            "last_solver_e_adjoint_success_batches": last_row.get(
+                                "solver/e_adjoint_success_batches"
+                            ),
+                            "last_solver_e_adjoint_rel_res_max": last_row.get(
+                                "solver/e_adjoint_rel_res_max"
+                            ),
+                        }
+                    ),
+                    indent=2,
+                ),
+                flush=True,
+            )
+        else:
+            print(
+                _checkpoint_info_text(
+                    checkpoint,
+                    payload,
+                    route_metadata=(route_for_report, route_source_for_report),
+                    production_route_evidence=checkpoint_route_evidence,
+                ),
+                flush=True,
+            )
         if args.require_mode_default_optimizer:
-            route, _route_source = route_metadata or _checkpoint_route_metadata(payload)
+            route, _route_source = route_for_report, route_source_for_report
             _exit_unless_mode_default_optimizer(
                 command_parser,
                 route,
@@ -2429,7 +3209,7 @@ def main(argv: list[str] | None = None) -> None:
                 ),
             )
         if args.require_production_default_route:
-            route, _route_source = route_metadata or _checkpoint_route_metadata(payload)
+            route, _route_source = route_for_report, route_source_for_report
             _exit_unless_production_default_route(
                 command_parser,
                 route,
@@ -2469,10 +3249,144 @@ def main(argv: list[str] | None = None) -> None:
             else None
         )
         gate_payload = audited_payload if audited_payload is not None else payload
-        print(
-            _summary_info_text(summary, payload, audited_payload=audited_payload),
-            flush=True,
-        )
+        if args.json:
+            print(
+                json.dumps(
+                    _ensure_json_ready(
+                        {
+                            "summary": summary,
+                            "status": payload.get("status"),
+                            "reason": payload.get("reason"),
+                            "mode": payload.get("mode"),
+                            "optimizer": payload.get("optimizer"),
+                            "mode_default_optimizer": payload.get(
+                                "mode_default_optimizer"
+                            ),
+                            "uses_mode_default_optimizer": payload.get(
+                                "uses_mode_default_optimizer"
+                            ),
+                            "uses_production_default_optimizer_settings": payload.get(
+                                "uses_production_default_optimizer_settings"
+                            ),
+                            "production_default_optimizer_setting_mismatches": payload.get(
+                                "production_default_optimizer_setting_mismatches"
+                            ),
+                            "uses_production_default_route": payload.get(
+                                "uses_production_default_route"
+                            ),
+                            "production_default_route_mismatches": payload.get(
+                                "production_default_route_mismatches"
+                            ),
+                            "families": payload.get("families"),
+                            "species": payload.get("species"),
+                            "batches": payload.get("batches"),
+                            "batch_packing": payload.get("batch_packing"),
+                            "family_chunk_size": payload.get("family_chunk_size"),
+                            "clade_budget": payload.get("clade_budget"),
+                            "fixed_iters_e": payload.get("fixed_iters_e"),
+                            "fixed_iters_pi": payload.get("fixed_iters_pi"),
+                            "neumann_terms": payload.get("neumann_terms"),
+                            "objective": payload.get("objective"),
+                            "gradient_route": payload.get("gradient_route"),
+                            "rate_parameterization": payload.get(
+                                "rate_parameterization"
+                            ),
+                            "production_default_basis": payload.get(
+                                "production_default_basis"
+                            ),
+                            "configured_steps": payload.get("configured_steps"),
+                            "optimizer_step_cap": payload.get("optimizer_step_cap"),
+                            "optimizer_step_cap_reason": payload.get(
+                                "optimizer_step_cap_reason"
+                            ),
+                            "final_check_iters": payload.get("final_check_iters"),
+                            "final_check_iters_e": payload.get("final_check_iters_e"),
+                            "solver_warmup_iters": payload.get("solver_warmup_iters"),
+                            "fd_adam_warmup_steps": payload.get("fd_adam_warmup_steps"),
+                            "fd_hessian_refresh_steps": payload.get(
+                                "fd_hessian_refresh_steps"
+                            ),
+                            "hessian_sgd_normal_fixed_iters_pi": payload.get(
+                                "hessian_sgd_normal_fixed_iters_pi"
+                            ),
+                            "hessian_sgd_normal_neumann_terms": payload.get(
+                                "hessian_sgd_normal_neumann_terms"
+                            ),
+                            "hessian_sgd_pi_adjoint_warmstart": payload.get(
+                                "hessian_sgd_pi_adjoint_warmstart"
+                            ),
+                            "pi_fixed_point_relaxation": payload.get(
+                                "pi_fixed_point_relaxation"
+                            ),
+                            "hessian_sgd_validation_interval": payload.get(
+                                "hessian_sgd_validation_interval"
+                            ),
+                            "hessian_sgd_validation_fixed_iters_pi": payload.get(
+                                "hessian_sgd_validation_fixed_iters_pi"
+                            ),
+                            "hessian_sgd_validation_neumann_terms": payload.get(
+                                "hessian_sgd_validation_neumann_terms"
+                            ),
+                            "adagrad_restart_schedule": payload.get(
+                                "adagrad_restart_schedule"
+                            ),
+                            "adagrad_restart_total_steps": payload.get(
+                                "adagrad_restart_total_steps"
+                            ),
+                            "adagrad_restart_final_check_iters": payload.get(
+                                "adagrad_restart_final_check_iters"
+                            ),
+                            "steps_completed": payload.get("steps_completed"),
+                            "elapsed_s": payload.get("elapsed_s"),
+                            "best_step": payload.get("best_step"),
+                            "final_nll_bits": payload.get("final_nll_bits"),
+                            "final_log_likelihood_bits": payload.get(
+                                "final_log_likelihood_bits"
+                            ),
+                            "final_grad_inf": payload.get("final_grad_inf"),
+                            "final_projected_grad_inf": payload.get(
+                                "final_projected_grad_inf"
+                            ),
+                            "best_nll_bits": payload.get("best_nll_bits"),
+                            "best_log_likelihood_bits": payload.get(
+                                "best_log_likelihood_bits"
+                            ),
+                            "final_check_status": payload.get("final_check_status"),
+                            "final_check_source": payload.get("final_check_source"),
+                            "final_check_reason": payload.get("final_check_reason"),
+                            "final_check_fallback_clade_budget": payload.get(
+                                "final_check_fallback_clade_budget"
+                            ),
+                            "final_check_loss_abs_delta_bits": payload.get(
+                                "final_check_loss_abs_delta_bits"
+                            ),
+                            "final_check_grad_max_abs_delta": payload.get(
+                                "final_check_grad_max_abs_delta"
+                            ),
+                            "final_check_grad_rel_inf_delta": payload.get(
+                                "final_check_grad_rel_inf_delta"
+                            ),
+                            "final_solver_e_adjoint_failed_batches": payload.get(
+                                "final_solver_e_adjoint_failed_batches"
+                            ),
+                            "final_solver_e_adjoint_success_batches": payload.get(
+                                "final_solver_e_adjoint_success_batches"
+                            ),
+                            "final_solver_e_adjoint_rel_res_max": payload.get(
+                                "final_solver_e_adjoint_rel_res_max"
+                            ),
+                            "route": gate_payload.get("route", {}),
+                        }
+                    ),
+                    indent=2,
+                ),
+                flush=True,
+            )
+        else:
+            print(
+                _summary_info_text(summary, payload, audited_payload=audited_payload),
+                flush=True,
+            )
         if args.require_mode_default_optimizer:
             _exit_unless_mode_default_optimizer(
                 command_parser,
@@ -2508,7 +3422,23 @@ def main(argv: list[str] | None = None) -> None:
             _ensure_backtracking_available(args.backtrack_binary)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
-        print("backtracking_available=true", flush=True)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "backtracking_available": True,
+                        "backtrack_binary": (
+                            str(args.backtrack_binary)
+                            if args.backtrack_binary is not None
+                            else None
+                        ),
+                    },
+                    indent=2,
+                ),
+                flush=True,
+            )
+        else:
+            print("backtracking_available=true", flush=True)
         return
     if args.command == "preprocess-check":
         try:
@@ -2517,11 +3447,37 @@ def main(argv: list[str] | None = None) -> None:
             )
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
-        print(
-            "preprocessing_available=true "
-            f"{_optional_text('preprocess_native_lib', preprocess_native_lib)}",
-            flush=True,
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "preprocessing_available": True,
+                        "preprocess_native_lib": str(preprocess_native_lib),
+                    },
+                    indent=2,
+                ),
+                flush=True,
+            )
+        else:
+            print(
+                "preprocessing_available=true "
+                f"{_optional_text('preprocess_native_lib', preprocess_native_lib)}",
+                flush=True,
+            )
+        return
+
+    if args.command == "doctor":
+        report = _doctor_readiness_report(
+            args.out_dir,
+            args.preprocess_native_lib,
+            args.backtrack_binary,
         )
+        if args.json:
+            print(json.dumps(_ensure_json_ready(report), indent=2), flush=True)
+        else:
+            print(_doctor_readiness_text(report), flush=True)
+        if not report["ready"]:
+            command_parser.exit(status=1)
         return
     if args.command == "run":
         if args.checkpoint is not None:
@@ -2548,7 +3504,7 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
         try:
-            opt_result = optimize(run_config)
+            opt_result = _run_optimize_command(run_config, invocation_argv)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
         if opt_result.status == "failed":

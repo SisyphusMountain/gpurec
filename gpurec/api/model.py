@@ -1981,16 +1981,21 @@ class GeneReconModel(torch.nn.Module):
                 if self._origination_prior.is_shared
                 else None
             )
-            prepared_shared_constants = prepare_shared_pi_forward_constants(
-                E=e_solve.e_out["E"],
-                Ebar=e_solve.e_out["E_bar"],
-                E_s1=e_solve.e_out["E_s1"],
-                E_s2=e_solve.e_out["E_s2"],
-                log_pS=e_solve.log_p_s,
-                log_pD=e_solve.log_p_d,
-                max_transfer_mat=e_solve.max_transfer,
-                S=int(self._dataset.S),
-            )
+            prepared_shared_constants = None
+            if all(
+                field in e_solve.e_out
+                for field in ("E_bar", "E_s1", "E_s2")
+            ):
+                prepared_shared_constants = prepare_shared_pi_forward_constants(
+                    E=e_solve.e_out["E"],
+                    Ebar=e_solve.e_out["E_bar"],
+                    E_s1=e_solve.e_out["E_s1"],
+                    E_s2=e_solve.e_out["E_s2"],
+                    log_pS=e_solve.log_p_s,
+                    log_pD=e_solve.log_p_d,
+                    max_transfer_mat=e_solve.max_transfer,
+                    S=int(self._dataset.S),
+                )
             scratch_shape = (
                 max(meta.clade_count for meta in self.batch_metadata),
                 int(self._dataset.S),

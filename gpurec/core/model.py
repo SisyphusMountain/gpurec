@@ -66,6 +66,31 @@ def parse_alerax_family_file(
     leaf-to-species maps. ``starting_gene_tree`` and ``gene_tree`` entries are
     both accepted because AleRax uses both forms in local fixtures.
     """
+    family_names, tree_paths, mapping_paths = parse_alerax_family_file_with_paths(
+        families_file,
+        start=start,
+        max_families=max_families,
+    )
+    leaf_species_maps = [
+        parse_alerax_mapping_file(path) if path else {}
+        for path in mapping_paths
+    ]
+    return family_names, tree_paths, leaf_species_maps
+
+
+def parse_alerax_family_file_with_paths(
+    families_file: str | os.PathLike,
+    *,
+    start: int = 0,
+    max_families: int | None = None,
+) -> tuple[list[str], list[list[str]], list[str | None]]:
+    """Parse AleRax family manifests and return mapping file paths.
+
+    This low-level parser mirrors :func:`parse_alerax_family_file` but returns
+    raw mapping paths instead of resolving mapping contents. Callers that need
+    per-family diagnostics can parse mapping files later with
+    :func:`parse_alerax_mapping_file`.
+    """
     start, max_families = normalize_family_selection(start, max_families)
 
     base_dir = Path(families_file).resolve().parent
@@ -131,11 +156,10 @@ def parse_alerax_family_file(
 
     names = [str(rec["name"]) for rec in selected]
     tree_paths = [list(rec["tree_paths"]) for rec in selected]
-    leaf_maps = [
-        parse_alerax_mapping_file(rec["mapping"]) if rec["mapping"] else {}
-        for rec in selected
+    mapping_paths = [
+        None if rec["mapping"] is None else str(rec["mapping"]) for rec in selected
     ]
-    return names, tree_paths, leaf_maps
+    return names, tree_paths, mapping_paths
 
 
 def normalize_family_tree_paths(

@@ -7346,6 +7346,62 @@ def test_optimization_runner_result_preserves_empty_clade_budget_for_sequential_
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_writes_run_manifest_with_command_metadata(
+    tmp_path: Path,
+):
+    command_argv = [
+        "gpurec",
+        "optimize",
+        "--mode",
+        "specieswise",
+    ]
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        mode="specieswise",
+    )
+    runner = _WorkflowSpecieswiseOptimizerModeRunner(config, command_argv=command_argv)
+
+    result = runner.run()
+
+    manifest_path = config.out_dir / optimize_workflow._RUN_MANIFEST_ARTIFACT_FILE
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["schema_version"] == 1
+    assert manifest["schema_name"] == "gpurec optimization run manifest"
+    assert manifest["out_dir"] == str(config.out_dir)
+    assert manifest["command"] == " ".join(command_argv)
+    assert manifest["command_argv"] == command_argv
+    assert manifest["run_config"]["path"] == str(
+        config.out_dir / optimize_workflow._RUN_CONFIG_ARTIFACT_FILE
+    )
+    assert manifest["run_config"]["version"] == "1"
+    assert manifest["run_config"]["hash_sha256"] == optimize_workflow._run_manifest_hash(
+        config
+    )
+    assert manifest["route"]["mode"] == config.mode
+    assert manifest["route"]["optimizer"] == config.optimizer
+    assert manifest["optimization"]["mode"] == result.mode
+    assert manifest["optimization"]["optimizer"] == result.optimizer
+    assert manifest["optimization"]["status"] == result.status
+    assert manifest["optimization"]["reason"] == result.reason
+    assert manifest["optimization"]["steps_completed"] == result.steps_completed
+    assert manifest["optimization"]["families"] == result.families
+    assert manifest["optimization"]["species"] == result.species
+    assert manifest["optimization"]["batches"] == result.batches
+    assert (
+        manifest["optimization"]["sampling_checkpoint"]
+        == (None if result.sampling_checkpoint is None else str(result.sampling_checkpoint))
+    )
+    assert manifest["selections"]["families"] == result.families
+    assert manifest["selections"]["species"] == result.species
+    assert manifest["runtime"]["package_version"]
+    assert isinstance(manifest["runtime"]["started_s"], float)
+    assert manifest["runtime"]["platform"]["name"]
+    assert manifest["reproducibility"]["seeded"] is False
+    assert isinstance(manifest["reproducibility"]["torch_seed"], int)
+
+
 def test_optimization_runner_adagrad_restarts_specieswise_uses_schedule(
     tmp_path: Path,
 ):
