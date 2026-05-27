@@ -731,13 +731,16 @@ def _per_family_nll(
 ) -> list[tuple[str, float]]:
     if values is None:
         values = model.full_nll_per_family()
-    values = values.detach().cpu().reshape(-1)
     family_names = model_family_names(model)
-    if values.numel() != len(family_names):
+    if not torch.is_tensor(values):
+        raise RuntimeError("per-family likelihood vector must be a tensor")
+    expected_shape = (len(family_names),)
+    if _tensor_shape(values) != expected_shape:
         raise RuntimeError(
-            "per-family likelihood vector has "
-            f"{values.numel()} rows for {len(family_names)} families"
+            "per-family likelihood vector has shape "
+            f"{_tensor_shape(values)}, expected {expected_shape}"
         )
+    values = values.detach().cpu()
     return list(zip(family_names, values.tolist()))
 
 

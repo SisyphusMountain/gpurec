@@ -4330,6 +4330,22 @@ def test_workflow_final_tsv_artifacts_quote_labels(tmp_path: Path):
     assert likelihood_rows[2] == ["fam\nline", "2.5", "-2.5"]
 
 
+def test_per_family_likelihood_artifact_rejects_non_vector_values(tmp_path: Path):
+    model = SimpleNamespace(
+        family_names=["fam0", "fam1"],
+        full_nll_per_family=lambda: torch.ones((2, 1), dtype=torch.float64),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"per-family likelihood vector has shape \(2, 1\), expected \(2,\)",
+    ):
+        optimize_workflow._write_per_family_likelihoods(
+            tmp_path / "per_fam_likelihoods.tsv",
+            model,
+        )
+
+
 def test_workflow_rate_table_rejects_label_theta_mismatches(tmp_path: Path):
     theta = torch.zeros((2, 3), dtype=torch.float64)
 
