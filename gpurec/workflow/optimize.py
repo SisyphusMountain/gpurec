@@ -772,6 +772,8 @@ def _per_family_nll(
             f"{_tensor_shape(values)}, expected {expected_shape}"
         )
     values = values.detach().cpu()
+    if not bool(torch.isfinite(values).all().item()):
+        raise RuntimeError("per-family likelihood vector contains nonfinite values")
     return list(zip(family_names, values.tolist()))
 
 

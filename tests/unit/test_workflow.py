@@ -4346,6 +4346,25 @@ def test_per_family_likelihood_artifact_rejects_non_vector_values(tmp_path: Path
         )
 
 
+def test_per_family_likelihood_artifact_rejects_nonfinite_values(tmp_path: Path):
+    model = SimpleNamespace(
+        family_names=["fam0", "fam1"],
+        full_nll_per_family=lambda: torch.tensor(
+            [1.0, math.nan],
+            dtype=torch.float64,
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="per-family likelihood vector contains nonfinite values",
+    ):
+        optimize_workflow._write_per_family_likelihoods(
+            tmp_path / "per_fam_likelihoods.tsv",
+            model,
+        )
+
+
 def test_workflow_rate_table_rejects_label_theta_mismatches(tmp_path: Path):
     theta = torch.zeros((2, 3), dtype=torch.float64)
 
