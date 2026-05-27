@@ -4388,6 +4388,40 @@ def test_workflow_rate_table_rejects_label_theta_mismatches(tmp_path: Path):
     ):
         _write_rate_table(tmp_path / "families.tsv", family_model, "genewise")
 
+    short_species_model = SimpleNamespace(
+        theta=torch.nn.Parameter(theta[:1].clone()),
+        species_names=["sp0", "sp1"],
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "specieswise rate table has 1 theta rows but 2 species labels; "
+            "expected one theta row per species"
+        ),
+    ):
+        _write_rate_table(
+            tmp_path / "short_species.tsv",
+            short_species_model,
+            "specieswise",
+        )
+
+    short_family_model = SimpleNamespace(
+        theta=torch.nn.Parameter(theta[:1].clone()),
+        family_names=["fam0", "fam1"],
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "genewise rate table has 1 theta rows but 2 family labels; "
+            "expected one theta row per family"
+        ),
+    ):
+        _write_rate_table(
+            tmp_path / "short_families.tsv",
+            short_family_model,
+            "genewise",
+        )
+
     global_model = SimpleNamespace(theta=torch.nn.Parameter(theta.clone()))
     with pytest.raises(
         RuntimeError,

@@ -689,12 +689,19 @@ def _parameter_labels(
         return ["global"]
     else:
         raise RuntimeError(f"unsupported rate-table mode {mode!r}")
-    if len(labels) < theta_rows:
+    label_count = len(labels)
+    if label_count < theta_rows:
         raise RuntimeError(
             f"{mode} rate table has {theta_rows} theta rows but only "
-            f"{len(labels)} {label_kind} labels"
+            f"{label_count} {label_kind} labels"
         )
-    return labels[:theta_rows]
+    if label_count > theta_rows:
+        raise RuntimeError(
+            f"{mode} rate table has {theta_rows} theta rows but "
+            f"{label_count} {label_kind} labels; expected one theta row per "
+            f"{label_kind}"
+        )
+    return labels
 
 
 def _rate_table_theta(model: GeneReconModel, mode: str) -> torch.Tensor:
