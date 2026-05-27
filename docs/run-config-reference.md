@@ -5,16 +5,17 @@
 snake_case field names. CLI flags use the same names with underscores changed
 to hyphens. For example, `fixed_iters_pi` is `--fixed-iters-pi`.
 
-`--config` accepts a JSON object, not Hydra YAML. Relative paths inside JSON
-configs are resolved relative to the config file. Relative paths passed as CLI
-flags are resolved relative to the current working directory. Explicit CLI
-flags override fields loaded from `--config`. Unknown JSON fields are rejected
-by `RunConfig.from_dict(...)` before model construction. Mode strings are
-stripped and case-normalized before `optimizer=auto` resolves the production
-default optimizer. Optimizer strings are stripped and case-normalized, and
-underscore aliases such as `hessian_sgd` and `adagrad_restarts` are converted
-to the canonical hyphenated names. The same normalization rules are applied to
-flat JSON configs and explicit CLI flags.
+`--config` accepts a JSON object, not Hydra YAML. Use `--config -` to read the
+same flat JSON object from standard input. Relative paths inside JSON config
+files are resolved relative to the config file; relative paths from standard
+input or explicit CLI flags are resolved relative to the current working
+directory. Explicit CLI flags override fields loaded from `--config`. Unknown
+JSON fields are rejected by `RunConfig.from_dict(...)` before model construction.
+Mode strings are stripped and case-normalized before `optimizer=auto` resolves
+the production default optimizer. Optimizer strings are stripped and
+case-normalized, and underscore aliases such as `hessian_sgd` and `adagrad_restarts`
+are converted to the canonical hyphenated names. The same normalization rules
+are applied to flat JSON configs and explicit CLI flags.
 
 `gpurec config-template --mode genewise` writes the genewise production starter
 with `optimizer=auto`, which resolves to `hessian-sgd`. The specieswise

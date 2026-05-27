@@ -226,12 +226,13 @@ optimization diagnostics, and can sample RecPhyloXML reconciliation scenarios.
 The optimized likelihood path currently requires CUDA.
 History JSONL is recorded for every optimizer step; `log_every` and
 `--log-every` only throttle console progress prints.
-The `--config` option accepts a flat JSON `RunConfig`; Hydra-style YAML
-configs should be converted to JSON or passed as explicit CLI flags.  Relative
-paths in JSON configs are resolved from the config file's directory; relative
-paths passed as explicit CLI flags are resolved from the current working
-directory.  For the maintained field-by-field config and CLI option reference,
-see [`docs/run-config-reference.md`](docs/run-config-reference.md).
+The `--config` option accepts a flat JSON `RunConfig`; pass `--config -` to
+read that JSON from standard input. Hydra-style YAML configs should be converted
+to JSON or passed as explicit CLI flags. Relative paths in JSON config files are
+resolved from the config file's directory; relative paths from `--config -` or
+explicit CLI flags are resolved from the current working directory. For the
+maintained field-by-field config and CLI option reference, see
+[`docs/run-config-reference.md`](docs/run-config-reference.md).
 Use `gpurec validate-config --config ...` to check JSON/CLI config values,
 input paths, AleRax family records, mapping files, and referenced gene-tree
 files without constructing the CUDA likelihood model.

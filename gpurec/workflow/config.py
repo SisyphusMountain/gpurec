@@ -418,12 +418,41 @@ def load_json_object(path: str | Path, *, description: str = "config") -> dict[s
     return data
 
 
+def load_json_object_text(
+    text: str,
+    *,
+    description: str = "config",
+) -> dict[str, Any]:
+    try:
+        data = json.loads(text, parse_constant=_reject_json_constant)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON {description}: {exc.msg}") from exc
+    except ValueError as exc:
+        raise ValueError(f"invalid JSON {description}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{description} must contain a JSON object")
+    return data
+
+
 def load_run_config_data(path: str | Path) -> dict[str, Any]:
     path = Path(path).expanduser().resolve()
     data = load_json_object(path)
     return _resolve_run_config_path_fields(
         data,
         base_dir=path.parent,
+    )
+
+
+def load_run_config_text(
+    text: str,
+    *,
+    base_dir: str | Path,
+    description: str = "config",
+) -> dict[str, Any]:
+    data = load_json_object_text(text, description=description)
+    return _resolve_run_config_path_fields(
+        data,
+        base_dir=Path(base_dir).expanduser().resolve(),
     )
 
 

@@ -80,6 +80,7 @@ from gpurec.workflow.config import (
     effective_final_check_iters,
     effective_final_check_iters_e,
     effective_route_metadata,
+    load_run_config_text,
     production_default_optimizer_config_overrides,
     production_default_optimizer_setting_mismatches_from_route,
     production_default_route_contract,
@@ -229,6 +230,29 @@ def test_run_config_from_json_resolves_relative_paths_from_config_file(
     assert config.resume_from == (
         config_dir / "checkpoints" / "latest.pt"
     ).resolve()
+
+
+def test_load_run_config_text_resolves_relative_paths_from_base_dir(tmp_path: Path):
+    data = load_run_config_text(
+        json.dumps(
+            {
+                "species_tree": "inputs/sp.nwk",
+                "families_file": "inputs/families.txt",
+                "out_dir": "runs/main",
+                "device": "cpu",
+            }
+        ),
+        base_dir=tmp_path / "configs",
+        description="config <stdin>",
+    )
+
+    assert data["species_tree"] == (
+        tmp_path / "configs" / "inputs" / "sp.nwk"
+    ).resolve()
+    assert data["families_file"] == (
+        tmp_path / "configs" / "inputs" / "families.txt"
+    ).resolve()
+    assert data["out_dir"] == (tmp_path / "configs" / "runs" / "main").resolve()
 
 
 def test_run_config_from_json_expands_user_config_path(

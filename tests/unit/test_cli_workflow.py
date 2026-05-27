@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import os
@@ -658,6 +659,52 @@ def test_cli_config_template_output_validates_with_production_route_gates(
     assert "uses_mode_default_optimizer=true" in captured.out
     assert "uses_production_default_route=true" in captured.out
     assert "production_default_route_mismatches=none" in captured.out
+
+
+def test_cli_validate_config_reads_stdin_config(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "species_tree": "sp.nwk",
+                    "families_file": "families.txt",
+                    "out_dir": "stdin-out",
+                    "mode": "genewise",
+                    "device": "cpu",
+                    "optimizer": "auto",
+                    "family_chunk_size": 0,
+                    "batch_packing": "depth_first_fit",
+                    "clade_budget": DEFAULT_CLADE_BUDGET,
+                }
+            )
+        ),
+    )
+
+    main(
+        [
+            "validate-config",
+            "--config",
+            "-",
+            "--require-mode-default-optimizer",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "valid_config=true" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert f"out_dir={tmp_path / 'stdin-out'}" in captured.out
 
 
 def test_cli_config_template_global_mode_is_mode_default_but_not_production_route(

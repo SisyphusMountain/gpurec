@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from numbers import Integral, Real
 from pathlib import Path
 from types import SimpleNamespace
@@ -842,6 +843,14 @@ def _batch_packing(value: str) -> str:
 def _config_data(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
+    if str(path) == "-":
+        from gpurec.workflow.config import load_run_config_text
+
+        return load_run_config_text(
+            sys.stdin.read(),
+            base_dir=Path.cwd(),
+            description="config <stdin>",
+        )
     if path.suffix.lower() in {".yaml", ".yml"}:
         raise ValueError(
             "--config currently expects a flat JSON RunConfig file; "
@@ -1389,8 +1398,10 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--config",
         type=Path,
         help=(
-            "Flat JSON RunConfig file; relative config paths resolve from the "
-            "config file, and explicit CLI flags override matching fields."
+            "Flat JSON RunConfig file, or '-' to read JSON from stdin; "
+            "relative config paths resolve from the config file or current "
+            "working directory for stdin, and explicit CLI flags override "
+            "matching fields."
         ),
     )
     parser.add_argument(
