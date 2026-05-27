@@ -444,6 +444,31 @@ def _is_single_value_tensor(value: object) -> bool:
     return torch.is_tensor(value) and value.numel() == 1
 
 
+def _validate_genewise_optimizer_loss_vector(
+    model: GeneReconModel,
+    loss_vec: object,
+    *,
+    label: str,
+) -> torch.Tensor:
+    if not torch.is_tensor(loss_vec):
+        raise RuntimeError(f"{label} did not return a tensor loss vector")
+    if loss_vec.ndim != 1:
+        raise RuntimeError(
+            f"{label} returned loss vector with shape {_tensor_shape(loss_vec)}, "
+            "expected a one-dimensional tensor"
+        )
+    expected_family_count = getattr(model, "n_families", None)
+    if (
+        expected_family_count is not None
+        and loss_vec.numel() != int(expected_family_count)
+    ):
+        raise RuntimeError(
+            f"{label} returned {loss_vec.numel()} loss values for "
+            f"{int(expected_family_count)} families"
+        )
+    return loss_vec
+
+
 class _NonfiniteParameterUpdate(RuntimeError):
     """Internal sentinel for optimizer updates that corrupt theta."""
 
@@ -1051,25 +1076,11 @@ class OptimizationRunner:
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         model.theta.grad = None
         loss_vec, grad = model.full_genewise_nll_and_grad(need_grad=True)
-        if not torch.is_tensor(loss_vec):
-            raise RuntimeError(
-                "genewise optimizer evaluation did not return a tensor loss vector"
-            )
-        if loss_vec.ndim != 1:
-            raise RuntimeError(
-                "genewise optimizer evaluation returned loss vector with shape "
-                f"{_tensor_shape(loss_vec)}, expected a one-dimensional tensor"
-            )
-        expected_family_count = getattr(model, "n_families", None)
-        if (
-            expected_family_count is not None
-            and loss_vec.numel() != int(expected_family_count)
-        ):
-            raise RuntimeError(
-                "genewise optimizer evaluation returned "
-                f"{loss_vec.numel()} loss values for {int(expected_family_count)} "
-                "families"
-            )
+        loss_vec = _validate_genewise_optimizer_loss_vector(
+            model,
+            loss_vec,
+            label="genewise optimizer evaluation",
+        )
         if grad is None:
             raise RuntimeError("genewise optimizer evaluation did not produce gradients")
         if not torch.is_tensor(grad):
@@ -1098,6 +1109,11 @@ class OptimizationRunner:
 
     def _evaluate_genewise_loss_vector(self, model: GeneReconModel) -> torch.Tensor:
         loss_vec, _grad = model.full_genewise_nll_and_grad(need_grad=False)
+        loss_vec = _validate_genewise_optimizer_loss_vector(
+            model,
+            loss_vec,
+            label="genewise loss-only optimizer probe",
+        )
         return loss_vec.detach()
 
     def _final_eval_fallback_clade_budgets(self) -> list[int]:
@@ -1716,15 +1732,20 @@ class OptimizationRunner:
         active_values: torch.Tensor,
     ) -> torch.Tensor:
         idx = self._active_batch_indices(model)
-        values = active_values.detach().reshape(-1).to(
+        if not torch.is_tensor(active_values):
+            raise RuntimeError(
+                "active genewise objective did not return a tensor loss vector"
+            )
+        expected_shape = (int(idx.numel()),)
+        if _tensor_shape(active_values) != expected_shape:
+            raise RuntimeError(
+                "active genewise objective returned loss vector shape "
+                f"{_tensor_shape(active_values)}, expected {expected_shape}"
+            )
+        values = active_values.detach().to(
             device=model.theta.device,
             dtype=model.theta.dtype,
         )
-        if values.numel() != idx.numel():
-            raise RuntimeError(
-                "active genewise objective returned "
-                f"{values.numel()} values for {idx.numel()} batch families"
-            )
         full = torch.zeros(
             (int(model.n_families),),
             device=model.theta.device,

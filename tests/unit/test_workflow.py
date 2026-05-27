@@ -7645,6 +7645,47 @@ def test_optimization_runner_genewise_loss_probe_clears_transient_solver_state(
     torch.testing.assert_close(static.pi_adjoint_cache, accepted_cache)
 
 
+def test_genewise_loss_vector_probe_rejects_bad_full_vector_shape(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+
+    def bad_full_genewise_nll_and_grad(*, need_grad: bool):
+        assert need_grad is False
+        return torch.ones((model.n_families, 1), dtype=model.theta.dtype), None
+
+    model.full_genewise_nll_and_grad = bad_full_genewise_nll_and_grad
+
+    with pytest.raises(RuntimeError, match=r"loss vector with shape \(2, 1\)"):
+        runner._evaluate_genewise_loss_vector_probe(model, active_batch=False)
+
+
+def test_active_genewise_loss_vector_probe_rejects_bad_local_shape(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.select_batch(0)
+
+    def bad_nll_per_family():
+        return torch.ones((1, 1), dtype=model.theta.dtype)
+
+    model.nll_per_family = bad_nll_per_family
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"active genewise objective returned loss vector shape \(1, 1\)",
+    ):
+        runner._evaluate_genewise_loss_vector_probe(model, active_batch=True)
+
+
 def test_optimization_runner_lbfgsb_specieswise_records_kkt_metrics(tmp_path: Path):
     config = _optimizer_mode_config(
         tmp_path,
