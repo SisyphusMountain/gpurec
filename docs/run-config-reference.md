@@ -12,7 +12,7 @@ input or explicit CLI flags are resolved relative to the current working
 directory. Explicit CLI flags override fields loaded from `--config`. Unknown
 JSON fields are rejected by `RunConfig.from_dict(...)` before model construction.
 Mode strings are stripped and case-normalized before `optimizer=auto` resolves
-the production default optimizer. Optimizer strings are stripped and
+the mode default optimizer for its sharing mode. Optimizer strings are stripped and
 case-normalized, and underscore aliases such as `hessian_sgd` and `adagrad_restarts`
 are converted to the canonical hyphenated names. The same normalization rules
 are applied to flat JSON configs and explicit CLI flags.
@@ -108,19 +108,30 @@ values with labels.
 | `hessian_sgd_validation_neumann_terms` | `--hessian-sgd-validation-neumann-terms` | Optional positive Neumann budget for periodic `hessian-sgd` validation steps; requires a positive validation interval. |
 | `adagrad_restart_schedule` | `--adagrad-restart-schedule` | Specieswise `adagrad-restarts` phase ladder as `budget:lr:steps` or `E/Pi[/Neumann]:lr:steps`. Later phases must not decrease `fixed_iters_E`, `fixed_iters_Pi`, or `neumann_terms`; same-budget LR restarts are allowed. Non-default values require specieswise `adagrad-restarts`. |
 | `adagrad_restart_final_check_iters` | `--adagrad-restart-final-check-iters` | Final specieswise validation budget for `adagrad-restarts`; `0` disables, otherwise positive even. Non-default values require specieswise `adagrad-restarts`. |
+| `adagrad_restart_phase_loss_patience` | `--adagrad-restart-phase-loss-patience` | For specieswise `adagrad-restarts`, advance to the next phase after this many flat-loss steps; `0` keeps fixed phase lengths. The same rule applies to specieswise `adagrad-restarts-lbfgsb`. |
 | `lbfgs_lr` | `--lbfgs-lr` | Positive base learning rate for L-BFGS style optimizers. |
 | `lbfgs_history_size` | `--lbfgs-history-size` | Positive number of curvature pairs retained by L-BFGS style optimizers. |
 | `lbfgs_max_iter` | `--lbfgs-max-iter` | Positive L-BFGS inner iteration count per optimizer step. |
 | `lbfgs_max_ls` | `--lbfgs-max-ls` | Positive line-search probe cap for L-BFGS style optimizers. |
 | `lbfgs_line_search` | `--lbfgs-line-search` | Batched L-BFGS line search mode: `none` or `strong_wolfe`. |
+| `lbfgsb_high_kkt_stop_patience` | `--lbfgsb-high-kkt-stop-patience` | For lbfgsb, stop after this many consecutive high-KKT tiny-progress rows; `0` disables the stop. |
+| `lbfgsb_high_kkt_stop_min_fallbacks` | `--lbfgsb-high-kkt-stop-min-fallbacks` | Minimum accepted lbfgsb fallback rows before the high-KKT stop can trigger. |
+| `lbfgsb_fallback_max_coordinates` | `--lbfgsb-fallback-max-coordinates` | Maximum coordinate-sign fallback candidates for lbfgsb fallback competition; `0` disables coordinate fallback. |
+| `lbfgsb_fallback_max_loss_evals` | `--lbfgsb-fallback-max-loss-evals` | Optional per-step loss-only evaluation budget for lbfgsb fallback line searches and fallback competition. |
+| `lbfgsb_fallback_resolution_competition_factor` | `--lbfgsb-fallback-resolution-competition-factor` | For lbfgsb fallback competition, also challenge accepted fallback moves whose decrease is at most this multiple of the fp loss resolution; `0` keeps only tiny-progress triggers. |
+| `lbfgsb_best_retry_attempts` | `--lbfgsb-best-retry-attempts` | For lbfgsb, reload the best checkpoint this many times when terminal plateaus are reached, preserving serialized LBFGS-B state. |
+| `lbfgsb_loss_change_tol_schedule` | `--lbfgsb-loss-change-tol-schedule` | Optional lbfgsb loss-stop schedule as `loss_change_tol:loss_patience` entries, for example `0.25:2,0.1:2`. |
+| `lbfgsb_loss_schedule_force_fallback` | `--lbfgsb-loss-schedule-force-fallback` | When lbfgsb loss-stop schedule advances, force the next row to start from the projected-gradient fallback. |
 | `fd_hessian_epsilon` | `--fd-hessian-epsilon` | Positive finite-difference epsilon for Hessian-conditioned genewise probes. |
 | `fd_newton_damping` | `--fd-newton-damping` | Positive diagonal damping added to finite-difference Hessians. |
 
 Supported explicit optimizers are `adam`, `adagrad`, `projected-sgd`,
 `lbfgs`, `adam-lbfgs`, `projected-lbfgs`, `lbfgsb`, `batched-lbfgs`,
-`adam-fd-newton`, `hessian-sgd`, and `adagrad-restarts`. `batched-lbfgs`,
+`adam-fd-newton`, `hessian-sgd`, `adagrad-restarts`,
+and `adagrad-restarts-lbfgsb`. `batched-lbfgs`,
 `adam-fd-newton`, and `hessian-sgd` require `mode=genewise`.
 `adagrad-restarts` requires `mode=specieswise`.
+`adagrad-restarts-lbfgsb` requires `mode=specieswise`.
 
 ## Stopping, Logging, And Resume
 
@@ -131,6 +142,7 @@ Supported explicit optimizers are `adam`, `adagrad`, `projected-sgd`,
 | `best_likelihood_patience` | `--best-likelihood-patience` | Non-negative patience for steps without best-likelihood improvement. |
 | `best_likelihood_min_delta` | `--best-likelihood-min-delta` | Non-negative improvement required to reset best-likelihood patience. |
 | `projected_grad_tol` | `--projected-grad-tol` | Non-negative projected-gradient infinity-norm tolerance for projected optimizers. |
+| `loss_stop_projected_grad_gate` | `--loss-stop-projected-grad-gate` / `--no-loss-stop-projected-grad-gate` | Require projected-gradient tolerance to pass before loss-change patience can stop projected-LBFGS-B and lbfgsb. |
 | `projected_lbfgs_min_lr` | `--projected-lbfgs-min-lr` | Positive lower bound for automatic projected-LBFGS base learning-rate backoff. |
 | `checkpoint_every` | `--checkpoint-every` | Non-negative checkpoint interval in optimizer steps; `0` disables periodic checkpoints. |
 | `log_every` | `--log-every` | Positive console progress interval; `history.jsonl` is still recorded every optimizer step. |
