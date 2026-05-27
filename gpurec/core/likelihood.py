@@ -472,6 +472,10 @@ def _validate_root_nll_shapes(Pi_root_rows, E) -> None:
             )
 
 
+def _root_row_family_count(Pi_root_rows) -> int | None:
+    return int(Pi_root_rows.shape[0]) if Pi_root_rows.ndim == 2 else None
+
+
 def compute_nll(
     Pi,
     E,
@@ -515,8 +519,10 @@ def compute_nll_root_rows(
 
     ``Pi_root_rows`` is ``[S]`` for one family or ``[G, S]`` in family order.
     ``E`` is either one shared ``[S]`` vector or matching ``[G, S]``
-    family-specific rows. This is equivalent to ``compute_nll(Pi, E, root_ids)``
-    when ``Pi_root_rows`` has been
+    family-specific rows. Family-specific ``origination_probs`` with shape
+    ``[G, S]`` require ``Pi_root_rows`` to have shape ``[G, S]`` so each weight
+    row has a matching likelihood row. This is equivalent to
+    ``compute_nll(Pi, E, root_ids)`` when ``Pi_root_rows`` has been
     gathered as ``Pi[root_ids]``, but avoids keeping the full Pi matrix alive in
     root-likelihood-only callers.  ``denominator`` may be supplied as a scalar
     or as one value per root row by callers that reuse one E solve across
@@ -528,22 +534,27 @@ def compute_nll_root_rows(
         if denominator is None:
             denominator = torch.log2((1 - torch.exp2(E).mean(dim=-1)))
     else:
+        family_count = _root_row_family_count(Pi_root_rows)
         probs = prepare_origination_probs(
             origination_probs,
             S=int(Pi_root_rows.shape[-1]),
             device=Pi_root_rows.device,
             dtype=Pi_root_rows.dtype,
-            family_count=(
-                int(Pi_root_rows.shape[0]) if Pi_root_rows.ndim == 2 else None
-            ),
+            family_count=family_count,
             assume_prepared=origination_probs_prepared,
         )
+        if family_count is None and probs.ndim == 2:
+            raise ValueError(
+                "family-specific origination_probs require Pi_root_rows with "
+                f"shape [families, S], got {_tensor_shape(Pi_root_rows)}"
+            )
         numerator = _weighted_logsumexp2(Pi_root_rows, probs)
         if denominator is None:
             denominator = compute_origination_denominator(
                 E,
                 probs,
                 origination_probs_prepared=True,
+                family_count=family_count,
             )
     denominator = _normalize_nll_denominator(denominator, numerator)
     return -(numerator - denominator)

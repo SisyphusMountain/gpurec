@@ -311,6 +311,32 @@ def test_compute_nll_scalar_root_uses_root_row_contract_with_weighted_prior():
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
 
+def test_scalar_root_row_nll_rejects_family_specific_origination_probs():
+    dtype = torch.float64
+    root_row = torch.tensor([-4.0, -2.0, -5.0], dtype=dtype)
+    E = torch.tensor([-3.0, -2.0, -4.0], dtype=dtype)
+    weights = torch.ones(2, 3, dtype=dtype)
+
+    with pytest.raises(ValueError, match="family-specific origination_probs"):
+        compute_nll_root_rows(root_row, E, origination_probs=weights)
+
+
+def test_compute_nll_scalar_root_rejects_family_specific_origination_probs():
+    dtype = torch.float64
+    Pi = torch.tensor(
+        [
+            [-4.0, -2.0, -5.0],
+            [-1.5, -3.0, -2.5],
+        ],
+        dtype=dtype,
+    )
+    E = torch.tensor([-3.0, -2.0, -4.0], dtype=dtype)
+    weights = torch.ones(2, 3, dtype=dtype)
+
+    with pytest.raises(ValueError, match="family-specific origination_probs"):
+        compute_nll(Pi, E, torch.tensor(1), origination_probs=weights)
+
+
 def test_e_step_requires_ancestors_t():
     dtype = torch.float64
     E = torch.full((3,), -1.0, dtype=dtype)
