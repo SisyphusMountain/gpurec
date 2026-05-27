@@ -1325,7 +1325,10 @@ def _validate_run_sampling_args(args: argparse.Namespace, run_config: RunConfig)
 
 
 def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
-    from gpurec.workflow.config import production_default_optimizer_config_overrides
+    from gpurec.workflow.config import (
+        DEFAULT_CLADE_BUDGET,
+        production_default_optimizer_config_overrides,
+    )
 
     data: dict[str, Any] = {
         "species_tree": str(args.species_tree),
@@ -1337,7 +1340,7 @@ def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
         "optimizer": "auto",
         "family_chunk_size": 0,
         "batch_packing": "depth_first_fit",
-        "clade_budget": 500_000,
+        "clade_budget": DEFAULT_CLADE_BUDGET,
         "fixed_iters_pi": 16,
         "neumann_terms": 16,
         "steps": 5000,
@@ -1444,7 +1447,10 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--clade-budget",
         type=int,
-        help="Clade budget for non-sequential resident-batch packing.",
+        help=(
+            "Clade budget for non-sequential resident-batch packing. "
+            "Workflow default: 315000."
+        ),
     )
     parser.add_argument(
         "--batch-packing",

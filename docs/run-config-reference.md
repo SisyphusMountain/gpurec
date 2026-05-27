@@ -45,7 +45,7 @@ reference lists the complete `RunConfig` surface.
 | Field | CLI flag | Contract |
 |---|---|---|
 | `family_chunk_size` | `--family-chunk-size` | Families per resident chunk; `0`, `all`, `none`, or `null` means one resident batch. |
-| `clade_budget` | `--clade-budget` | Positive clade budget for non-sequential batch packing; use `null` only with `batch_packing=sequential`. |
+| `clade_budget` | `--clade-budget` | Positive clade budget for non-sequential batch packing; use `null` only with `batch_packing=sequential`. The workflow default is `315000`, matching the retained HOGENOM and `test_trees_1000` resident-batch evidence. |
 | `batch_packing` | `--batch-packing` | Resident-batch packing policy. Supported normalized values are `sequential`, `clade_first_fit`, and `depth_first_fit`. |
 | `max_wave_size` | `--max-wave-size` | Optional positive cap on clades scheduled into one resident wave. |
 | `small_family_max_leaves` | `--small-family-max-leaves` | Families with at most this many leaves can be planned first; `0` disables the split. |

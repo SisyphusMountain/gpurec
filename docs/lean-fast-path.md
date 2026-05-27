@@ -13,7 +13,7 @@ This branch is anchored to the measured `test_trees_1000` path:
 
 The benchmark memory policy above records the measured pruning baseline, not
 the production workflow defaults.  `RunConfig` currently defaults to one
-resident batch (`family_chunk_size=0`), `clade_budget=500000`, and
+resident batch (`family_chunk_size=0`), `clade_budget=315000`, and
 `max_wave_size=8192`.
 
 Measured full-dataset result before this pruning:

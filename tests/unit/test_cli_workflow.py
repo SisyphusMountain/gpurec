@@ -22,6 +22,7 @@ from gpurec.cli import (
     main,
 )
 from gpurec.workflow.config import (
+    DEFAULT_CLADE_BUDGET,
     RunConfig,
     SamplingConfig,
     effective_route_metadata,
@@ -518,6 +519,7 @@ def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):
     assert data["mode"] == "genewise"
     assert data["device"] == "cuda"
     assert data["optimizer"] == "auto"
+    assert data["clade_budget"] == DEFAULT_CLADE_BUDGET
     for name, expected in production_default_optimizer_config_overrides(
         "genewise"
     ).items():
@@ -544,6 +546,7 @@ def test_cli_config_template_prints_specieswise_adagrad_restart_defaults(capsys)
     assert captured.err == ""
     assert data["mode"] == "specieswise"
     assert data["optimizer"] == "auto"
+    assert data["clade_budget"] == DEFAULT_CLADE_BUDGET
     for name, expected in production_default_optimizer_config_overrides(
         "specieswise"
     ).items():
@@ -994,7 +997,7 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "mapped_families=1" in captured.out
     assert "batch_packing=depth_first_fit" in captured.out
     assert "family_chunk_size=0" in captured.out
-    assert "clade_budget=500000" in captured.out
+    assert "clade_budget=315000" in captured.out
     assert "fixed_iters_e=adaptive" in captured.out
     assert "fixed_iters_pi=16" in captured.out
     assert "neumann_terms=16" in captured.out
@@ -2150,7 +2153,7 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "production_default_route_mismatches=none",
         "batch_packing=depth_first_fit",
         "family_chunk_size=0",
-        "clade_budget=500000",
+        "clade_budget=315000",
         "fixed_iters_e=adaptive",
         "fixed_iters_pi=16",
         "neumann_terms=16",
@@ -4265,7 +4268,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "batches=2" in captured.out
     assert "batch_packing=depth_first_fit" in captured.out
     assert "family_chunk_size=0" in captured.out
-    assert "clade_budget=500000" in captured.out
+    assert "clade_budget=315000" in captured.out
     assert "fixed_iters_e=null" in captured.out
     assert "fixed_iters_pi=16" in captured.out
     assert "neumann_terms=16" in captured.out
@@ -4797,7 +4800,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "batches=2" in captured.out
     assert "batch_packing=depth_first_fit" in captured.out
     assert "family_chunk_size=0" in captured.out
-    assert "clade_budget=500000" in captured.out
+    assert "clade_budget=315000" in captured.out
     assert "fixed_iters_e=null" in captured.out
     assert "fixed_iters_pi=16" in captured.out
     assert "neumann_terms=16" in captured.out

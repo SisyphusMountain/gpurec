@@ -70,6 +70,7 @@ from gpurec.workflow._metadata import (
 from gpurec.workflow.config import (
     DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
     DEFAULT_ADAGRAD_RESTART_SCHEDULE,
+    DEFAULT_CLADE_BUDGET,
     RunConfig,
     SamplingConfig,
     adagrad_restart_schedule_specs,
@@ -1223,6 +1224,7 @@ def test_run_config_from_dict_preserves_batch_packing_default(tmp_path: Path):
     )
 
     assert config.batch_packing == "depth_first_fit"
+    assert config.clade_budget == DEFAULT_CLADE_BUDGET
     assert config.small_family_max_leaves == 0
 
 
@@ -9996,7 +9998,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.final_check_iters == summary["final_check_iters"]
     assert summary["batch_packing"] == "depth_first_fit"
     assert summary["family_chunk_size"] == 0
-    assert summary["clade_budget"] == 500_000
+    assert summary["clade_budget"] == DEFAULT_CLADE_BUDGET
     assert summary["fixed_iters_e"] is None
     assert summary["fixed_iters_pi"] == 16
     assert summary["neumann_terms"] == 16

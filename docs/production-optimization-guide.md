@@ -229,6 +229,11 @@ specieswise optimizer gate. `test_trees_1000` is the resident likelihood and
 construction gate. A production default should not move just because it improves
 one of those axes while degrading likelihood/gradient parity or end-to-end
 optimization on the other.
+The shared workflow starter keeps `batch_packing=depth_first_fit` and now
+defaults to `clade_budget=315000`, the retained resident-batch budget common to
+the current HOGENOM and generated-tree evidence. Use
+`batch_packing=clade_first_fit` explicitly when reproducing the
+`test_trees_1000` construction benchmark route.
 
 ## Operating Checklist
 

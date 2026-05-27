@@ -33,6 +33,7 @@ def _default_device() -> str:
 UINT64_MAX = (1 << 64) - 1
 DEFAULT_ADAGRAD_RESTART_SCHEDULE = "8:1.0:60,16:0.5:35,32:0.5:30"
 DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS = 128
+DEFAULT_CLADE_BUDGET = 315_000
 MODE_DEFAULT_OPTIMIZERS = {
     "genewise": "hessian-sgd",
     "specieswise": "adagrad-restarts",
@@ -554,7 +555,7 @@ class RunConfig:
     preprocess_cpu_cores: int | None = None
 
     family_chunk_size: int | str | None = 0
-    clade_budget: int | None = 500_000
+    clade_budget: int | None = DEFAULT_CLADE_BUDGET
     batch_packing: str = "depth_first_fit"
     max_wave_size: int | None = 8192
     small_family_max_leaves: int = 0
