@@ -31,6 +31,12 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _csv_safe(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 def json_dumps_strict(value: Any, **kwargs: Any) -> str:
     """Serialize diagnostics as standards-compliant JSON after sanitization.
 
@@ -243,4 +249,4 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(row)
+            writer.writerow({key: _csv_safe(value) for key, value in row.items()})

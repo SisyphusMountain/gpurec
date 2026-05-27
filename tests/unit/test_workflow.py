@@ -92,6 +92,7 @@ from gpurec.workflow.diagnostics import (
     parameter_stats,
     solver_stats,
     tensor_stats,
+    write_csv,
     write_json_strict,
 )
 from gpurec.workflow.optimize import OptimizationRunner, _write_rate_table
@@ -4507,6 +4508,26 @@ def test_workflow_json_diagnostics_write_strict_file(tmp_path: Path):
     assert text.endswith("\n")
     assert text.index('"a"') < text.index('"z"')
     assert json.loads(text) == {"a": [1.0, None], "z": None}
+
+
+def test_workflow_csv_diagnostics_blank_nonfinite_values(tmp_path: Path):
+    path = tmp_path / "optimization_history.csv"
+
+    write_csv(
+        path,
+        [
+            {"step": 0, "loss": 1.25, "grad": math.inf},
+            {"step": 1, "loss": math.nan, "grad": -math.inf, "note": "failed"},
+        ],
+    )
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert rows == [
+        {"step": "0", "loss": "1.25", "grad": "", "note": ""},
+        {"step": "1", "loss": "", "grad": "", "note": "failed"},
+    ]
 
 
 def test_workflow_solver_stats_surface_e_adjoint_failure_telemetry():
