@@ -10565,6 +10565,102 @@ def test_optimization_runner_reuses_final_genewise_vector_for_artifacts(
     assert "fam1" in per_family
 
 
+def test_optimization_runner_skips_per_family_artifact_after_failed_final_genewise_eval(
+    tmp_path: Path,
+):
+    class FakeNonfiniteFinalGenewiseModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.tensor(
+                    [
+                        [0.25, -0.15, 0.05],
+                        [0.10, 0.20, -0.05],
+                    ],
+                    dtype=torch.float32,
+                )
+            )
+            self.family_names = ["fam0", "fam1"]
+            self.species_names = ["sp0", "sp1"]
+            self.n_families = 2
+            self.n_species = 2
+            self.batch_metadata = [SimpleNamespace(batch_index=0)]
+            self.full_vector_calls = 0
+            self.closed = False
+
+        def full_loss(self):
+            return self.theta.square().sum() + 2.0
+
+        def full_genewise_nll_and_grad(self, *, need_grad: bool):
+            self.full_vector_calls += 1
+            if self.full_vector_calls == 1:
+                values = torch.tensor(
+                    [float("nan"), 1.0],
+                    device=self.theta.device,
+                    dtype=self.theta.dtype,
+                )
+            else:
+                values = self.theta.detach().square().sum(dim=1) + 1.0
+            grad = 2.0 * self.theta.detach() if need_grad else None
+            return values, grad
+
+        def full_nll_per_family(self):
+            raise AssertionError("failed final eval must not write per-family TSV")
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return []
+
+        def clear(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class FakeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeNonfiniteFinalGenewiseModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        lr=0.05,
+        checkpoint_every=0,
+        log_every=10,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    )
+    config.out_dir.mkdir(parents=True)
+    stale_per_family = config.out_dir / "per_fam_likelihoods.tsv"
+    stale_per_family.write_text("stale likelihoods", encoding="utf-8")
+    runner = FakeRunner(config)
+
+    result = runner.run()
+
+    assert result.status == "failed"
+    assert result.reason == "nonfinite_objective_or_gradient"
+    assert result.sampling_checkpoint is None
+    assert runner.fake_model.full_vector_calls == 1
+    assert runner.fake_model.closed
+    assert not stale_per_family.exists()
+    assert (config.out_dir / "summary.json").exists()
+    assert (config.out_dir / "history.jsonl").exists()
+    assert (config.out_dir / "rates_final.tsv").exists()
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed"
+    assert summary["reason"] == "nonfinite_objective_or_gradient"
+    assert summary["sampling_checkpoint"] is None
+    assert summary["final_log_likelihood_bits"] is None
+
+
 def test_optimization_runner_preserves_final_artifacts_when_staging_fails(
     tmp_path: Path,
     monkeypatch,

@@ -847,6 +847,7 @@ def _write_final_artifacts(
     summary: dict[str, Any],
     history_jsonl: Path,
     per_family_nll: torch.Tensor | None = None,
+    include_per_family_likelihoods: bool = True,
 ) -> None:
     stage_dir: Path | None = None
     try:
@@ -868,7 +869,7 @@ def _write_final_artifacts(
         _write_rate_table(rates_stage_path, model, config.mode)
         staged_outputs.append((rates_stage_path, config.out_dir / "rates_final.tsv"))
 
-        if config.mode == "genewise":
+        if config.mode == "genewise" and include_per_family_likelihoods:
             per_family_stage_path = stage_dir / "per_fam_likelihoods.tsv"
             _write_per_family_likelihoods(
                 per_family_stage_path,
@@ -4592,6 +4593,7 @@ class OptimizationRunner:
                 summary=summary,
                 history_jsonl=self.history_jsonl,
                 per_family_nll=final_per_family_nll,
+                include_per_family_likelihoods=not final_eval_failed,
             )
             result = _optimization_result_from_summary(config.out_dir, summary)
         except BaseException as exc:
