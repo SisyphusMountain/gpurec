@@ -18,6 +18,9 @@ file as the map for deeper context.
 - `input-preparation.md`: bioinformatician-facing guide for species trees,
   AleRax `[FAMILIES]` records, gene-tree files, mapping files, JSON config path
   resolution, and `validate-config --check-preprocess` preflight validation.
+- `production-likelihood-optimization-strategy.md`: production policy for
+  choosing and validating genewise and specieswise likelihood optimization
+  routes without overfitting to HOGENOM or `test_trees_1000`.
 - `optimization-workflow-call-graph.md`: current production call graph for
   `validate-config`, AleRax preprocessing, resident likelihood/gradient
   evaluation, optimizer phases, checkpoints, and final artifacts.

@@ -4,6 +4,8 @@ This guide describes the supported production route for AleRax-style
 optimization. It ties together the likelihood objective, gradient surface,
 solver fidelity controls, default optimizers, and artifacts that operators
 should inspect when running `gpurec optimize` or `gpurec run`.
+For mode-level policy on when to keep these defaults versus validate a
+dataset-calibrated route, see `docs/production-likelihood-optimization-strategy.md`.
 
 ## Objective And Parameters
 
