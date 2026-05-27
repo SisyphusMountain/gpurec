@@ -28,7 +28,9 @@ The primary objective is negative log-likelihood in bits:
 `likelihood/data_nll_bits`. The corresponding log-likelihood is
 `likelihood/log_likelihood_bits`. Gradient summaries use `grad/*`; projected
 gradient summaries at bounds use `grad/projected_inf`. Solver diagnostics use
-`solver/*`. Specieswise Adagrad restart runs also record
+`solver/*`; batch/wave/count fields under that namespace are typed JSON
+integers, while means, residuals, timings, losses, and gradient norms are
+numbers. Specieswise Adagrad restart runs also record
 `optimizer/adagrad_restart_*` fields. Warmstart-enabled Pi-adjoint gradients
 also report `solver/pi_adjoint_residual_absmax_max`,
 `solver/pi_adjoint_residual_relmax_max`, and

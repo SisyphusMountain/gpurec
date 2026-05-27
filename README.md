@@ -482,7 +482,9 @@ printed checkpoint line and any route gates use the same audited checkpoint
 route snapshot, including legacy config fallback evidence.
 
 History rows include aggregate `solver/*` telemetry when the model reports
-solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
+solver statistics. Batch/wave/count fields under `solver/*` are typed JSON
+integers; means, residuals, timings, losses, and gradient norms remain
+numbers. E-adjoint nonconvergence is diagnostic-only: the retained
 BiCGSTAB solve returns its best iterate with `success=False`, optimization
 continues unless the objective or gradient becomes nonfinite, and history rows
 surface integer `solver/e_adjoint_failed_batches` and

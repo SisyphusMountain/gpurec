@@ -4265,21 +4265,24 @@ def test_workflow_solver_stats_surface_e_adjoint_failure_telemetry():
 
     stats = solver_stats(model)
 
+    assert stats["solver/batches_with_stats"] == 2
+    assert stats["solver/pi_wave_count"] == 3
+    assert stats["solver/pi_converged_waves"] == 3
     assert stats["solver/e_adjoint_iterations_max"] == 3.0
     assert stats["solver/e_adjoint_iterations_mean"] == pytest.approx(2.0)
     assert stats["solver/e_adjoint_rel_res_max"] == pytest.approx(0.25)
     assert stats["solver/e_adjoint_rel_res_mean"] == pytest.approx(0.15)
     assert stats["solver/e_adjoint_success_batches"] == 1
     assert stats["solver/e_adjoint_failed_batches"] == 1
-    assert stats["solver/gradient_converged_batches"] == 2.0
-    assert stats["solver/pi_adjoint_warmstart_enabled_batches"] == 2.0
-    assert stats["solver/pi_adjoint_warmstart_used_batches"] == 1.0
+    assert stats["solver/gradient_converged_batches"] == 2
+    assert stats["solver/pi_adjoint_warmstart_enabled_batches"] == 2
+    assert stats["solver/pi_adjoint_warmstart_used_batches"] == 1
     assert stats["solver/pi_adjoint_residual_absmax_max"] == pytest.approx(0.5)
     assert stats["solver/pi_adjoint_residual_absmax_mean"] == pytest.approx(0.3125)
     assert stats["solver/pi_adjoint_residual_relmax_max"] == pytest.approx(0.25)
     assert stats["solver/pi_adjoint_residual_relmax_mean"] == pytest.approx(0.15)
-    assert stats["solver/pi_adjoint_residual_checked_batches"] == 2.0
-    assert stats["solver/pi_adjoint_residual_wave_count"] == 7.0
+    assert stats["solver/pi_adjoint_residual_checked_batches"] == 2
+    assert stats["solver/pi_adjoint_residual_wave_count"] == 7
 
 
 def test_workflow_metadata_model_name_helpers_return_copies_and_fallbacks():

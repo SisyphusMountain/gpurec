@@ -157,12 +157,12 @@ def solver_stats(model: Any) -> dict[str, float | int]:
     pi_wave_count = sum(int(row.get("Pi_wave_count", 0)) for row in stats)
     pi_converged = sum(int(row.get("Pi_converged_waves", 0)) for row in stats)
     out = {
-        "solver/batches_with_stats": float(len(stats)),
+        "solver/batches_with_stats": len(stats),
         "solver/e_iterations_max": float(max(e_iterations, default=0)),
         "solver/e_iterations_mean": float(sum(e_iterations) / max(len(e_iterations), 1)),
         "solver/pi_iteration_limit_max": float(max(pi_caps, default=0)),
-        "solver/pi_wave_count": float(pi_wave_count),
-        "solver/pi_converged_waves": float(pi_converged),
+        "solver/pi_wave_count": pi_wave_count,
+        "solver/pi_converged_waves": pi_converged,
         "solver/neumann_terms_max": float(max(neumann, default=0)),
     }
     if pi_wave_iterations:
@@ -171,7 +171,7 @@ def solver_stats(model: Any) -> dict[str, float | int]:
             sum(pi_wave_iterations) / len(pi_wave_iterations)
         )
     if grad_converged:
-        out["solver/gradient_converged_batches"] = float(sum(grad_converged))
+        out["solver/gradient_converged_batches"] = int(sum(grad_converged))
     if e_adjoint_iterations:
         out["solver/e_adjoint_iterations_max"] = float(max(e_adjoint_iterations))
         out["solver/e_adjoint_iterations_mean"] = float(
@@ -189,11 +189,11 @@ def solver_stats(model: Any) -> dict[str, float | int]:
             len(e_adjoint_success) - success_count
         )
     if pi_adjoint_warmstart_enabled:
-        out["solver/pi_adjoint_warmstart_enabled_batches"] = float(
+        out["solver/pi_adjoint_warmstart_enabled_batches"] = int(
             sum(pi_adjoint_warmstart_enabled)
         )
     if pi_adjoint_warmstart_used:
-        out["solver/pi_adjoint_warmstart_used_batches"] = float(
+        out["solver/pi_adjoint_warmstart_used_batches"] = int(
             sum(pi_adjoint_warmstart_used)
         )
     if pi_adjoint_residual_absmax:
@@ -213,10 +213,10 @@ def solver_stats(model: Any) -> dict[str, float | int]:
             / len(pi_adjoint_residual_relmax)
         )
     if pi_adjoint_residual_wave_count:
-        out["solver/pi_adjoint_residual_checked_batches"] = float(
+        out["solver/pi_adjoint_residual_checked_batches"] = int(
             len(pi_adjoint_residual_wave_count)
         )
-        out["solver/pi_adjoint_residual_wave_count"] = float(
+        out["solver/pi_adjoint_residual_wave_count"] = int(
             sum(pi_adjoint_residual_wave_count)
         )
     return out

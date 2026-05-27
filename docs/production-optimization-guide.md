@@ -94,7 +94,9 @@ initial guess. Enable it only for genewise `hessian-sgd` validation runs with
 warmstarted budget policy is validated. The workflow uses staged cache updates:
 loss probes and rejected line-search candidates do not become the next accepted
 warm start, and a staged adjoint is committed only after the final accepted
-current-theta gradient. When enabled in a controlled experiment, history rows include
+current-theta gradient. Solver batch/wave/count telemetry is emitted as typed
+JSON integers, while means and residual diagnostics remain numeric. When
+enabled in a controlled experiment, history rows include
 `solver/pi_adjoint_warmstart_enabled_batches`,
 `solver/pi_adjoint_warmstart_used_batches`,
 `solver/pi_adjoint_pending_cache_commits`, and
