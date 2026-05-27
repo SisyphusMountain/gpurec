@@ -1317,6 +1317,14 @@ def _ensure_backtracking_available(backtrack_binary: Path | None) -> None:
     ensure_backtracking_available(backtrack_binary)
 
 
+def _ensure_preprocessing_available(preprocess_native_lib: Path | None) -> Path:
+    from gpurec.core.preprocess_rust import ensure_native_preprocessing_available
+
+    return ensure_native_preprocessing_available(
+        preprocess_native_lib=preprocess_native_lib,
+    )
+
+
 def _validate_run_sampling_args(args: argparse.Namespace, run_config: RunConfig) -> None:
     _sampling_config_from_args(
         args,
@@ -1802,6 +1810,18 @@ def _add_backtrack_binary_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_preprocess_native_lib_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--preprocess-native-lib",
+        type=Path,
+        help=(
+            "Native Rust preprocessing extension. Installed workflow "
+            "preprocessing requires this or GPUREC_PREPROCESS_NATIVE_LIB; source "
+            "trees can fall back to Cargo when a Rust toolchain is present."
+        ),
+    )
+
+
 def _add_sampling_args(
     parser: argparse.ArgumentParser,
     *,
@@ -1971,6 +1991,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_backtrack_binary_arg(backtrack_check_parser)
     backtrack_check_parser.set_defaults(_command_parser=backtrack_check_parser)
+
+    preprocess_check_parser = sub.add_parser(
+        "preprocess-check",
+        help="Check Rust preprocessing native extension availability.",
+        description=(
+            "Validate the Rust preprocessing native extension or source-tree "
+            "Cargo build fallback without reading dataset files."
+        ),
+    )
+    _add_preprocess_native_lib_arg(preprocess_check_parser)
+    preprocess_check_parser.set_defaults(_command_parser=preprocess_check_parser)
 
     checkpoint_info_parser = sub.add_parser(
         "checkpoint-info",
@@ -2366,6 +2397,19 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
         print("backtracking_available=true", flush=True)
+        return
+    if args.command == "preprocess-check":
+        try:
+            preprocess_native_lib = _ensure_preprocessing_available(
+                args.preprocess_native_lib,
+            )
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            _exit_runtime_error(command_parser, str(exc))
+        print(
+            "preprocessing_available=true "
+            f"{_optional_text('preprocess_native_lib', preprocess_native_lib)}",
+            flush=True,
+        )
         return
     if args.command == "run":
         if args.checkpoint is not None:

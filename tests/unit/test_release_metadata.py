@@ -635,6 +635,15 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'cd "$smoke_dir"',
         "gpurec --help",
         "python -m gpurec.cli --help",
+        "gpurec preprocess-check --help | tee preprocess-check-help.txt",
+        'grep -q -- "--preprocess-native-lib" preprocess-check-help.txt',
+        'grep -q -- "GPUREC_PREPROCESS_NATIVE_LIB" preprocess-check-help.txt',
+        "unset GPUREC_PREPROCESS_NATIVE_LIB",
+        "gpurec preprocess-check > preprocess-check-missing.txt 2>&1",
+        "preprocess_check_status=$?",
+        'test "$preprocess_check_status" -eq 1',
+        'grep -q -- "GPUREC_PREPROCESS_NATIVE_LIB" preprocess-check-missing.txt',
+        'grep -q -- "--preprocess-native-lib" preprocess-check-missing.txt',
         "gpurec config-template --help | tee config-template-help.txt",
         'grep -q -- "mode-default Adam" config-template-help.txt',
         "gpurec config-template --mode genewise",
@@ -676,6 +685,9 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
             'export GPUREC_PREPROCESS_NATIVE_LIB="$GITHUB_WORKSPACE/crates/'
             'gpurec-preprocess/target/release/libgpurec_preprocess.so"'
         ),
+        "gpurec preprocess-check | tee preprocess-check.txt",
+        "preprocessing_available=true",
+        "preprocess_native_lib=",
         "$GITHUB_WORKSPACE/examples/tiny/species.nwk",
         "$GITHUB_WORKSPACE/examples/tiny/families.txt",
         "gpurec validate-config --config generated-genewise-run.json "
@@ -1189,6 +1201,27 @@ def test_release_readiness_documents_sampling_binary_distribution_contract():
         assert token in guide
 
 
+def test_release_readiness_documents_preprocess_native_distribution_contract():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    for token in (
+        "Preprocessing Native Extension Contract",
+        "Wheels intentionally do not ship the Rust preprocessing crate sources",
+        "platform-specific PyO3 extension",
+        "Installed `gpurec validate-config\n  --check-preprocess`, `gpurec optimize`, `gpurec run`, and",
+        "`gpurec preprocess-check` require a compatible prebuilt native preprocessing",
+        "`GPUREC_PREPROCESS_NATIVE_LIB`",
+        "`--preprocess-native-lib`",
+        "Source archives include `crates/gpurec-preprocess/`",
+        "source-archive Cargo build fallback for the native extension",
+        "requires Rust/Cargo",
+        "wheel-only external native\n  extension requirement",
+        "bundled platform wheels",
+        "update the README, package-data\n  checks, installed-wheel smoke, and source-archive smoke together",
+    ):
+        assert token in guide
+
+
 def test_release_readiness_smokes_top_level_exports():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
 
@@ -1210,6 +1243,12 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "python -m pip install --no-deps dist/*.whl",
         "smoke_dir=$(mktemp -d)",
         'cd "$smoke_dir"',
+        "gpurec preprocess-check --help",
+        "gpurec preprocess-check > preprocess-check-missing.txt 2>&1",
+        "preprocess_check_status=$?",
+        'test "$preprocess_check_status" -eq 1',
+        "GPUREC_PREPROCESS_NATIVE_LIB",
+        "--preprocess-native-lib",
         "gpurec config-template --mode genewise",
         "gpurec config-template --mode specieswise",
         "gpurec config-template --mode global",
@@ -1219,6 +1258,7 @@ def test_release_readiness_documents_installed_wheel_smoke():
             'export GPUREC_PREPROCESS_NATIVE_LIB="$repo_root/crates/'
             'gpurec-preprocess/target/release/libgpurec_preprocess.so"'
         ),
+        "gpurec preprocess-check",
         "generated-genewise-run.json",
         "generated-specieswise-run.json",
         "generated-global-run.json",
@@ -1245,7 +1285,7 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "cuda_backward_ready=false",
         "mode-default `adam` diagnostic and fails `--require-production-default-route` with a `mode` mismatch",
         "source-checkout `crates/gpurec-preprocess` PyO3 extension",
-        "`GPUREC_PREPROCESS_NATIVE_LIB` before any installed-wheel",
+        "`GPUREC_PREPROCESS_NATIVE_LIB`, running `gpurec preprocess-check`, and only then calling installed-wheel",
         "compatible prebuilt native preprocessing extension",
         "mode-default optimizer gates",
         "gpurec validate-config --help",
@@ -1399,7 +1439,7 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert (
         "`config-template`, `validate-config`,\n  `optimize`, "
         "`summary-info`, `checkpoint-info`, `sample`, `run`, and\n  "
-        "`backtrack-check` commands"
+        "`preprocess-check`/`backtrack-check` commands"
     ) in readme
     assert "gpurec validate-config --config examples/minimal-run-config.json" in readme
     assert "--check-preprocess" in readme
@@ -1408,7 +1448,15 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert "In a wheel-only\ninstall" in readme
     assert "Workflow preprocessing is implemented by\nthe native Rust" in readme
     assert "wheel-only deployments should point `GPUREC_PREPROCESS_NATIVE_LIB`" in readme
-    assert "`GPUREC_PREPROCESS_BIN` is reserved for the subprocess\nadapter" in readme
+    assert "Use `gpurec preprocess-check` to validate that native\nextension path" in readme
+    assert "### Preprocessing Native Extension Setup" in readme
+    assert "export GPUREC_PREPROCESS_NATIVE_LIB=\"/opt/gpurec/lib/libgpurec_preprocess.so\"" in readme
+    assert "gpurec preprocess-check" in readme
+    assert "--preprocess-native-lib" in readme
+    assert (
+        "`GPUREC_PREPROCESS_BIN` is reserved for the subprocess adapter"
+        in " ".join(readme.split())
+    )
     assert "For a source checkout or unpacked source archive" in readme
     assert (
         "cargo build --locked --release --manifest-path "
@@ -1439,6 +1487,8 @@ def test_readme_documents_installed_sampling_binary_setup():
     )
     assert "`gpurec summary-info --help`" in normalized_guide
     assert "`gpurec checkpoint-info --help`" in normalized_guide
+    assert "`gpurec preprocess-check --help`" in normalized_guide
+    assert "running `gpurec preprocess-check`, and only then calling installed-wheel" in normalized_guide
     assert (
         "installed `gpurec sample --help`, `gpurec run --help`, and "
         "`gpurec backtrack-check`"

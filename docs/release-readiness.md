@@ -11,6 +11,24 @@ and the packaging assumptions covered by current automated build steps.
 - Build source and wheel artifacts from a clean checkout and install them in a
   fresh environment with a PyTorch build that matches the target CUDA runtime.
 
+## Preprocessing Native Extension Contract
+
+The current release contract is explicit rather than unresolved:
+
+- Wheels intentionally do not ship the Rust preprocessing crate sources or a
+  platform-specific PyO3 extension. Installed `gpurec validate-config
+  --check-preprocess`, `gpurec optimize`, `gpurec run`, and
+  `gpurec preprocess-check` require a compatible prebuilt native preprocessing
+  extension selected with `GPUREC_PREPROCESS_NATIVE_LIB` or
+  `--preprocess-native-lib` for the check command.
+- Source archives include `crates/gpurec-preprocess/` and support the locked
+  source-archive Cargo build fallback for the native extension. That fallback
+  requires Rust/Cargo.
+- Release notes and deployment docs must state the wheel-only external native
+  extension requirement unless a future packaging change ships and smokes
+  bundled platform wheels. Any such change must update the README, package-data
+  checks, installed-wheel smoke, and source-archive smoke together.
+
 ## Sampling Binary Distribution Contract
 
 The current release contract is explicit rather than unresolved:
@@ -46,7 +64,10 @@ unpacked source archive, runs source-archive
 `examples/specieswise-adagrad-restarts-config.json`, then confirms
 `--require-cuda-backward-ready` fails both source-archive examples with
 `cuda_backward_ready_reason=requires_s_gt_256` and no stdout, and smokes both
-`gpurec --help` and `python -m gpurec.cli --help`.  It also smokes installed
+`gpurec --help` and `python -m gpurec.cli --help`. It also checks installed
+`gpurec preprocess-check --help` and confirms a wheel-only environment without
+`GPUREC_PREPROCESS_NATIVE_LIB` reports the native-extension requirement without a
+traceback. It also smokes installed
 `gpurec config-template --help`,
 `gpurec config-template --mode specieswise`,
 `gpurec config-template --mode global`, and
@@ -72,9 +93,10 @@ checks that it passes `--require-mode-default-optimizer` as a mode-default
 mismatch. It also smokes
 the installed-wheel preprocessing path by building the source-checkout
 `crates/gpurec-preprocess` PyO3 extension and exporting
-`GPUREC_PREPROCESS_NATIVE_LIB` before any installed-wheel
-`--check-preprocess` call, matching the wheel-only deployment requirement for a
-compatible prebuilt native preprocessing extension. It also smokes
+`GPUREC_PREPROCESS_NATIVE_LIB`, running `gpurec preprocess-check`, and only then
+calling installed-wheel `--check-preprocess`, matching the wheel-only deployment
+requirement for a compatible prebuilt native preprocessing extension. It also
+smokes
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
 `--require-converged` and `--require-final-check-ok` summary gates for
@@ -155,12 +177,22 @@ smoke_dir=$(mktemp -d)
 cd "$smoke_dir"
 gpurec --help
 python -m gpurec.cli --help
+gpurec preprocess-check --help
+unset GPUREC_PREPROCESS_NATIVE_LIB
+set +e
+gpurec preprocess-check > preprocess-check-missing.txt 2>&1
+preprocess_check_status=$?
+set -e
+test "$preprocess_check_status" -eq 1
+grep -q "GPUREC_PREPROCESS_NATIVE_LIB" preprocess-check-missing.txt
+grep -q -- "--preprocess-native-lib" preprocess-check-missing.txt
 gpurec config-template --mode genewise
 gpurec config-template --mode specieswise
 gpurec config-template --mode global
 cargo build --release --locked --features python-extension \
   --manifest-path "$repo_root/crates/gpurec-preprocess/Cargo.toml"
 export GPUREC_PREPROCESS_NATIVE_LIB="$repo_root/crates/gpurec-preprocess/target/release/libgpurec_preprocess.so"
+gpurec preprocess-check
 gpurec config-template --mode genewise \
   --species-tree "$repo_root/examples/tiny/species.nwk" \
   --families-file "$repo_root/examples/tiny/families.txt" \
@@ -276,6 +308,7 @@ CUDA_VISIBLE_DEVICES='' gpurec --help
 CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' gpurec config-template --mode genewise
 CUDA_VISIBLE_DEVICES='' gpurec config-template --mode specieswise
+CUDA_VISIBLE_DEVICES='' gpurec preprocess-check --help
 CUDA_VISIBLE_DEVICES='' gpurec optimize --help
 CUDA_VISIBLE_DEVICES='' gpurec validate-config --config examples/minimal-run-config.json
 CUDA_VISIBLE_DEVICES='' gpurec summary-info --help

@@ -15,7 +15,7 @@ stochastic RecPhyloXML sampling.
   backtracking.
 - `gpurec` CLI entry point with `config-template`, `validate-config`,
   `optimize`, `summary-info`, `checkpoint-info`, `sample`, `run`, and
-  `backtrack-check` commands.
+  `preprocess-check`/`backtrack-check` commands.
 - Standard PyTorch optimizers over `model.theta`, including `torch.optim.Adam`.
 - `gpurec.optimization.BatchedLBFGS` for row-wise genewise polishing.
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree
@@ -49,9 +49,10 @@ the native Rust `crates/gpurec-preprocess` extension.  Source checkouts and
 unpacked source archives can build it with Cargo from the crate manifest;
 wheel-only deployments should point `GPUREC_PREPROCESS_NATIVE_LIB` at a
 compatible prebuilt extension before running `validate-config --check-preprocess`,
-`optimize`, or `run`. `GPUREC_PREPROCESS_BIN` is reserved for the subprocess
-adapter and profiling helpers; it is not a workflow model-construction
-fallback.
+`optimize`, or `run`. Use `gpurec preprocess-check` to validate that native
+extension path or the source-tree Cargo build fallback without reading dataset
+files. `GPUREC_PREPROCESS_BIN` is reserved for the subprocess adapter and
+profiling helpers; it is not a workflow model-construction fallback.
 
 For the checkout-local HOGENOM experiment scripts:
 
@@ -661,6 +662,25 @@ source archive.  It requires a Rust toolchain and fetches the pinned `rustree`
 git dependency declared by `crates/gpurec-backtrack/Cargo.toml`; otherwise use a
 prebuilt binary.
 
+### Preprocessing Native Extension Setup
+
+Workflow model construction uses the Rust preprocessing PyO3 extension.  In a
+wheel-only install, point gpurec at a compatible prebuilt extension and validate
+it before running preprocessing or optimization:
+
+```bash
+export GPUREC_PREPROCESS_NATIVE_LIB="/opt/gpurec/lib/libgpurec_preprocess.so"
+gpurec preprocess-check
+gpurec validate-config --config run.json --check-preprocess
+```
+
+For a source checkout or unpacked source archive, the same command validates the
+Cargo build fallback and reports the resolved native library path:
+
+```bash
+gpurec preprocess-check
+```
+
 Python callers that use `sample_recphyloxml*` with `backend="native"` or
 `backend="auto"` can point `GPUREC_BACKTRACK_NATIVE_LIB` at a prebuilt PyO3
 backtracking extension.  Without that variable, source checkouts build
@@ -682,7 +702,7 @@ Triton-only.
 
 | Variable | Scope |
 | --- | --- |
-| `GPUREC_PREPROCESS_NATIVE_LIB` | Optional path to a prebuilt native Rust preprocessing extension. |
+| `GPUREC_PREPROCESS_NATIVE_LIB` | Optional path to a prebuilt native Rust preprocessing extension used by workflow preprocessing and `gpurec preprocess-check`. |
 | `GPUREC_PREPROCESS_BIN` | Optional path to the Rust preprocessing CLI used by the subprocess adapter and profiling helpers. |
 | `GPUREC_BACKTRACK_BIN` | Path to the Rust backtracking binary used by `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
 | `GPUREC_BACKTRACK_NATIVE_LIB` | Optional path to a prebuilt native Rust backtracking extension used by Python helper calls with `backend="native"` or native `auto` resolution. |
@@ -704,6 +724,7 @@ of dataset path overrides.
 | Task | Command | Notes |
 | --- | --- | --- |
 | General installed workflow | `gpurec config-template`, `gpurec validate-config`, `gpurec optimize`, `gpurec summary-info`, `gpurec checkpoint-info`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. `config-template` prints or writes installed JSON templates for mode-specific defaults: genewise and specieswise are production-route starters, while global is a shared-rate diagnostic that fails the strict production-route gate. `validate-config` is a CPU-safe path/reference preflight; `summary-info` and `checkpoint-info` are CPU-safe artifact inspection commands. None of those inspection/preflight commands construct the CUDA likelihood model. |
+| Preprocessing native preflight | `gpurec preprocess-check` | Validates `GPUREC_PREPROCESS_NATIVE_LIB`, `--preprocess-native-lib`, or the source-tree Cargo build fallback without reading dataset files. |
 | Sampling binary preflight | `gpurec backtrack-check` | Validates `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo fallback without loading a checkpoint. |
 | Legacy HOGENOM W&B wrapper | `python scripts/optimize_hogenom_ccp_wandb.py` | Checkout-local compatibility wrapper with argparse flags, checkpoints, plots, and optional W&B logging. |
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax; see `configs/README.md` for config ownership. |

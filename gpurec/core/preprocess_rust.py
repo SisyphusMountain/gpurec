@@ -101,7 +101,12 @@ def _is_cargo_fallback_command(command: list[str]) -> bool:
     )
 
 
-def _native_library_path(cargo_manifest: str | Path = _PREPROCESS_MANIFEST) -> Path:
+def _native_library_path(
+    cargo_manifest: str | Path = _PREPROCESS_MANIFEST,
+    native_library: str | Path | None = None,
+) -> Path:
+    if native_library is not None:
+        return Path(native_library).expanduser().resolve()
     override = os.environ.get(_PREPROCESS_NATIVE_LIB_ENV)
     if override:
         return Path(override).expanduser().resolve()
@@ -117,12 +122,15 @@ def _build_native_extension(cargo_manifest: str | Path = _PREPROCESS_MANIFEST) -
             "or source archive cargo manifest to build automatically; default "
             f"source manifest not found at {manifest}. Set "
             f"{_PREPROCESS_NATIVE_LIB_ENV} to a compatible prebuilt native "
-            "extension for installed-wheel deployments."
+            "extension for installed-wheel deployments, or pass "
+            "--preprocess-native-lib to gpurec preprocess-check."
         )
     if shutil.which("cargo") is None:
         raise RuntimeError(
             "gpurec Rust preprocessing native backend requires cargo to build "
-            f"the extension, or set {_PREPROCESS_NATIVE_LIB_ENV} to a built library"
+            f"the extension, or set {_PREPROCESS_NATIVE_LIB_ENV} to a built "
+            "library. For gpurec preprocess-check, pass --preprocess-native-lib "
+            "to check a specific prebuilt extension."
         )
     subprocess.run(
         [
@@ -141,12 +149,29 @@ def _build_native_extension(cargo_manifest: str | Path = _PREPROCESS_MANIFEST) -
 
 
 @lru_cache(maxsize=1)
-def _load_native_module(cargo_manifest: str | Path = _PREPROCESS_MANIFEST):
-    path = _native_library_path(cargo_manifest)
-    if not path.exists() and os.environ.get(_PREPROCESS_NATIVE_LIB_ENV) is None:
+def _load_native_module(
+    cargo_manifest: str | Path = _PREPROCESS_MANIFEST,
+    native_library: str | Path | None = None,
+):
+    path = _native_library_path(cargo_manifest, native_library)
+    if native_library is not None:
+        native_override_source = "preprocess_native_lib"
+    elif os.environ.get(_PREPROCESS_NATIVE_LIB_ENV) is not None:
+        native_override_source = _PREPROCESS_NATIVE_LIB_ENV
+    else:
+        native_override_source = None
+    if not path.exists() and native_override_source is None:
         _build_native_extension(cargo_manifest)
     if not path.exists():
-        raise RuntimeError(f"Rust preprocessing native library not found: {path}")
+        if native_override_source is None:
+            raise RuntimeError(f"Rust preprocessing native library not found: {path}")
+        raise RuntimeError(
+            "Rust preprocessing native library from "
+            f"{native_override_source} not found: {path}. Set "
+            f"{_PREPROCESS_NATIVE_LIB_ENV} to a compatible prebuilt native "
+            "extension for installed-wheel deployments, or pass "
+            "--preprocess-native-lib to gpurec preprocess-check."
+        )
 
     existing = sys.modules.get(_NATIVE_MODULE_NAME)
     if existing is not None:
@@ -168,6 +193,23 @@ def _load_native_module(cargo_manifest: str | Path = _PREPROCESS_MANIFEST):
         sys.modules.pop(_NATIVE_MODULE_NAME, None)
         raise
     return module
+
+
+def ensure_native_preprocessing_available(
+    *,
+    preprocess_native_lib: str | Path | None = None,
+    cargo_manifest: str | Path = _PREPROCESS_MANIFEST,
+) -> Path:
+    """Load the Rust preprocessing extension and return the resolved library path."""
+    path = _native_library_path(cargo_manifest, preprocess_native_lib)
+    _load_native_module.cache_clear()
+    try:
+        _load_native_module(cargo_manifest, preprocess_native_lib)
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Rust preprocessing native library could not be loaded from {path}: {exc}"
+        ) from exc
+    return path
 
 
 class _BinaryReader:

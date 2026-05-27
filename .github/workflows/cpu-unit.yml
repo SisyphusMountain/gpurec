@@ -298,6 +298,17 @@ jobs:
           cd "$smoke_dir"
           gpurec --help
           python -m gpurec.cli --help
+          gpurec preprocess-check --help | tee preprocess-check-help.txt
+          grep -q -- "--preprocess-native-lib" preprocess-check-help.txt
+          grep -q -- "GPUREC_PREPROCESS_NATIVE_LIB" preprocess-check-help.txt
+          unset GPUREC_PREPROCESS_NATIVE_LIB
+          set +e
+          gpurec preprocess-check > preprocess-check-missing.txt 2>&1
+          preprocess_check_status=$?
+          set -e
+          test "$preprocess_check_status" -eq 1
+          grep -q -- "GPUREC_PREPROCESS_NATIVE_LIB" preprocess-check-missing.txt
+          grep -q -- "--preprocess-native-lib" preprocess-check-missing.txt
           gpurec config-template --help | tee config-template-help.txt
           grep -q -- "mode-default Adam" config-template-help.txt
           gpurec config-template --mode genewise | tee genewise-config-template.json
@@ -319,6 +330,9 @@ jobs:
           grep -q '"mode": "global"' global-config-template.json
           cargo build --release --locked --features python-extension --manifest-path "$GITHUB_WORKSPACE/crates/gpurec-preprocess/Cargo.toml"
           export GPUREC_PREPROCESS_NATIVE_LIB="$GITHUB_WORKSPACE/crates/gpurec-preprocess/target/release/libgpurec_preprocess.so"
+          gpurec preprocess-check | tee preprocess-check.txt
+          grep -q "preprocessing_available=true" preprocess-check.txt
+          grep -q "preprocess_native_lib=" preprocess-check.txt
           gpurec config-template --mode genewise --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-genewise-out" --output generated-genewise-run.json
           gpurec validate-config --config generated-genewise-run.json --require-mode-default-optimizer --require-production-default-route --check-preprocess | tee generated-genewise-validate.txt
           grep -q "optimizer=hessian-sgd" generated-genewise-validate.txt

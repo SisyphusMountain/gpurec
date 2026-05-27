@@ -36,6 +36,10 @@ Current Rust slice:
   family records with relative tree/mapping paths, explicit mappings, multiple
   families, multiple tree records, and species matrices without requiring the
   private HOGENOM dataset.
+- `gpurec preprocess-check` validates the native PyO3 preprocessing extension or
+  source-tree Cargo build fallback without reading dataset files, and the release
+  smoke checks both the installed-wheel missing-extension diagnostic and the
+  success path with `GPUREC_PREPROCESS_NATIVE_LIB`.
 
 Latest local timing from the preprocessing benchmark on `tests/data/hogenom_bench`
 (1,055 families, 8 threads, 9 repeats, species matrices disabled):
@@ -59,4 +63,6 @@ for CLI experiments but is not the production-performance path.
 
 Known remaining work before replacement:
 
-- Add packaging/install integration for prebuilt Rust extension artifacts.
+- None for the raw preprocessing replacement path. Remaining redistribution work
+  is release-policy work such as adding a project license and choosing whether
+  future platform wheels should bundle native artifacts.

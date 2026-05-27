@@ -2064,6 +2064,8 @@ def test_input_preparation_guide_documents_alerax_data_contract():
         "shared-rate diagnostic configs",
         "will not pass `--require-production-default-route`",
         "gpurec validate-config --config run.json --check-preprocess",
+        "`gpurec preprocess-check`",
+        "`--preprocess-native-lib`",
         "gpurec validate-config --config run.json --require-mode-default-optimizer",
         "gpurec validate-config --config run.json --require-production-default-route",
         "reject changed HOGENOM/`test_trees_1000` route settings",

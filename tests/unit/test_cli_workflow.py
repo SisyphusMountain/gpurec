@@ -155,6 +155,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "require_production_default_route",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
+    assert _parser_action_dests("preprocess-check") == {"preprocess_native_lib"}
     assert _parser_action_dests("checkpoint-info") == {
         "checkpoint",
         "require_final_check_ok",
@@ -5396,6 +5397,52 @@ def test_cli_backtrack_check_reports_missing_binary_without_traceback(
     assert exc_info.value.code == 1
     assert "GPUREC_BACKTRACK_BIN" in captured.err
     assert "--backtrack-binary" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_preprocess_check_delegates_native_preflight(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    calls: list[Path | None] = []
+    native_lib = tmp_path / "libgpurec_preprocess.so"
+
+    def fake_preflight(preprocess_native_lib: Path | None) -> Path:
+        calls.append(preprocess_native_lib)
+        return native_lib
+
+    monkeypatch.setattr("gpurec.cli._ensure_preprocessing_available", fake_preflight)
+
+    main(["preprocess-check", "--preprocess-native-lib", str(native_lib)])
+
+    captured = capsys.readouterr()
+    assert captured.out == (
+        f"preprocessing_available=true preprocess_native_lib={native_lib}\n"
+    )
+    assert captured.err == ""
+    assert calls == [native_lib]
+
+
+def test_cli_preprocess_check_reports_missing_native_without_traceback(
+    capsys,
+    monkeypatch,
+):
+    def fail_preflight(preprocess_native_lib: Path | None) -> Path:
+        assert preprocess_native_lib is None
+        raise RuntimeError(
+            "set GPUREC_PREPROCESS_NATIVE_LIB or pass --preprocess-native-lib"
+        )
+
+    monkeypatch.setattr("gpurec.cli._ensure_preprocessing_available", fail_preflight)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["preprocess-check"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "GPUREC_PREPROCESS_NATIVE_LIB" in captured.err
+    assert "--preprocess-native-lib" in captured.err
     assert "Traceback" not in captured.err
 
 

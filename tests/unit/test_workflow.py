@@ -3501,6 +3501,25 @@ def test_rust_preprocess_native_backend_reports_missing_source_manifest(
     assert "source checkout or source archive cargo manifest" in message
     assert str(missing_manifest) in message
     assert "GPUREC_PREPROCESS_NATIVE_LIB" in message
+    assert "--preprocess-native-lib" in message
+    assert "installed-wheel deployments" in message
+
+
+def test_rust_preprocess_native_preflight_reports_missing_explicit_library(
+    tmp_path: Path,
+):
+    missing_native_lib = tmp_path / "libgpurec_preprocess.so"
+
+    with pytest.raises(RuntimeError) as exc_info:
+        preprocess_rust.ensure_native_preprocessing_available(
+            preprocess_native_lib=missing_native_lib,
+        )
+
+    message = str(exc_info.value)
+    assert "preprocess_native_lib" in message
+    assert str(missing_native_lib) in message
+    assert "GPUREC_PREPROCESS_NATIVE_LIB" in message
+    assert "--preprocess-native-lib" in message
     assert "installed-wheel deployments" in message
 
 
