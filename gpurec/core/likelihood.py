@@ -415,6 +415,36 @@ def _normalize_nll_denominator(denominator, numerator):
     return value
 
 
+def _validate_root_nll_shapes(Pi_root_rows, E) -> None:
+    if Pi_root_rows.ndim not in (1, 2):
+        raise ValueError(
+            "Pi_root_rows must have shape [S] or [families, S], "
+            f"got {_tensor_shape(Pi_root_rows)}"
+        )
+    if E.ndim not in (1, 2):
+        raise ValueError(
+            "E must have shape [S] or [families, S], "
+            f"got {_tensor_shape(E)}"
+        )
+    if int(Pi_root_rows.shape[-1]) != int(E.shape[-1]):
+        raise ValueError(
+            "Pi_root_rows and E must share the species dimension; "
+            f"got {_tensor_shape(Pi_root_rows)} and {_tensor_shape(E)}"
+        )
+    if Pi_root_rows.ndim == 1 and E.ndim != 1:
+        raise ValueError(
+            "E must have shape [S] when Pi_root_rows has shape [S], "
+            f"got {_tensor_shape(E)}"
+        )
+    if Pi_root_rows.ndim == 2 and E.ndim == 2:
+        family_count = int(Pi_root_rows.shape[0])
+        if int(E.shape[0]) != family_count:
+            raise ValueError(
+                "E family dimension must match Pi_root_rows; "
+                f"expected {family_count}, got {int(E.shape[0])}"
+            )
+
+
 def compute_nll(
     Pi,
     E,
@@ -456,13 +486,16 @@ def compute_nll_root_rows(
 ):
     """Compute per-family NLL from already-gathered root rows.
 
-    ``Pi_root_rows`` is ``[G, S]`` in family order. This is equivalent to
-    ``compute_nll(Pi, E, root_ids)`` when ``Pi_root_rows`` has been
+    ``Pi_root_rows`` is ``[S]`` for one family or ``[G, S]`` in family order.
+    ``E`` is either one shared ``[S]`` vector or matching ``[G, S]``
+    family-specific rows. This is equivalent to ``compute_nll(Pi, E, root_ids)``
+    when ``Pi_root_rows`` has been
     gathered as ``Pi[root_ids]``, but avoids keeping the full Pi matrix alive in
     root-likelihood-only callers.  ``denominator`` may be supplied as a scalar
     or as one value per root row by callers that reuse one E solve across
     multiple root-row batches.
     """
+    _validate_root_nll_shapes(Pi_root_rows, E)
     if origination_probs is None:
         numerator = logsumexp2(Pi_root_rows, dim=-1) - math.log2(Pi_root_rows.shape[-1])
         if denominator is None:

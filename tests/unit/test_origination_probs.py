@@ -157,6 +157,41 @@ def test_scalar_root_row_nll_rejects_vector_denominator():
         compute_nll_root_rows(root_row, E, denominator=torch.zeros(1, dtype=dtype))
 
 
+@pytest.mark.parametrize(
+    ("root_rows", "E", "message"),
+    [
+        (
+            torch.zeros(2, 3, dtype=torch.float64),
+            torch.zeros(4, dtype=torch.float64),
+            "share the species dimension",
+        ),
+        (
+            torch.zeros(2, 3, dtype=torch.float64),
+            torch.zeros(3, 3, dtype=torch.float64),
+            "family dimension",
+        ),
+        (
+            torch.zeros(1, 2, 3, dtype=torch.float64),
+            torch.zeros(3, dtype=torch.float64),
+            "Pi_root_rows",
+        ),
+        (
+            torch.zeros(3, dtype=torch.float64),
+            torch.zeros(1, 3, dtype=torch.float64),
+            "when Pi_root_rows has shape",
+        ),
+        (
+            torch.zeros(2, 3, dtype=torch.float64),
+            torch.zeros(1, 2, 3, dtype=torch.float64),
+            "E must have shape",
+        ),
+    ],
+)
+def test_root_row_nll_rejects_invalid_root_or_e_shapes(root_rows, E, message):
+    with pytest.raises(ValueError, match=message):
+        compute_nll_root_rows(root_rows, E)
+
+
 def test_compute_nll_scalar_root_uses_root_row_contract_with_weighted_prior():
     dtype = torch.float64
     Pi = torch.tensor(
