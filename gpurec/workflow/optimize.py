@@ -436,6 +436,14 @@ def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
     return tensor is not None and bool(torch.isfinite(tensor).all().item())
 
 
+def _tensor_shape(tensor: torch.Tensor) -> tuple[int, ...]:
+    return tuple(int(dim) for dim in tensor.shape)
+
+
+def _is_single_value_tensor(value: object) -> bool:
+    return torch.is_tensor(value) and value.numel() == 1
+
+
 class _NonfiniteParameterUpdate(RuntimeError):
     """Internal sentinel for optimizer updates that corrupt theta."""
 
@@ -1032,12 +1040,41 @@ class OptimizationRunner:
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         model.theta.grad = None
         loss_vec, grad = model.full_genewise_nll_and_grad(need_grad=True)
+        if not torch.is_tensor(loss_vec):
+            raise RuntimeError(
+                "genewise optimizer evaluation did not return a tensor loss vector"
+            )
+        if loss_vec.ndim != 1:
+            raise RuntimeError(
+                "genewise optimizer evaluation returned loss vector with shape "
+                f"{_tensor_shape(loss_vec)}, expected a one-dimensional tensor"
+            )
+        expected_family_count = getattr(model, "n_families", None)
+        if (
+            expected_family_count is not None
+            and loss_vec.numel() != int(expected_family_count)
+        ):
+            raise RuntimeError(
+                "genewise optimizer evaluation returned "
+                f"{loss_vec.numel()} loss values for {int(expected_family_count)} "
+                "families"
+            )
         if grad is None:
             raise RuntimeError("genewise optimizer evaluation did not produce gradients")
-        model.theta.grad = grad.detach().to(
+        if not torch.is_tensor(grad):
+            raise RuntimeError(
+                "genewise optimizer evaluation did not return tensor gradients"
+            )
+        grad = grad.detach().to(
             device=model.theta.device,
             dtype=model.theta.dtype,
         )
+        if _tensor_shape(grad) != _tensor_shape(model.theta):
+            raise RuntimeError(
+                "genewise optimizer evaluation returned gradient shape "
+                f"{_tensor_shape(grad)}, expected theta shape {_tensor_shape(model.theta)}"
+            )
+        model.theta.grad = grad
         loss = loss_vec.sum()
         row: dict[str, Any] = {
             "likelihood/data_nll_bits": float(loss.detach().cpu()),
@@ -1490,14 +1527,6 @@ class OptimizationRunner:
                 "optimizer/final_check_iters_E": 0,
             }
 
-        baseline_loss_bits = float(baseline_loss.detach().cpu())
-        baseline_grad = baseline_grad.detach().clone()
-        baseline_grad_inf = (
-            float(baseline_grad.detach().abs().amax().cpu())
-            if baseline_grad.numel()
-            else 0.0
-        )
-
         metrics: dict[str, Any] = {
             "optimizer/final_check_status": "failed",
             "optimizer/final_check_source": "configured_solver_budget",
@@ -1505,6 +1534,29 @@ class OptimizationRunner:
             "optimizer/final_check_iters_E": check_iters_E,
             "optimizer/final_check_evals": 1,
         }
+        if not _is_single_value_tensor(baseline_loss):
+            metrics["optimizer/final_check_reason"] = "baseline_loss_not_scalar"
+            return metrics
+        if not torch.is_tensor(baseline_grad):
+            metrics["optimizer/final_check_reason"] = "baseline_gradient_not_tensor"
+            return metrics
+
+        baseline_grad = baseline_grad.detach().clone()
+        baseline_grad_shape = _tensor_shape(baseline_grad)
+        theta_shape = _tensor_shape(model.theta)
+        if baseline_grad_shape != theta_shape:
+            metrics["optimizer/final_check_reason"] = (
+                "baseline_gradient_shape_mismatch: baseline gradient shape "
+                f"{baseline_grad_shape} does not match theta shape {theta_shape}"
+            )
+            return metrics
+
+        baseline_loss_bits = float(baseline_loss.detach().reshape(()).cpu())
+        baseline_grad_inf = (
+            float(baseline_grad.detach().abs().amax().cpu())
+            if baseline_grad.numel()
+            else 0.0
+        )
         try:
             _clear_cached_solver_runtime_state(model)
             configure_solver(
@@ -1562,17 +1614,34 @@ class OptimizationRunner:
             else:
                 check_loss, _check_metrics = self._evaluate_and_backward(model)
                 check_grad = model.theta.grad
+            if not _is_single_value_tensor(check_loss):
+                metrics["optimizer/final_check_reason"] = "check_loss_not_scalar"
+                return metrics
+            check_loss = check_loss.detach().reshape(())
+            if check_grad is None:
+                metrics["optimizer/final_check_reason"] = "missing_check_gradient"
+                return metrics
+            if not torch.is_tensor(check_grad):
+                metrics["optimizer/final_check_reason"] = "check_gradient_not_tensor"
+                return metrics
+            check_grad = check_grad.detach()
+            if _tensor_shape(check_grad) != baseline_grad_shape:
+                metrics["optimizer/final_check_reason"] = (
+                    "gradient_shape_mismatch: check gradient shape "
+                    f"{_tensor_shape(check_grad)} does not match baseline gradient "
+                    f"shape {baseline_grad_shape}"
+                )
+                return metrics
             check_failed = (
                 not torch.isfinite(check_loss).item()
                 or not _is_finite_tensor(check_grad)
             )
-            if check_failed or check_grad is None:
+            if check_failed:
                 metrics["optimizer/final_check_reason"] = (
                     "nonfinite_objective_or_gradient"
                 )
                 return metrics
 
-            check_grad = check_grad.detach()
             check_loss_bits = float(check_loss.detach().cpu())
             grad_delta = (check_grad - baseline_grad).detach()
             grad_delta_inf = (

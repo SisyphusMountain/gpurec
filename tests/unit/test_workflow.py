@@ -8095,6 +8095,30 @@ def test_memory_retryable_error_includes_scratch_budget_guard():
     assert optimize_workflow._is_memory_retryable_runtime_error(exc)
 
 
+def test_genewise_vector_eval_rejects_bad_gradient_shape(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+
+    def bad_full_genewise_nll_and_grad(*, need_grad: bool):
+        values = torch.ones((model.n_families,), dtype=model.theta.dtype)
+        grad = (
+            torch.zeros((1, model.theta.shape[1]), dtype=model.theta.dtype)
+            if need_grad
+            else None
+        )
+        return values, grad
+
+    model.full_genewise_nll_and_grad = bad_full_genewise_nll_and_grad
+
+    with pytest.raises(RuntimeError, match=r"gradient shape \(1, 3\)"):
+        runner._evaluate_genewise_vector_and_grad(model)
+
+
 def test_final_genewise_eval_does_not_fallback_for_non_memory_error(
     tmp_path: Path,
     monkeypatch,
@@ -9536,6 +9560,66 @@ def test_final_iteration_check_runs_for_specieswise_mode(tmp_path: Path):
     assert metrics["optimizer/final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
     assert metrics["optimizer/final_check_grad_max_abs_delta"] == pytest.approx(0.0)
     assert solver_configs == [
+        {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32},
+        {"fixed_iters_E": 6, "fixed_iters_Pi": 16, "neumann_terms": 16},
+    ]
+
+
+def test_final_iteration_check_rejects_broadcastable_gradient_shape(tmp_path: Path):
+    class FakeTheta:
+        def __init__(self):
+            self.shape = (2, 3)
+            self.device = torch.device("cpu")
+            self.dtype = torch.float32
+            self.is_cuda = False
+            self.grad = None
+
+    class FakeModel:
+        def __init__(self):
+            self.theta = FakeTheta()
+            self.solver_configs: list[dict[str, object]] = []
+            self.clears = 0
+
+        def configure_solver_iterations(self, **kwargs):
+            self.solver_configs.append(dict(kwargs))
+
+        def clear(self):
+            self.clears += 1
+
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="lbfgsb",
+        mode="specieswise",
+        fixed_iters_e=6,
+        fixed_iters_pi=16,
+        neumann_terms=16,
+        final_check_iters=32,
+    )
+    runner = OptimizationRunner(config)
+    model = FakeModel()
+    baseline_loss = torch.tensor(1.0)
+    baseline_grad = torch.zeros(model.theta.shape)
+
+    def evaluate_and_backward(model_arg):
+        assert model_arg is model
+        model_arg.theta.grad = torch.zeros((1, model_arg.theta.shape[1]))
+        return baseline_loss.clone(), {}
+
+    runner._evaluate_and_backward = evaluate_and_backward  # type: ignore[method-assign]
+
+    metrics = runner._evaluate_final_iteration_check(
+        model,
+        baseline_loss=baseline_loss,
+        baseline_grad=baseline_grad,
+    )
+
+    assert metrics["optimizer/final_check_status"] == "failed"
+    assert metrics["optimizer/final_check_reason"] == (
+        "gradient_shape_mismatch: check gradient shape (1, 3) does not match "
+        "baseline gradient shape (2, 3)"
+    )
+    torch.testing.assert_close(model.theta.grad, baseline_grad)
+    assert model.solver_configs == [
         {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32},
         {"fixed_iters_E": 6, "fixed_iters_Pi": 16, "neumann_terms": 16},
     ]
