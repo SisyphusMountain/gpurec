@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 import torch
 
+from gpurec.core.model import parse_alerax_family_file
 from gpurec.core.preprocess_rust import RustPreprocessExtension
 from gpurec.core.preprocess_rust import RustPreprocessSubprocessExtension
 
 
 ROOT = Path(__file__).resolve().parents[2]
 RUST_MANIFEST = ROOT / "crates" / "gpurec-preprocess" / "Cargo.toml"
+HOGENOM_STYLE_FIXTURE = ROOT / "tests" / "fixtures" / "alerax_hogenom_style"
 SUBPROCESS_TIMEOUT = 60
 
 
@@ -344,6 +346,57 @@ def test_rust_preprocess_cli_matches_native_adapter_multiple_families_and_branch
         family_name="fam2",
         include_species_matrices=False,
     )
+
+
+def test_rust_preprocess_cli_matches_native_adapter_hogenom_style_alerax_fixture(
+    tmp_path: Path,
+):
+    species = HOGENOM_STYLE_FIXTURE / "species.nwk"
+    families_file = HOGENOM_STYLE_FIXTURE / "families.txt"
+    names, tree_paths, leaf_maps = parse_alerax_family_file(families_file)
+    families = {name: paths for name, paths in zip(names, tree_paths)}
+    leaf_species_maps = {
+        name: mapping
+        for name, mapping in zip(names, leaf_maps)
+        if mapping
+    }
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "species_path": str(species),
+                "families": families,
+                "leaf_species_maps": leaf_species_maps,
+                "include_species_matrices": True,
+                "num_threads": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rust = _run_rust_preprocess(request_path)
+    expected = _plain(
+        RustPreprocessExtension().preprocess_multiple_families(
+            str(species),
+            families,
+            leaf_species_maps=leaf_species_maps,
+            include_details=True,
+            include_species_matrices=True,
+            include_debug_details=False,
+            include_scheduler_details=False,
+            include_legacy_ccp_details=False,
+            num_threads=2,
+        )
+    )
+
+    assert names == ["ribosomal_like", "transfer_like"]
+    for family_name in names:
+        _assert_preprocess_outputs_match(
+            rust,
+            expected,
+            family_name=family_name,
+            include_species_matrices=True,
+        )
 
 
 @pytest.mark.parametrize(

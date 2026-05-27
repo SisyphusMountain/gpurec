@@ -31,7 +31,11 @@ Current Rust slice:
   multifurcating gene-tree family with species matrices enabled, and a
   multi-family request with signed, decimal, and exponent branch-length
   spellings. It also covers native-vs-subprocess adapter raw output parity plus
-  mapping-error and malformed-Newick error behavior.
+  mapping-error and malformed-Newick error behavior. The tracked
+  `tests/fixtures/alerax_hogenom_style` fixture exercises HOGENOM-style AleRax
+  family records with relative tree/mapping paths, explicit mappings, multiple
+  families, multiple tree records, and species matrices without requiring the
+  private HOGENOM dataset.
 
 Latest local timing from the preprocessing benchmark on `tests/data/hogenom_bench`
 (1,055 families, 8 threads, 9 repeats, species matrices disabled):
@@ -55,5 +59,4 @@ for CLI experiments but is not the production-performance path.
 
 Known remaining work before replacement:
 
-- Add parity coverage for HOGENOM-style fixtures.
 - Add packaging/install integration for prebuilt Rust extension artifacts.

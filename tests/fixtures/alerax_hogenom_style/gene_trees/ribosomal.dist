@@ -1,0 +1,2 @@
+((gene_a1:0.11,gene_b1:0.12)ab:0.13,(gene_c1:0.14,gene_d1:0.15)cd:0.16)root:0.17;
+((gene_a1:0.21,gene_c1:0.22)ac:0.23,(gene_b1:0.24,gene_d1:0.25)bd:0.26)root:0.27

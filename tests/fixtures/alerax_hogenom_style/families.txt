@@ -1,0 +1,8 @@
+[FAMILIES]
+- ribosomal_like
+starting_gene_tree = gene_trees/ribosomal.dist
+mapping = mappings/ribosomal.map
+- transfer_like
+starting_gene_tree = gene_trees/transfer_seed.nwk
+gene_tree = gene_trees/transfer_alt.nwk
+mapping = mappings/transfer.map
