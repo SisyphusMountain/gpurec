@@ -110,6 +110,15 @@ def _native_library_path(cargo_manifest: str | Path = _PREPROCESS_MANIFEST) -> P
 
 
 def _build_native_extension(cargo_manifest: str | Path = _PREPROCESS_MANIFEST) -> None:
+    manifest = Path(cargo_manifest)
+    if not manifest.exists():
+        raise RuntimeError(
+            "gpurec Rust preprocessing native backend needs a source checkout "
+            "or source archive cargo manifest to build automatically; default "
+            f"source manifest not found at {manifest}. Set "
+            f"{_PREPROCESS_NATIVE_LIB_ENV} to a compatible prebuilt native "
+            "extension for installed-wheel deployments."
+        )
     if shutil.which("cargo") is None:
         raise RuntimeError(
             "gpurec Rust preprocessing native backend requires cargo to build "
@@ -124,7 +133,7 @@ def _build_native_extension(cargo_manifest: str | Path = _PREPROCESS_MANIFEST) -
             "--features",
             "python-extension",
             "--manifest-path",
-            str(cargo_manifest),
+            str(manifest),
         ],
         cwd=_REPO_ROOT,
         check=True,

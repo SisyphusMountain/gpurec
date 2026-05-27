@@ -317,6 +317,8 @@ jobs:
           gpurec config-template --mode global | tee global-config-template.json
           grep -q '"optimizer": "auto"' global-config-template.json
           grep -q '"mode": "global"' global-config-template.json
+          cargo build --release --locked --features python-extension --manifest-path "$GITHUB_WORKSPACE/crates/gpurec-preprocess/Cargo.toml"
+          export GPUREC_PREPROCESS_NATIVE_LIB="$GITHUB_WORKSPACE/crates/gpurec-preprocess/target/release/libgpurec_preprocess.so"
           gpurec config-template --mode genewise --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-genewise-out" --output generated-genewise-run.json
           gpurec validate-config --config generated-genewise-run.json --require-mode-default-optimizer --require-production-default-route --check-preprocess | tee generated-genewise-validate.txt
           grep -q "optimizer=hessian-sgd" generated-genewise-validate.txt

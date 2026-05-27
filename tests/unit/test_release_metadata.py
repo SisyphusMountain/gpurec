@@ -668,6 +668,14 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "generated-global-mode-default-validate.txt",
         "generated-global-production-route.out",
         "generated-global-production-route.err",
+        (
+            "cargo build --release --locked --features python-extension "
+            '--manifest-path "$GITHUB_WORKSPACE/crates/gpurec-preprocess/Cargo.toml"'
+        ),
+        (
+            'export GPUREC_PREPROCESS_NATIVE_LIB="$GITHUB_WORKSPACE/crates/'
+            'gpurec-preprocess/target/release/libgpurec_preprocess.so"'
+        ),
         "$GITHUB_WORKSPACE/examples/tiny/species.nwk",
         "$GITHUB_WORKSPACE/examples/tiny/families.txt",
         "gpurec validate-config --config generated-genewise-run.json "
@@ -1205,6 +1213,12 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "gpurec config-template --mode genewise",
         "gpurec config-template --mode specieswise",
         "gpurec config-template --mode global",
+        "cargo build --release --locked --features python-extension",
+        '--manifest-path "$repo_root/crates/gpurec-preprocess/Cargo.toml"',
+        (
+            'export GPUREC_PREPROCESS_NATIVE_LIB="$repo_root/crates/'
+            'gpurec-preprocess/target/release/libgpurec_preprocess.so"'
+        ),
         "generated-genewise-run.json",
         "generated-specieswise-run.json",
         "generated-global-run.json",
@@ -1230,6 +1244,9 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "preprocess_checked=true",
         "cuda_backward_ready=false",
         "mode-default `adam` diagnostic and fails `--require-production-default-route` with a `mode` mismatch",
+        "source-checkout `crates/gpurec-preprocess` PyO3 extension",
+        "`GPUREC_PREPROCESS_NATIVE_LIB` before any installed-wheel",
+        "compatible prebuilt native preprocessing extension",
         "mode-default optimizer gates",
         "gpurec validate-config --help",
         "--require-cuda-backward-ready",
@@ -1389,6 +1406,9 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert "retained Rust parser to run on\nCPU" in readme
     assert "CPU-safe path/reference preflight" in readme
     assert "In a wheel-only\ninstall" in readme
+    assert "Workflow preprocessing is implemented by\nthe native Rust" in readme
+    assert "wheel-only deployments should point `GPUREC_PREPROCESS_NATIVE_LIB`" in readme
+    assert "`GPUREC_PREPROCESS_BIN` is reserved for the subprocess\nadapter" in readme
     assert "For a source checkout or unpacked source archive" in readme
     assert (
         "cargo build --locked --release --manifest-path "

@@ -44,9 +44,14 @@ pip install -e ".[dev]"
 
 The CUDA kernels import Triton directly, so Triton is a core dependency rather
 than an optional extra.  Install a PyTorch build that matches the local CUDA
-runtime before installing `gpurec`.  CPU preprocessing is implemented by the
-Rust `crates/gpurec-preprocess` extension; source-checkout runs need a Rust
-toolchain unless `GPUREC_PREPROCESS_NATIVE_LIB` points at a prebuilt extension.
+runtime before installing `gpurec`.  Workflow preprocessing is implemented by
+the native Rust `crates/gpurec-preprocess` extension.  Source checkouts and
+unpacked source archives can build it with Cargo from the crate manifest;
+wheel-only deployments should point `GPUREC_PREPROCESS_NATIVE_LIB` at a
+compatible prebuilt extension before running `validate-config --check-preprocess`,
+`optimize`, or `run`. `GPUREC_PREPROCESS_BIN` is reserved for the subprocess
+adapter and profiling helpers; it is not a workflow model-construction
+fallback.
 
 For the checkout-local HOGENOM experiment scripts:
 

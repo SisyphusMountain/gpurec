@@ -117,6 +117,14 @@ tree, family records, gene trees, and mapping files on CPU:
 gpurec validate-config --config run.json --check-preprocess
 ```
 
+Workflow preprocessing uses the native Rust `crates/gpurec-preprocess`
+extension.  Source checkouts and unpacked source archives can build that native
+extension from the included Cargo manifest.  Wheel-only deployments should set
+`GPUREC_PREPROCESS_NATIVE_LIB` to a compatible prebuilt extension before using
+`--check-preprocess`, `gpurec optimize`, or `gpurec run`.  The
+`GPUREC_PREPROCESS_BIN` CLI override is for the subprocess adapter and
+profiling helpers, not a workflow model-construction fallback.
+
 The validation output reports the effective optimizer, batch packing, family
 chunking, solver budgets, optimizer-specific defaults, and, when
 `--check-preprocess` is used, `cuda_backward_ready` for the current species

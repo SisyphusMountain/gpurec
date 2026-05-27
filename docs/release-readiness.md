@@ -70,6 +70,11 @@ generates a global template too, then
 checks that it passes `--require-mode-default-optimizer` as a mode-default
 `adam` diagnostic and fails `--require-production-default-route` with a `mode`
 mismatch. It also smokes
+the installed-wheel preprocessing path by building the source-checkout
+`crates/gpurec-preprocess` PyO3 extension and exporting
+`GPUREC_PREPROCESS_NATIVE_LIB` before any installed-wheel
+`--check-preprocess` call, matching the wheel-only deployment requirement for a
+compatible prebuilt native preprocessing extension. It also smokes
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
 `--require-converged` and `--require-final-check-ok` summary gates for
@@ -153,6 +158,9 @@ python -m gpurec.cli --help
 gpurec config-template --mode genewise
 gpurec config-template --mode specieswise
 gpurec config-template --mode global
+cargo build --release --locked --features python-extension \
+  --manifest-path "$repo_root/crates/gpurec-preprocess/Cargo.toml"
+export GPUREC_PREPROCESS_NATIVE_LIB="$repo_root/crates/gpurec-preprocess/target/release/libgpurec_preprocess.so"
 gpurec config-template --mode genewise \
   --species-tree "$repo_root/examples/tiny/species.nwk" \
   --families-file "$repo_root/examples/tiny/families.txt" \

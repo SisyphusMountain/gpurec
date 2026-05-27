@@ -16,6 +16,7 @@ import torch
 
 import gpurec
 import gpurec.backtracking as backtracking
+import gpurec.core.preprocess_rust as preprocess_rust
 import gpurec.entropy as entropy
 import gpurec.api.model as api_model
 import gpurec.api.uniform_chunked as uniform_chunked_api
@@ -3372,6 +3373,21 @@ def test_public_constructors_reject_removed_preprocessing_cache_kwargs(
             [tmp_path / "g.nwk"],
             preprocess_cache_dir=tmp_path / "cache",
         )
+
+
+def test_rust_preprocess_native_backend_reports_missing_source_manifest(
+    tmp_path: Path,
+):
+    missing_manifest = tmp_path / "missing-crate" / "Cargo.toml"
+
+    with pytest.raises(RuntimeError) as exc_info:
+        preprocess_rust._build_native_extension(missing_manifest)
+
+    message = str(exc_info.value)
+    assert "source checkout or source archive cargo manifest" in message
+    assert str(missing_manifest) in message
+    assert "GPUREC_PREPROCESS_NATIVE_LIB" in message
+    assert "installed-wheel deployments" in message
 
 
 @pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])
