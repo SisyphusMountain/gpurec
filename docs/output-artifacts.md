@@ -209,7 +209,9 @@ packing, solver budgets, restart schedule, and Hessian-SGD normal-stage
 overrides without reconstructing a full `RunConfig`. Resume and sampling
 compatibility checks treat absent route metadata as a legacy checkpoint, but a
 checkpoint that does carry `route_metadata` must include and match all current
-non-mutable route fields before theta restoration.
+non-mutable route fields before theta restoration. `restore_model_theta(...)`
+also validates that the payload theta is a finite floating tensor with the
+model's exact theta shape before copying it into the model.
 The same checkpoint status and route fields are available from the CLI:
 
 ```bash

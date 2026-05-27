@@ -6424,6 +6424,37 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
     assert int(load_checkpoint(final_path)["next_step"]) == 4
 
 
+@pytest.mark.parametrize(
+    ("theta", "message"),
+    [
+        ([[1.0, 2.0, 3.0]], "invalid theta tensor"),
+        (
+            torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.int64),
+            "invalid theta tensor dtype",
+        ),
+        (
+            torch.tensor([[0.0, math.nan, 0.0], [0.0, 0.0, 0.0]]),
+            "nonfinite theta tensor",
+        ),
+        (torch.zeros(1, 3), r"checkpoint theta shape \(1, 3\)"),
+    ],
+)
+def test_restore_model_theta_validates_payload_before_copy(
+    theta: object,
+    message: str,
+):
+    model = _DummyModel()
+    with torch.no_grad():
+        model.theta.fill_(0.5)
+    before = model.theta.detach().clone()
+
+    with pytest.raises(RuntimeError, match=message):
+        restore_model_theta(model, {"theta": theta})
+
+    torch.testing.assert_close(model.theta.detach(), before)
+    assert not model.cleared
+
+
 def test_checkpoint_compatibility_rejects_route_metadata_mismatch(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",

@@ -311,7 +311,14 @@ def load_checkpoint(
 
 
 def restore_model_theta(model: Any, payload: dict[str, Any]) -> None:
-    theta = payload["theta"].to(device=model.theta.device, dtype=model.theta.dtype)
+    theta_value = payload.get("theta")
+    if not torch.is_tensor(theta_value):
+        raise RuntimeError("checkpoint payload has invalid theta tensor")
+    if not torch.is_floating_point(theta_value):
+        raise RuntimeError("checkpoint payload has invalid theta tensor dtype")
+    if not bool(torch.isfinite(theta_value).all().item()):
+        raise RuntimeError("checkpoint payload has nonfinite theta tensor")
+    theta = theta_value.to(device=model.theta.device, dtype=model.theta.dtype)
     if tuple(theta.shape) != tuple(model.theta.shape):
         raise RuntimeError(
             f"checkpoint theta shape {tuple(theta.shape)} does not match model "
