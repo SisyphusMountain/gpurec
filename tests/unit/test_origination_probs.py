@@ -109,6 +109,54 @@ def test_root_row_nll_accepts_precomputed_denominator():
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
 
+def test_root_row_nll_accepts_vector_precomputed_denominator():
+    dtype = torch.float64
+    root_rows = torch.tensor(
+        [[-4.0, -2.0, -5.0], [-1.5, -3.0, -2.5]],
+        dtype=dtype,
+    )
+    E = torch.tensor(
+        [[-3.0, -2.0, -4.0], [-2.5, -2.25, -3.25]],
+        dtype=dtype,
+    )
+    denominator = torch.log2(1 - torch.exp2(E).mean(dim=-1))
+
+    expected = compute_nll_root_rows(root_rows, E)
+    actual = compute_nll_root_rows(root_rows, E, denominator=denominator)
+
+    assert actual.shape == (2,)
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "denominator",
+    [
+        torch.zeros(2, 1, dtype=torch.float64),
+        torch.zeros(3, dtype=torch.float64),
+        torch.zeros(1, 2, dtype=torch.float64),
+    ],
+)
+def test_root_row_nll_rejects_broadcasting_denominator_shapes(denominator):
+    dtype = torch.float64
+    root_rows = torch.tensor(
+        [[-4.0, -2.0, -5.0], [-1.5, -3.0, -2.5]],
+        dtype=dtype,
+    )
+    E = torch.tensor([-3.0, -2.0, -4.0], dtype=dtype)
+
+    with pytest.raises(ValueError, match="denominator.*per-family NLL shape"):
+        compute_nll_root_rows(root_rows, E, denominator=denominator)
+
+
+def test_scalar_root_row_nll_rejects_vector_denominator():
+    dtype = torch.float64
+    root_row = torch.tensor([-4.0, -2.0, -5.0], dtype=dtype)
+    E = torch.tensor([-3.0, -2.0, -4.0], dtype=dtype)
+
+    with pytest.raises(ValueError, match="denominator.*per-family NLL shape"):
+        compute_nll_root_rows(root_row, E, denominator=torch.zeros(1, dtype=dtype))
+
+
 def test_compute_nll_scalar_root_uses_root_row_contract_with_weighted_prior():
     dtype = torch.float64
     Pi = torch.tensor(

@@ -394,6 +394,27 @@ def compute_origination_denominator(
     return torch.log2((probs * (1 - torch.exp2(E))).sum(dim=-1))
 
 
+def _normalize_nll_denominator(denominator, numerator):
+    if denominator is None:
+        return None
+    if torch.is_tensor(denominator):
+        value = denominator.to(device=numerator.device, dtype=numerator.dtype)
+    else:
+        value = torch.as_tensor(
+            denominator,
+            device=numerator.device,
+            dtype=numerator.dtype,
+        )
+    if value.ndim == 0:
+        return value
+    if _tensor_shape(value) != _tensor_shape(numerator):
+        raise ValueError(
+            "denominator must be scalar or match the per-family NLL shape "
+            f"{_tensor_shape(numerator)}, got {_tensor_shape(value)}"
+        )
+    return value
+
+
 def compute_nll(
     Pi,
     E,
@@ -438,8 +459,9 @@ def compute_nll_root_rows(
     ``Pi_root_rows`` is ``[G, S]`` in family order. This is equivalent to
     ``compute_nll(Pi, E, root_ids)`` when ``Pi_root_rows`` has been
     gathered as ``Pi[root_ids]``, but avoids keeping the full Pi matrix alive in
-    root-likelihood-only callers.  ``denominator`` may be supplied by callers
-    that reuse one E solve across multiple root-row batches.
+    root-likelihood-only callers.  ``denominator`` may be supplied as a scalar
+    or as one value per root row by callers that reuse one E solve across
+    multiple root-row batches.
     """
     if origination_probs is None:
         numerator = logsumexp2(Pi_root_rows, dim=-1) - math.log2(Pi_root_rows.shape[-1])
@@ -463,4 +485,5 @@ def compute_nll_root_rows(
                 probs,
                 origination_probs_prepared=True,
             )
+    denominator = _normalize_nll_denominator(denominator, numerator)
     return -(numerator - denominator)
