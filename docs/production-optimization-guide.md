@@ -246,19 +246,21 @@ E7/Pi4 warmup, a fixed8 bridge, one E16/Pi8 repair row, then the
 `0.25:1,0.1:2` L-BFGS-B schedule without forced fallback or resolution
 competition. That route reached `1699446.0` bits in `1490.81s`, and its
 important feature was avoiding extra high-fidelity prefix rows and letting the
-ordinary L-BFGS-B tail continue rather than harder Pi/E polishing. Tightening
-coordinate fallback on that route is the current near-best Pareto point
-(`1469.20s`, `1699446.375` bits): it still accepted no fallback rows, but made
-the terminal no-move rows cheaper while landing `0.375` bits above the lowest
-endpoint. Tightening the final phase to one-row patience gives a faster Pareto
-point (`1437.82s`, `1699446.875` bits), but a preserved-state no-high-KKT resume
-did not recover the lower endpoint from that plateau. Plain factor `16` remains
-a slower quality-polish setting. Intermediate probes at factors `4` and `8` did
-not preserve the lower objective basin, so this is not currently a smooth
-time/quality dial. The schedule-forced fallback and best-checkpoint retry
-controls are also dataset-specific tail escape hatches. They are not part of
-the retained HOGENOM default; validate them per dataset before promoting them to
-a production preset.
+ordinary L-BFGS-B tail continue rather than harder Pi/E polishing. Reducing
+`lbfgs_max_ls` to `3` on the no-coordinate policy found the current lowest
+endpoint (`1503.43s`, `1699445.875` bits), but it changed the basin rather than
+being a free overhead trim. Disabling coordinate fallback on the same route is
+the current near-best Pareto point (`1469.20s`, `1699446.375` bits): it still
+accepted no fallback rows, but made the terminal no-move rows cheaper while
+landing `0.5` bits above the lowest endpoint. Tightening the final phase to
+one-row patience gives a faster Pareto point (`1437.82s`, `1699446.875` bits),
+but a preserved-state no-high-KKT resume did not recover the lower endpoint from
+that plateau. Plain factor `16` remains a slower quality-polish setting.
+Intermediate probes at factors `4` and `8` did not preserve the lower objective
+basin, so this is not currently a smooth time/quality dial. The schedule-forced
+fallback and best-checkpoint retry controls are also dataset-specific tail
+escape hatches. They are not part of the retained HOGENOM default; validate them
+per dataset before promoting them to a production preset.
 
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,
