@@ -1188,6 +1188,39 @@ def _evaluate_static_state(
     )
 
 
+def _validate_genewise_loss_vector(
+    name: str,
+    value: torch.Tensor,
+    *,
+    family_count: int,
+) -> torch.Tensor:
+    if not torch.is_tensor(value):
+        raise TypeError(f"{name} must be a torch.Tensor")
+    expected_shape = (int(family_count),)
+    actual_shape = tuple(int(dim) for dim in value.shape)
+    if actual_shape != expected_shape:
+        raise ValueError(
+            f"{name} must have shape {expected_shape}, got {actual_shape}"
+        )
+    return value
+
+
+def _validate_genewise_gradient_matrix(
+    name: str,
+    value: torch.Tensor,
+    *,
+    expected_shape: tuple[int, ...],
+) -> torch.Tensor:
+    if not torch.is_tensor(value):
+        raise TypeError(f"{name} must be a torch.Tensor")
+    actual_shape = tuple(int(dim) for dim in value.shape)
+    if actual_shape != expected_shape:
+        raise ValueError(
+            f"{name} must have shape {expected_shape}, got {actual_shape}"
+        )
+    return value
+
+
 class _GeneReconFullLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, theta: torch.Tensor, model: "GeneReconModel"):
@@ -2382,10 +2415,20 @@ class GeneReconModel(torch.nn.Module):
                 need_grad=need_grad,
                 per_family=True,
             )
-            values.copy_(loss.to(device=values.device, dtype=values.dtype).reshape(-1))
+            loss = _validate_genewise_loss_vector(
+                "genewise per-family NLL",
+                loss,
+                family_count=self.n_families,
+            )
+            values.copy_(loss.to(device=values.device, dtype=values.dtype))
             if need_grad:
                 if grad is None or grad_total is None:
                     raise RuntimeError("internal error: missing genewise gradient")
+                grad = _validate_genewise_gradient_matrix(
+                    "genewise gradient",
+                    grad,
+                    expected_shape=tuple(int(dim) for dim in grad_total.shape),
+                )
                 grad_total.copy_(grad.to(device=grad_total.device, dtype=grad_total.dtype))
             return values, grad_total
 
@@ -2401,6 +2444,11 @@ class GeneReconModel(torch.nn.Module):
                     need_grad=need_grad,
                     per_family=True,
                 )
+                batch_values = _validate_genewise_loss_vector(
+                    "genewise batch per-family NLL",
+                    batch_values,
+                    family_count=len(metadata.family_indices),
+                )
                 idx = torch.as_tensor(
                     metadata.family_indices,
                     dtype=torch.long,
@@ -2409,11 +2457,16 @@ class GeneReconModel(torch.nn.Module):
                 values.index_copy_(
                     0,
                     idx,
-                    batch_values.to(device=values.device, dtype=values.dtype).reshape(-1),
+                    batch_values.to(device=values.device, dtype=values.dtype),
                 )
                 if need_grad:
                     if batch_grad is None or grad_total is None:
                         raise RuntimeError("internal error: missing genewise batch gradient")
+                    batch_grad = _validate_genewise_gradient_matrix(
+                        "genewise batch gradient",
+                        batch_grad,
+                        expected_shape=tuple(int(dim) for dim in theta_batch.shape),
+                    )
                     grad_total.index_copy_(
                         0,
                         idx.to(device=grad_total.device),

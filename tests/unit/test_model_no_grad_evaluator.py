@@ -63,6 +63,52 @@ def _model_with_active_state(
     return model, static, theta
 
 
+def _genewise_stream_model(
+    *,
+    family_count: int,
+    batches: tuple[tuple[int, ...], ...] = (),
+):
+    model = api_model.GeneReconModel.__new__(api_model.GeneReconModel)
+    torch.nn.Module.__init__(model)
+    model._mode = "genewise"
+    model._dataset = SimpleNamespace(families=[object() for _ in range(family_count)])
+    model.theta = torch.nn.Parameter(
+        torch.zeros((family_count, 3), dtype=torch.float64)
+    )
+    model._batched_resident = bool(batches)
+    if not batches:
+        static = object()
+        model._active_static = lambda: static
+        return model
+
+    metadata = [
+        SimpleNamespace(family_indices=tuple(int(index) for index in family_indices))
+        for family_indices in batches
+    ]
+    model.batch_metadata = metadata
+    model._current_batch_index = 0
+
+    def select_batch(batch_index: int):
+        model._current_batch_index = int(batch_index)
+        return metadata[model._current_batch_index]
+
+    def active_static():
+        return SimpleNamespace(batch_index=model._current_batch_index)
+
+    def active_theta():
+        indices = torch.tensor(
+            metadata[model._current_batch_index].family_indices,
+            dtype=torch.long,
+            device=model.theta.device,
+        )
+        return model.theta.index_select(0, indices)
+
+    model.select_batch = select_batch
+    model._active_static = active_static
+    model._active_theta = active_theta
+    return model
+
+
 def test_forward_with_non_grad_theta_uses_resident_no_grad_evaluator(monkeypatch):
     model, static, theta = _model_with_active_state(
         mode="global",
@@ -298,6 +344,65 @@ def test_model_evaluate_static_state_delegates_to_uniform_evaluator(monkeypatch)
             "per_family": True,
         }
     ]
+
+
+def test_full_genewise_nll_and_grad_rejects_bad_single_static_loss_shape(
+    monkeypatch,
+):
+    model = _genewise_stream_model(family_count=2)
+
+    def fake_evaluate_static_state(
+        static_arg,
+        theta_arg,
+        *,
+        need_grad,
+        per_family=False,
+    ):
+        assert need_grad is True
+        assert per_family is True
+        return (
+            torch.ones((2, 1), dtype=theta_arg.dtype),
+            torch.zeros_like(theta_arg),
+        )
+
+    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+
+    with pytest.raises(ValueError, match="genewise per-family NLL.*shape"):
+        model.full_genewise_nll_and_grad(need_grad=True)
+
+
+def test_full_genewise_nll_and_grad_rejects_bad_batch_gradient_shape(
+    monkeypatch,
+):
+    model = _genewise_stream_model(family_count=3, batches=((0, 1), (2,)))
+    model._current_batch_index = 1
+    theta_shapes: list[tuple[int, ...]] = []
+
+    def fake_evaluate_static_state(
+        static_arg,
+        theta_arg,
+        *,
+        need_grad,
+        per_family=False,
+    ):
+        assert need_grad is True
+        assert per_family is True
+        theta_shapes.append(tuple(int(dim) for dim in theta_arg.shape))
+        return (
+            torch.ones((theta_arg.shape[0],), dtype=theta_arg.dtype),
+            torch.zeros(
+                (theta_arg.shape[0] + 1, theta_arg.shape[1]),
+                dtype=theta_arg.dtype,
+            ),
+        )
+
+    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+
+    with pytest.raises(ValueError, match="genewise batch gradient.*shape"):
+        model.full_genewise_nll_and_grad(need_grad=True)
+
+    assert theta_shapes == [(2, 3)]
+    assert model.current_batch_index == 1
 
 
 def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypatch):
