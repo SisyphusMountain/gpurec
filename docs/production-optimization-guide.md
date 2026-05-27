@@ -182,7 +182,10 @@ accepted as `E/Pi[/Neumann]:learning_rate:steps`, for example
 `8/4:1.0:60` to start with `fixed_iters_E=8`, `fixed_iters_Pi=4`, and
 `neumann_terms=4`. The runner resets Adagrad state at each budget change and
 records `optimizer/adagrad_restart_*` fields in history, including explicit
-E/Pi/Neumann budgets. The final validation uses
+E/Pi/Neumann budgets. Phase indexes, phase steps, phase lengths, and
+E/Pi/Neumann budget fields are typed JSON integers; the schedule learning rate
+remains numeric and `optimizer/adagrad_restart_restarted` is boolean. The final
+validation uses
 `adagrad_restart_final_check_iters=128` by default.
 The default ladder has `adagrad_restart_total_steps=125`; `steps` is treated as
 a maximum cap, so specieswise `adagrad-restarts` stops when either the configured

@@ -3484,25 +3484,23 @@ class OptimizationRunner:
                         metrics["optimizer/adagrad_restart_phase"] = (
                             adagrad_restart_active_phase.name
                         )
-                        metrics["optimizer/adagrad_restart_phase_index"] = float(
+                        metrics["optimizer/adagrad_restart_phase_index"] = int(
                             adagrad_restart_active_phase.index
                         )
-                        metrics["optimizer/adagrad_restart_phase_step"] = float(
-                            phase_step
-                        )
-                        metrics["optimizer/adagrad_restart_phase_steps"] = float(
+                        metrics["optimizer/adagrad_restart_phase_step"] = int(phase_step)
+                        metrics["optimizer/adagrad_restart_phase_steps"] = int(
                             adagrad_restart_active_phase.phase.steps
                         )
-                        metrics["optimizer/adagrad_restart_budget"] = float(
+                        metrics["optimizer/adagrad_restart_budget"] = int(
                             adagrad_restart_active_phase.phase.budget
                         )
-                        metrics["optimizer/adagrad_restart_fixed_iters_E"] = float(
+                        metrics["optimizer/adagrad_restart_fixed_iters_E"] = int(
                             adagrad_restart_active_phase.phase.fixed_iters_e
                         )
-                        metrics["optimizer/adagrad_restart_fixed_iters_Pi"] = float(
+                        metrics["optimizer/adagrad_restart_fixed_iters_Pi"] = int(
                             adagrad_restart_active_phase.phase.fixed_iters_pi
                         )
-                        metrics["optimizer/adagrad_restart_neumann_terms"] = float(
+                        metrics["optimizer/adagrad_restart_neumann_terms"] = int(
                             adagrad_restart_active_phase.phase.neumann_terms
                         )
                         metrics["optimizer/adagrad_restart_lr"] = float(

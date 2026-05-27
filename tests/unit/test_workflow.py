@@ -7004,23 +7004,49 @@ def test_optimization_runner_adagrad_restarts_specieswise_uses_schedule(
         "adagrad-restarts:fixed6_phase2",
     ]
     assert [row["optimizer/adagrad_restart_budget"] for row in step_rows] == [
-        4.0,
-        4.0,
-        6.0,
-        6.0,
+        4,
+        4,
+        6,
+        6,
     ]
+    assert all(
+        isinstance(row["optimizer/adagrad_restart_budget"], int)
+        and not isinstance(row["optimizer/adagrad_restart_budget"], bool)
+        for row in step_rows
+    )
     assert [row["optimizer/adagrad_restart_lr"] for row in step_rows] == [
         1.0,
         1.0,
         0.5,
         0.5,
     ]
-    assert [row["optimizer/adagrad_restart_phase_step"] for row in step_rows] == [
-        0.0,
-        1.0,
-        0.0,
-        1.0,
+    assert all(
+        isinstance(row["optimizer/adagrad_restart_lr"], float)
+        for row in step_rows
+    )
+    assert [row["optimizer/adagrad_restart_phase_index"] for row in step_rows] == [
+        0,
+        0,
+        1,
+        1,
     ]
+    assert [row["optimizer/adagrad_restart_phase_step"] for row in step_rows] == [
+        0,
+        1,
+        0,
+        1,
+    ]
+    assert [row["optimizer/adagrad_restart_phase_steps"] for row in step_rows] == [
+        2,
+        2,
+        2,
+        2,
+    ]
+    assert all(
+        isinstance(row["optimizer/adagrad_restart_phase_step"], int)
+        and not isinstance(row["optimizer/adagrad_restart_phase_step"], bool)
+        for row in step_rows
+    )
     assert [row["optimizer/adagrad_restart_restarted"] for row in step_rows] == [
         True,
         False,
@@ -7068,10 +7094,10 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
         "adagrad-restarts:E16_Pi8_N6_phase2",
     ]
     assert [row["optimizer/adagrad_restart_budget"] for row in step_rows] == [
-        4.0,
-        4.0,
-        8.0,
-        8.0,
+        4,
+        4,
+        8,
+        8,
     ]
     assert [
         (
@@ -7081,11 +7107,19 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
         )
         for row in step_rows
     ] == [
-        (8.0, 4.0, 4.0),
-        (8.0, 4.0, 4.0),
-        (16.0, 8.0, 6.0),
-        (16.0, 8.0, 6.0),
+        (8, 4, 4),
+        (8, 4, 4),
+        (16, 8, 6),
+        (16, 8, 6),
     ]
+    for row in step_rows:
+        for key in (
+            "optimizer/adagrad_restart_fixed_iters_E",
+            "optimizer/adagrad_restart_fixed_iters_Pi",
+            "optimizer/adagrad_restart_neumann_terms",
+        ):
+            assert isinstance(row[key], int)
+            assert not isinstance(row[key], bool)
     assert result.status == "converged"
     assert result.reason == "adagrad_restart_schedule_complete"
     summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))

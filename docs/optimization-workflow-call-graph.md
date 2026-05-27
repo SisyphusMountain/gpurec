@@ -188,6 +188,9 @@ flowchart TD
   `fixed_iters_E`, `fixed_iters_Pi`, and `neumann_terms` to the phase budget,
   resets Adagrad state, records `optimizer/adagrad_restart_*` fields, and uses
   `adagrad_restart_total_steps` as the schedule-derived optimizer cap.
+  Phase indexes, phase steps, phase lengths, and E/Pi/Neumann budget fields are
+  typed JSON integers; `optimizer/adagrad_restart_restarted` is boolean and the
+  phase learning rate remains numeric.
   Route metadata reports the resulting `optimizer_step_cap` and
   `optimizer_step_cap_reason` alongside `configured_steps`, and uses
   `adagrad_restart_final_check_iters` for the final high-fidelity evaluation.

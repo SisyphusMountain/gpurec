@@ -1883,6 +1883,9 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`likelihood/data_nll_bits`",
         "`grad/projected_inf`",
         "`optimizer/adagrad_restart_*`",
+        "phase indexes, phase steps, phase lengths, and E/Pi/Neumann budget fields are typed JSON integers",
+        "the learning rate is numeric",
+        "the restart marker is boolean",
         "Strict JSON",
         "family ordering",
         "`reconciliations/event_counts.tsv`",
@@ -2098,6 +2101,8 @@ def test_optimization_workflow_call_graph_documents_current_cli_and_optimizers()
         "`optimizer_step_cap_reason`",
         "`adagrad_restart_final_check_iters`",
         "records `optimizer/adagrad_restart_*` fields",
+        "Phase indexes, phase steps, phase lengths, and E/Pi/Neumann budget fields are typed JSON integers",
+        "`optimizer/adagrad_restart_restarted` is boolean",
         "`hessian-sgd` is genewise-only",
         "finite-difference Hessians",
         "projected gradients",
@@ -2138,6 +2143,9 @@ def test_project_readme_documents_e_adjoint_diagnostics():
         "`solver/pi_adjoint_residual_relmax_max`",
         "one extra fixed-point self-loop application",
         "`pi_fixed_point_relaxation`",
+        "Specieswise `adagrad-restarts` history rows type phase indexes",
+        "phase lengths, and E/Pi/Neumann budget fields as JSON integers",
+        "`optimizer/adagrad_restart_restarted` is a boolean",
     ):
         assert token in normalized
 

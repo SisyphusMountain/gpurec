@@ -501,6 +501,10 @@ self-loop application, so warm-budget experiments can monitor whether the
 implicit-gradient solve is actually converging. These experiments can set
 `pi_fixed_point_relaxation` for cached Pi-adjoint updates; the default `1.0`
 keeps the standard fixed-point update.
+Specieswise `adagrad-restarts` history rows type phase indexes, phase steps,
+phase lengths, and E/Pi/Neumann budget fields as JSON integers; the schedule
+learning rate remains numeric and `optimizer/adagrad_restart_restarted` is a
+boolean.
 
 `theta_final.pt` is a raw tensor export for inspection or custom analysis.  It
 does not carry run configuration, family ordering, or species ordering metadata;

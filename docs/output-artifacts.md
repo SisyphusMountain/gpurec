@@ -31,8 +31,10 @@ gradient summaries at bounds use `grad/projected_inf`. Solver diagnostics use
 `solver/*`; batch/wave/count fields under that namespace are typed JSON
 integers, while means, residuals, timings, losses, and gradient norms are
 numbers. Specieswise Adagrad restart runs also record
-`optimizer/adagrad_restart_*` fields. Warmstart-enabled Pi-adjoint gradients
-also report `solver/pi_adjoint_residual_absmax_max`,
+`optimizer/adagrad_restart_*` fields; phase indexes, phase steps, phase
+lengths, and E/Pi/Neumann budget fields are typed JSON integers, the learning
+rate is numeric, and the restart marker is boolean. Warmstart-enabled
+Pi-adjoint gradients also report `solver/pi_adjoint_residual_absmax_max`,
 `solver/pi_adjoint_residual_relmax_max`, and
 `solver/pi_adjoint_residual_checked_batches` when residual telemetry is
 available. `summary.json` and
