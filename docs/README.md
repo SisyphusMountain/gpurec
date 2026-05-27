@@ -21,6 +21,9 @@ file as the map for deeper context.
 - `production-likelihood-optimization-strategy.md`: production policy for
   choosing and validating genewise and specieswise likelihood optimization
   routes without overfitting to HOGENOM or `test_trees_1000`.
+- `known-limitations.md`: explicit production constraints for CUDA readiness,
+  size-dependent backward gates, parser subset boundaries, and native artifact
+  dependencies.
 - `optimization-workflow-call-graph.md`: current production call graph for
   `validate-config`, AleRax preprocessing, resident likelihood/gradient
   evaluation, optimizer phases, checkpoints, and final artifacts.
@@ -29,6 +32,8 @@ file as the map for deeper context.
 - `troubleshooting.md`: operator-facing preflight and failure triage for JSON
   configs, AleRax family inputs, CUDA memory, optimization status, and sampling
   binary setup.
+- `bioinformatics-quickstart.md`: first-run end-to-end path for new users:
+  install, validate inputs, optimize, inspect outputs, and sample.
 - `simplification-opportunity-index-2026-05-21.md`: direct inventory of
   removable or mergeable alternative paths, with source-file evidence, retained
   behavior, and deletion gates.

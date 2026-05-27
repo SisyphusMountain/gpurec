@@ -353,10 +353,14 @@ The production optimization guide
 explains how the likelihood objective, gradient route, solver budgets,
 genewise `hessian-sgd` default, specieswise `adagrad-restarts` default, and
 HOGENOM/`test_trees_1000` validation gates fit together. The production strategy
-strategy note
+note
 [`docs/production-likelihood-optimization-strategy.md`](docs/production-likelihood-optimization-strategy.md)
 summarizes when to keep those defaults and when to validate a calibrated
 specieswise composite route.
+For the shortest user-facing flow, use
+[`docs/bioinformatics-quickstart.md`](docs/bioinformatics-quickstart.md). The
+known constraints for this release-grade workflow are documented in
+[`docs/known-limitations.md`](docs/known-limitations.md).
 For the complete `RunConfig` field and CLI flag reference, see
 [`docs/run-config-reference.md`](docs/run-config-reference.md).
 For source data layout, AleRax family syntax, mapping files, path resolution,
