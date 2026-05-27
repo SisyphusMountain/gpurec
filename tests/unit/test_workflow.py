@@ -7527,6 +7527,59 @@ def test_optimization_runner_loss_probe_clears_transient_solver_state(
     torch.testing.assert_close(static.pi_adjoint_cache, accepted_cache)
 
 
+def test_optimizer_scalar_eval_rejects_non_scalar_loss(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        mode="global",
+    )
+    runner = OptimizationRunner(config)
+
+    class BadLossModel(_WorkflowOptimizerModeModel):
+        def full_loss(self):
+            return self.theta.square()
+
+    model = BadLossModel()
+
+    with pytest.raises(RuntimeError, match="scalar loss"):
+        runner._evaluate_and_backward(model)
+
+    assert model.theta.grad is None
+
+
+def test_optimizer_scalar_eval_rejects_bad_gradient_shape(tmp_path: Path):
+    class FakeTheta:
+        def __init__(self):
+            self.shape = (2, 3)
+            self.device = torch.device("cpu")
+            self.dtype = torch.float32
+            self.grad = None
+
+    class BadGradientModel:
+        def __init__(self):
+            self.theta = FakeTheta()
+
+        def full_loss(self):
+            loss = torch.tensor(1.0, requires_grad=True)
+
+            def set_bad_grad(grad):
+                self.theta.grad = torch.zeros((1, 3), dtype=torch.float32)
+                return grad
+
+            loss.register_hook(set_bad_grad)
+            return loss
+
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        mode="global",
+    )
+    runner = OptimizationRunner(config)
+
+    with pytest.raises(RuntimeError, match=r"gradient shape \(1, 3\)"):
+        runner._evaluate_and_backward(BadGradientModel())
+
+
 def test_optimization_runner_genewise_loss_probe_clears_transient_solver_state(
     tmp_path: Path,
 ):

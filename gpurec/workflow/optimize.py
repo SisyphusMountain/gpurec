@@ -1004,14 +1004,25 @@ class OptimizationRunner:
     def _evaluate_and_backward(self, model: GeneReconModel) -> tuple[torch.Tensor, dict[str, Any]]:
         model.theta.grad = None
         loss = model.full_loss()
+        if not _is_single_value_tensor(loss):
+            raise RuntimeError("optimizer evaluation did not return a scalar loss")
+        loss = loss.reshape(())
         loss.backward()
-        if model.theta.grad is None:
+        grad = model.theta.grad
+        if grad is None:
             raise RuntimeError("optimizer evaluation did not produce theta gradients")
+        if not torch.is_tensor(grad):
+            raise RuntimeError("optimizer evaluation did not return tensor gradients")
+        if _tensor_shape(grad) != _tensor_shape(model.theta):
+            raise RuntimeError(
+                "optimizer evaluation returned gradient shape "
+                f"{_tensor_shape(grad)}, expected theta shape {_tensor_shape(model.theta)}"
+            )
         row: dict[str, Any] = {
             "likelihood/data_nll_bits": float(loss.detach().cpu()),
             "likelihood/log_likelihood_bits": float(-loss.detach().cpu()),
         }
-        row.update(tensor_stats("grad", model.theta.grad))
+        row.update(tensor_stats("grad", grad))
         row.update(parameter_stats(model.theta))
         row.update(solver_stats(model))
         return loss, row
