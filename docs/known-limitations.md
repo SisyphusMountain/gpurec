@@ -4,8 +4,7 @@ This page tracks constraints that should be visible before launch.
 
 ## Current Production Constraint Matrix
 
-- `gpurec` production likelihood/gradient runs are CUDA-first; there is no
-  fully featured CPU fallback.
+- `gpurec` production likelihood/gradient runs are CUDA-first; there is no full CPU fallback.
 - Backward on the retained Pi route requires `S > 256` postorder species nodes.
   Tiny species-tree fixtures can still be used for parser/config checks, but not
   as end-to-end CUDA optimization smokes.

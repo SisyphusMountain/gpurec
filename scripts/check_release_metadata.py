@@ -896,6 +896,7 @@ def _known_limitations_issues(root: Path) -> list[str]:
     text = guide.read_text(encoding="utf-8").lower()
     required_phrases = (
         "cuda",
+        "no full cpu fallback",
         "s > 256",
         "newick subset",
         "quoted labels",
