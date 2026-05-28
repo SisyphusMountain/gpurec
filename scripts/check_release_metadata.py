@@ -534,6 +534,8 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "readiness command successfully",
         "native preprocessing",
         "backtracking artifacts",
+        "stable schemas",
+        "compatibility rules",
         "checksums",
         "provenance",
         "binary provenance",
