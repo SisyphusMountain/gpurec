@@ -193,6 +193,15 @@ def _release_notes_version_issues(project: dict[str, Any], root: Path) -> list[s
                 "docs/release-notes.md must mention current pyproject version "
                 f"{version!r}"
             )
+        lower_text = text.lower()
+        if "known limitations" not in lower_text:
+            issues.append(
+                "docs/release-notes.md must include a 'Known limitations' section"
+            )
+        if "migration notes" not in lower_text:
+            issues.append(
+                "docs/release-notes.md must include a 'Migration notes' section"
+            )
 
     return issues
 

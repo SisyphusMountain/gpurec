@@ -134,7 +134,18 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "release-notes.md").write_text(
-            "# Release Notes\n\n## 0.0.0 - 2026-01-01\n\n- fixture\n",
+            "\n".join(
+                [
+                    "# Release Notes",
+                    "",
+                    "## 0.0.0 - 2026-01-01",
+                    "",
+                    "- Added",
+                    "- Known limitations",
+                    "- Migration notes",
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
     if create_dockerfile:
@@ -913,6 +924,50 @@ def test_release_metadata_check_requires_release_notes_current_version(tmp_path:
 
     assert result.returncode == 1
     assert "docs/release-notes.md must mention current pyproject version" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_release_notes_known_limitations_section(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "release-notes.md").write_text(
+        "# Release Notes\n\n## 0.0.0 - 2026-01-01\n\n- Migration notes\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must include a 'Known limitations' section" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_release_notes_migration_notes_section(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "release-notes.md").write_text(
+        "# Release Notes\n\n## 0.0.0 - 2026-01-01\n\n- Known limitations\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must include a 'Migration notes' section" in result.stdout
     assert result.stderr == ""
 
 
