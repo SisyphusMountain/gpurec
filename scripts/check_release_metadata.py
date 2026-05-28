@@ -699,6 +699,7 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "retryable runtime failures",
         "input contract failures",
         "likely cause",
+        "suggestion",
         "next action",
         "authoritative files",
         "summary.json",

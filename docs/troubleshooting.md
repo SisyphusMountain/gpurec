@@ -11,6 +11,8 @@ For workflow-manager triage, classify failures into retryable runtime failures
 vs input contract failures.
 Workflow managers can distinguish retryable failures from input contract
 failures using these categories.
+Actionable diagnostics should include a concrete suggestion for the next command
+or config change.
 
 - Retryable runtime failures: CUDA OOM/runtime pressure, transient GPU runtime
   errors, or recoverable nonconvergence that should be retried with adjusted
