@@ -26,7 +26,6 @@ from gpurec.backtracking import (
     EVENT_KEYS,
     _activate_family_batch,
     _backtrack_command,
-    ensure_backtracking_available,
     export_backtracking_input,
     recphyloxml_event_counts,
     sample_recphyloxml,
@@ -3561,7 +3560,7 @@ def test_rust_preprocess_native_backend_reports_missing_source_manifest(
     assert str(missing_manifest) in message
     assert "GPUREC_PREPROCESS_NATIVE_LIB" in message
     assert "--preprocess-native-lib" in message
-    assert "installed-wheel deployments" in message
+    assert "compatible prebuilt native extension" in message
 
 
 def test_rust_preprocess_native_preflight_reports_missing_explicit_library(
@@ -3579,7 +3578,7 @@ def test_rust_preprocess_native_preflight_reports_missing_explicit_library(
     assert str(missing_native_lib) in message
     assert "GPUREC_PREPROCESS_NATIVE_LIB" in message
     assert "--preprocess-native-lib" in message
-    assert "installed-wheel deployments" in message
+    assert "compatible prebuilt native extension" in message
 
 
 @pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])
@@ -7398,6 +7397,14 @@ def test_optimization_runner_writes_run_manifest_with_command_metadata(
     assert manifest["runtime"]["package_version"]
     assert isinstance(manifest["runtime"]["started_s"], float)
     assert manifest["runtime"]["platform"]["name"]
+    assert "cuda_available" in manifest["runtime"]["torch"]
+    assert manifest["runtime"]["torch"]["cuda_available"] in (True, False, None)
+    assert manifest["runtime"]["native_artifacts"]["preprocess"]["manifest_version"] == (
+        preprocess_rust._manifest_version()
+    )
+    assert manifest["runtime"]["native_artifacts"]["backtracking"]["manifest_version"] == (
+        backtracking._manifest_version()
+    )
     assert manifest["reproducibility"]["seeded"] is False
     assert isinstance(manifest["reproducibility"]["torch_seed"], int)
 

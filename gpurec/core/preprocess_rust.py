@@ -145,7 +145,7 @@ def _build_native_extension(cargo_manifest: str | Path = _PREPROCESS_MANIFEST) -
             "or source archive cargo manifest to build automatically; default "
             f"source manifest not found at {manifest}. Set "
             f"{_PREPROCESS_NATIVE_LIB_ENV} to a compatible prebuilt native "
-            "extension for installed-wheel deployments, or pass "
+            "extension, or pass "
             "--preprocess-native-lib to gpurec preprocess-check."
         )
     if shutil.which("cargo") is None:
@@ -192,7 +192,7 @@ def _load_native_module(
             "Rust preprocessing native library from "
             f"{native_override_source} not found: {path}. Set "
             f"{_PREPROCESS_NATIVE_LIB_ENV} to a compatible prebuilt native "
-            "extension for installed-wheel deployments, or pass "
+            "extension, or pass "
             "--preprocess-native-lib to gpurec preprocess-check."
         )
 
