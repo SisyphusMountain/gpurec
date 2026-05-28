@@ -193,6 +193,7 @@ def _write_complete_release_metadata_fixture(
                     "Release-candidate checks",
                     "Final publication checks",
                     "A release candidate can be built from a clean checkout by following one checklist.",
+                    "The package metadata checker passes before publication.",
                     "Build release artifacts from a clean checkout before tagging.",
                     "Install and smoke release artifacts in a fresh environment.",
                     "Smoke the installed wheel from outside the checkout.",
@@ -2935,6 +2936,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: release-candidate checks" in result.stdout
     assert "must document release gate phrase: final publication checks" in result.stdout
     assert "must document release gate phrase: one checklist" in result.stdout
+    assert "must document release gate phrase: package metadata checker passes" in result.stdout
     assert "must document release gate phrase: clean checkout" in result.stdout
     assert "must document release gate phrase: fresh environment" in result.stdout
     assert "must document release gate phrase: outside the checkout" in result.stdout
