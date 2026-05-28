@@ -187,7 +187,16 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "publication-checklist.md").write_text(
-            "# Publication Checklist\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Publication Checklist",
+                    "",
+                    "Reference CITATION.cff for software citation metadata.",
+                    "Archive run_manifest.json and summary.json for reproducibility.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_platform_matrix:
         (root / "docs" / "platform-matrix.md").parent.mkdir(
@@ -544,6 +553,51 @@ def test_release_metadata_check_requires_publication_checklist(tmp_path: Path):
         "missing required release artifact: docs/publication-checklist.md"
         in result.stdout
     )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_publication_checklist_citation_reference(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "publication-checklist.md").write_text(
+        "Archive run_manifest.json and summary.json.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must mention CITATION.cff metadata" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_publication_checklist_artifact_references(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "publication-checklist.md").write_text(
+        "Reference CITATION.cff for citation metadata.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must mention run_manifest.json" in result.stdout
+    assert "must mention summary.json" in result.stdout
     assert result.stderr == ""
 
 

@@ -236,6 +236,28 @@ def _policy_document_issues(root: Path) -> list[str]:
     return issues
 
 
+def _publication_checklist_issues(root: Path) -> list[str]:
+    publication = root / "docs" / "publication-checklist.md"
+    if not publication.is_file():
+        return []
+
+    text = publication.read_text(encoding="utf-8").lower()
+    issues: list[str] = []
+    if "citation.cff" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention CITATION.cff metadata"
+        )
+    if "run_manifest.json" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention run_manifest.json"
+        )
+    if "summary.json" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention summary.json"
+        )
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -370,6 +392,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_citation_metadata_issues(project, project_root))
     issues.extend(_release_notes_version_issues(project, project_root))
     issues.extend(_policy_document_issues(project_root))
+    issues.extend(_publication_checklist_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)
