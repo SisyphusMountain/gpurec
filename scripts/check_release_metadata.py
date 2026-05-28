@@ -859,6 +859,8 @@ def _end_to_end_tutorial_public_command_issues(root: Path) -> list[str]:
         "writes outputs",
         "samples recphyloxml",
         "gpurec validate-config",
+        "--check-preprocess",
+        "--require-cuda-backward-ready",
         "gpurec optimize",
         "gpurec sample",
     )

@@ -518,6 +518,8 @@ def _write_complete_release_metadata_fixture(
                     "First successful run tutorial uses only public commands.",
                     "Tracked or downloadable dataset that writes outputs and samples RecPhyloXML.",
                     "gpurec validate-config",
+                    "--check-preprocess",
+                    "--require-cuda-backward-ready",
                     "gpurec optimize",
                     "gpurec sample",
                     "",
@@ -2193,6 +2195,8 @@ def test_release_metadata_check_requires_end_to_end_tutorial_public_command_phra
     assert "must document tutorial phrase: writes outputs" in result.stdout
     assert "must document tutorial phrase: samples recphyloxml" in result.stdout
     assert "must document tutorial phrase: gpurec validate-config" in result.stdout
+    assert "must document tutorial phrase: --check-preprocess" in result.stdout
+    assert "must document tutorial phrase: --require-cuda-backward-ready" in result.stdout
     assert "must document tutorial phrase: gpurec optimize" in result.stdout
     assert "must document tutorial phrase: gpurec sample" in result.stdout
     assert result.stderr == ""
