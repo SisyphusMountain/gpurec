@@ -56,6 +56,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/workflow-examples/nextflow/README.md",
     "docs/workflow-examples/slurm/README.md",
     "docs/workflow-examples/snakemake/README.md",
+    "scripts/README.md",
     "scripts/generate_dependency_inventory.py",
 )
 
@@ -1397,6 +1398,29 @@ def _docs_map_user_vs_research_scope_issues(root: Path) -> list[str]:
     return issues
 
 
+def _legacy_script_decision_issues(root: Path) -> list[str]:
+    guide = root / "scripts" / "README.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "ownership matrix",
+        "legacy",
+        "keep",
+        "migrate",
+        "delete",
+        "keep, migrate, or delete decisions",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "scripts/README.md must document legacy-script phrase: " + phrase
+            )
+    return issues
+
+
 def _glossary_core_term_issues(root: Path) -> list[str]:
     guide = root / "docs" / "glossary.md"
     if not guide.is_file():
@@ -1618,6 +1642,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_input_validation_fixture_category_issues(project_root))
     issues.extend(_input_validation_fixture_cpu_safe_issues(project_root))
     issues.extend(_docs_map_user_vs_research_scope_issues(project_root))
+    issues.extend(_legacy_script_decision_issues(project_root))
     issues.extend(_glossary_core_term_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 

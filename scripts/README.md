@@ -23,6 +23,8 @@ constants rather than general path flags.
 New production workflow behavior should go into `gpurec.workflow` and the
 installed CLI first.  Mirror it into these legacy scripts only when a retained
 HOGENOM experiment needs that behavior.
+Legacy scripts must have explicit keep, migrate, or delete decisions in the
+ownership matrix below.
 
 ## Ownership Matrix
 

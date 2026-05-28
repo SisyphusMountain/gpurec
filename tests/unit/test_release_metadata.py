@@ -101,6 +101,7 @@ def _write_complete_release_metadata_fixture(
     create_lean_fast_path: bool = True,
     create_lean_performance_path_regression: bool = True,
     create_professionalization_audit_progress: bool = True,
+    create_scripts_readme: bool = True,
     create_dependency_inventory_script: bool = True,
     create_release_readiness: bool = True,
     urls_block: str | None = None,
@@ -747,6 +748,20 @@ def _write_complete_release_metadata_fixture(
         (root / "scripts").mkdir(parents=True, exist_ok=True)
         (root / "scripts" / "generate_dependency_inventory.py").write_text(
             "#!/usr/bin/env python3\nprint('fixture')\n",
+            encoding="utf-8",
+        )
+    if create_scripts_readme:
+        (root / "scripts").mkdir(parents=True, exist_ok=True)
+        (root / "scripts" / "README.md").write_text(
+            "\n".join(
+                [
+                    "# Script Ownership",
+                    "",
+                    "Ownership matrix for legacy script maintenance.",
+                    "Legacy scripts must have keep, migrate, or delete decisions.",
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
@@ -2704,6 +2719,52 @@ def test_release_metadata_check_requires_docs_map_scope_phrases(
     assert result.stderr == ""
 
 
+def test_release_metadata_check_requires_scripts_readme_artifact(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path, create_scripts_readme=False)
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: scripts/README.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_legacy_script_decision_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "scripts" / "README.md").write_text(
+        "# Script Ownership\n\nScripts index.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document legacy-script phrase: ownership matrix" in result.stdout
+    assert "must document legacy-script phrase: legacy" in result.stdout
+    assert "must document legacy-script phrase: keep" in result.stdout
+    assert "must document legacy-script phrase: migrate" in result.stdout
+    assert "must document legacy-script phrase: delete" in result.stdout
+    assert (
+        "must document legacy-script phrase: keep, migrate, or delete decisions"
+        in result.stdout
+    )
+    assert result.stderr == ""
+
+
 def test_release_metadata_check_requires_readme_short_user_path_phrases(
     tmp_path: Path,
 ):
@@ -3889,6 +3950,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/workflow-examples/snakemake/README.md",
         "docs/workflow-examples/nextflow/README.md",
         "docs/workflow-examples/slurm/README.md",
+        "scripts/README.md",
         "scripts/generate_dependency_inventory.py",
         "examples/README.md",
         "examples/minimal-run-config.json",

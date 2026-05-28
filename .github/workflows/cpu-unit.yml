@@ -192,6 +192,7 @@ jobs:
               "docs/workflow-examples/snakemake/README.md",
               "docs/workflow-examples/nextflow/README.md",
               "docs/workflow-examples/slurm/README.md",
+              "scripts/README.md",
               "scripts/generate_dependency_inventory.py",
               "examples/README.md",
               "examples/minimal-run-config.json",
