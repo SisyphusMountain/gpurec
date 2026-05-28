@@ -794,6 +794,88 @@ def test_cli_validate_config_reads_stdin_config(
     assert f"out_dir={tmp_path / 'stdin-out'}" in captured.out
 
 
+def test_cli_validate_config_uses_config_file_directory_for_relative_paths(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    config_dir = tmp_path / "config-dir"
+    data_dir = config_dir / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
+    (data_dir / "families.txt").write_text(
+        "\n".join(["[FAMILIES]", "- fam0", "starting_gene_tree = g.nwk", ""]),
+        encoding="utf-8",
+    )
+    (data_dir / "g.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+    config_path = config_dir / "run.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "species_tree": "data/sp.nwk",
+                "families_file": "data/families.txt",
+                "out_dir": "out",
+                "mode": "genewise",
+                "device": "cpu",
+                "optimizer": "auto",
+                "family_chunk_size": 0,
+                "batch_packing": "depth_first_fit",
+                "clade_budget": DEFAULT_CLADE_BUDGET,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    main(["validate-config", "--config", str(config_path)])
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "valid_config=true" in captured.out
+    assert f"out_dir={config_dir / 'out'}" in captured.out
+
+
+def test_cli_validate_config_stdin_uses_cwd_for_relative_paths(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    data_dir = tmp_path / "stdin-data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
+    (data_dir / "families.txt").write_text(
+        "\n".join(["[FAMILIES]", "- fam0", "starting_gene_tree = g.nwk", ""]),
+        encoding="utf-8",
+    )
+    (data_dir / "g.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+
+    monkeypatch.chdir(data_dir)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "species_tree": "sp.nwk",
+                    "families_file": "families.txt",
+                    "out_dir": "stdin-out",
+                    "mode": "genewise",
+                    "device": "cpu",
+                    "optimizer": "auto",
+                    "family_chunk_size": 0,
+                    "batch_packing": "depth_first_fit",
+                    "clade_budget": DEFAULT_CLADE_BUDGET,
+                }
+            )
+        ),
+    )
+
+    main(["validate-config", "--config", "-"])
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "valid_config=true" in captured.out
+    assert f"out_dir={data_dir / 'stdin-out'}" in captured.out
+
+
 def test_cli_config_template_global_mode_is_mode_default_but_not_production_route(
     tmp_path: Path,
     capsys,
