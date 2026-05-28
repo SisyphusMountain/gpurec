@@ -2,6 +2,7 @@
 
 This directory contains tiny AleRax-style fixtures for `validate-inputs` smoke checks.
 Each scenario is fully standalone and uses only local `.nwk` and `.tsv` files.
+These checks run without constructing a CUDA model.
 
 - `valid/`: complete, parseable minimal dataset that should pass without preprocess
   checks.

@@ -1014,6 +1014,26 @@ def _input_validation_fixture_category_issues(root: Path) -> list[str]:
     return issues
 
 
+def _input_validation_fixture_cpu_safe_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "workflow-examples" / "input-validation-fixtures" / "README.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "without constructing a cuda model",
+        "validate-inputs",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/workflow-examples/input-validation-fixtures/README.md must document cpu-safe phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _docs_map_user_vs_research_scope_issues(root: Path) -> list[str]:
     guide = root / "docs" / "README.md"
     if not guide.is_file():
@@ -1246,6 +1266,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_api_contract_compatibility_policy_issues(project_root))
     issues.extend(_input_validation_fixture_issue_shape_issues(project_root))
     issues.extend(_input_validation_fixture_category_issues(project_root))
+    issues.extend(_input_validation_fixture_cpu_safe_issues(project_root))
     issues.extend(_docs_map_user_vs_research_scope_issues(project_root))
     issues.extend(_glossary_core_term_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
