@@ -139,6 +139,8 @@ Set `steps` above the checkpoint `next_step`; otherwise resume only refreshes
 final artifacts.
 This is the interrupted optimization recovery path for runs that stop before
 final publication.
+For retryable stops, resume with unchanged config so checkpoint metadata and
+route evidence remain aligned with the active run.
 If resume fails with incompatible config evidence, treat it as an incompatible
 config failure: regenerate config from current templates and retry from a
 checkpoint only after route-critical fields match.

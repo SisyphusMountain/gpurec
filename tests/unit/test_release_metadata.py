@@ -494,6 +494,7 @@ def _write_complete_release_metadata_fixture(
                     "Workflow managers can distinguish retryable failures from input contract failures.",
                     "Include resume guidance for incompatible config failures.",
                     "Include interrupted optimization recovery guidance.",
+                    "Resume with unchanged config when checkpoint and route metadata match.",
                     "",
                 ]
             ),
@@ -2099,6 +2100,7 @@ def test_release_metadata_check_requires_troubleshooting_recovery_phrases(
     assert "must document failure-recovery phrase: workflow managers can distinguish" in result.stdout
     assert "must document failure-recovery phrase: incompatible config" in result.stdout
     assert "must document failure-recovery phrase: interrupted optimization" in result.stdout
+    assert "must document failure-recovery phrase: unchanged config" in result.stdout
     assert result.stderr == ""
 
 

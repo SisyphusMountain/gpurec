@@ -665,6 +665,7 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "workflow managers can distinguish",
         "incompatible config",
         "interrupted optimization",
+        "unchanged config",
     )
     issues: list[str] = []
     for phrase in required_phrases:
