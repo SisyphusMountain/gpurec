@@ -3860,9 +3860,12 @@ def main(argv: list[str] | None = None) -> None:
             command_parser.exit(
                 status=1,
                 message=(
-                    "optimization failed; refusing to sample from a failed run "
-                    f"({opt_result.reason})"
-                    "\n"
+                    _with_suggestion(
+                        "optimization failed; refusing to sample from a failed run "
+                        f"({opt_result.reason})",
+                        "inspect summary/checkpoint diagnostics, fix the failure cause, then resume or rerun optimize before sampling",
+                    )
+                    + "\n"
                 ),
             )
         if args.require_converged and opt_result.status != "converged":

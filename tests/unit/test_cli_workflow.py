@@ -6196,6 +6196,7 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
     assert "sample_out_dir" not in captured.out
     assert "optimization failed" in captured.err
     assert "nonfinite_objective_or_gradient" in captured.err
+    assert "suggestion:" in captured.err
     assert "Traceback" not in captured.err
 
 
