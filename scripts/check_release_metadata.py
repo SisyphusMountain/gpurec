@@ -270,6 +270,7 @@ def _policy_document_issues(root: Path) -> list[str]:
             "run_manifest.json",
             "checkpoint metadata",
             "gpurec doctor --json",
+            "stderr/stdout",
         )
         for phrase in support_window_phrases:
             if phrase not in text:
