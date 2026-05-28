@@ -86,6 +86,7 @@ def _write_complete_release_metadata_fixture(
     create_publication_checklist: bool = True,
     create_platform_matrix: bool = True,
     create_api_contract: bool = True,
+    create_known_limitations: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -140,6 +141,13 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "api-contract.md").write_text(
             "# API Contract\n", encoding="utf-8"
+        )
+    if create_known_limitations:
+        (root / "docs" / "known-limitations.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "known-limitations.md").write_text(
+            "# Known Limitations\n", encoding="utf-8"
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
@@ -318,6 +326,24 @@ def test_release_metadata_check_requires_api_contract(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/api-contract.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_known_limitations(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path, create_known_limitations=False
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/known-limitations.md" in result.stdout
     assert result.stderr == ""
 
 
@@ -665,6 +691,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/README.md",
         "docs/input-preparation.md",
         "docs/api-contract.md",
+        "docs/known-limitations.md",
         "docs/lean-fast-path.md",
         "docs/optimization-workflow-call-graph.md",
         "docs/output-artifacts.md",

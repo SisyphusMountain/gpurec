@@ -156,6 +156,7 @@ jobs:
               "docs/README.md",
               "docs/input-preparation.md",
               "docs/api-contract.md",
+              "docs/known-limitations.md",
               "docs/lean-fast-path.md",
               "docs/optimization-workflow-call-graph.md",
               "docs/output-artifacts.md",

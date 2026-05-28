@@ -34,6 +34,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/publication-checklist.md",
     "docs/platform-matrix.md",
     "docs/api-contract.md",
+    "docs/known-limitations.md",
 )
 
 
