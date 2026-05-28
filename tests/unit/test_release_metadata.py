@@ -252,7 +252,7 @@ def _write_complete_release_metadata_fixture(
                     "# Publication Checklist",
                     "",
                     "Reference CITATION.cff for software citation metadata.",
-                    "Archive run_manifest.json and summary.json for reproducibility.",
+                    "Archive run_config.json, run_manifest.json and summary.json for reproducibility.",
                     "Record gpurec doctor --json and gpurec summary-info --summary output_gpurec/summary.json --json.",
                     "Archive history.jsonl and checkpoints/ for rerun audit trails.",
                     "Archive checksums, provenance evidence, and binary provenance records with publication artifacts.",
@@ -968,6 +968,7 @@ def test_release_metadata_check_requires_publication_checklist_artifact_referenc
     )
 
     assert result.returncode == 1
+    assert "must mention run_config.json" in result.stdout
     assert "must mention run_manifest.json" in result.stdout
     assert "must mention summary.json" in result.stdout
     assert result.stderr == ""

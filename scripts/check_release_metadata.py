@@ -326,6 +326,10 @@ def _publication_checklist_issues(root: Path) -> list[str]:
         issues.append(
             "docs/publication-checklist.md must mention CITATION.cff metadata"
         )
+    if "run_config.json" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention run_config.json"
+        )
     if "run_manifest.json" not in text:
         issues.append(
             "docs/publication-checklist.md must mention run_manifest.json"
