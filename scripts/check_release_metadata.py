@@ -264,6 +264,7 @@ def _policy_document_issues(root: Path) -> list[str]:
             "native artifact",
             "release and patch policy",
             "older tags may receive backports",
+            "api-contract.md",
             "run_config.json",
             "history.jsonl",
             "summary.json",
