@@ -539,6 +539,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "dependency scan snapshot",
         "sbom",
         "dependency vulnerability scanning",
+        "fresh machine can reproduce the documented validation run",
         "help and import smoke tests remain cpu-safe",
         "ci rejects obvious lint errors",
         "broken type annotations in public modules",
