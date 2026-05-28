@@ -57,3 +57,5 @@ python -m gpurec.cli validate-inputs \
 
 All failing commands should return nonzero with machine-readable `issues` entries.
 
+Each issue entry is expected to include: file path, family name, affected label,
+expected format, and next action.
