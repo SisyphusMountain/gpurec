@@ -1074,8 +1074,10 @@ def _snakemake_example_gate_issues(root: Path) -> list[str]:
 
     text = guide.read_text(encoding="utf-8").lower()
     required_phrases = (
+        "fail fast",
         "gpurec validate-config",
         "--check-preprocess",
+        "reject non-converged outputs",
         "--require-converged",
         "--require-final-check-ok",
         "gpurec sample",
@@ -1097,9 +1099,11 @@ def _nextflow_example_gate_issues(root: Path) -> list[str]:
 
     text = guide.read_text(encoding="utf-8").lower()
     required_phrases = (
+        "fail fast",
         "nextflow run main.nf -resume",
         "gpurec validate-config",
         "--check-preprocess",
+        "reject non-converged outputs",
         "--require-converged",
         "--require-final-check-ok",
     )

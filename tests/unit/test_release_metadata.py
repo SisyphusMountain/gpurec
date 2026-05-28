@@ -613,6 +613,8 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# Snakemake Example",
                     "",
+                    "Fail fast on bad config before expensive steps.",
+                    "Reject non-converged outputs with strict summary/checkpoint gates.",
                     "gpurec validate-config --check-preprocess",
                     "--require-converged",
                     "--require-final-check-ok",
@@ -630,7 +632,9 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# Nextflow Example",
                     "",
+                    "Fail fast on bad config before expensive steps.",
                     "nextflow run main.nf -resume",
+                    "Reject non-converged outputs with strict summary/checkpoint gates.",
                     "gpurec validate-config --check-preprocess",
                     "--require-converged",
                     "--require-final-check-ok",
@@ -2441,8 +2445,10 @@ def test_release_metadata_check_requires_snakemake_gate_phrases(
     )
 
     assert result.returncode == 1
+    assert "must document gate phrase: fail fast" in result.stdout
     assert "must document gate phrase: gpurec validate-config" in result.stdout
     assert "must document gate phrase: --check-preprocess" in result.stdout
+    assert "must document gate phrase: reject non-converged outputs" in result.stdout
     assert "must document gate phrase: --require-converged" in result.stdout
     assert "must document gate phrase: --require-final-check-ok" in result.stdout
     assert "must document gate phrase: gpurec sample" in result.stdout
@@ -2467,9 +2473,11 @@ def test_release_metadata_check_requires_nextflow_gate_phrases(
     )
 
     assert result.returncode == 1
+    assert "must document gate phrase: fail fast" in result.stdout
     assert "must document gate phrase: nextflow run main.nf -resume" in result.stdout
     assert "must document gate phrase: gpurec validate-config" in result.stdout
     assert "must document gate phrase: --check-preprocess" in result.stdout
+    assert "must document gate phrase: reject non-converged outputs" in result.stdout
     assert "must document gate phrase: --require-converged" in result.stdout
     assert "must document gate phrase: --require-final-check-ok" in result.stdout
     assert result.stderr == ""
