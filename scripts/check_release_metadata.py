@@ -834,6 +834,8 @@ def _known_limitations_issues(root: Path) -> list[str]:
         "newick subset",
         "quoted labels",
         "embedded delimiters",
+        "nested comments",
+        "nhx/beast metadata",
         "unary species nodes",
         "non-binary species trees",
         "wheel",
