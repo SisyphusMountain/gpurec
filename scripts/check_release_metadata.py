@@ -532,6 +532,8 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "outside the checkout",
         "fresh install",
         "readiness command successfully",
+        "native preprocessing",
+        "backtracking artifacts",
         "checksums",
         "provenance",
         "binary provenance",

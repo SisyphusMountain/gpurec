@@ -12,6 +12,7 @@ A release candidate can be built from a clean checkout by following one checklis
   `docs/release-notes.md`, `docs/support-policy.md`,
   `docs/versioning-policy.md`, `docs/publication-checklist.md`, and a
   CUDA-capable deployment recipe (`Dockerfile`).
+- Installation docs cover native preprocessing and backtracking artifacts.
 - Offline installation policy is documented and current in
   `docs/platform-matrix.md`.
 - Build source artifacts from a clean checkout and install them in a fresh environment
