@@ -168,6 +168,34 @@ def _citation_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
     return issues
 
 
+def _release_notes_version_issues(project: dict[str, Any], root: Path) -> list[str]:
+    version = project.get("version")
+    if not isinstance(version, str) or not version.strip():
+        return []
+    version = version.strip()
+
+    issues: list[str] = []
+    changelog = root / "CHANGELOG.md"
+    if changelog.is_file():
+        text = changelog.read_text(encoding="utf-8")
+        if version not in text:
+            issues.append(
+                "CHANGELOG.md must mention current pyproject version "
+                f"{version!r}"
+            )
+
+    release_notes = root / "docs" / "release-notes.md"
+    if release_notes.is_file():
+        text = release_notes.read_text(encoding="utf-8")
+        if version not in text:
+            issues.append(
+                "docs/release-notes.md must mention current pyproject version "
+                f"{version!r}"
+            )
+
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -300,6 +328,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_script_metadata_issues(project))
     issues.extend(_release_artifact_issues(project_root))
     issues.extend(_citation_metadata_issues(project, project_root))
+    issues.extend(_release_notes_version_issues(project, project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)

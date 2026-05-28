@@ -108,7 +108,10 @@ def _write_complete_release_metadata_fixture(
     if create_readme:
         (root / "README.md").write_text("# fixture\n", encoding="utf-8")
     if create_changelog:
-        (root / "CHANGELOG.md").write_text("# Changelog\n", encoding="utf-8")
+        (root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n## 0.0.0 - 2026-01-01\n\n- fixture\n",
+            encoding="utf-8",
+        )
     if create_citation:
         (root / "CITATION.cff").write_text(
             "\n".join(
@@ -130,7 +133,8 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "release-notes.md").write_text(
-            "# Release Notes\n", encoding="utf-8"
+            "# Release Notes\n\n## 0.0.0 - 2026-01-01\n\n- fixture\n",
+            encoding="utf-8",
         )
     if create_dockerfile:
         (root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
@@ -841,6 +845,43 @@ def test_release_metadata_check_requires_readme_metadata(tmp_path: Path):
     assert result.returncode == 1
     assert "must declare readme metadata" in result.stdout
     assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_changelog_current_version(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "CHANGELOG.md").write_text("# Changelog\n\n## 9.9.9\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "CHANGELOG.md must mention current pyproject version" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_release_notes_current_version(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "release-notes.md").write_text(
+        "# Release Notes\n\n## 9.9.9\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "docs/release-notes.md must mention current pyproject version" in result.stdout
     assert result.stderr == ""
 
 
