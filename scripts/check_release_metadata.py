@@ -234,6 +234,10 @@ def _release_notes_version_issues(project: dict[str, Any], root: Path) -> list[s
             issues.append(
                 "docs/release-notes.md must include a 'Release artifact notes' section"
             )
+        if "dependency and python/torch/cuda support updates" not in lower_text:
+            issues.append(
+                "docs/release-notes.md must include dependency/python/torch/cuda support-update guidance"
+            )
 
     return issues
 
