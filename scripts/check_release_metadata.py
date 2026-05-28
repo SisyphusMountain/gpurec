@@ -246,6 +246,10 @@ def _release_notes_version_issues(project: dict[str, Any], root: Path) -> list[s
             issues.append(
                 "docs/release-notes.md must include benchmark evidence guidance"
             )
+        if "native preprocessing" not in lower_text or "backtracking" not in lower_text:
+            issues.append(
+                "docs/release-notes.md must state how native preprocessing/backtracking artifacts are provided"
+            )
 
     return issues
 

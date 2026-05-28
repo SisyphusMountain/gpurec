@@ -15,6 +15,7 @@ upgrade notes for downstream consumers.
   - Known limitations carried into the release.
   - Migration notes for config/CLI surface changes.
   - Release artifact notes (wheel/source expectations and native binaries).
+  - Native preprocessing/backtracking artifact distribution model and install path.
 
 ## Template
 
@@ -58,3 +59,7 @@ Keep this file updated whenever `CHANGELOG.md` is appended.
   - New release governance files introduced:
     `CHANGELOG.md`, `CITATION.cff`, `LICENSE`, `Dockerfile`, and
     `docs/release-notes.md`.
+- Native preprocessing/backtracking artifact distribution model and install path
+  - Current release remains source-only for native artifacts: users provide a
+    compatible preprocessing extension and backtracking binary as documented in
+    `docs/platform-matrix.md` and `docs/release-readiness.md`.

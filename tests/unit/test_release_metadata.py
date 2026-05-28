@@ -165,6 +165,7 @@ def _write_complete_release_metadata_fixture(
                     "- Known limitations",
                     "- Migration notes",
                     "- Release artifact notes",
+                    "- Native preprocessing/backtracking artifact distribution model and user-facing install path.",
                     "",
                 ]
             ),
@@ -3004,6 +3005,45 @@ def test_release_metadata_check_requires_release_notes_benchmark_evidence_guidan
 
     assert result.returncode == 1
     assert "must include benchmark evidence guidance" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_release_notes_native_artifact_distribution_guidance(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "release-notes.md").write_text(
+        "\n".join(
+            [
+                "# Release Notes",
+                "",
+                "## 0.0.0 - 2026-01-01",
+                "",
+                "- Dependency and Python/Torch/CUDA support updates",
+                "- Known limitations",
+                "- Migration notes",
+                "- Release artifact notes",
+                "- Tested platform matrix and validation hardware/software notes.",
+                "- Benchmark evidence summary and scope disclaimer.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "must state how native preprocessing/backtracking artifacts are provided"
+        in result.stdout
+    )
     assert result.stderr == ""
 
 
