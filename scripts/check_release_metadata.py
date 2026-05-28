@@ -703,6 +703,7 @@ def _output_artifact_flow_issues(root: Path) -> list[str]:
         "input/output flow",
         "validate-config --check-preprocess",
         "gpurec optimize",
+        "gpurec summary-info / gpurec checkpoint-info",
         "gpurec sample",
         "reconciliations/*.xml",
     )

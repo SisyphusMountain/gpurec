@@ -389,7 +389,8 @@ def _write_complete_release_metadata_fixture(
                     "Run directory structure uses output_gpurec/, checkpoints/,",
                     "and reconciliations/.",
                     "Input/output flow uses validate-config --check-preprocess,",
-                    "gpurec optimize, gpurec sample, and reconciliations/*.xml.",
+                    "gpurec optimize, gpurec summary-info / gpurec checkpoint-info,",
+                    "gpurec sample, and reconciliations/*.xml.",
                     "run_manifest.json records package version, native artifact",
                     "metadata, PyTorch version, CUDA availability, GPU name,",
                     "command line invocation, config hash, random seed fields,",
@@ -1634,6 +1635,7 @@ def test_release_metadata_check_requires_output_artifact_flow_phrases(
     assert "must document flow phrase: input/output flow" in result.stdout
     assert "must document flow phrase: validate-config --check-preprocess" in result.stdout
     assert "must document flow phrase: gpurec optimize" in result.stdout
+    assert "must document flow phrase: gpurec summary-info / gpurec checkpoint-info" in result.stdout
     assert "must document flow phrase: gpurec sample" in result.stdout
     assert "must document flow phrase: reconciliations/*.xml" in result.stdout
     assert result.stderr == ""
