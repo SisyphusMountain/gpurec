@@ -304,6 +304,28 @@ def _platform_matrix_issues(root: Path) -> list[str]:
     return issues
 
 
+def _readme_cli_exit_code_issues(root: Path) -> list[str]:
+    readme = root / "README.md"
+    if not readme.is_file():
+        return []
+
+    text = readme.read_text(encoding="utf-8")
+    required_phrases = (
+        "CLI exit codes are stable for workflow managers",
+        "`0`: command completed successfully.",
+        "`1`: command ran but failed a runtime or validation gate",
+        "`2`: CLI usage or argument parsing error from `argparse`.",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "README.md must document CLI exit-code policy including: "
+                + phrase
+            )
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -440,6 +462,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_policy_document_issues(project_root))
     issues.extend(_publication_checklist_issues(project_root))
     issues.extend(_platform_matrix_issues(project_root))
+    issues.extend(_readme_cli_exit_code_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)

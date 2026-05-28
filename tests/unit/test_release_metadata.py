@@ -107,7 +107,20 @@ def _write_complete_release_metadata_fixture(
 ) -> None:
     (root / "LICENSE").write_text("fixture license\n", encoding="utf-8")
     if create_readme:
-        (root / "README.md").write_text("# fixture\n", encoding="utf-8")
+        (root / "README.md").write_text(
+            "\n".join(
+                [
+                    "# fixture",
+                    "",
+                    "CLI exit codes are stable for workflow managers:",
+                    "- `0`: command completed successfully.",
+                    "- `1`: command ran but failed a runtime or validation gate",
+                    "- `2`: CLI usage or argument parsing error from `argparse`.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
     if create_changelog:
         (root / "CHANGELOG.md").write_text(
             "# Changelog\n\n## 0.0.0 - 2026-01-01\n\n- fixture\n",
@@ -1075,6 +1088,25 @@ def test_release_metadata_check_requires_readme_metadata(tmp_path: Path):
     assert result.returncode == 1
     assert "must declare readme metadata" in result.stdout
     assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_readme_cli_exit_code_policy(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "README.md").write_text("# fixture\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "README.md must document CLI exit-code policy" in result.stdout
     assert result.stderr == ""
 
 
