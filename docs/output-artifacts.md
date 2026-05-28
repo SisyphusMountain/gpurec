@@ -3,6 +3,8 @@
 This page describes the files written by the supported `gpurec optimize`,
 `gpurec run`, and `gpurec sample` workflows. It is meant as an operator-facing
 contract for reading run results without having to inspect workflow source code.
+Documented output artifacts use stable schemas or explicit compatibility rules
+for production automation.
 
 Optimization writes final artifacts through a staged publish step. Existing
 final artifacts are backed up, new files are moved into place, and backups are

@@ -346,6 +346,7 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# Output Artifacts",
                     "",
+                    "Output artifacts follow stable schemas or compatibility rules.",
                     "Example output snippets for summary.json, rates_final.tsv,",
                     "per_fam_likelihoods.tsv, and a RecPhyloXML output snippet.",
                     "Run directory structure uses output_gpurec/, checkpoints/,",
@@ -1367,6 +1368,43 @@ def test_release_metadata_check_requires_output_artifact_theta_checkpoint_phrase
     assert "must document theta/checkpoint phrase: theta_final.pt" in result.stdout
     assert "must document theta/checkpoint phrase: for inspection only" in result.stdout
     assert "must document theta/checkpoint phrase: checkpoint is required" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_output_artifact_schema_compatibility_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "output-artifacts.md").write_text(
+        "\n".join(
+            [
+                "# Output Artifacts",
+                "",
+                "Example output snippets.",
+                "Run directory structure.",
+                "Input/output flow.",
+                "run_manifest.json contract text.",
+                "theta_final.pt is for inspection only.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document schema-compatibility phrase: stable schemas" in result.stdout
+    assert (
+        "must document schema-compatibility phrase: compatibility rules"
+        in result.stdout
+    )
     assert result.stderr == ""
 
 
