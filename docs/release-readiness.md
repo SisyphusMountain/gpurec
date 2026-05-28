@@ -224,6 +224,9 @@ python scripts/check_release_metadata.py
 gpurec doctor
 ```
 
+The release readiness command set must confirm writable output directory checks
+as part of `gpurec doctor` readiness evidence before long GPU runs.
+
 The checker validates required project metadata, required URLs and
 classifiers, the `gpurec = "gpurec.cli:main"` console-script entry point,
 declared README files, and declared license metadata.  License metadata may
