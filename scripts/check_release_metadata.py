@@ -452,6 +452,8 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "nightly checks",
         "release-candidate checks",
         "final publication checks",
+        "checksums",
+        "provenance",
         "sha256sum dist/* > dist/sha256sums",
     )
     issues: list[str] = []
