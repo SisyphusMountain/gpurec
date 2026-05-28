@@ -547,6 +547,8 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "documented commands",
         "gpu validation has passed",
         "production route",
+        "exact tested platform matrix",
+        "benchmark evidence",
         "checksums",
         "provenance",
         "binary provenance",

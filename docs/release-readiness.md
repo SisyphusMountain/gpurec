@@ -19,6 +19,7 @@ A release candidate can be built from a clean checkout by following one checklis
   convergence failures.
 - A realistic dataset can be validated, optimized, inspected, resumed, and sampled using documented commands.
 - GPU validation has passed for the production route.
+- Release notes state the exact tested platform matrix and benchmark evidence.
 - Offline installation policy is documented and current in
   `docs/platform-matrix.md`.
 - Build source artifacts from a clean checkout and install them in a fresh environment
