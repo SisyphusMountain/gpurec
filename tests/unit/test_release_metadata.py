@@ -82,6 +82,7 @@ def _write_complete_release_metadata_fixture(
     create_dockerfile: bool = True,
     create_release_notes: bool = True,
     create_support_policy: bool = True,
+    create_versioning_policy: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -108,6 +109,13 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "support-policy.md").write_text(
             "# Support Policy\n", encoding="utf-8"
+        )
+    if create_versioning_policy:
+        (root / "docs" / "versioning-policy.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "versioning-policy.md").write_text(
+            "# Versioning Policy\n", encoding="utf-8"
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
@@ -219,6 +227,22 @@ def test_release_metadata_check_requires_support_policy(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/support-policy.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_versioning_policy(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path, create_versioning_policy=False)
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/versioning-policy.md" in result.stdout
     assert result.stderr == ""
 
 
@@ -569,6 +593,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/professionalization-audit-progress.tex",
         "docs/release-readiness.md",
         "docs/support-policy.md",
+        "docs/versioning-policy.md",
         "docs/troubleshooting.md",
         "examples/README.md",
         "examples/minimal-run-config.json",
@@ -1490,6 +1515,7 @@ def test_readme_documents_installed_sampling_binary_setup():
         in " ".join(readme.split())
     )
     assert "For a source checkout or unpacked source archive" in readme
+    assert "docs/versioning-policy.md" in readme
     assert (
         "cargo build --locked --release --manifest-path "
         "crates/gpurec-backtrack/Cargo.toml"

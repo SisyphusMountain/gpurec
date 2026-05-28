@@ -856,4 +856,5 @@ For source data layout and preflight validation, see
 [`docs/input-preparation.md`](docs/input-preparation.md).
 For run triage, see [`docs/troubleshooting.md`](docs/troubleshooting.md).
 Project governance files are: `CHANGELOG.md`, `CITATION.cff`,
-`docs/release-notes.md`, `docs/support-policy.md`, and top-level `LICENSE`.
+`docs/release-notes.md`, `docs/support-policy.md`,
+`docs/versioning-policy.md`, and top-level `LICENSE`.

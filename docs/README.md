@@ -70,6 +70,8 @@ file as the map for deeper context.
   packaging verification gates.
 - `support-policy.md`: explicit production support scope, platform envelope,
   release/patch policy, and support evidence requirements.
+- `versioning-policy.md`: semantic-versioning rules, compatibility commitments,
+  and release-line policy for user-facing contract changes.
 - `release-notes.md`: release note template with migration notes and release
   limitation blocks.
 - `../examples/README.md`: source-checkout/source-archive CUDA flat JSON

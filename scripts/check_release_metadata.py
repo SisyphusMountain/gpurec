@@ -30,6 +30,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "Dockerfile",
     "docs/release-notes.md",
     "docs/support-policy.md",
+    "docs/versioning-policy.md",
 )
 
 

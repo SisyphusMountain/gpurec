@@ -157,6 +157,7 @@ jobs:
               "docs/professionalization-audit-progress.tex",
               "docs/release-readiness.md",
               "docs/support-policy.md",
+              "docs/versioning-policy.md",
               "docs/troubleshooting.md",
               "examples/README.md",
               "examples/minimal-run-config.json",
