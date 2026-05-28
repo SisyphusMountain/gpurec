@@ -238,6 +238,9 @@ def _write_complete_release_metadata_fixture(
         (root / "docs" / "workflow-examples" / "end-to-end-tutorial" / "run.json").write_text(
             "{}\n", encoding="utf-8"
         )
+        (root / "docs" / "workflow-examples" / "end-to-end-tutorial" / "generate_dataset.py").write_text(
+            "print('fixture')\n", encoding="utf-8"
+        )
         (root / "docs" / "workflow-examples" / "input-validation-fixtures").mkdir(
             parents=True, exist_ok=True
         )
@@ -677,6 +680,34 @@ def test_release_metadata_check_requires_workflow_examples_run_config(tmp_path: 
     assert (
         "missing required release artifact: "
         "docs/workflow-examples/end-to-end-tutorial/run.json"
+    ) in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_workflow_examples_dataset_generator(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (
+        tmp_path
+        / "docs"
+        / "workflow-examples"
+        / "end-to-end-tutorial"
+        / "generate_dataset.py"
+    ).unlink()
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "missing required release artifact: "
+        "docs/workflow-examples/end-to-end-tutorial/generate_dataset.py"
     ) in result.stdout
     assert result.stderr == ""
 

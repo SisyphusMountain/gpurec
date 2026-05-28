@@ -47,6 +47,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/workflow-examples/README.md",
     "docs/workflow-examples/end-to-end-tutorial/README.md",
     "docs/workflow-examples/end-to-end-tutorial/run.json",
+    "docs/workflow-examples/end-to-end-tutorial/generate_dataset.py",
     "docs/workflow-examples/input-validation-fixtures/README.md",
     "docs/workflow-examples/snakemake/README.md",
     "docs/workflow-examples/nextflow/README.md",
