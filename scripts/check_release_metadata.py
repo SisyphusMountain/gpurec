@@ -41,6 +41,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/long-validation-workflow.md",
     "docs/validation-envelope.md",
     "docs/troubleshooting.md",
+    "docs/README.md",
 )
 
 
