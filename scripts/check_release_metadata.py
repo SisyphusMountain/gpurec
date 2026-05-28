@@ -128,6 +128,9 @@ def _citation_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
         return []
 
     top_level_version: str | None = None
+    has_cff_version = False
+    has_title = False
+    has_repository_code = False
     preferred_version: str | None = None
     in_preferred = False
     preferred_indent = 0
@@ -142,6 +145,12 @@ def _citation_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
             continue
         if in_preferred and indent <= preferred_indent:
             in_preferred = False
+        if stripped.startswith("cff-version:"):
+            has_cff_version = True
+        if stripped.startswith("title:"):
+            has_title = True
+        if stripped.startswith("repository-code:"):
+            has_repository_code = True
         if stripped.startswith("version:"):
             value = stripped.split(":", 1)[1].strip().strip('"').strip("'")
             if in_preferred and preferred_version is None:
@@ -150,6 +159,12 @@ def _citation_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
                 top_level_version = value
 
     issues: list[str] = []
+    if not has_cff_version:
+        issues.append("CITATION.cff must declare cff-version")
+    if not has_title:
+        issues.append("CITATION.cff must declare title")
+    if not has_repository_code:
+        issues.append("CITATION.cff must declare repository-code")
     if top_level_version is None:
         issues.append("CITATION.cff must declare a top-level version")
     elif top_level_version != project_version:
