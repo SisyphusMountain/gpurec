@@ -543,6 +543,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "accidental public-surface drift",
         "generated cli help snapshot",
         "docstring requirements for public apis",
+        "signed",
         "stable schemas",
         "compatibility rules",
         "known limitations",

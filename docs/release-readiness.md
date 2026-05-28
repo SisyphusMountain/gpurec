@@ -31,6 +31,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - CI rejects accidental public-surface drift before release publication.
 - CI maintains a generated CLI help snapshot for stable flags and exits.
 - CI enforces docstring requirements for public APIs.
+- Release artifacts are signed and checksummed before publication.
 
 ## Preprocessing Native Extension Contract
 
