@@ -521,6 +521,7 @@ def _write_complete_release_metadata_fixture(
                     "--check-preprocess",
                     "--require-cuda-backward-ready",
                     "gpurec optimize",
+                    "gpurec optimize --resume-from output_gpurec/checkpoints/latest.pt",
                     "gpurec sample",
                     "",
                 ]
@@ -2198,6 +2199,8 @@ def test_release_metadata_check_requires_end_to_end_tutorial_public_command_phra
     assert "must document tutorial phrase: --check-preprocess" in result.stdout
     assert "must document tutorial phrase: --require-cuda-backward-ready" in result.stdout
     assert "must document tutorial phrase: gpurec optimize" in result.stdout
+    assert "must document tutorial phrase: --resume-from" in result.stdout
+    assert "must document tutorial phrase: output_gpurec/checkpoints/latest.pt" in result.stdout
     assert "must document tutorial phrase: gpurec sample" in result.stdout
     assert result.stderr == ""
 

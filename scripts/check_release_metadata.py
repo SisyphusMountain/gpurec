@@ -862,6 +862,8 @@ def _end_to_end_tutorial_public_command_issues(root: Path) -> list[str]:
         "--check-preprocess",
         "--require-cuda-backward-ready",
         "gpurec optimize",
+        "--resume-from",
+        "output_gpurec/checkpoints/latest.pt",
         "gpurec sample",
     )
     issues: list[str] = []
