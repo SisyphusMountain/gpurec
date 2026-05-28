@@ -134,6 +134,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     assert _parser_action_dests("optimize") == (
         expected_parser_dests
         | {
+            "dry_run",
             "require_converged",
             "require_final_check_ok",
             "require_mode_default_optimizer",
@@ -163,6 +164,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "require_cuda_backward_ready",
     }
     assert _parser_action_dests("run") == expected_parser_dests | {
+        "dry_run",
         "sample_out_dir",
         "samples",
         "seed",
@@ -5214,6 +5216,27 @@ def test_cli_optimize_passes_invocation_argv_to_optimizer(
     assert captured["command_argv"] == args
 
 
+def test_cli_optimize_dry_run_skips_optimizer_and_reports_preflight(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called in --dry-run mode")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    main(_minimal_workflow_cli_args("optimize", tmp_path) + ["--dry-run"])
+
+    captured = capsys.readouterr()
+    assert "dry_run=true" in captured.out
+    assert "command=optimize" in captured.out
+    assert "preprocessed_families=1" in captured.out
+    assert "preprocessed_species_nodes=3" in captured.out
+    assert "cuda_backward_ready=false" in captured.out
+    assert captured.err == ""
+
+
 def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
     tmp_path: Path,
     capsys,
@@ -6041,6 +6064,38 @@ def test_cli_run_passes_invocation_argv_to_optimizer(
 
     main(args)
     assert captured["command_argv"] == args
+
+
+def test_cli_run_dry_run_skips_backtracking_optimize_and_sample(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unexpected_backtrack_check(backtrack_binary):
+        raise AssertionError("backtracking availability should not run in --dry-run mode")
+
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called in --dry-run mode")
+
+    def unexpected_sample(config):
+        raise AssertionError("sample should not be called in --dry-run mode")
+
+    monkeypatch.setattr(
+        "gpurec.cli._ensure_backtracking_available",
+        unexpected_backtrack_check,
+    )
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+
+    main(_minimal_workflow_cli_args("run", tmp_path) + ["--dry-run", "--samples", "3"])
+
+    captured = capsys.readouterr()
+    assert "dry_run=true" in captured.out
+    assert "command=run" in captured.out
+    assert "preprocessed_families=1" in captured.out
+    assert "preprocessed_species_nodes=3" in captured.out
+    assert "cuda_backward_ready=false" in captured.out
+    assert captured.err == ""
 
 
 def test_cli_run_refuses_sampling_after_failed_optimization(

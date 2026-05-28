@@ -2066,6 +2066,29 @@ def _validate_config_route_text(
     return _route_metadata_text(route)
 
 
+def _workflow_dry_run_text(
+    *,
+    command: str,
+    config: RunConfig,
+    summary: dict[str, object],
+    route_metadata: dict[str, Any],
+) -> str:
+    cuda_ready = summary.get("cuda_backward_ready")
+    return (
+        f"dry_run=true command={command} "
+        f"mode={config.mode} optimizer={config.optimizer} "
+        f"families={summary.get('families', 0)} "
+        f"gene_tree_files={summary.get('gene_tree_files', 0)} "
+        f"mapped_families={summary.get('mapped_families', 0)} "
+        f"preprocessed_families={summary.get('preprocessed_families', 0)} "
+        f"preprocessed_species_nodes={summary.get('preprocessed_species_nodes', 0)} "
+        f"cuda_backward_ready={str(cuda_ready).lower() if isinstance(cuda_ready, bool) else 'null'} "
+        f"{_optional_text('cuda_backward_ready_reason', summary.get('cuda_backward_ready_reason'))} "
+        f"{_validate_config_route_text(config, route_metadata=route_metadata)} "
+        f"device={config.device} {_optional_text('out_dir', config.out_dir)}"
+    )
+
+
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
@@ -2693,6 +2716,14 @@ def build_parser() -> argparse.ArgumentParser:
             "final_check_status is ok."
         ),
     )
+    optimize_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Validate config, routes, and CPU preprocessing only; print "
+            "estimated workflow readiness/counts without running optimization."
+        ),
+    )
     optimize_parser.set_defaults(_command_parser=optimize_parser)
 
     validate_parser = sub.add_parser(
@@ -2839,6 +2870,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "After optimization, print the optimization status and exit before "
             "sampling unless final_check_status is ok."
+        ),
+    )
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Validate config, routes, sampling args, and CPU preprocessing "
+            "only; print estimated workflow readiness/counts without running "
+            "optimization or sampling."
         ),
     )
     run_parser.set_defaults(_command_parser=run_parser)
@@ -3019,16 +3059,35 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "optimize":
         try:
             config = _run_config_from_args(args, validate_input_paths=False)
-            _require_config_route_gates(
+            route_metadata = _require_config_route_gates(
                 command_parser,
                 config,
                 require_mode_default_optimizer=args.require_mode_default_optimizer,
                 require_production_default_route=args.require_production_default_route,
             )
             _validate_run_config_input_paths(config)
-            _preflight_run_config(config)
+            summary = _preflight_run_config(
+                config,
+                check_preprocess=args.dry_run,
+            )
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
+        route_metadata_for_report = (
+            route_metadata
+            if route_metadata is not None
+            else _config_route_metadata(config)
+        )
+        if args.dry_run:
+            print(
+                _workflow_dry_run_text(
+                    command="optimize",
+                    config=config,
+                    summary=summary,
+                    route_metadata=route_metadata_for_report,
+                ),
+                flush=True,
+            )
+            return
         try:
             result = _run_optimize_command(config, invocation_argv)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
@@ -3691,17 +3750,36 @@ def main(argv: list[str] | None = None) -> None:
             )
         try:
             run_config = _run_config_from_args(args, validate_input_paths=False)
-            _require_config_route_gates(
+            route_metadata = _require_config_route_gates(
                 command_parser,
                 run_config,
                 require_mode_default_optimizer=args.require_mode_default_optimizer,
                 require_production_default_route=args.require_production_default_route,
             )
             _validate_run_config_input_paths(run_config)
-            _preflight_run_config(run_config)
+            summary = _preflight_run_config(
+                run_config,
+                check_preprocess=args.dry_run,
+            )
             _validate_run_sampling_args(args, run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
+        route_metadata_for_report = (
+            route_metadata
+            if route_metadata is not None
+            else _config_route_metadata(run_config)
+        )
+        if args.dry_run:
+            print(
+                _workflow_dry_run_text(
+                    command="run",
+                    config=run_config,
+                    summary=summary,
+                    route_metadata=route_metadata_for_report,
+                ),
+                flush=True,
+            )
+            return
         try:
             _ensure_backtracking_available(args.backtrack_binary)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
