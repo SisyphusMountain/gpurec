@@ -103,6 +103,12 @@ For older one-off scripts or benchmark outputs, include only the `--tsv` and
 
 ## Maintainer Build Path
 
+GPU validation is enforced in `.github/workflows/gpu-validation.yml` for
+`pull_request` and `push` events (protected branches `main` and `production`).
+Those required runs must execute on a CUDA-capable self-hosted runner and fail
+if CUDA is unavailable. The weekly scheduled run remains a non-blocking drift
+check that can skip when no CUDA runtime is exposed.
+
 The CPU GitHub Actions workflow includes a packaging job that installs
 `.[release]` on Python 3.10 and 3.12, builds source and wheel artifacts, runs
 `twine check`, installs the built wheel with existing runtime dependencies,

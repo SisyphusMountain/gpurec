@@ -1,6 +1,11 @@
 name: GPU Validation
 
 on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - production
   schedule:
     - cron: "0 5 * * 1"
   workflow_dispatch:
@@ -30,7 +35,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Skip if no CUDA runtime is available
+      - name: Detect CUDA runtime availability
         id: cuda-check
         run: |
           python - <<'PY'
@@ -44,6 +49,13 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write(f"skip={skip}\n")
           PY
+
+      - name: Fail required GPU gate when CUDA is unavailable
+        if: steps.cuda-check.outputs.skip == '1' && github.event_name != 'schedule'
+        run: |
+          echo "GPU validation is required for pull_request/push events."
+          echo "This runner did not expose a CUDA runtime."
+          exit 1
 
       - name: Build preprocessing extension for config smoke
         if: steps.cuda-check.outputs.skip != '1'
