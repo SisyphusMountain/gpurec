@@ -199,6 +199,7 @@ def _write_complete_release_metadata_fixture(
                     "A fresh install must run a readiness command successfully before release sign-off.",
                     "Installation docs cover native preprocessing and backtracking artifacts.",
                     "Output artifacts have stable schemas or documented compatibility rules.",
+                    "Known limitations are prominent and accurate.",
                     "Checksums, provenance evidence, and binary provenance records are required.",
                     "sha256sum dist/* > dist/SHA256SUMS",
                     "",
@@ -2848,6 +2849,8 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: backtracking artifacts" in result.stdout
     assert "must document release gate phrase: stable schemas" in result.stdout
     assert "must document release gate phrase: compatibility rules" in result.stdout
+    assert "must document release gate phrase: known limitations" in result.stdout
+    assert "must document release gate phrase: prominent and accurate" in result.stdout
     assert "must document release gate phrase: checksums" in result.stdout
     assert "must document release gate phrase: provenance" in result.stdout
     assert "must document release gate phrase: binary provenance" in result.stdout

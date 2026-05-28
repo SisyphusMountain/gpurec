@@ -536,6 +536,8 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "backtracking artifacts",
         "stable schemas",
         "compatibility rules",
+        "known limitations",
+        "prominent and accurate",
         "checksums",
         "provenance",
         "binary provenance",
