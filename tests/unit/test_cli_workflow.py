@@ -2044,6 +2044,7 @@ def test_cli_mode_default_gate_rejects_override_before_input_paths(
     assert exc_info.value.code == 2
     assert "config optimizer is 'adam'" in captured.err
     assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "suggestion:" in captured.err
     assert str(missing_species) not in captured.err
     assert str(missing_families) not in captured.err
     assert "path does not exist" not in captured.err
@@ -2086,6 +2087,7 @@ def test_cli_production_route_gate_rejects_override_before_input_paths(
         "fd_hessian_refresh_steps"
     ) in captured.err
     assert "use optimizer=auto and omit route overrides" in captured.err
+    assert "suggestion:" in captured.err
     assert str(missing_species) not in captured.err
     assert str(missing_families) not in captured.err
     assert "path does not exist" not in captured.err

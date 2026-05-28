@@ -573,7 +573,10 @@ def _mode_default_optimizer_gate_message_from_audited(
         )
     if action is not None:
         message = f"{message}; {action}"
-    return message
+    return _with_suggestion(
+        message,
+        "use optimizer=auto or the documented mode default optimizer for the selected mode",
+    )
 
 
 def _production_default_route_gate_message(
@@ -613,7 +616,10 @@ def _production_default_route_gate_message_from_evidence(
         )
     if action is not None:
         message = f"{message}; {action}"
-    return message
+    return _with_suggestion(
+        message,
+        "use optimizer=auto and remove route/optimizer override fields to restore the shipped production default route",
+    )
 
 
 def _require_config_mode_default_optimizer(
