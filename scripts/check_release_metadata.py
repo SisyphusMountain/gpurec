@@ -658,6 +658,8 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "machine-readable",
         "summaries",
         "checkpoints",
+        "run-directory inspection",
+        "repair",
     )
     issues: list[str] = []
     for phrase in required_phrases:

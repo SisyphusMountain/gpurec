@@ -109,6 +109,8 @@ If the checkpoint is expected to be a final validation checkpoint, add
 `--require-final-check-ok`; the command prints the checkpoint fields first and
 then fails unless the saved last row reports
 `optimizer/final_check_status=ok`.
+Use these commands for run-directory inspection before deciding whether repair
+or discard is safer for a failed run directory.
 
 | Status and reason | Meaning | Next action |
 |---|---|---|
