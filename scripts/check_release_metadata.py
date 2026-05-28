@@ -456,6 +456,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "python scripts/check_release_metadata.py",
         "validation-envelope.md",
         "scripts/run_long_validation.py",
+        "gpurec doctor",
         "quick pr checks",
         "nightly checks",
         "release-candidate checks",

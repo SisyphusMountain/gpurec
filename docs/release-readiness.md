@@ -221,6 +221,7 @@ Check metadata before building public artifacts:
 
 ```bash
 python scripts/check_release_metadata.py
+gpurec doctor
 ```
 
 The checker validates required project metadata, required URLs and

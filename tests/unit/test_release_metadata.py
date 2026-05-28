@@ -180,6 +180,7 @@ def _write_complete_release_metadata_fixture(
                     "python scripts/check_release_metadata.py",
                     "scripts/run_long_validation.py",
                     "validation-envelope.md",
+                    "gpurec doctor",
                     "Quick PR checks",
                     "Nightly checks",
                     "Release-candidate checks",
@@ -2698,6 +2699,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: python scripts/check_release_metadata.py" in result.stdout
     assert "must document release gate phrase: scripts/run_long_validation.py" in result.stdout
     assert "must document release gate phrase: validation-envelope.md" in result.stdout
+    assert "must document release gate phrase: gpurec doctor" in result.stdout
     assert "must document release gate phrase: quick pr checks" in result.stdout
     assert "must document release gate phrase: nightly checks" in result.stdout
     assert "must document release gate phrase: release-candidate checks" in result.stdout
