@@ -215,6 +215,7 @@ def _write_complete_release_metadata_fixture(
                     "CI enforces docstring requirements for public APIs.",
                     "Release artifacts are signed and checksummed before publication.",
                     "Binary artifacts are traced to source revisions and build settings.",
+                    "Release can be rebuilt from source archive without relying on unpinned moving targets.",
                     "Output artifacts have stable schemas or documented compatibility rules.",
                     "Known limitations are prominent and accurate.",
                     "CLI errors are actionable for common input, native binary, CUDA, and convergence failures.",
@@ -2958,6 +2959,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: docstring requirements for public apis" in result.stdout
     assert "must document release gate phrase: signed" in result.stdout
     assert "must document release gate phrase: traced to source revisions and build settings" in result.stdout
+    assert "must document release gate phrase: rebuilt from source archive without relying on unpinned moving targets" in result.stdout
     assert "must document release gate phrase: stable schemas" in result.stdout
     assert "must document release gate phrase: compatibility rules" in result.stdout
     assert "must document release gate phrase: known limitations" in result.stdout

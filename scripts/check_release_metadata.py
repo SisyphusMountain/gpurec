@@ -552,6 +552,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "docstring requirements for public apis",
         "signed",
         "traced to source revisions and build settings",
+        "rebuilt from source archive without relying on unpinned moving targets",
         "stable schemas",
         "compatibility rules",
         "known limitations",
