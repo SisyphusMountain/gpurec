@@ -32,6 +32,11 @@ Use this checklist before submitting results that depend on `gpurec`.
 
 ## Reporting Requirements
 
+- Record the tested platform matrix (Python/PyTorch/CUDA/Triton/GPU/native
+  artifact model) from [`release-notes.md`](release-notes.md) in publication
+  records.
+- Report benchmark evidence scope explicitly as benchmark evidence rather than a
+  guaranteed performance contract for all environments.
 - Cite known limitations from [`known-limitations.md`](known-limitations.md) in
   manuscripts or internal reports when they affect interpretation.
 - Include migration notes from [`release-notes.md`](release-notes.md) if results

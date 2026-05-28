@@ -395,6 +395,14 @@ def _publication_checklist_issues(root: Path) -> list[str]:
         issues.append(
             "docs/publication-checklist.md must mention binary provenance evidence guidance"
         )
+    if "tested platform matrix" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention tested platform matrix reporting guidance"
+        )
+    if "benchmark evidence" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention benchmark evidence scope guidance"
+        )
     return issues
 
 

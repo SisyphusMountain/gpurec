@@ -264,6 +264,8 @@ def _write_complete_release_metadata_fixture(
                     "Record gpurec doctor --json and gpurec summary-info --summary output_gpurec/summary.json --json.",
                     "Archive history.jsonl and checkpoints/ for rerun audit trails.",
                     "Archive checksums, provenance evidence, and binary provenance records with publication artifacts.",
+                    "Record tested platform matrix details from release-notes.md for publication context.",
+                    "Report benchmark evidence scope as non-guaranteed performance context.",
                     "Report known-limitations.md caveats and release-notes.md migration notes.",
                     "Run scripts/validate_output_artifacts.py before publication.",
                     "",
@@ -1119,6 +1121,42 @@ def test_release_metadata_check_requires_publication_checklist_artifact_validato
     assert "must mention checksums evidence guidance" in result.stdout
     assert "must mention provenance evidence guidance" in result.stdout
     assert "must mention binary provenance evidence guidance" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_publication_checklist_matrix_and_benchmark_guidance(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "publication-checklist.md").write_text(
+        "\n".join(
+            [
+                "# Publication Checklist",
+                "",
+                "Reference CITATION.cff for software citation metadata.",
+                "Archive run_config.json, run_manifest.json and summary.json for reproducibility.",
+                "Record gpurec doctor --json and gpurec summary-info --summary output_gpurec/summary.json --json.",
+                "Archive history.jsonl and checkpoints/ for rerun audit trails.",
+                "Archive checksums, provenance evidence, and binary provenance records with publication artifacts.",
+                "Report known-limitations.md caveats and release-notes.md migration notes.",
+                "Run scripts/validate_output_artifacts.py before publication.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must mention tested platform matrix reporting guidance" in result.stdout
+    assert "must mention benchmark evidence scope guidance" in result.stdout
     assert result.stderr == ""
 
 
