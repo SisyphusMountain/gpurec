@@ -68,6 +68,8 @@ file as the map for deeper context.
   cleanup and verification work.
 - `release-readiness.md`: release blockers, clean-checkout hygiene, and
   packaging verification gates.
+- `support-policy.md`: explicit production support scope, platform envelope,
+  release/patch policy, and support evidence requirements.
 - `release-notes.md`: release note template with migration notes and release
   limitation blocks.
 - `../examples/README.md`: source-checkout/source-archive CUDA flat JSON

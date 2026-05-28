@@ -81,6 +81,7 @@ def _write_complete_release_metadata_fixture(
     create_citation: bool = True,
     create_dockerfile: bool = True,
     create_release_notes: bool = True,
+    create_support_policy: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -101,6 +102,13 @@ def _write_complete_release_metadata_fixture(
         )
     if create_dockerfile:
         (root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    if create_support_policy:
+        (root / "docs" / "support-policy.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "support-policy.md").write_text(
+            "# Support Policy\n", encoding="utf-8"
+        )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
         urls_block = """
@@ -195,6 +203,22 @@ def test_release_metadata_check_requires_governance_artifacts(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: CHANGELOG.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_support_policy(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path, create_support_policy=False)
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/support-policy.md" in result.stdout
     assert result.stderr == ""
 
 
@@ -544,6 +568,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/production-optimization-guide.md",
         "docs/professionalization-audit-progress.tex",
         "docs/release-readiness.md",
+        "docs/support-policy.md",
         "docs/troubleshooting.md",
         "examples/README.md",
         "examples/minimal-run-config.json",

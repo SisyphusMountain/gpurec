@@ -29,6 +29,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "CITATION.cff",
     "Dockerfile",
     "docs/release-notes.md",
+    "docs/support-policy.md",
 )
 
 
