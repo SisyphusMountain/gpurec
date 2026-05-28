@@ -233,6 +233,7 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "Reference CITATION.cff for software citation metadata.",
                     "Archive run_manifest.json and summary.json for reproducibility.",
+                    "Record gpurec doctor --json and gpurec summary-info --summary output_gpurec/summary.json --json.",
                     "",
                 ]
             ),
@@ -891,6 +892,39 @@ def test_release_metadata_check_requires_publication_checklist_artifact_referenc
     assert result.returncode == 1
     assert "must mention run_manifest.json" in result.stdout
     assert "must mention summary.json" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_publication_checklist_json_command_references(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "publication-checklist.md").write_text(
+        "\n".join(
+            [
+                "# Publication Checklist",
+                "",
+                "Reference CITATION.cff for software citation metadata.",
+                "Archive run_manifest.json and summary.json for reproducibility.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must mention gpurec doctor --json" in result.stdout
+    assert (
+        "must mention gpurec summary-info --summary ... --json" in result.stdout
+    )
     assert result.stderr == ""
 
 

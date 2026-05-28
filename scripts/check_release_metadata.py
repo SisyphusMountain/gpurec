@@ -296,6 +296,14 @@ def _publication_checklist_issues(root: Path) -> list[str]:
         issues.append(
             "docs/publication-checklist.md must mention summary.json"
         )
+    if "gpurec doctor --json" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention gpurec doctor --json"
+        )
+    if "gpurec summary-info --summary" not in text or "--json" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention gpurec summary-info --summary ... --json"
+        )
     return issues
 
 
