@@ -84,6 +84,7 @@ def _write_complete_release_metadata_fixture(
     create_support_policy: bool = True,
     create_versioning_policy: bool = True,
     create_publication_checklist: bool = True,
+    create_platform_matrix: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -124,6 +125,13 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "publication-checklist.md").write_text(
             "# Publication Checklist\n", encoding="utf-8"
+        )
+    if create_platform_matrix:
+        (root / "docs" / "platform-matrix.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "platform-matrix.md").write_text(
+            "# Platform Matrix\n", encoding="utf-8"
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
@@ -270,6 +278,22 @@ def test_release_metadata_check_requires_publication_checklist(tmp_path: Path):
         "missing required release artifact: docs/publication-checklist.md"
         in result.stdout
     )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_platform_matrix(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path, create_platform_matrix=False)
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/platform-matrix.md" in result.stdout
     assert result.stderr == ""
 
 
@@ -619,6 +643,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/lean-fast-path.md",
         "docs/optimization-workflow-call-graph.md",
         "docs/output-artifacts.md",
+        "docs/platform-matrix.md",
         "docs/production-optimization-guide.md",
         "docs/professionalization-audit-progress.tex",
         "docs/release-readiness.md",

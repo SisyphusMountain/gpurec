@@ -158,6 +158,7 @@ jobs:
               "docs/lean-fast-path.md",
               "docs/optimization-workflow-call-graph.md",
               "docs/output-artifacts.md",
+              "docs/platform-matrix.md",
               "docs/production-optimization-guide.md",
               "docs/professionalization-audit-progress.tex",
               "docs/release-readiness.md",
