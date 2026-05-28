@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 import pytest
 import torch
 
@@ -435,6 +437,88 @@ def test_gene_dataset_accepts_supported_branch_length_variants(
     )
     assert dataset.S == 5
     assert int(dataset.families[0]["N_splits"]) > 0
+
+
+def _random_binary_newick(
+    rng: random.Random,
+    labels: list[str],
+    *,
+    root_label: str,
+) -> str:
+    parts = [
+        f"{label}:{rng.choice(['1', '1e-2', '.5', '+2.0E-1', '-0.0'])}"
+        for label in labels
+    ]
+    while len(parts) > 1:
+        left_idx = rng.randrange(len(parts))
+        left = parts.pop(left_idx)
+        right_idx = rng.randrange(len(parts))
+        right = parts.pop(right_idx)
+        parts.append(f"({left},{right})")
+    return f"{parts[0]}{root_label};"
+
+
+def test_gene_dataset_accepts_randomized_documented_simple_newick_subset(tmp_path):
+    rng = random.Random(0)
+
+    for idx in range(20):
+        species_labels = [f"S{i}" for i in range(4)]
+        gene_labels = [f"g{i}" for i in range(4)]
+        species_tree = _write(
+            tmp_path / f"sp_{idx}.nwk",
+            _random_binary_newick(rng, species_labels, root_label="Root"),
+        )
+        gene_tree = _write(
+            tmp_path / f"gene_{idx}.nwk",
+            _random_binary_newick(rng, gene_labels, root_label="GeneRoot"),
+        )
+        leaf_map = {gene: species for gene, species in zip(gene_labels, species_labels)}
+
+        dataset = GeneDataset(
+            species_tree,
+            [[str(gene_tree)]],
+            genewise=False,
+            specieswise=False,
+            dtype=torch.float64,
+            device="cpu",
+            family_names=["fam0"],
+            leaf_species_maps=[leaf_map],
+            preprocess_cpu_cores=1,
+        )
+        assert dataset.S == 7
+        assert int(dataset.families[0]["N_splits"]) > 0
+
+
+def test_gene_dataset_rejects_randomized_malformed_newick_variants(tmp_path):
+    rng = random.Random(1)
+    species_tree = _write(tmp_path / "sp.nwk", "((A:1,B:1)AB:1,C:1)Root;")
+
+    valid_gene = _random_binary_newick(
+        rng,
+        ["a", "b", "c"],
+        root_label="GeneRoot",
+    )
+    malformed_gene_trees = [
+        valid_gene + ")",
+        "(a:1,b:1)GeneRoot)extra;",
+        "((a:1)Unary:1,b:1)GeneRoot;",
+    ]
+    for idx, bad_newick in enumerate(malformed_gene_trees):
+        gene_tree = _write(tmp_path / f"gene_bad_{idx}.nwk", bad_newick)
+        with pytest.raises(
+            RuntimeError,
+            match="Unexpected trailing characters|Expected ',' or '\\)'|Unexpected end of input|Unary node in gene tree",
+        ):
+            GeneDataset(
+                species_tree,
+                [[str(gene_tree)]],
+                genewise=False,
+                specieswise=False,
+                dtype=torch.float64,
+                device="cpu",
+                family_names=["fam0"],
+                leaf_species_maps=[{"a": "A", "b": "B", "c": "C"}],
+            )
 
 
 @pytest.mark.parametrize(
