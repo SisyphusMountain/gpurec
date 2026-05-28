@@ -432,7 +432,16 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "glossary.md").write_text(
-            "# Glossary\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Glossary",
+                    "",
+                    "`D` `T` `L` `DTL` `CCP` `specieswise` `genewise` `global`",
+                    "`RecPhyloXML` `NLL` `route` `solver budget` `checkpoint`",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_workflow_examples:
         (root / "docs" / "workflow-examples" / "README.md").parent.mkdir(
@@ -1511,6 +1520,40 @@ def test_release_metadata_check_requires_glossary(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/glossary.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_glossary_core_terms(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "glossary.md").write_text(
+        "# Glossary\n\nTerms list.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document glossary term: `d`" in result.stdout
+    assert "must document glossary term: `t`" in result.stdout
+    assert "must document glossary term: `l`" in result.stdout
+    assert "must document glossary term: `dtl`" in result.stdout
+    assert "must document glossary term: `ccp`" in result.stdout
+    assert "must document glossary term: `specieswise`" in result.stdout
+    assert "must document glossary term: `genewise`" in result.stdout
+    assert "must document glossary term: `global`" in result.stdout
+    assert "must document glossary term: `recphyloxml`" in result.stdout
+    assert "must document glossary term: `nll`" in result.stdout
+    assert "must document glossary term: `route`" in result.stdout
+    assert "must document glossary term: `solver budget`" in result.stdout
+    assert "must document glossary term: `checkpoint`" in result.stdout
     assert result.stderr == ""
 
 

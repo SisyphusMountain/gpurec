@@ -846,6 +846,34 @@ def _docs_map_user_vs_research_scope_issues(root: Path) -> list[str]:
     return issues
 
 
+def _glossary_core_term_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "glossary.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "`d`",
+        "`t`",
+        "`l`",
+        "`dtl`",
+        "`ccp`",
+        "`specieswise`",
+        "`genewise`",
+        "`global`",
+        "`recphyloxml`",
+        "`nll`",
+        "`route`",
+        "`solver budget`",
+        "`checkpoint`",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append("docs/glossary.md must document glossary term: " + phrase)
+    return issues
+
+
 def _optimization_guide_goal_defaults_issues(root: Path) -> list[str]:
     guide = root / "docs" / "production-optimization-guide.md"
     if not guide.is_file():
@@ -1027,6 +1055,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_api_contract_json_mode_issues(project_root))
     issues.extend(_input_validation_fixture_issue_shape_issues(project_root))
     issues.extend(_docs_map_user_vs_research_scope_issues(project_root))
+    issues.extend(_glossary_core_term_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
