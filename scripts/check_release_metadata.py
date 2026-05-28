@@ -356,6 +356,14 @@ def _publication_checklist_issues(root: Path) -> list[str]:
         issues.append(
             "docs/publication-checklist.md must mention scripts/validate_output_artifacts.py gate"
         )
+    if "checksums" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention checksums evidence guidance"
+        )
+    if "provenance" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention provenance evidence guidance"
+        )
     return issues
 
 

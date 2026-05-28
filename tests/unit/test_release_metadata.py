@@ -246,6 +246,7 @@ def _write_complete_release_metadata_fixture(
                     "Archive run_manifest.json and summary.json for reproducibility.",
                     "Record gpurec doctor --json and gpurec summary-info --summary output_gpurec/summary.json --json.",
                     "Archive history.jsonl and checkpoints/ for rerun audit trails.",
+                    "Archive checksums and provenance evidence with publication artifacts.",
                     "Report known-limitations.md caveats and release-notes.md migration notes.",
                     "Run scripts/validate_output_artifacts.py before publication.",
                     "",
@@ -1072,6 +1073,8 @@ def test_release_metadata_check_requires_publication_checklist_artifact_validato
 
     assert result.returncode == 1
     assert "must mention scripts/validate_output_artifacts.py gate" in result.stdout
+    assert "must mention checksums evidence guidance" in result.stdout
+    assert "must mention provenance evidence guidance" in result.stdout
     assert result.stderr == ""
 
 

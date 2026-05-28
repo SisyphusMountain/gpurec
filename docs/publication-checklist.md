@@ -14,6 +14,7 @@ Use this checklist before submitting results that depend on `gpurec`.
 
 - Archive `run_config.json`, `run_manifest.json`, `summary.json`,
   `history.jsonl`, `checkpoints/`, and the selected sampling checkpoint.
+- Archive checksums and provenance evidence for the publication artifact bundle.
 - Archive native-toolchain provenance when applicable (Rust/Cargo versions,
   backtracking binary path/version, preprocessing native library path/version).
 - Keep dependency inventory and vulnerability scan outputs generated during
