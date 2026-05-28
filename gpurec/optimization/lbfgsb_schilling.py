@@ -29,7 +29,7 @@ class SchillingActiveResult:
 def schilling_projgr(
     n: int,
     x: np.ndarray,
-    l: np.ndarray,
+    lower: np.ndarray,
     u: np.ndarray,
     nbd: np.ndarray,
     g: np.ndarray,
@@ -43,14 +43,14 @@ def schilling_projgr(
                     gi = max(x[i] - u[i], gi)
             else:
                 if nbd[i] <= 2:
-                    gi = min(x[i] - l[i], gi)
+                    gi = min(x[i] - lower[i], gi)
         sbgnrm = max(sbgnrm, abs(gi))
     return float(sbgnrm)
 
 
 def schilling_active(
     n: int,
-    l: np.ndarray,
+    lower: np.ndarray,
     u: np.ndarray,
     nbd: np.ndarray,
     x: np.ndarray,
@@ -61,10 +61,10 @@ def schilling_active(
     prjctd = False
     for i in range(n):
         if nbd[i] > 0:
-            if nbd[i] <= 2 and x[i] <= l[i]:
-                if x[i] < l[i]:
+            if nbd[i] <= 2 and x[i] <= lower[i]:
+                if x[i] < lower[i]:
                     prjctd = True
-                    x[i] = l[i]
+                    x[i] = lower[i]
                 nbdd += 1
             elif nbd[i] >= 2 and x[i] >= u[i]:
                 if x[i] > u[i]:
@@ -81,7 +81,7 @@ def schilling_active(
             iwhere[i] = -1
         else:
             cnstnd = True
-            if nbd[i] == 2 and u[i] - l[i] <= 0.0:
+            if nbd[i] == 2 and u[i] - lower[i] <= 0.0:
                 iwhere[i] = 3
             else:
                 iwhere[i] = 0
@@ -170,7 +170,7 @@ def schilling_formt(
 def schilling_cauchy(
     n: int,
     x: np.ndarray,
-    l: np.ndarray,
+    lower: np.ndarray,
     u: np.ndarray,
     nbd: np.ndarray,
     g: np.ndarray,
@@ -215,7 +215,7 @@ def schilling_cauchy(
             tl = 0.0
             tu = 0.0
             if nbd[i - 1] <= 2:
-                tl = x[i - 1] - l[i - 1]
+                tl = x[i - 1] - lower[i - 1]
             if nbd[i - 1] >= 2:
                 tu = u[i - 1] - x[i - 1]
             xlower = (nbd[i - 1] <= 2) and (tl <= 0.0)
@@ -244,7 +244,7 @@ def schilling_cauchy(
                 pointr = (pointr % m) + 1
             if (nbd[i - 1] <= 2) and (nbd[i - 1] != 0) and (neggi < 0.0):
                 nbreak += 1
-                tl = x[i - 1] - l[i - 1]
+                tl = x[i - 1] - lower[i - 1]
                 iorder[nbreak - 1] = i
                 t[nbreak - 1] = tl / (-neggi)
                 if nbreak == 1 or t[nbreak - 1] < bkmin:
@@ -316,8 +316,8 @@ def schilling_cauchy(
                 xcp[ibp - 1] = u[ibp - 1]
                 iwhere[ibp - 1] = 2
             else:
-                zibp = l[ibp - 1] - x[ibp - 1]
-                xcp[ibp - 1] = l[ibp - 1]
+                zibp = lower[ibp - 1] - x[ibp - 1]
+                xcp[ibp - 1] = lower[ibp - 1]
                 iwhere[ibp - 1] = 1
 
             if nleft == 0 and nbreak == n:
@@ -424,7 +424,7 @@ def schilling_subsm(
     m: int,
     nsub: int,
     ind: np.ndarray,
-    l: np.ndarray,
+    lower: np.ndarray,
     u: np.ndarray,
     nbd: np.ndarray,
     x: np.ndarray,
@@ -494,13 +494,13 @@ def schilling_subsm(
         xk = x[k]
         if nbd[k] != 0:
             if nbd[k] == 1:
-                x[k] = max(l[k], xk + dk)
-                if x[k] == l[k]:
+                x[k] = max(lower[k], xk + dk)
+                if x[k] == lower[k]:
                     iword = 1
             elif nbd[k] == 2:
-                xk2 = max(l[k], xk + dk)
+                xk2 = max(lower[k], xk + dk)
                 x[k] = min(u[k], xk2)
-                if x[k] == l[k] or x[k] == u[k]:
+                if x[k] == lower[k] or x[k] == u[k]:
                     iword = 1
             elif nbd[k] == 3:
                 x[k] = min(u[k], xk + dk)
@@ -528,7 +528,7 @@ def schilling_subsm(
         dk = d[i - 1]
         if nbd[k] != 0:
             if dk < 0.0 and nbd[k] <= 2:
-                temp2 = l[k] - x[k]
+                temp2 = lower[k] - x[k]
                 if temp2 >= 0.0:
                     temp1 = 0.0
                 elif dk * alpha < temp2:
@@ -550,7 +550,7 @@ def schilling_subsm(
             x[k] = u[k]
             d[ibd - 1] = 0.0
         elif dk < 0.0:
-            x[k] = l[k]
+            x[k] = lower[k]
             d[ibd - 1] = 0.0
 
     for i in range(1, nsub + 1):

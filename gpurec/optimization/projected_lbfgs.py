@@ -339,7 +339,6 @@ class ProjectedLBFGS(Optimizer):
             accepted_flat = flat.clone()
             accepted_loss = loss
             accepted_alpha = 0.0
-            accepted_delta = torch.zeros_like(flat)
             alpha = lr
             for _probe in range(max_ls):
                 trial_flat = self._project_flat(
@@ -364,11 +363,10 @@ class ProjectedLBFGS(Optimizer):
                     loss=loss,
                     trial_gtd=trial_gtd,
                     c1=c1,
-                ):
+                    ):
                     accepted_flat = trial_flat.detach().clone()
                     accepted_loss = trial_loss.detach().clone()
                     accepted_alpha = alpha
-                    accepted_delta = delta.detach().clone()
                     last_gtd = float(trial_gtd.detach().cpu())
                     last_step_inf = step_inf
                     break

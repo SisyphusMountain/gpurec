@@ -44,9 +44,36 @@ hogenom = [
     "pandas",
     "wandb",
 ]
-dev = ["pytest", "ipython", "PyYAML", "tomli; python_version < '3.11'"]
+dev = [
+    "pytest",
+    "ipython",
+    "PyYAML",
+    "ruff",
+    "mypy",
+    "tomli; python_version < '3.11'",
+]
 release = ["build", "twine"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gpurec*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["F"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.10"
+show_error_codes = true
+warn_unused_ignores = true
+warn_unused_configs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+follow_imports = "normal"

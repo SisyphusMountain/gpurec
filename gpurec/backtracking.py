@@ -21,7 +21,7 @@ from typing import Any
 import torch
 
 from gpurec._validation import integer_value
-from gpurec.api.model import FamilyInput, GeneReconModel, ReconciliationState
+from gpurec.api.model import GeneReconModel, ReconciliationState
 from gpurec.recphyloxml import (
     EVENT_KEYS,
     direct_children,

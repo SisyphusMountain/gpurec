@@ -31,7 +31,9 @@ def checkpoint_nonnegative_int(
 ) -> int | None:
     if value is MISSING:
         if default is not MISSING:
-            return int(default)
+            if not isinstance(default, int):
+                raise invalid_checkpoint_field(path, key)
+            return default
         raise invalid_checkpoint_field(path, key)
     if value is None:
         if allow_none:
@@ -73,10 +75,16 @@ def checkpoint_string_list(path: Path, key: str, value: Any) -> list[str]:
 
 
 def checkpoint_progress(path: Path, payload: dict[str, Any]) -> tuple[int, int]:
-    step = int(checkpoint_nonnegative_int(path, "step", payload.get("step", MISSING)))
-    next_step = int(
-        checkpoint_nonnegative_int(path, "next_step", payload.get("next_step", MISSING))
+    step = checkpoint_nonnegative_int(path, "step", payload.get("step", MISSING))
+    if step is None:
+        raise invalid_checkpoint_field(path, "step")
+    next_step = checkpoint_nonnegative_int(
+        path,
+        "next_step",
+        payload.get("next_step", MISSING),
     )
+    if next_step is None:
+        raise invalid_checkpoint_field(path, "next_step")
     if next_step not in {step, step + 1}:
         raise RuntimeError(f"checkpoint {path} has inconsistent progress metadata")
     return step, next_step

@@ -1,0 +1,7 @@
+[FAMILIES]
+- family_a
+starting_gene_tree = fam_a.nwk
+mapping = map_a.tsv
+- family_a
+starting_gene_tree = fam_b.nwk
+mapping = map_b.tsv

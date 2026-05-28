@@ -13,16 +13,24 @@ from typing import Any, Optional, Sequence
 import torch
 
 from gpurec._validation import (
-    bool_value,
-    finite_float,
+    bool_value as _bool_value,
+    finite_float as _finite_float,
     integer_value,
-    nonnegative_float,
+    nonnegative_float as _nonnegative_float,
     nonnegative_int,
-    optional_positive_int,
-    positive_even_int,
-    positive_float,
+    optional_positive_int as _optional_positive_int,
+    positive_even_int as _positive_even_int,
+    positive_float as _positive_float,
     positive_int,
 )
+
+
+bool_value = _bool_value
+finite_float = _finite_float
+nonnegative_float = _nonnegative_float
+optional_positive_int = _optional_positive_int
+positive_even_int = _positive_even_int
+positive_float = _positive_float
 
 
 def require_cuda_device(device: Any, *, owner: str) -> torch.device:

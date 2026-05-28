@@ -6,10 +6,14 @@ import os
 import json
 import math
 import sys
+import shutil
 from numbers import Integral, Real
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from gpurec.workflow.config import RunConfig, SamplingConfig
 
 from gpurec.core.batch_planning import (
     normalize_batch_packing,
@@ -105,6 +109,37 @@ def _doctor_triton_readiness() -> dict[str, Any]:
     return check
 
 
+def _backtrack_command_path(backtrack_binary: Path | None) -> str | None:
+    from gpurec import backtracking
+    from gpurec.backtracking import _backtrack_command, _is_cargo_fallback_command
+
+    try:
+        command = _backtrack_command(
+            cargo_manifest=backtracking._BACKTRACK_MANIFEST,
+            backtrack_binary=backtrack_binary,
+        )
+    except Exception:
+        return None
+    if not command:
+        return None
+    if command[0] == "cargo":
+        if _is_cargo_fallback_command(command):
+            marker = "--manifest-path"
+            if marker not in command:
+                return None
+            manifest_index = command.index(marker)
+            if manifest_index + 1 >= len(command):
+                return None
+            return str(Path(command[manifest_index + 1]).expanduser().resolve())
+        return None
+
+    path = Path(command[0]).expanduser()
+    if path.is_absolute() or os.path.dirname(command[0]) not in ("", os.curdir):
+        return str(path.resolve())
+    resolved = shutil.which(command[0])
+    return resolved
+
+
 def _add_version_contract_fields(
     check: dict[str, Any],
     *,
@@ -164,7 +199,9 @@ def _doctor_backtracking_readiness(
     try:
         _ensure_backtracking_available(backtrack_binary)
         check["ok"] = True
-        check["path"] = str(backtrack_binary) if backtrack_binary is not None else None
+        check["path"] = _backtrack_command_path(backtrack_binary)
+        if backtrack_binary is not None and check["path"] is None:
+            check["path"] = str(backtrack_binary)
         _add_version_contract_fields(
             check,
             expected_version=expected_version,

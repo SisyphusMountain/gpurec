@@ -52,7 +52,6 @@ from .config import (
     adagrad_restart_schedule_specs,
     adagrad_restart_schedule_total_steps,
     effective_final_check_iters,
-    effective_final_check_iters_e,
     effective_route_metadata,
     loss_stop_schedule_specs,
 )
@@ -154,6 +153,36 @@ _FINAL_SOLVER_SUMMARY_FIELDS = (
     ("solver/e_adjoint_success_batches", "final_solver_e_adjoint_success_batches"),
     ("solver/e_adjoint_rel_res_max", "final_solver_e_adjoint_rel_res_max"),
 )
+
+
+def _run_manifest_native_artifacts_info() -> dict[str, Any]:
+    from gpurec.core import preprocess_rust
+    from gpurec import backtracking
+
+    preprocess_version = preprocess_rust._manifest_version()
+    backtrack_version = backtracking._manifest_version()
+
+    preprocess_path = os.environ.get("GPUREC_PREPROCESS_NATIVE_LIB")
+    backtrack_path = os.environ.get("GPUREC_BACKTRACK_BIN")
+
+    return {
+        "preprocess": {
+            "path": (
+                str(Path(preprocess_path).expanduser().resolve())
+                if preprocess_path is not None
+                else None
+            ),
+            "manifest_version": preprocess_version,
+        },
+        "backtracking": {
+            "path": (
+                str(Path(backtrack_path).expanduser().resolve())
+                if backtrack_path is not None
+                else None
+            ),
+            "manifest_version": backtrack_version,
+        },
+    }
 
 
 def _final_check_summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -876,6 +905,9 @@ def _run_manifest_runtime_info(start_time_s: float) -> dict[str, Any]:
     torch_info: dict[str, Any] = {
         "version": _readiness_text(torch.__version__, None) if torch is not None else None,
         "cuda": _readiness_text(torch.version.cuda if torch is not None else None, None),
+        "cuda_available": (
+            None if torch is None else bool(torch.cuda.is_available())
+        ),
         "devices": None if torch is None else int(torch.cuda.device_count()),
         "current_device": (
             None
@@ -919,7 +951,10 @@ def _run_manifest_runtime_info(start_time_s: float) -> dict[str, Any]:
         },
         "torch": torch_info,
         "triton": triton_info,
-        "native_artifacts": artifact_readiness,
+        "native_artifacts": {
+            **artifact_readiness,
+            **_run_manifest_native_artifacts_info(),
+        },
     }
 
 
@@ -2333,7 +2368,6 @@ class OptimizationRunner:
                 ),
             }
             grad_evals = 0
-        loss_evals = 0
         active_theta0 = theta0.index_select(0, idx)
         rows, cols = active_grad0.shape
         if cols != 3:

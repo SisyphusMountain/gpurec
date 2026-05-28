@@ -1,0 +1,9 @@
+[FAMILIES]
+- tutorial_family_1
+starting_gene_tree = g1.nwk
+mapping = gene_map.tsv
+
+- tutorial_family_2
+starting_gene_tree = g2.nwk
+mapping = gene_map.tsv
+

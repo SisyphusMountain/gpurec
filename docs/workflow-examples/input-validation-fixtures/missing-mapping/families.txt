@@ -1,0 +1,4 @@
+[FAMILIES]
+- family_a
+starting_gene_tree = fam_a.nwk
+mapping = missing_map.tsv

@@ -45,7 +45,7 @@ from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
 from ._uniform_evaluator import compute_pi_output_root_nll
 from ._validation import (
-    auto_int as _as_auto_int,
+    auto_int as _auto_int,
     auto_nonnegative_int as _auto_nonnegative_int,
     auto_positive_int as _auto_positive_int,
     bool_value,
@@ -61,6 +61,8 @@ from ._validation import (
     require_default_objective,
     theta_init_base_from_rates,
 )
+
+_as_auto_int = _auto_int
 
 
 _PI_BACKWARD_TENSOR_KEYS = (
@@ -594,11 +596,11 @@ def _evaluate_chunked_uniform_result(
 
         bwd_ms = 0.0
         if need_grad:
-            def run_backward():
+            def _run_backward(pi_output: dict[str, torch.Tensor | None]) -> torch.Tensor:
                 return Pi_wave_backward(
                     wave_layout=built.wave_layout,
-                    Pi_star_wave=pi_out["Pi_wave_ordered"],
-                    Pibar_star_wave=pi_out["Pibar_wave_ordered"],
+                    Pi_star_wave=pi_output["Pi_wave_ordered"],
+                    Pibar_star_wave=pi_output["Pibar_wave_ordered"],
                     E=e_out["E"],
                     Ebar=e_out["E_bar"],
                     E_s1=e_out["E_s1"],
@@ -614,12 +616,15 @@ def _evaluate_chunked_uniform_result(
                     neumann_terms=state.neumann_terms,
                     use_pruning=state.use_pruning,
                     pruning_threshold=state.pruning_threshold,
-                    uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
+                    uniform_pibar_row_max=pi_output.get("uniform_pibar_row_max"),
                     origination_probs=chunk_origination_probs,
                     origination_probs_prepared=True,
                 )
 
-            bwd_ms, pi_bwd = _time_cuda_ms(profile, run_backward)
+            bwd_ms, pi_bwd = _time_cuda_ms(
+                profile,
+                lambda pi_output=pi_out: _run_backward(pi_output),
+            )
             pi_backward_ms += bwd_ms
             backward_ms += bwd_ms
             if pi_bwd_accumulator is None:
@@ -943,7 +948,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             else rust_preprocessed.family_basic_counts()
         )
         clade_counts = [int(value) for value in rust_counts["clade_counts"]]
-        split_counts = [int(value) for value in rust_counts["split_counts"]]
         leaf_counts: list[int] | None = None
         nonleaf_counts: list[int] | None = None
         schedule_depths: list[int] | None = None

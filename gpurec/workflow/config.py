@@ -175,6 +175,13 @@ def _normalize_optional_nonnegative_int(
 
 
 def _normalize_finite_float(name: str, value: float | int | str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number, not a boolean")
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            raise ValueError(f"{name} must be a number")
+        return finite_float(name, value)
     return finite_float(name, value)
 
 
@@ -1276,6 +1283,8 @@ def _route_setting_matches(name: str, actual: Any, expected: Any) -> bool:
         if isinstance(actual, bool) or not isinstance(actual, Real):
             return False
         try:
+            if isinstance(actual, str):
+                actual = float(actual)
             return finite_float(name, actual) == expected
         except ValueError:
             return False
@@ -1350,6 +1359,8 @@ def production_default_optimizer_setting_mismatches_from_route(
         mismatched.append("mode")
         return tuple(missing), tuple(mismatched)
     try:
+        if not isinstance(optimizer, str):
+            raise ValueError("optimizer must be a string")
         optimizer_text = normalize_optimizer_for_mode(mode_text, optimizer)
     except ValueError:
         mismatched.append("optimizer")
@@ -1393,11 +1404,18 @@ def production_default_route_mismatches_from_route(
             missing.append(name)
         elif route[name] != expected:
             mismatched.append(name)
-    for name, expected in _PRODUCTION_DEFAULT_BATCH_ROUTE_SETTINGS.items():
-        if name not in route:
-            missing.append(name)
-        elif not _route_setting_matches(name, route[name], expected):
-            mismatched.append(name)
+    for (
+        batch_name,
+        batch_expected,
+    ) in _PRODUCTION_DEFAULT_BATCH_ROUTE_SETTINGS.items():
+        if batch_name not in route:
+            missing.append(batch_name)
+        elif not _route_setting_matches(
+            batch_name,
+            route[batch_name],
+            batch_expected,
+        ):
+            mismatched.append(batch_name)
     setting_missing, setting_mismatches = (
         production_default_optimizer_setting_mismatches_from_route(route)
     )

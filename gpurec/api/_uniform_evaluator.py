@@ -26,7 +26,6 @@ from .autograd import (
     compute_resident_implicit_gradient,
     _origination_probs_for_static,
     _record_forward_solver_stats,
-    solve_resident_e,
     solve_resident_pi_given_e,
     solve_resident_e_pi,
 )

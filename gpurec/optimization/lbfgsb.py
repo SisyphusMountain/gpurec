@@ -398,7 +398,6 @@ class LBFGSB(Optimizer):
         s = old_dirs[-1]
         y = old_stps[-1]
         sy = torch.dot(s, y)
-        ss = torch.dot(s, s).clamp_min(torch.finfo(s.dtype).eps)
         if not torch.isfinite(sy) or float(sy.detach().cpu()) <= 0.0:
             return 1.0
         return float((torch.dot(y, y) / sy.clamp_min(torch.finfo(y.dtype).eps)).detach().cpu())
@@ -413,7 +412,6 @@ class LBFGSB(Optimizer):
         s_mat, y_mat = self._history_matrices(old_dirs, old_stps)
         if s_mat is None or y_mat is None:
             return theta * vec
-        m = s_mat.shape[1]
         sy = s_mat.T @ y_mat
         ss = s_mat.T @ s_mat
         lower_l = torch.tril(sy, diagonal=-1)

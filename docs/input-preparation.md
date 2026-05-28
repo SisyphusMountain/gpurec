@@ -150,3 +150,18 @@ shape, but they are not CPU optimizer smokes.  The optimized likelihood path
 currently requires CUDA, and the retained Pi backward path currently requires
 more than 256 postorder species nodes (`S > 256`); tiny fixtures report
 `cuda_backward_ready=false`.
+
+## Validation Fixtures
+
+Use `docs/workflow-examples/input-validation-fixtures/` for a quick
+`validate-inputs` smoke with both passing and failing cases:
+
+- `valid/`: complete working dataset.
+- `duplicate-family-names/`: parser rejection for repeated AleRax family IDs.
+- `missing-mapping/`: parser rejection for a missing mapping target.
+- `malformed-newick/`: preprocessing rejection for invalid gene tree syntax.
+- `unsupported-species-topology/`: preprocessing rejection for non-binary
+  species trees.
+
+The bad fixture commands intentionally fail with machine-readable issue entries and
+consistent exit status, making them suitable for automation checks.

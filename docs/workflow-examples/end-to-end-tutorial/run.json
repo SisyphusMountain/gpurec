@@ -1,0 +1,11 @@
+{
+  "species_tree": "sp.nwk",
+  "families_file": "families.txt",
+  "out_dir": "output_gpurec",
+  "mode": "genewise",
+  "dtype": "fp32",
+  "device": "cuda",
+  "steps": 8,
+  "batch_packing": "depth_first_fit",
+  "family_chunk_size": 0
+}

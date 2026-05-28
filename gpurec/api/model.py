@@ -49,13 +49,13 @@ from gpurec.core.origination import (
     prepare_origination_prior,
 )
 from gpurec.core.forward import (
-    pi_export_state_request,
     prepare_shared_pi_forward_constants,
 )
 from gpurec.core.parameter_layout import ParameterLayout
 from gpurec.core.likelihood import compute_origination_denominator
 
 from .autograd import (
+    solve_resident_e,
     ReconStaticState,
     _GeneReconFunction,
     _clear_pi_adjoint_runtime_cache,
@@ -72,7 +72,6 @@ from ._uniform_evaluator import (
     evaluate_resident_no_grad,
     evaluate_resident_no_grad_with_solved_e,
     evaluate_resident_static_state,
-    solve_resident_e,
 )
 from ._validation import (
     bool_value,

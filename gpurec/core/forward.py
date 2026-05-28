@@ -294,7 +294,7 @@ def Pi_wave_forward(
     )
     if scratch_tensors is not None and output_intent.retain_saved_state:
         raise ValueError("Pi scratch reuse is only supported for root-row loss output")
-    leaf_row_index = wave_layout['leaf_row_index']
+    _leaf_row_index = wave_layout['leaf_row_index']
     leaf_species_index = wave_layout.get('leaf_species_index')
     wave_metas = wave_layout['wave_metas']
 
@@ -527,7 +527,7 @@ def Pi_wave_forward(
     def _run_wave_self_loop(meta, dts_r, leaf_wt, DL_w, SL1_w, SL2_w,
                             Ebar_w, E_w, mt_w, wave_index):
         ws = meta['start']
-        we = meta['end']
+        _we = meta['end']
         W = meta['W']
         has_leaf_term = (
             not specialize_nonleaf_leaf_term

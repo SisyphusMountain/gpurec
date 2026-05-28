@@ -1,0 +1,3 @@
+run_config: ../end-to-end-tutorial/run.json
+sample_count: 2
+sample_seed: 42

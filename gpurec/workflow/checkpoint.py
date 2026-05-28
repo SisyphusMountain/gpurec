@@ -312,19 +312,26 @@ def load_checkpoint(
 
 def restore_model_theta(model: Any, payload: dict[str, Any]) -> None:
     theta_value = payload.get("theta")
-    if not torch.is_tensor(theta_value):
+    if not isinstance(theta_value, torch.Tensor):
         raise RuntimeError("checkpoint payload has invalid theta tensor")
     if not torch.is_floating_point(theta_value):
         raise RuntimeError("checkpoint payload has invalid theta tensor dtype")
     if not bool(torch.isfinite(theta_value).all().item()):
         raise RuntimeError("checkpoint payload has nonfinite theta tensor")
-    theta = theta_value.to(device=model.theta.device, dtype=model.theta.dtype)
-    if tuple(theta.shape) != tuple(model.theta.shape):
+    model_theta = getattr(model, "theta", None)
+    if model_theta is None:
+        raise RuntimeError("checkpoint payload cannot be restored; model.theta is missing")
+    if not torch.is_tensor(model_theta):
+        raise RuntimeError("checkpoint payload cannot be restored; model.theta is not a tensor")
+    if not isinstance(model_theta, torch.Tensor):
+        raise RuntimeError("checkpoint payload cannot be restored; model.theta is not a tensor")
+    theta = theta_value.to(device=model_theta.device, dtype=model_theta.dtype)
+    if tuple(theta.shape) != tuple(model_theta.shape):
         raise RuntimeError(
             f"checkpoint theta shape {tuple(theta.shape)} does not match model "
-            f"shape {tuple(model.theta.shape)}"
+            f"shape {tuple(model_theta.shape)}"
         )
     with torch.no_grad():
-        model.theta.copy_(theta)
-        model.theta.grad = None
+        model_theta.copy_(theta)
+        model_theta.grad = None
     model.clear()
