@@ -76,6 +76,14 @@ When all native dependencies are available, run `gpurec doctor` once before the
 first long run to validate Python/Torch/Triton availability, preprocessing and
 backtracking readiness, and output directory writability in one command.
 
+CLI exit codes are stable for workflow managers:
+
+- `0`: command completed successfully.
+- `1`: command ran but failed a runtime or validation gate (for example
+  missing native artifacts, failed optimization requirements, or artifact
+  contract checks).
+- `2`: CLI usage or argument parsing error from `argparse`.
+
 For the checkout-local HOGENOM experiment scripts:
 
 ```bash

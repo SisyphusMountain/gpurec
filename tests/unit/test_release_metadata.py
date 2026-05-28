@@ -1451,6 +1451,10 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert "CPU-safe path/reference preflight" in readme
     assert "Workflow preprocessing is implemented by\nthe native Rust" in readme
     assert "Use `gpurec preprocess-check` and `gpurec backtrack-check`" in readme
+    assert "CLI exit codes are stable for workflow managers" in readme
+    assert "- `0`: command completed successfully." in readme
+    assert "- `1`: command ran but failed a runtime or validation gate" in readme
+    assert "- `2`: CLI usage or argument parsing error from `argparse`." in readme
     assert "### Preprocessing Native Extension Setup" in readme
     assert "cargo build --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml" in readme
     assert "GPUREC_PREPROCESS_NATIVE_LIB" in normalized_guide
