@@ -59,7 +59,7 @@ Bug reports should include:
 - Installed `gpurec` version/tag and installation method.
 - `gpurec doctor --json` output.
 - Command line used and full stderr/stdout.
-- Relevant artifacts (`run_config.json`, `summary.json`, `run_manifest.json`,
+- Relevant artifacts (`run_config.json`, `history.jsonl`, `summary.json`, `run_manifest.json`,
   and checkpoint metadata when applicable).
 
 Without this evidence, maintainers may request additional diagnostics before

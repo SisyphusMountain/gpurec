@@ -265,6 +265,7 @@ def _policy_document_issues(root: Path) -> list[str]:
             "release and patch policy",
             "older tags may receive backports",
             "run_config.json",
+            "history.jsonl",
             "summary.json",
             "run_manifest.json",
             "checkpoint metadata",
