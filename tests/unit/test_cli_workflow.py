@@ -2485,6 +2485,8 @@ def test_cli_validate_config_requires_preprocess_for_cuda_backward_gate(
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "--require-cuda-backward-ready requires --check-preprocess" in captured.err
+    assert "suggestion:" in captured.err
+    assert "add --check-preprocess" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -2507,8 +2509,40 @@ def test_cli_validate_config_cuda_gate_rejects_flag_combo_before_loading_config(
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "--require-cuda-backward-ready requires --check-preprocess" in captured.err
+    assert "suggestion:" in captured.err
+    assert "add --check-preprocess" in captured.err
     assert str(missing_config) not in captured.err
     assert "path does not exist" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_validate_inputs_cuda_gate_requires_valid_inputs_before_readiness(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(
+        tmp_path,
+        species_tree="(A:1,B:1,C:1)Root;\n",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--check-preprocess",
+                "--require-cuda-backward-ready",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "input validation failed; fix input issues before checking CUDA backward readiness" in captured.err
+    assert "suggestion:" in captured.err
+    assert "rerun validate-inputs --json" in captured.err
     assert "Traceback" not in captured.err
 
 

@@ -3157,7 +3157,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "validate-config":
         if args.require_cuda_backward_ready and not args.check_preprocess:
             command_parser.error(
-                "--require-cuda-backward-ready requires --check-preprocess"
+                _with_suggestion(
+                    "--require-cuda-backward-ready requires --check-preprocess",
+                    "add --check-preprocess to run CPU preprocessing before enforcing CUDA backward readiness",
+                )
             )
         try:
             raw_config_data = _resolved_run_config_data_from_args(args)
@@ -3271,7 +3274,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "validate-inputs":
         if args.require_cuda_backward_ready and not args.check_preprocess:
             command_parser.error(
-                "--require-cuda-backward-ready requires --check-preprocess"
+                _with_suggestion(
+                    "--require-cuda-backward-ready requires --check-preprocess",
+                    "add --check-preprocess to run CPU preprocessing before enforcing CUDA backward readiness",
+                )
             )
         config = SimpleNamespace(
             species_tree=args.species_tree.expanduser().resolve(),
@@ -3291,8 +3297,11 @@ def main(argv: list[str] | None = None) -> None:
         if args.check_preprocess:
             if args.require_cuda_backward_ready and not summary["valid_inputs"]:
                 command_parser.error(
-                    "input validation failed; fix input issues before checking "
-                    "CUDA backward readiness"
+                    _with_suggestion(
+                        "input validation failed; fix input issues before checking "
+                        "CUDA backward readiness",
+                        "rerun validate-inputs --json to review issue codes and actions, then fix input contracts before enabling --require-cuda-backward-ready",
+                    )
                 )
             preprocess_text = (
                 f" preprocess_checked={summary.get('preprocess_checked', False)}"
