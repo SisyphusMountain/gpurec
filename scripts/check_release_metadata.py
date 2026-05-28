@@ -537,6 +537,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "backtracking artifacts",
         "dependency manifest",
         "dependency scan snapshot",
+        "help and import smoke tests remain cpu-safe",
         "stable schemas",
         "compatibility rules",
         "known limitations",

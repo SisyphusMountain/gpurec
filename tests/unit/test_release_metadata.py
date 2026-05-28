@@ -200,6 +200,7 @@ def _write_complete_release_metadata_fixture(
                     "A fresh install must run a readiness command successfully before release sign-off.",
                     "Installation docs cover native preprocessing and backtracking artifacts.",
                     "Release artifacts include a reproducible dependency manifest and dependency scan snapshot.",
+                    "Help and import smoke tests remain CPU-safe during release checks.",
                     "Output artifacts have stable schemas or documented compatibility rules.",
                     "Known limitations are prominent and accurate.",
                     "CLI errors are actionable for common input, native binary, CUDA, and convergence failures.",
@@ -2928,6 +2929,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: backtracking artifacts" in result.stdout
     assert "must document release gate phrase: dependency manifest" in result.stdout
     assert "must document release gate phrase: dependency scan snapshot" in result.stdout
+    assert "must document release gate phrase: help and import smoke tests remain cpu-safe" in result.stdout
     assert "must document release gate phrase: stable schemas" in result.stdout
     assert "must document release gate phrase: compatibility rules" in result.stdout
     assert "must document release gate phrase: known limitations" in result.stdout

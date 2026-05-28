@@ -25,6 +25,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - Build source artifacts from a clean checkout and install them in a fresh environment
   with a PyTorch build that matches the target CUDA runtime.
 - Release artifacts are smoke-tested outside the repository before publication.
+- Help and import smoke tests remain CPU-safe during release checks.
 
 ## Preprocessing Native Extension Contract
 
