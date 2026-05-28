@@ -210,6 +210,7 @@ def _write_complete_release_metadata_fixture(
                     "Release and patch policy: older tags may receive backports.",
                     "Support evidence includes summary.json and run_manifest.json.",
                     "Support evidence includes checkpoint metadata when applicable.",
+                    "Support evidence includes gpurec doctor --json readiness output.",
                     "",
                 ]
             ),
@@ -839,6 +840,7 @@ def test_release_metadata_check_requires_support_policy_support_window_phrases(
     assert "must document support-window phrase: summary.json" in result.stdout
     assert "must document support-window phrase: run_manifest.json" in result.stdout
     assert "must document support-window phrase: checkpoint metadata" in result.stdout
+    assert "must document support-window phrase: gpurec doctor --json" in result.stdout
     assert result.stderr == ""
 
 
