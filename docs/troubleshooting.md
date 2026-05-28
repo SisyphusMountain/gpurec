@@ -64,6 +64,8 @@ preflight command.
 Read `summary.json` first. It records `status`, `reason`, final objective and
 gradient diagnostics, final-check likelihood/gradient deltas when available,
 and the effective optimizer/batch/solver route that produced the run.
+These failure states are machine-readable in summaries and checkpoints for
+workflow-manager automation.
 For a terminal view of the same fields, use:
 
 ```bash

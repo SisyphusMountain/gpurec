@@ -488,6 +488,7 @@ def _write_complete_release_metadata_fixture(
                     "Include an insufficient CUDA memory example with mitigation steps.",
                     "Include nonconvergence, final-check failure, nonfinite objective, and missing native binary examples.",
                     "Include resume guidance after partial final artifact publication.",
+                    "Failure states remain machine-readable in summaries and checkpoints.",
                     "",
                 ]
             ),
@@ -2083,6 +2084,9 @@ def test_release_metadata_check_requires_troubleshooting_recovery_phrases(
     assert "must document failure-recovery phrase: nonfinite objective" in result.stdout
     assert "must document failure-recovery phrase: missing native binary" in result.stdout
     assert "must document failure-recovery phrase: partial final artifact publication" in result.stdout
+    assert "must document failure-recovery phrase: machine-readable" in result.stdout
+    assert "must document failure-recovery phrase: summaries" in result.stdout
+    assert "must document failure-recovery phrase: checkpoints" in result.stdout
     assert result.stderr == ""
 
 

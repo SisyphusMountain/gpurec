@@ -655,6 +655,9 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "nonfinite objective",
         "missing native binary",
         "partial final artifact publication",
+        "machine-readable",
+        "summaries",
+        "checkpoints",
     )
     issues: list[str] = []
     for phrase in required_phrases:
