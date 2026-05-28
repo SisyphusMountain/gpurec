@@ -55,6 +55,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/optimization-workflow-call-graph.md",
     "docs/lean-fast-path.md",
     "docs/professionalization-audit-progress.tex",
+    "scripts/generate_dependency_inventory.py",
 )
 
 
