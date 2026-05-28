@@ -387,7 +387,7 @@ def _write_complete_release_metadata_fixture(
                     "run_manifest.json records package version, native artifact",
                     "metadata, PyTorch version, CUDA availability, GPU name,",
                     "command line invocation, config hash, random seed fields,",
-                    "and selected route metadata.",
+                    "selected route metadata, and evidence to reproduce or audit runs.",
                     "theta_final.pt is for inspection only, and a checkpoint is required",
                     "for resume, route checks, or sampling.",
                     "",
@@ -1663,6 +1663,7 @@ def test_release_metadata_check_requires_output_artifact_run_manifest_phrases(
     assert "must document run-manifest phrase: config hash" in result.stdout
     assert "must document run-manifest phrase: random seed" in result.stdout
     assert "must document run-manifest phrase: selected route" in result.stdout
+    assert "must document run-manifest phrase: reproduce or audit" in result.stdout
     assert result.stderr == ""
 
 

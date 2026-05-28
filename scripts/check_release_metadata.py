@@ -720,6 +720,7 @@ def _output_artifact_run_manifest_contract_issues(root: Path) -> list[str]:
         "config hash",
         "random seed",
         "selected route",
+        "reproduce or audit",
     )
     issues: list[str] = []
     for phrase in required_phrases:
