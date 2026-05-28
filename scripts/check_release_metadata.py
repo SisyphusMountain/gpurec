@@ -710,6 +710,31 @@ def _workflow_examples_overview_gate_issues(root: Path) -> list[str]:
     return issues
 
 
+def _api_contract_json_mode_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "api-contract.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "cli output modes",
+        "--json",
+        "validate-config",
+        "doctor",
+        "checkpoint-info",
+        "summary-info",
+        "json mode emits single json objects with stable keys",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/api-contract.md must document json-output contract phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _optimization_guide_goal_defaults_issues(root: Path) -> list[str]:
     guide = root / "docs" / "production-optimization-guide.md"
     if not guide.is_file():
@@ -885,6 +910,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_snakemake_example_gate_issues(project_root))
     issues.extend(_nextflow_example_gate_issues(project_root))
     issues.extend(_workflow_examples_overview_gate_issues(project_root))
+    issues.extend(_api_contract_json_mode_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]

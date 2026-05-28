@@ -257,7 +257,19 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "api-contract.md").write_text(
-            "# API Contract\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# API Contract",
+                    "",
+                    "## CLI output modes",
+                    "",
+                    "`--json` mode is supported by validate-config, doctor,",
+                    "checkpoint-info, and summary-info.",
+                    "JSON mode emits single JSON objects with stable keys.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_known_limitations:
         (root / "docs" / "known-limitations.md").parent.mkdir(
@@ -1592,6 +1604,37 @@ def test_release_metadata_check_requires_workflow_examples_overview_gate_phrases
     )
     assert (
         "must document acceptance-gate phrase: reject non-converged outputs"
+        in result.stdout
+    )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_api_contract_json_output_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "api-contract.md").write_text(
+        "# API Contract\n\nMinimal contract.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document json-output contract phrase: cli output modes" in result.stdout
+    assert "must document json-output contract phrase: --json" in result.stdout
+    assert "must document json-output contract phrase: validate-config" in result.stdout
+    assert "must document json-output contract phrase: doctor" in result.stdout
+    assert "must document json-output contract phrase: checkpoint-info" in result.stdout
+    assert "must document json-output contract phrase: summary-info" in result.stdout
+    assert (
+        "must document json-output contract phrase: json mode emits single json objects with stable keys"
         in result.stdout
     )
     assert result.stderr == ""
