@@ -356,6 +356,7 @@ def _write_complete_release_metadata_fixture(
                     "Exit status `0` indicates success.",
                     "Exit status `1` indicates runtime and route-validation failures.",
                     "Exit status `2` indicates CLI parse/config errors.",
+                    "Runtime errors should include suggestion: remediation text.",
                     "",
                 ]
             ),
@@ -2929,6 +2930,7 @@ def test_release_metadata_check_requires_api_contract_exit_code_phrases(
         in result.stdout
     )
     assert "must document exit-code phrase: cli parse/config errors" in result.stdout
+    assert "must document exit-code phrase: suggestion:" in result.stdout
     assert result.stderr == ""
 
 

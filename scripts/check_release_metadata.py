@@ -1311,6 +1311,7 @@ def _api_contract_exit_code_issues(root: Path) -> list[str]:
         "exit status `2`",
         "runtime and route-validation failures",
         "cli parse/config errors",
+        "suggestion:",
     )
     issues: list[str] = []
     for phrase in required_phrases:

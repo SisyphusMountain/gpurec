@@ -156,6 +156,8 @@ No other `GPUREC_*` variables are documented as public support.
   flow, non-converged requirements, and non-ok final-check requirements.
 - Exit status `2` is used for CLI parse/config errors emitted by argparse or
   malformed command usage.
+- Failure diagnostics should include `suggestion:` guidance when remediation is
+  known so operators can take the next action directly.
 
 Status text remains machine-parseable (key-value fields) and JSON mode is the
 required machine path for automation.
