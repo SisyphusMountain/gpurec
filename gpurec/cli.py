@@ -3140,7 +3140,13 @@ def main(argv: list[str] | None = None) -> None:
         try:
             result = _run_optimize_command(config, invocation_argv)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(command_parser, str(exc))
+            _exit_runtime_error(
+                command_parser,
+                _with_suggestion(
+                    str(exc),
+                    "inspect optimize diagnostics, then retry optimize or run validate-config --check-preprocess to isolate input/native setup failures",
+                ),
+            )
         print(
             f"{_optimization_result_text(result)} "
             f"{_optional_text('out_dir', result.out_dir)}",
@@ -3865,11 +3871,23 @@ def main(argv: list[str] | None = None) -> None:
         try:
             _ensure_backtracking_available(args.backtrack_binary)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(command_parser, str(exc))
+            _exit_runtime_error(
+                command_parser,
+                _with_suggestion(
+                    str(exc),
+                    "install or point to a compatible backtracking artifact via --backtrack-binary/GPUREC_BACKTRACK_BIN, run backtrack-check, then rerun run",
+                ),
+            )
         try:
             opt_result = _run_optimize_command(run_config, invocation_argv)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(command_parser, str(exc))
+            _exit_runtime_error(
+                command_parser,
+                _with_suggestion(
+                    str(exc),
+                    "inspect optimize diagnostics, then retry run or use optimize first to isolate optimization failures before sampling",
+                ),
+            )
         if opt_result.status == "failed":
             print(
                 f"{_optimization_result_text(opt_result)} "
@@ -3931,8 +3949,11 @@ def main(argv: list[str] | None = None) -> None:
         if not checkpoint.is_file():
             _exit_runtime_error(
                 command_parser,
-                "optimization completed but no sampling checkpoint was found "
-                f"at {checkpoint}",
+                _with_suggestion(
+                    "optimization completed but no sampling checkpoint was found "
+                    f"at {checkpoint}",
+                    "resume optimization to produce checkpoints/latest.pt or checkpoints/best.pt, then rerun run or invoke sample --checkpoint explicitly",
+                ),
             )
         try:
             sampling_config = _sampling_config_from_args(args, checkpoint)

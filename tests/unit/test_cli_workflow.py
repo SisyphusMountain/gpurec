@@ -5217,6 +5217,8 @@ def test_cli_optimize_reports_workflow_errors_without_traceback(
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
     assert "workflow failed" in captured.err
+    assert "suggestion:" in captured.err
+    assert "validate-config --check-preprocess" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -5814,6 +5816,8 @@ def test_cli_run_reports_optimize_errors_without_traceback(
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
     assert "workflow failed" in captured.err
+    assert "suggestion:" in captured.err
+    assert "use optimize first to isolate optimization failures before sampling" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -6052,9 +6056,54 @@ def test_cli_run_preflights_backtracking_before_optimization(
     assert exc_info.value.code == 1
     assert "GPUREC_BACKTRACK_BIN" in captured.err
     assert "--backtrack-binary" in captured.err
+    assert "suggestion:" in captured.err
+    assert "run backtrack-check" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
     assert calls == [None]
+
+
+def test_cli_run_reports_missing_sampling_checkpoint_with_suggestion(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def successful_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="converged",
+            reason="best_likelihood_patience",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            sampling_checkpoint=config.out_dir / "checkpoints" / "missing.pt",
+            final_nll_bits=12.0,
+            final_grad_inf=0.25,
+            final_projected_grad_inf=0.125,
+            best_nll_bits=11.0,
+            final_check_status="ok",
+            final_check_source="configured_solver_budget",
+            steps_completed=10,
+            elapsed_s=0.5,
+            best_step=10,
+        )
+
+    def unexpected_sample(config):
+        raise AssertionError("sample should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("run", tmp_path))
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "optimization completed but no sampling checkpoint was found" in captured.err
+    assert "checkpoints/missing.pt" in captured.err
+    assert "suggestion:" in captured.err
+    assert "sample --checkpoint explicitly" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_run_passes_invocation_argv_to_optimizer(
