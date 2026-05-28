@@ -865,6 +865,7 @@ def test_release_metadata_check_requires_support_policy_support_window_phrases(
     assert "must document support-window phrase: pytorch" in result.stdout
     assert "must document support-window phrase: cuda" in result.stdout
     assert "must document support-window phrase: native artifact" in result.stdout
+    assert "must document support-window phrase: native artifact versions" in result.stdout
     assert "must document support-window phrase: release and patch policy" in result.stdout
     assert "must document support-window phrase: older tags may receive backports" in result.stdout
     assert "must document support-window phrase: api-contract.md" in result.stdout

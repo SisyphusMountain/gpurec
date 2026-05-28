@@ -274,6 +274,7 @@ def _policy_document_issues(root: Path) -> list[str]:
             "pytorch",
             "cuda",
             "native artifact",
+            "native artifact versions",
             "release and patch policy",
             "older tags may receive backports",
             "api-contract.md",
