@@ -43,6 +43,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/troubleshooting.md",
     "docs/README.md",
     "docs/production-optimization-guide.md",
+    "docs/glossary.md",
 )
 
 

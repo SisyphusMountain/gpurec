@@ -95,6 +95,7 @@ def _write_complete_release_metadata_fixture(
     create_troubleshooting: bool = True,
     create_docs_readme: bool = True,
     create_production_optimization_guide: bool = True,
+    create_glossary: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -212,6 +213,13 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "production-optimization-guide.md").write_text(
             "# Production Optimization Guide\n", encoding="utf-8"
+        )
+    if create_glossary:
+        (root / "docs" / "glossary.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "glossary.md").write_text(
+            "# Glossary\n", encoding="utf-8"
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
@@ -571,6 +579,25 @@ def test_release_metadata_check_requires_production_optimization_guide(
         "missing required release artifact: docs/production-optimization-guide.md"
         in result.stdout
     )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_glossary(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        create_glossary=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/glossary.md" in result.stdout
     assert result.stderr == ""
 
 
