@@ -362,7 +362,15 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "long-validation-workflow.md").write_text(
-            "# Long Validation Workflow\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Long Validation Workflow",
+                    "",
+                    "Use this report as benchmark evidence, not a hard performance guarantee.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_validation_envelope:
         (root / "docs" / "validation-envelope.md").parent.mkdir(
@@ -1337,6 +1345,32 @@ def test_release_metadata_check_requires_long_validation_workflow(tmp_path: Path
     assert result.returncode == 1
     assert (
         "missing required release artifact: docs/long-validation-workflow.md"
+        in result.stdout
+    )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_long_validation_evidence_scope_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "long-validation-workflow.md").write_text(
+        "# Long Validation Workflow\n\nRelease run steps.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document evidence-scope phrase: benchmark evidence" in result.stdout
+    assert (
+        "must document evidence-scope phrase: not a hard performance guarantee"
         in result.stdout
     )
     assert result.stderr == ""
