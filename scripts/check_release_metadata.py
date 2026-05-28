@@ -1023,6 +1023,7 @@ def _workflow_examples_overview_gate_issues(root: Path) -> list[str]:
         "fail fast",
         "--check-preprocess",
         "--require-converged",
+        "--require-final-check-ok",
         "resume from a checkpoint",
         "reject non-converged outputs",
         "tracked mini public dataset",

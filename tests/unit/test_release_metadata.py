@@ -520,6 +520,7 @@ def _write_complete_release_metadata_fixture(
                     "Snakemake and Nextflow references fail fast on bad config,",
                     "run gpurec validate-config --check-preprocess in preflight,",
                     "enforce gpurec summary-info --require-converged gates,",
+                    "enforce gpurec summary-info --require-final-check-ok gates,",
                     "resume from a checkpoint, and reject non-converged outputs.",
                     "",
                 ]
@@ -2378,6 +2379,7 @@ def test_release_metadata_check_requires_workflow_examples_overview_gate_phrases
     assert "must document acceptance-gate phrase: fail fast" in result.stdout
     assert "must document acceptance-gate phrase: --check-preprocess" in result.stdout
     assert "must document acceptance-gate phrase: --require-converged" in result.stdout
+    assert "must document acceptance-gate phrase: --require-final-check-ok" in result.stdout
     assert (
         "must document acceptance-gate phrase: resume from a checkpoint"
         in result.stdout
