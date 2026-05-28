@@ -663,6 +663,7 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "recover or safely discard",
         "without inspecting python source",
         "workflow managers can distinguish",
+        "incompatible config",
     )
     issues: list[str] = []
     for phrase in required_phrases:
