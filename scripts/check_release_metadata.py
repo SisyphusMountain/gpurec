@@ -525,6 +525,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "nightly checks",
         "release-candidate checks",
         "final publication checks",
+        "one checklist",
         "clean checkout",
         "outside the checkout",
         "checksums",

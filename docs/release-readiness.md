@@ -2,6 +2,7 @@
 
 This checklist records release requirements, manual release decisions, and the
 packaging assumptions covered by current automated build steps.
+A release candidate can be built from a clean checkout by following one checklist: this document.
 
 ## Required Before Redistribution
 
