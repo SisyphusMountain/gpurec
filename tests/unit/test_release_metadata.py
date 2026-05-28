@@ -1154,6 +1154,10 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "tarfile.open",
         "zipfile.ZipFile",
         "required_sdist = required_wheel +",
+        "LICENSE",
+        "CHANGELOG.md",
+        "CITATION.cff",
+        "Dockerfile",
         "docs/README.md",
         "docs/input-preparation.md",
         "docs/api-contract.md",
@@ -1218,21 +1222,16 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         assert required in artifact_check
 
 
-def test_cpu_sdist_required_docs_cover_release_metadata_required_docs():
+def test_cpu_sdist_required_artifacts_cover_release_metadata_required_artifacts():
     workflow = _load_cpu_ci_workflow()
     package = workflow["jobs"]["package"]
     artifact_check = _step_run(package, "Check artifact package data")
     checker = _load_check_release_metadata_module()
 
-    required_release_docs = [
-        artifact
-        for artifact in checker.REQUIRED_RELEASE_ARTIFACTS
-        if artifact.startswith("docs/")
-    ]
-    for doc_path in required_release_docs:
+    for artifact_path in checker.REQUIRED_RELEASE_ARTIFACTS:
         assert (
-            doc_path in artifact_check
-        ), f"required release doc missing from sdist gate: {doc_path}"
+            artifact_path in artifact_check
+        ), f"required release artifact missing from sdist gate: {artifact_path}"
 
     assert _workflow_step(
         package,

@@ -153,6 +153,10 @@ jobs:
 
           required_wheel = []
           required_sdist = required_wheel + [
+              "LICENSE",
+              "CHANGELOG.md",
+              "CITATION.cff",
+              "Dockerfile",
               "docs/README.md",
               "docs/input-preparation.md",
               "docs/api-contract.md",
