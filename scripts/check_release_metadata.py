@@ -1066,6 +1066,9 @@ def _slurm_example_lifecycle_issues(root: Path) -> list[str]:
         "output paths",
         "local scratch",
         "shared network storage",
+        "thread controls",
+        "preprocessing",
+        "pytorch",
     )
     issues: list[str] = []
     for phrase in required_phrases:
