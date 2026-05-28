@@ -309,6 +309,8 @@ def _write_complete_release_metadata_fixture(
                     "per_fam_likelihoods.tsv, and a RecPhyloXML output snippet.",
                     "Run directory structure uses output_gpurec/, checkpoints/,",
                     "and reconciliations/.",
+                    "Input/output flow uses validate-config --check-preprocess,",
+                    "gpurec optimize, gpurec sample, and reconciliations/*.xml.",
                     "",
                 ]
             ),
@@ -999,6 +1001,32 @@ def test_release_metadata_check_requires_output_artifact_directory_structure_phr
     assert "must document directory-structure phrase: output_gpurec/" in result.stdout
     assert "must document directory-structure phrase: checkpoints/" in result.stdout
     assert "must document directory-structure phrase: reconciliations/" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_output_artifact_flow_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "output-artifacts.md").write_text(
+        "# Output Artifacts\n\nRun directory structure.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document flow phrase: input/output flow" in result.stdout
+    assert "must document flow phrase: validate-config --check-preprocess" in result.stdout
+    assert "must document flow phrase: gpurec optimize" in result.stdout
+    assert "must document flow phrase: gpurec sample" in result.stdout
+    assert "must document flow phrase: reconciliations/*.xml" in result.stdout
     assert result.stderr == ""
 
 

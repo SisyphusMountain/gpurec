@@ -96,6 +96,21 @@ output_gpurec/
 Use this structure for archive/reproducibility checks and workflow-manager
 handoff between optimize, inspect, and sample stages.
 
+## Input/Output Flow
+
+```text
+species_tree.nwk + families.txt + gene trees + mapping
+  -> gpurec validate-config --check-preprocess
+  -> gpurec optimize (or gpurec run optimize phase)
+  -> summary.json + checkpoints/latest.pt + checkpoints/best.pt + rates_final.tsv
+  -> gpurec summary-info / gpurec checkpoint-info
+  -> gpurec sample (or gpurec run sampling phase)
+  -> reconciliations/*.xml + reconciliations/summary.json + event-count artifacts
+```
+
+Use this flow when wiring workflow-manager stages so preflight failures,
+optimization failures, and sampling failures are triaged at the correct step.
+
 The primary objective is negative log-likelihood in bits:
 `likelihood/data_nll_bits`. The corresponding log-likelihood is
 `likelihood/log_likelihood_bits`. Gradient summaries use `grad/*`; projected

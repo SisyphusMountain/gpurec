@@ -460,6 +460,29 @@ def _output_artifact_directory_structure_issues(root: Path) -> list[str]:
     return issues
 
 
+def _output_artifact_flow_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "output-artifacts.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "input/output flow",
+        "validate-config --check-preprocess",
+        "gpurec optimize",
+        "gpurec sample",
+        "reconciliations/*.xml",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/output-artifacts.md must document flow phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _quickstart_lifecycle_issues(root: Path) -> list[str]:
     quickstart = root / "docs" / "bioinformatics-quickstart.md"
     if not quickstart.is_file():
@@ -673,6 +696,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_input_preparation_large_dataset_issues(project_root))
     issues.extend(_output_artifact_snippet_issues(project_root))
     issues.extend(_output_artifact_directory_structure_issues(project_root))
+    issues.extend(_output_artifact_flow_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
     issues.extend(_quickstart_installation_decision_tree_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
