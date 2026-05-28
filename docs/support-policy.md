@@ -25,7 +25,7 @@ The supported environment matrix is versioned in
 ## Release And Patch Policy
 
 - `production` is the active stabilization branch.
-- The latest tagged release is the primary supported release line.
+- The latest release tag is the primary supported release line.
 - Security, correctness, or reproducibility issues found in the latest release
   are fixed in `production` first, then included in the next release tag.
 - Older tags may receive backports at maintainer discretion; they are not
