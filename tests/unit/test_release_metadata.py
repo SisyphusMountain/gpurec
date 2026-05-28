@@ -291,6 +291,8 @@ def _write_complete_release_metadata_fixture(
                     "Use --max-families to sample the first `N` families.",
                     "Use preprocess outputs as a memory estimate and tune",
                     "clade_budget plus family_chunk_size for large runs.",
+                    "Conversion guidance covers Treerecs, GeneRax, AleRax,",
+                    "OrthoFinder, and gene -> species TSV mappings.",
                     "",
                 ]
             ),
@@ -931,6 +933,32 @@ def test_release_metadata_check_requires_input_preparation_large_dataset_phrases
     assert "must document large-dataset phrase: memory estimate" in result.stdout
     assert "must document large-dataset phrase: clade_budget" in result.stdout
     assert "must document large-dataset phrase: family_chunk_size" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_input_preparation_conversion_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "input-preparation.md").write_text(
+        "# Input Preparation\n\nBasic mapping notes.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document conversion phrase: treerecs" in result.stdout
+    assert "must document conversion phrase: generax" in result.stdout
+    assert "must document conversion phrase: alerax" in result.stdout
+    assert "must document conversion phrase: orthofinder" in result.stdout
+    assert "must document conversion phrase: gene -> species" in result.stdout
     assert result.stderr == ""
 
 

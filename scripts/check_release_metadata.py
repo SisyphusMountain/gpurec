@@ -415,6 +415,29 @@ def _input_preparation_large_dataset_issues(root: Path) -> list[str]:
     return issues
 
 
+def _input_preparation_conversion_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "input-preparation.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "treerecs",
+        "generax",
+        "alerax",
+        "orthofinder",
+        "gene -> species",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/input-preparation.md must document conversion phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _output_artifact_snippet_issues(root: Path) -> list[str]:
     guide = root / "docs" / "output-artifacts.md"
     if not guide.is_file():
@@ -694,6 +717,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_validation_envelope_issues(project_root))
     issues.extend(_troubleshooting_recovery_issues(project_root))
     issues.extend(_input_preparation_large_dataset_issues(project_root))
+    issues.extend(_input_preparation_conversion_issues(project_root))
     issues.extend(_output_artifact_snippet_issues(project_root))
     issues.extend(_output_artifact_directory_structure_issues(project_root))
     issues.extend(_output_artifact_flow_issues(project_root))

@@ -65,6 +65,23 @@ file, the legacy fallback maps `Species_gene` to `Species` and a leaf without
 narrow supported lower-level escape hatch is
 `GeneDataset(..., leaf_species_maps=...)`.
 
+## Mapping Conversion Guidance
+
+Common source conventions can be normalized to the same explicit mapping file
+shape:
+
+- Treerecs / GeneRax style `Species:gene1;gene2` lines: keep as-is.
+- AleRax family `mapping = ...` paths: point each family to one normalized
+  mapping file in that same `Species:gene1;gene2` format.
+- OrthoFinder-style gene labels (for example `Species_gene`): split at the
+  first `_`, then emit explicit mapping lines rather than relying on fallback.
+- Simple `gene -> species` TSVs: invert into grouped
+  `Species:gene1;gene2;...` entries before preflight validation.
+
+After conversion, run `gpurec validate-inputs --json` (or
+`validate-config --check-preprocess`) and treat any missing species or
+duplicate gene assignment as an input contract failure.
+
 ## JSON Run Config
 
 The CLI accepts a flat JSON config.  Paths inside the JSON config, including
