@@ -271,6 +271,7 @@ def _policy_document_issues(root: Path) -> list[str]:
             "checkpoint metadata",
             "gpurec doctor --json",
             "known-limitations.md",
+            "release notes",
             "installation method",
             "command line",
             "stderr/stdout",
