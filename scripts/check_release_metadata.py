@@ -542,6 +542,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "broken type annotations in public modules",
         "accidental public-surface drift",
         "generated cli help snapshot",
+        "docstring requirements for public apis",
         "stable schemas",
         "compatibility rules",
         "known limitations",
