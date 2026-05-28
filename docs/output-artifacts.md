@@ -25,6 +25,48 @@ the end of the optimization phase.
 | `checkpoints/latest.pt` | `optimize`, optimization phase of `run` | Versioned checkpoint for resume. | Carries config metadata, effective route metadata, theta, optimizer state when available, progress, status, last row, family names, and species names. |
 | `checkpoints/best.pt` | `optimize`, optimization phase of `run` | Versioned checkpoint at the best accepted NLL. | Preferred checkpoint for downstream sampling when present. |
 
+## Example Output Snippets
+
+`summary.json` (trimmed):
+
+```json
+{
+  "status": "converged",
+  "reason": "loss_plateau",
+  "families": 2,
+  "species": 261,
+  "final_nll_bits": 12345.678,
+  "sampling_checkpoint": "output_gpurec/checkpoints/best.pt"
+}
+```
+
+`rates_final.tsv` (header + one row):
+
+```tsv
+row	name	D	T	L	pS	theta_D	theta_T	theta_L
+0	family_000001	0.05	0.01	0.03	0.91	-4.3219	-6.6439	-5.0589
+```
+
+`per_fam_likelihoods.tsv` (genewise mode):
+
+```tsv
+family	nll_bits	log_likelihood_bits
+family_000001	1234.5	-1234.5
+family_000002	1250.0	-1250.0
+```
+
+RecPhyloXML output snippet (`reconciliations/all/*_sample_*.xml`):
+
+```xml
+<recGeneTree>
+  <phylogeny rooted="true">
+    <clade>
+      <name>family_000001_sample_0000</name>
+    </clade>
+  </phylogeny>
+</recGeneTree>
+```
+
 The primary objective is negative log-likelihood in bits:
 `likelihood/data_nll_bits`. The corresponding log-likelihood is
 `likelihood/log_likelihood_bits`. Gradient summaries use `grad/*`; projected

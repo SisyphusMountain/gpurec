@@ -298,7 +298,16 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "output-artifacts.md").write_text(
-            "# Output Artifacts\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Output Artifacts",
+                    "",
+                    "Example output snippets for summary.json, rates_final.tsv,",
+                    "per_fam_likelihoods.tsv, and a RecPhyloXML output snippet.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_long_validation_workflow:
         (root / "docs" / "long-validation-workflow.md").parent.mkdir(
@@ -908,6 +917,32 @@ def test_release_metadata_check_requires_output_artifacts_doc(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/output-artifacts.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_output_artifact_snippet_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "output-artifacts.md").write_text(
+        "# Output Artifacts\n\nContracts.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document output snippet phrase: example output snippets" in result.stdout
+    assert "must document output snippet phrase: summary.json" in result.stdout
+    assert "must document output snippet phrase: rates_final.tsv" in result.stdout
+    assert "must document output snippet phrase: per_fam_likelihoods.tsv" in result.stdout
+    assert "must document output snippet phrase: recphyloxml output snippet" in result.stdout
     assert result.stderr == ""
 
 
