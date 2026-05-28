@@ -99,6 +99,7 @@ def _write_complete_release_metadata_fixture(
     create_workflow_examples: bool = True,
     create_optimization_workflow_call_graph: bool = True,
     create_lean_fast_path: bool = True,
+    create_lean_performance_path_regression: bool = True,
     create_professionalization_audit_progress: bool = True,
     create_dependency_inventory_script: bool = True,
     create_release_readiness: bool = True,
@@ -716,6 +717,24 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "lean-fast-path.md").write_text(
             "# Lean Fast Path\n", encoding="utf-8"
+        )
+    if create_lean_performance_path_regression:
+        (root / "docs" / "lean-performance-path-regression.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "lean-performance-path-regression.md").write_text(
+            "\n".join(
+                [
+                    "# Lean Performance Path Regression",
+                    "",
+                    "Benchmark tiers include quick smoke, PR benchmark, nightly benchmark, and release benchmark runs.",
+                    "Define acceptable variance and fail thresholds for each benchmark tier.",
+                    "Release candidates cannot regress key benchmark medians beyond a documented threshold.",
+                    "Performance docs record hardware, software versions, dataset, and command details.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_professionalization_audit_progress:
         (root / "docs" / "professionalization-audit-progress.tex").parent.mkdir(
@@ -2010,6 +2029,65 @@ def test_release_metadata_check_requires_long_validation_command_sequence_phrase
     assert "must document command-sequence phrase: gpurec sample --checkpoint" in result.stdout
     assert (
         "must document command-sequence phrase: scripts/validate_output_artifacts.py"
+        in result.stdout
+    )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_performance_regression_doc(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        create_lean_performance_path_regression=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "missing required release artifact: docs/lean-performance-path-regression.md"
+        in result.stdout
+    )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_performance_regression_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "lean-performance-path-regression.md").write_text(
+        "# Lean Performance Path Regression\n\nPerformance notes.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "must document performance-regression phrase: benchmark tiers"
+        in result.stdout
+    )
+    assert (
+        "must document performance-regression phrase: release candidates cannot regress key benchmark medians"
+        in result.stdout
+    )
+    assert (
+        "must document performance-regression phrase: documented threshold"
+        in result.stdout
+    )
+    assert (
+        "must document performance-regression phrase: software versions"
         in result.stdout
     )
     assert result.stderr == ""
@@ -3787,6 +3865,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/known-limitations.md",
         "docs/bioinformatics-quickstart.md",
         "docs/lean-fast-path.md",
+        "docs/lean-performance-path-regression.md",
         "docs/optimization-workflow-call-graph.md",
         "docs/output-artifacts.md",
         "docs/platform-matrix.md",

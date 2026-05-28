@@ -1,5 +1,16 @@
 # Lean Branch Performance Path Regression
 
+## Performance Regression Gates
+
+This document defines benchmark tiers for performance regression control:
+quick smoke, PR benchmark, nightly benchmark, and release benchmark.
+
+For each tier we record acceptable variance and fail thresholds.
+Release candidates cannot regress key benchmark medians beyond a documented threshold.
+
+Performance evidence must always list hardware, software versions, dataset, and
+command details used to collect the measurements.
+
 ## Problem
 
 The lean branch was supposed to keep only the highest-performance paths. It currently does the opposite for the main HOGENOM/genewise use case: genewise CUDA forward is routed away from the kernelized uniform path and back into a PyTorch sparse/dense Pibar fallback.

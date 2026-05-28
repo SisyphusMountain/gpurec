@@ -36,6 +36,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/known-limitations.md",
     "docs/lean-fast-path.md",
     "docs/long-validation-workflow.md",
+    "docs/lean-performance-path-regression.md",
     "docs/optimization-workflow-call-graph.md",
     "docs/output-artifacts.md",
     "docs/platform-matrix.md",
@@ -650,6 +651,37 @@ def _long_validation_command_sequence_issues(root: Path) -> list[str]:
         if phrase not in text:
             issues.append(
                 "docs/long-validation-workflow.md must document command-sequence phrase: "
+                + phrase
+            )
+    return issues
+
+
+def _performance_regression_doc_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "lean-performance-path-regression.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "benchmark tiers",
+        "quick smoke",
+        "pr benchmark",
+        "nightly benchmark",
+        "release benchmark",
+        "acceptable variance",
+        "fail thresholds",
+        "release candidates cannot regress key benchmark medians",
+        "documented threshold",
+        "hardware",
+        "software versions",
+        "dataset",
+        "command",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/lean-performance-path-regression.md must document performance-regression phrase: "
                 + phrase
             )
     return issues
@@ -1556,6 +1588,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_validation_envelope_issues(project_root))
     issues.extend(_long_validation_evidence_scope_issues(project_root))
     issues.extend(_long_validation_command_sequence_issues(project_root))
+    issues.extend(_performance_regression_doc_issues(project_root))
     issues.extend(_troubleshooting_recovery_issues(project_root))
     issues.extend(_input_preparation_large_dataset_issues(project_root))
     issues.extend(_input_preparation_conversion_issues(project_root))

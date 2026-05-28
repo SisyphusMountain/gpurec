@@ -169,6 +169,7 @@ jobs:
               "docs/known-limitations.md",
               "docs/bioinformatics-quickstart.md",
               "docs/lean-fast-path.md",
+              "docs/lean-performance-path-regression.md",
               "docs/optimization-workflow-call-graph.md",
               "docs/output-artifacts.md",
               "docs/platform-matrix.md",
