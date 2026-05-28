@@ -101,6 +101,7 @@ def _write_complete_release_metadata_fixture(
     create_lean_fast_path: bool = True,
     create_professionalization_audit_progress: bool = True,
     create_dependency_inventory_script: bool = True,
+    create_release_readiness: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -157,6 +158,23 @@ def _write_complete_release_metadata_fixture(
                     "- Added",
                     "- Known limitations",
                     "- Migration notes",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    if create_release_readiness:
+        (root / "docs" / "release-readiness.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "release-readiness.md").write_text(
+            "\n".join(
+                [
+                    "# Release Readiness",
+                    "",
+                    "python scripts/check_release_metadata.py",
+                    "scripts/run_long_validation.py",
+                    "validation-envelope.md",
                     "",
                 ]
             ),
@@ -1107,6 +1125,30 @@ def test_release_metadata_check_requires_readme_cli_exit_code_policy(
 
     assert result.returncode == 1
     assert "README.md must document CLI exit-code policy" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_release_readiness_gate_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "release-readiness.md").write_text(
+        "# Release Readiness\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document release gate phrase: python scripts/check_release_metadata.py" in result.stdout
+    assert "must document release gate phrase: scripts/run_long_validation.py" in result.stdout
+    assert "must document release gate phrase: validation-envelope.md" in result.stdout
     assert result.stderr == ""
 
 

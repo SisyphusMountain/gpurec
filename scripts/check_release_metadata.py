@@ -326,6 +326,27 @@ def _readme_cli_exit_code_issues(root: Path) -> list[str]:
     return issues
 
 
+def _release_readiness_issues(root: Path) -> list[str]:
+    readiness = root / "docs" / "release-readiness.md"
+    if not readiness.is_file():
+        return []
+
+    text = readiness.read_text(encoding="utf-8")
+    required_phrases = (
+        "python scripts/check_release_metadata.py",
+        "validation-envelope.md",
+        "scripts/run_long_validation.py",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/release-readiness.md must document release gate phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -463,6 +484,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_publication_checklist_issues(project_root))
     issues.extend(_platform_matrix_issues(project_root))
     issues.extend(_readme_cli_exit_code_issues(project_root))
+    issues.extend(_release_readiness_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)
