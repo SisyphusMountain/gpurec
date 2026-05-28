@@ -72,6 +72,8 @@ file as the map for deeper context.
   release/patch policy, and support evidence requirements.
 - `versioning-policy.md`: semantic-versioning rules, compatibility commitments,
   and release-line policy for user-facing contract changes.
+- `publication-checklist.md`: publication-facing checklist for citation,
+  reproducibility artifacts, validation evidence, and reporting requirements.
 - `release-notes.md`: release note template with migration notes and release
   limitation blocks.
 - `../examples/README.md`: source-checkout/source-archive CUDA flat JSON

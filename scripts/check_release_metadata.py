@@ -31,6 +31,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/release-notes.md",
     "docs/support-policy.md",
     "docs/versioning-policy.md",
+    "docs/publication-checklist.md",
 )
 
 

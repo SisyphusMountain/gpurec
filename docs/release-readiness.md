@@ -9,8 +9,8 @@ packaging assumptions covered by current automated build steps.
   `pyproject.toml` license metadata, and an OSI MIT license classifier.
 - Governance artifacts are present and current: `CHANGELOG.md`, `CITATION.cff`,
   `docs/release-notes.md`, `docs/support-policy.md`,
-  `docs/versioning-policy.md`, and a CUDA-capable deployment recipe
-  (`Dockerfile`).
+  `docs/versioning-policy.md`, `docs/publication-checklist.md`, and a
+  CUDA-capable deployment recipe (`Dockerfile`).
 - Build source artifacts from a clean checkout and install them in a fresh
   environment with a PyTorch build that matches the target CUDA runtime.
 
