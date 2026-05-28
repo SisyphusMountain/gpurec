@@ -194,6 +194,7 @@ def _write_complete_release_metadata_fixture(
                     "Final publication checks",
                     "A release candidate can be built from a clean checkout by following one checklist.",
                     "Build release artifacts from a clean checkout before tagging.",
+                    "Install and smoke release artifacts in a fresh environment.",
                     "Smoke the installed wheel from outside the checkout.",
                     "Checksums, provenance evidence, and binary provenance records are required.",
                     "sha256sum dist/* > dist/SHA256SUMS",
@@ -2836,6 +2837,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: final publication checks" in result.stdout
     assert "must document release gate phrase: one checklist" in result.stdout
     assert "must document release gate phrase: clean checkout" in result.stdout
+    assert "must document release gate phrase: fresh environment" in result.stdout
     assert "must document release gate phrase: outside the checkout" in result.stdout
     assert "must document release gate phrase: checksums" in result.stdout
     assert "must document release gate phrase: provenance" in result.stdout

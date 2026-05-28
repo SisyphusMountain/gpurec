@@ -14,8 +14,8 @@ A release candidate can be built from a clean checkout by following one checklis
   CUDA-capable deployment recipe (`Dockerfile`).
 - Offline installation policy is documented and current in
   `docs/platform-matrix.md`.
-- Build source artifacts from a clean checkout and install them in a fresh
-  environment with a PyTorch build that matches the target CUDA runtime.
+- Build source artifacts from a clean checkout and install them in a fresh environment
+  with a PyTorch build that matches the target CUDA runtime.
 
 ## Preprocessing Native Extension Contract
 

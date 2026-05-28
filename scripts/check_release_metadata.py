@@ -528,6 +528,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "final publication checks",
         "one checklist",
         "clean checkout",
+        "fresh environment",
         "outside the checkout",
         "checksums",
         "provenance",
