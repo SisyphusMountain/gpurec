@@ -396,6 +396,10 @@ def _platform_matrix_issues(root: Path) -> list[str]:
         issues.append(
             "docs/platform-matrix.md must document single readiness command guidance"
         )
+    if "gpurec doctor" not in text:
+        issues.append(
+            "docs/platform-matrix.md must document gpurec doctor readiness command guidance"
+        )
     matrix_terms = (
         "python",
         "pytorch",

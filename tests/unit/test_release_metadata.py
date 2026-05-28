@@ -1218,6 +1218,7 @@ def test_release_metadata_check_requires_platform_matrix_core_terms(
 
     assert result.returncode == 1
     assert "must document single readiness command guidance" in result.stdout
+    assert "must document gpurec doctor readiness command guidance" in result.stdout
     assert "must document matrix term: python" in result.stdout
     assert "must document matrix term: pytorch" in result.stdout
     assert "must document matrix term: cuda" in result.stdout
