@@ -6828,3 +6828,34 @@ def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):
     assert "Samples per selected family" in captured.out
     assert "--require-mode-default-optimizer" in captured.out
     assert "--require-production-default-route" in captured.out
+
+
+def test_cli_help_does_not_import_heavy_runtime_dependencies():
+    snippet = """
+import json
+import sys
+import gpurec.cli as cli
+
+before = {"torch": "torch" in sys.modules, "triton": "triton" in sys.modules}
+try:
+    cli.build_parser().parse_args(["--help"])
+except SystemExit as exc:
+    exit_code = int(exc.code)
+else:
+    exit_code = -1
+after = {"torch": "torch" in sys.modules, "triton": "triton" in sys.modules}
+print(json.dumps({"before": before, "after": after, "exit_code": exit_code}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        cwd=str(Path(__file__).resolve().parents[2]),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert payload["before"] == {"torch": False, "triton": False}
+    assert payload["after"] == {"torch": False, "triton": False}
+    assert payload["exit_code"] == 0
