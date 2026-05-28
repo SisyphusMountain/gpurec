@@ -1077,6 +1077,7 @@ def _snakemake_example_gate_issues(root: Path) -> list[str]:
         "fail fast",
         "gpurec validate-config",
         "--check-preprocess",
+        "resume",
         "reject non-converged outputs",
         "--require-converged",
         "--require-final-check-ok",

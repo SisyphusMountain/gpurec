@@ -616,6 +616,7 @@ def _write_complete_release_metadata_fixture(
                     "Fail fast on bad config before expensive steps.",
                     "Reject non-converged outputs with strict summary/checkpoint gates.",
                     "gpurec validate-config --check-preprocess",
+                    "resume from output_gpurec/checkpoints/latest.pt",
                     "--require-converged",
                     "--require-final-check-ok",
                     "gpurec sample",
@@ -2449,6 +2450,7 @@ def test_release_metadata_check_requires_snakemake_gate_phrases(
     assert "must document gate phrase: fail fast" in result.stdout
     assert "must document gate phrase: gpurec validate-config" in result.stdout
     assert "must document gate phrase: --check-preprocess" in result.stdout
+    assert "must document gate phrase: resume" in result.stdout
     assert "must document gate phrase: reject non-converged outputs" in result.stdout
     assert "must document gate phrase: --require-converged" in result.stdout
     assert "must document gate phrase: --require-final-check-ok" in result.stdout

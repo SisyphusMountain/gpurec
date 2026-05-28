@@ -11,6 +11,7 @@ The workflow runs:
 1. Fail fast on bad config with `gpurec validate-config --check-preprocess`
    (hard gate for CUDA-ready backward and parser checks)
 2. `gpurec optimize` with production-route and convergence gates (`--require-converged` and `--require-final-check-ok`)
+   and resume from `output_gpurec/checkpoints/latest.pt` when retrying an interrupted run
 3. `gpurec summary-info` and `gpurec checkpoint-info` hard gates (`--require-converged` and `--require-final-check-ok`)
 4. `gpurec sample` from the best checkpoint
 
