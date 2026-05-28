@@ -15,8 +15,10 @@ are intentionally broad enough to avoid overfitting to one workstation.
 
 ## Required Outcome
 
+- Convergence status must be explicitly recorded from `summary.status`.
 - `summary.status == "converged"`
 - `summary.reason` is present and documented in the validation report
+- Sampling output shape must satisfy the XML-count identity.
 - `reconciliations/summary.json` exists and has consistent XML count:
   `xml_files == families_sampled * samples_per_family`
 - Output artifacts pass `scripts/validate_output_artifacts.py`
