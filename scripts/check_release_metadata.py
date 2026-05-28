@@ -397,6 +397,7 @@ def _platform_matrix_issues(root: Path) -> list[str]:
         "cuda",
         "triton",
         "gpu",
+        "source-only",
         "rust",
         "compiler",
         "cargo",
