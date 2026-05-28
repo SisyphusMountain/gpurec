@@ -3813,9 +3813,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "run":
         if args.checkpoint is not None:
             command_parser.error(
-                "gpurec run samples from the checkpoint produced by this optimization; "
-                "use gpurec sample --checkpoint to sample an existing checkpoint, or "
-                "--resume-from to resume optimization"
+                _with_suggestion(
+                    "gpurec run samples from the checkpoint produced by this optimization; "
+                    "use gpurec sample --checkpoint to sample an existing checkpoint, or "
+                    "--resume-from to resume optimization",
+                    "remove --checkpoint from run; use run for optimize+sample, sample --checkpoint for sampling-only, or optimize --resume-from for resume-only",
+                )
             )
         try:
             run_config = _run_config_from_args(args, validate_input_paths=False)

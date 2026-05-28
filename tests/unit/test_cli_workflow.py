@@ -6535,6 +6535,7 @@ def test_cli_run_rejects_checkpoint_argument_without_traceback(capsys):
     assert exc_info.value.code == 2
     assert "gpurec sample --checkpoint" in captured.err
     assert "--resume-from" in captured.err
+    assert "suggestion:" in captured.err
     _assert_subcommand_usage(captured.err, "run")
     assert "Traceback" not in captured.err
 
