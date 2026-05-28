@@ -317,7 +317,16 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "troubleshooting.md").write_text(
-            "# Troubleshooting\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Troubleshooting",
+                    "",
+                    "Retryable runtime failures vs input contract failures.",
+                    "Authoritative files: summary.json, history.jsonl, checkpoints/latest.pt.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_docs_readme:
         (root / "docs" / "README.md").parent.mkdir(
@@ -947,6 +956,33 @@ def test_release_metadata_check_requires_troubleshooting_doc(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/troubleshooting.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_troubleshooting_recovery_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "troubleshooting.md").write_text(
+        "# Troubleshooting\n\nGeneral notes.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document failure-recovery phrase: retryable runtime failures" in result.stdout
+    assert "must document failure-recovery phrase: input contract failures" in result.stdout
+    assert "must document failure-recovery phrase: authoritative files" in result.stdout
+    assert "must document failure-recovery phrase: summary.json" in result.stdout
+    assert "must document failure-recovery phrase: history.jsonl" in result.stdout
+    assert "must document failure-recovery phrase: checkpoints/latest.pt" in result.stdout
     assert result.stderr == ""
 
 

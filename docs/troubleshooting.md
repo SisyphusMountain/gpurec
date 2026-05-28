@@ -4,6 +4,22 @@ This guide is for operators running the supported AleRax-style `gpurec`
 workflow. It focuses on failures that can happen before or after the CUDA
 likelihood/gradient route starts.
 
+## Failure Classification And Authoritative Files
+
+For workflow-manager triage, classify failures into retryable runtime failures
+vs input contract failures.
+
+- Retryable runtime failures: CUDA OOM/runtime pressure, transient GPU runtime
+  errors, or recoverable nonconvergence that should be retried with adjusted
+  compute budgets or resumed checkpoints.
+- Input contract failures: invalid config fields, missing files, malformed
+  Newick/mapping inputs, or unsupported dataset topology that must be fixed
+  before retry.
+
+After a failed run, the authoritative files are `summary.json`,
+`history.jsonl`, and `checkpoints/latest.pt`. Use them to decide whether to
+resume, retune, or discard the run directory.
+
 ## Preflight First
 
 Run the cheap path/reference preflight before optimization:
