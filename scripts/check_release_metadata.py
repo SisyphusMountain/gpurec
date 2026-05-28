@@ -641,6 +641,52 @@ def _slurm_example_lifecycle_issues(root: Path) -> list[str]:
     return issues
 
 
+def _snakemake_example_gate_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "workflow-examples" / "snakemake" / "README.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "gpurec validate-config",
+        "--check-preprocess",
+        "--require-converged",
+        "--require-final-check-ok",
+        "gpurec sample",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/workflow-examples/snakemake/README.md must document gate phrase: "
+                + phrase
+            )
+    return issues
+
+
+def _nextflow_example_gate_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "workflow-examples" / "nextflow" / "README.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "nextflow run main.nf -resume",
+        "gpurec validate-config",
+        "--check-preprocess",
+        "--require-converged",
+        "--require-final-check-ok",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/workflow-examples/nextflow/README.md must document gate phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _optimization_guide_goal_defaults_issues(root: Path) -> list[str]:
     guide = root / "docs" / "production-optimization-guide.md"
     if not guide.is_file():
@@ -813,6 +859,8 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_known_limitations_issues(project_root))
     issues.extend(_end_to_end_tutorial_public_command_issues(project_root))
     issues.extend(_slurm_example_lifecycle_issues(project_root))
+    issues.extend(_snakemake_example_gate_issues(project_root))
+    issues.extend(_nextflow_example_gate_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]

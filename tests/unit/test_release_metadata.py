@@ -443,13 +443,35 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "workflow-examples" / "snakemake" / "README.md").write_text(
-            "# Snakemake Example\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Snakemake Example",
+                    "",
+                    "gpurec validate-config --check-preprocess",
+                    "--require-converged",
+                    "--require-final-check-ok",
+                    "gpurec sample",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
         (root / "docs" / "workflow-examples" / "nextflow").mkdir(
             parents=True, exist_ok=True
         )
         (root / "docs" / "workflow-examples" / "nextflow" / "README.md").write_text(
-            "# Nextflow Example\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Nextflow Example",
+                    "",
+                    "nextflow run main.nf -resume",
+                    "gpurec validate-config --check-preprocess",
+                    "--require-converged",
+                    "--require-final-check-ok",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
         (root / "docs" / "workflow-examples" / "slurm").mkdir(
             parents=True, exist_ok=True
@@ -1479,6 +1501,58 @@ def test_release_metadata_check_requires_slurm_lifecycle_phrases(
         in result.stdout
     )
     assert "must document lifecycle phrase: gpurec sample" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_snakemake_gate_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "workflow-examples" / "snakemake" / "README.md").write_text(
+        "# Snakemake Example\n\nsnakemake --cores 1\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document gate phrase: gpurec validate-config" in result.stdout
+    assert "must document gate phrase: --check-preprocess" in result.stdout
+    assert "must document gate phrase: --require-converged" in result.stdout
+    assert "must document gate phrase: --require-final-check-ok" in result.stdout
+    assert "must document gate phrase: gpurec sample" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_nextflow_gate_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "workflow-examples" / "nextflow" / "README.md").write_text(
+        "# Nextflow Example\n\nnextflow run main.nf\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document gate phrase: nextflow run main.nf -resume" in result.stdout
+    assert "must document gate phrase: gpurec validate-config" in result.stdout
+    assert "must document gate phrase: --check-preprocess" in result.stdout
+    assert "must document gate phrase: --require-converged" in result.stdout
+    assert "must document gate phrase: --require-final-check-ok" in result.stdout
     assert result.stderr == ""
 
 
