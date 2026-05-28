@@ -424,7 +424,7 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# Validation Envelope",
                     "",
-                    "Runtime envelope, peak memory evidence, and final NLL range.",
+                    "Runtime envelope, peak memory evidence, final NLL range, and benchmark evidence scope.",
                     "",
                 ]
             ),
@@ -1869,6 +1869,7 @@ def test_release_metadata_check_requires_validation_envelope_evidence_terms(
     assert "must document validation evidence term: runtime envelope" in result.stdout
     assert "must document validation evidence term: peak memory" in result.stdout
     assert "must document validation evidence term: final nll" in result.stdout
+    assert "must document validation evidence term: benchmark evidence" in result.stdout
     assert result.stderr == ""
 
 

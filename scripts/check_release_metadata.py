@@ -484,6 +484,7 @@ def _validation_envelope_issues(root: Path) -> list[str]:
         "runtime envelope",
         "peak memory",
         "final nll",
+        "benchmark evidence",
     )
     issues: list[str] = []
     for phrase in required_phrases:
