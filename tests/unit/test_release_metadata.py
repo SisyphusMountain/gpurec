@@ -346,6 +346,16 @@ def test_release_metadata_check_reports_only_current_license_blockers():
     assert "Traceback" not in result.stderr
 
 
+def test_required_release_artifacts_exist_in_repository():
+    checker = _load_check_release_metadata_module()
+    missing = [
+        artifact
+        for artifact in checker.REQUIRED_RELEASE_ARTIFACTS
+        if not (ROOT / artifact).is_file()
+    ]
+    assert missing == []
+
+
 def test_top_level_package_version_matches_project_metadata():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.M)
