@@ -1251,6 +1251,9 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
     checksums = _step_run(package, "Generate artifact checksums")
     assert "sha256sum dist/* > dist/SHA256SUMS" in checksums
     assert "test -s dist/SHA256SUMS" in checksums
+    assert "ls dist/*.whl dist/*.tar.gz >/dev/null" in checksums
+    assert "grep -Eq '\\.whl$' dist/SHA256SUMS" in checksums
+    assert "grep -Eq '\\.tar\\.gz$' dist/SHA256SUMS" in checksums
 
     artifact_check = _step_run(package, "Check artifact package data")
     for required in (

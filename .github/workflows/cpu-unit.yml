@@ -139,6 +139,9 @@ jobs:
         run: |
           sha256sum dist/* > dist/SHA256SUMS
           test -s dist/SHA256SUMS
+          ls dist/*.whl dist/*.tar.gz >/dev/null
+          grep -Eq '\.whl$' dist/SHA256SUMS
+          grep -Eq '\.tar\.gz$' dist/SHA256SUMS
 
       - name: Check artifact metadata
         run: python -m twine check dist/*
