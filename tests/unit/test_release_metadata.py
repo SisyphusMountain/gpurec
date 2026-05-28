@@ -2250,6 +2250,24 @@ def test_release_readiness_documents_resolved_license_readiness():
     assert "Decide the Rust backtracking binary distribution model" not in guide
 
 
+def test_release_readiness_governance_list_matches_metadata_checker_core_artifacts():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+    checker = _load_check_release_metadata_module()
+
+    governance_core = {
+        "CHANGELOG.md",
+        "CITATION.cff",
+        "Dockerfile",
+        "docs/release-notes.md",
+        "docs/support-policy.md",
+        "docs/versioning-policy.md",
+        "docs/publication-checklist.md",
+    }
+    assert governance_core <= set(checker.REQUIRED_RELEASE_ARTIFACTS)
+    for artifact in sorted(governance_core):
+        assert artifact in guide
+
+
 def test_platform_matrix_documents_offline_installation_policy():
     matrix_doc = (ROOT / "docs" / "platform-matrix.md").read_text(encoding="utf-8")
 
