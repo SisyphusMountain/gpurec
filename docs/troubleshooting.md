@@ -3,6 +3,7 @@
 This guide is for operators running the supported AleRax-style `gpurec`
 workflow. It focuses on failures that can happen before or after the CUDA
 likelihood/gradient route starts.
+It is organized by symptom for operator triage rather than by internal subsystem.
 
 ## Failure Classification And Authoritative Files
 

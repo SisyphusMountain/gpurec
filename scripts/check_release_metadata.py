@@ -432,6 +432,7 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
 
     text = guide.read_text(encoding="utf-8").lower()
     required_phrases = (
+        "by symptom",
         "retryable runtime failures",
         "input contract failures",
         "authoritative files",
