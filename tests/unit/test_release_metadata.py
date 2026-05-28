@@ -192,6 +192,8 @@ def _write_complete_release_metadata_fixture(
                     "Nightly checks",
                     "Release-candidate checks",
                     "Final publication checks",
+                    "Build release artifacts from a clean checkout before tagging.",
+                    "Smoke the installed wheel from outside the checkout.",
                     "Checksums, provenance evidence, and binary provenance records are required.",
                     "sha256sum dist/* > dist/SHA256SUMS",
                     "",
@@ -2830,6 +2832,8 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: nightly checks" in result.stdout
     assert "must document release gate phrase: release-candidate checks" in result.stdout
     assert "must document release gate phrase: final publication checks" in result.stdout
+    assert "must document release gate phrase: clean checkout" in result.stdout
+    assert "must document release gate phrase: outside the checkout" in result.stdout
     assert "must document release gate phrase: checksums" in result.stdout
     assert "must document release gate phrase: provenance" in result.stdout
     assert "must document release gate phrase: binary provenance" in result.stdout
