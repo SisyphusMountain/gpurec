@@ -33,6 +33,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - CI enforces docstring requirements for public APIs.
 - Release artifacts are signed and checksummed before publication.
 - Release artifacts include an SBOM or equivalent dependency inventory export.
+- Release process includes dependency vulnerability scanning evidence.
 
 ## Preprocessing Native Extension Contract
 

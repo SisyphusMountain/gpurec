@@ -201,6 +201,7 @@ def _write_complete_release_metadata_fixture(
                     "Installation docs cover native preprocessing and backtracking artifacts.",
                     "Release artifacts include a reproducible dependency manifest and dependency scan snapshot.",
                     "Release artifacts include an SBOM or equivalent dependency inventory export.",
+                    "Release process includes dependency vulnerability scanning evidence.",
                     "Help and import smoke tests remain CPU-safe during release checks.",
                     "CI rejects obvious lint errors before release publication.",
                     "CI rejects broken type annotations in public modules.",
@@ -2937,6 +2938,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: dependency manifest" in result.stdout
     assert "must document release gate phrase: dependency scan snapshot" in result.stdout
     assert "must document release gate phrase: sbom" in result.stdout
+    assert "must document release gate phrase: dependency vulnerability scanning" in result.stdout
     assert "must document release gate phrase: help and import smoke tests remain cpu-safe" in result.stdout
     assert "must document release gate phrase: ci rejects obvious lint errors" in result.stdout
     assert "must document release gate phrase: broken type annotations in public modules" in result.stdout
