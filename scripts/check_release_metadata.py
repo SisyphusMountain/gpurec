@@ -339,6 +339,26 @@ def _readme_cli_exit_code_issues(root: Path) -> list[str]:
     return issues
 
 
+def _readme_short_user_path_issues(root: Path) -> list[str]:
+    readme = root / "README.md"
+    if not readme.is_file():
+        return []
+
+    text = readme.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "install",
+        "validate inputs",
+        "run optimization",
+        "inspect output",
+        "sample reconciliations",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append("README.md must document short-path phrase: " + phrase)
+    return issues
+
+
 def _release_readiness_issues(root: Path) -> list[str]:
     readiness = root / "docs" / "release-readiness.md"
     if not readiness.is_file():
@@ -968,6 +988,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_publication_checklist_issues(project_root))
     issues.extend(_platform_matrix_issues(project_root))
     issues.extend(_readme_cli_exit_code_issues(project_root))
+    issues.extend(_readme_short_user_path_issues(project_root))
     issues.extend(_release_readiness_issues(project_root))
     issues.extend(_validation_envelope_issues(project_root))
     issues.extend(_troubleshooting_recovery_issues(project_root))

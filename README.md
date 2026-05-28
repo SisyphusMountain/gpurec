@@ -111,6 +111,15 @@ The repository examples and bundled workflow templates are not a CPU fallback,
 are not an end-to-end optimizer smoke, and the retained CUDA backward path
 requires `S > 256` for its fused execution path.
 
+## Short User Path
+
+1. Install: run `pip install .`, then `gpurec doctor`.
+2. Validate inputs: run `gpurec validate-inputs --json` or
+   `gpurec validate-config --check-preprocess`.
+3. Run optimization: execute `gpurec optimize --config run.json`.
+4. Inspect output: check `gpurec summary-info` and `gpurec checkpoint-info`.
+5. Sample reconciliations: execute `gpurec sample --checkpoint ...`.
+
 ## Basic Optimization
 
 ```python

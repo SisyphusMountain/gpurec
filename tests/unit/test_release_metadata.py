@@ -113,6 +113,9 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# fixture",
                     "",
+                    "Short user path: install, validate inputs, run optimization,",
+                    "inspect output, sample reconciliations.",
+                    "",
                     "CLI exit codes are stable for workflow managers:",
                     "- `0`: command completed successfully.",
                     "- `1`: command ran but failed a runtime or validation gate",
@@ -1738,6 +1741,42 @@ def test_release_metadata_check_requires_workflow_examples_overview_gate_phrases
         "must document acceptance-gate phrase: reject non-converged outputs"
         in result.stdout
     )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_readme_short_user_path_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "README.md").write_text(
+        "\n".join(
+            [
+                "# fixture",
+                "",
+                "CLI exit codes are stable for workflow managers:",
+                "- `0`: command completed successfully.",
+                "- `1`: command ran but failed a runtime or validation gate",
+                "- `2`: CLI usage or argument parsing error from `argparse`.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document short-path phrase: install" in result.stdout
+    assert "must document short-path phrase: validate inputs" in result.stdout
+    assert "must document short-path phrase: run optimization" in result.stdout
+    assert "must document short-path phrase: inspect output" in result.stdout
+    assert "must document short-path phrase: sample reconciliations" in result.stdout
     assert result.stderr == ""
 
 
