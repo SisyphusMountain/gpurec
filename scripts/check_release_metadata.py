@@ -344,11 +344,15 @@ def _release_readiness_issues(root: Path) -> list[str]:
     if not readiness.is_file():
         return []
 
-    text = readiness.read_text(encoding="utf-8")
+    text = readiness.read_text(encoding="utf-8").lower()
     required_phrases = (
         "python scripts/check_release_metadata.py",
         "validation-envelope.md",
         "scripts/run_long_validation.py",
+        "quick pr checks",
+        "nightly checks",
+        "release-candidate checks",
+        "final publication checks",
     )
     issues: list[str] = []
     for phrase in required_phrases:
