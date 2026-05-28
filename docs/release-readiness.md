@@ -30,6 +30,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - CI rejects unused imports in public modules.
 - CI rejects broken type annotations in public modules.
 - CI rejects accidental public-surface drift before release publication.
+- Optional heavy dependencies do not load during gpurec --help or metadata inspection.
 - CI maintains a generated CLI help snapshot for stable flags and exits.
 - CI enforces docstring requirements for public APIs.
 - Release artifacts are signed and checksummed before publication.

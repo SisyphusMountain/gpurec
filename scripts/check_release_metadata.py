@@ -546,6 +546,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "unused imports",
         "broken type annotations in public modules",
         "accidental public-surface drift",
+        "optional heavy dependencies do not load during gpurec --help",
         "generated cli help snapshot",
         "docstring requirements for public apis",
         "signed",
