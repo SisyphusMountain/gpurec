@@ -222,6 +222,7 @@ Check metadata before building public artifacts:
 ```bash
 python scripts/check_release_metadata.py
 gpurec doctor
+gpurec doctor --json
 ```
 
 The release readiness command set must confirm writable output directory checks

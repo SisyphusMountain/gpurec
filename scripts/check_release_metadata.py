@@ -463,6 +463,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "validation-envelope.md",
         "scripts/run_long_validation.py",
         "gpurec doctor",
+        "gpurec doctor --json",
         "gpurec preprocess-check",
         "gpurec backtrack-check",
         "writable output directory",

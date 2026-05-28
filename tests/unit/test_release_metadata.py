@@ -181,6 +181,7 @@ def _write_complete_release_metadata_fixture(
                     "scripts/run_long_validation.py",
                     "validation-envelope.md",
                     "gpurec doctor",
+                    "gpurec doctor --json",
                     "gpurec preprocess-check",
                     "gpurec backtrack-check",
                     "writable output directory",
@@ -2720,6 +2721,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: scripts/run_long_validation.py" in result.stdout
     assert "must document release gate phrase: validation-envelope.md" in result.stdout
     assert "must document release gate phrase: gpurec doctor" in result.stdout
+    assert "must document release gate phrase: gpurec doctor --json" in result.stdout
     assert "must document release gate phrase: gpurec preprocess-check" in result.stdout
     assert "must document release gate phrase: gpurec backtrack-check" in result.stdout
     assert "must document release gate phrase: writable output directory" in result.stdout
