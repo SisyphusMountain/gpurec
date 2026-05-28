@@ -256,6 +256,9 @@ def test_workflow_examples_include_post_optimization_quality_gates():
     nextflow = (
         ROOT / "docs" / "workflow-examples" / "nextflow" / "main.nf"
     ).read_text(encoding="utf-8")
+    slurm = (
+        ROOT / "docs" / "workflow-examples" / "slurm" / "run-gpurec.sbatch"
+    ).read_text(encoding="utf-8")
 
     assert "gpurec optimize --config {RUN_CONFIG} \\" in snakemake
     assert "--require-converged \\" in snakemake
@@ -268,3 +271,10 @@ def test_workflow_examples_include_post_optimization_quality_gates():
     assert "--require-converged \\" in nextflow
     assert "gpurec summary-info --summary ${summary} \\" in nextflow
     assert "gpurec checkpoint-info --checkpoint ${checkpoint} \\" in nextflow
+
+    assert "gpurec optimize \\" in slurm
+    assert "--require-converged \\" in slurm
+    assert "gpurec summary-info \\" in slurm
+    assert "--summary output_gpurec/summary.json \\" in slurm
+    assert "gpurec checkpoint-info \\" in slurm
+    assert "--checkpoint output_gpurec/checkpoints/best.pt \\" in slurm

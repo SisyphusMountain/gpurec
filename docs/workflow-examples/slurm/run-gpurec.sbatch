@@ -31,10 +31,17 @@ gpurec optimize \
   --config "$run_json" \
   "${resume_args[@]}" \
   --require-mode-default-optimizer \
+  --require-converged \
   --require-final-check-ok
 
 if [[ -f output_gpurec/checkpoints/best.pt ]]; then
-  gpurec summary-info --summary output_gpurec/summary.json --require-final-check-ok
+  gpurec summary-info \
+    --summary output_gpurec/summary.json \
+    --require-converged \
+    --require-final-check-ok
+  gpurec checkpoint-info \
+    --checkpoint output_gpurec/checkpoints/best.pt \
+    --require-final-check-ok
   gpurec sample \
     --checkpoint output_gpurec/checkpoints/best.pt \
     --samples 2 \
