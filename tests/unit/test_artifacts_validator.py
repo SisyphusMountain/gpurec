@@ -277,3 +277,75 @@ def test_validate_history_rejects_empty_file(tmp_path: Path) -> None:
     assert result.returncode == 1
     issues = json.loads(result.stdout)["issues"]
     assert any("is empty" in issue for issue in issues)
+
+
+def test_cross_validate_summary_history_and_manifest_mismatch(tmp_path: Path) -> None:
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "max_steps",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "families": 1,
+                "species": 1,
+                "batches": 1,
+                "steps_completed": 12,
+                "final_nll_bits": 1.0,
+                "final_grad_inf": 0.1,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    history = tmp_path / "history.jsonl"
+    history.write_text(
+        "\n".join([json.dumps({"step": 10, "value": 1.0}), json.dumps({"step": 11, "value": 0.9})]),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "run_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_name": "gpurec optimization run manifest",
+                "out_dir": str(tmp_path),
+                "command": "gpurec optimize",
+                "command_argv": ["python", "-m", "gpurec"],
+                "runtime": {"python": "3.12"},
+                "route": {"mode": "genewise", "optimizer": "hessian-sgd"},
+                "optimization": {
+                    "mode": "cladewise",
+                    "optimizer": "adam",
+                    "status": "failed",
+                    "reason": "nonfinite_objective_or_gradient",
+                    "steps_completed": 9,
+                },
+                "run_config": {"path": "run_config.json", "hash_sha256": "deadbeef", "version": "1"},
+                "reproducibility": {"seeded": True},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_validator(
+        "--summary",
+        str(summary),
+        "--history",
+        str(history),
+        "--run-manifest",
+        str(manifest),
+        "--json",
+    )
+    assert result.returncode == 1
+    issues = json.loads(result.stdout)["issues"]
+    assert any("steps_completed mismatch vs history max step" in issue for issue in issues)
+    assert any("mode mismatch vs run_manifest optimization" in issue for issue in issues)
+    assert any("optimizer mismatch vs run_manifest optimization" in issue for issue in issues)
+    assert any("status mismatch vs run_manifest optimization" in issue for issue in issues)
+    assert any("reason mismatch vs run_manifest optimization" in issue for issue in issues)
+    assert any(
+        "steps_completed mismatch vs run_manifest optimization" in issue for issue in issues
+    )

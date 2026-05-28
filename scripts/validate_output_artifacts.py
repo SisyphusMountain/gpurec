@@ -514,6 +514,95 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _load_json_object(path: Path, issues: list[str]) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _append_issue(issues, path.name, f"failed to parse JSON for consistency checks: {exc}")
+        return None
+    if not isinstance(payload, dict):
+        _append_issue(
+            issues,
+            path.name,
+            f"expected JSON object for consistency checks, got {type(payload).__name__}",
+        )
+        return None
+    return payload
+
+
+def _load_history_max_step(path: Path, issues: list[str]) -> int | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        _append_issue(
+            issues,
+            path.name,
+            f"failed to read history for consistency checks: {exc}",
+        )
+        return None
+
+    max_step: int | None = None
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            step = row.get("step")
+            if _is_nonnegative_int(step):
+                current_step = int(step)
+                max_step = current_step if max_step is None else max(max_step, current_step)
+    return max_step
+
+
+def _cross_validate_group(
+    *,
+    summary_path: Path | None,
+    history_path: Path | None,
+    run_manifest_path: Path | None,
+    issues: list[str],
+) -> None:
+    summary_payload: dict[str, Any] | None = None
+    manifest_payload: dict[str, Any] | None = None
+
+    if summary_path is not None:
+        summary_payload = _load_json_object(summary_path, issues)
+    if run_manifest_path is not None:
+        manifest_payload = _load_json_object(run_manifest_path, issues)
+
+    if summary_payload is not None and history_path is not None:
+        max_step = _load_history_max_step(history_path, issues)
+        steps_completed = summary_payload.get("steps_completed")
+        if _is_nonnegative_int(steps_completed) and max_step is not None and int(steps_completed) != max_step:
+            _append_issue(
+                issues,
+                summary_path.name,
+                "steps_completed mismatch vs history max step: "
+                f"{steps_completed} != {max_step}",
+            )
+
+    if summary_payload is None or manifest_payload is None:
+        return
+
+    optimization = manifest_payload.get("optimization")
+    if not isinstance(optimization, dict):
+        return
+
+    for key in ("mode", "optimizer", "status", "reason", "steps_completed"):
+        if key in summary_payload and key in optimization:
+            summary_value = summary_payload[key]
+            manifest_value = optimization[key]
+            if summary_value != manifest_value:
+                _append_issue(
+                    issues,
+                    summary_path.name,
+                    f"{key} mismatch vs run_manifest optimization: "
+                    f"{summary_value!r} != {manifest_value!r}",
+                )
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -555,6 +644,18 @@ def main() -> int:
                     resolved.name,
                     f"unexpected validation error: {exc}",
                 )
+
+    summary_by_dir = {path.expanduser().resolve().parent: path.expanduser().resolve() for path in args.summary or []}
+    history_by_dir = {path.expanduser().resolve().parent: path.expanduser().resolve() for path in args.history or []}
+    manifest_by_dir = {path.expanduser().resolve().parent: path.expanduser().resolve() for path in args.run_manifest or []}
+    all_dirs = set(summary_by_dir) | set(history_by_dir) | set(manifest_by_dir)
+    for out_dir in all_dirs:
+        _cross_validate_group(
+            summary_path=summary_by_dir.get(out_dir),
+            history_path=history_by_dir.get(out_dir),
+            run_manifest_path=manifest_by_dir.get(out_dir),
+            issues=issues,
+        )
 
     if args.json:
         print(
