@@ -369,6 +369,8 @@ def _write_complete_release_metadata_fixture(
                     "clade_budget plus family_chunk_size for large runs.",
                     "Family-file guidance covers multiple families, multiple trees per family,",
                     "and mapping files.",
+                    "Run validate-inputs --json for CPU-safe dataset validation.",
+                    "This preflight does not construct the CUDA likelihood model.",
                     "Conversion guidance covers Treerecs, GeneRax, AleRax,",
                     "OrthoFinder, and gene -> species TSV mappings.",
                     "",
@@ -1548,6 +1550,35 @@ def test_release_metadata_check_requires_input_preparation_family_file_phrases(
     assert "must document family-file phrase: multiple families" in result.stdout
     assert "must document family-file phrase: multiple trees per family" in result.stdout
     assert "must document family-file phrase: mapping files" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_input_preparation_cpu_safe_validation_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "input-preparation.md").write_text(
+        "# Input Preparation\n\nFamily and conversion notes only.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "must document cpu-safe validation phrase: validate-inputs --json"
+        in result.stdout
+    )
+    assert (
+        "must document cpu-safe validation phrase: does not construct the cuda likelihood model"
+        in result.stdout
+    )
     assert result.stderr == ""
 
 

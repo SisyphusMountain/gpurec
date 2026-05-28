@@ -128,6 +128,8 @@ gpurec validate-config --config run.json --require-mode-default-optimizer
 gpurec validate-config --config run.json --require-production-default-route
 ```
 
+This CPU-safe preflight does not construct the CUDA likelihood model.
+
 Then ask the retained Rust preprocessing parser to read the selected species
 tree, family records, gene trees, and mapping files on CPU:
 
