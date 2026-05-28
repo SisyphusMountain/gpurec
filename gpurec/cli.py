@@ -366,10 +366,11 @@ def _run_config_cli_override_fields() -> tuple[str, ...]:
 def _sampling_error_message(exc: BaseException) -> str:
     message = str(exc)
     if _RAW_THETA_CHECKPOINT_ERROR in message:
-        return (
+        return _with_suggestion(
             f"{message}; --checkpoint must point to an optimization checkpoint "
             "such as checkpoints/best.pt or checkpoints/latest.pt, not "
-            "theta_final.pt"
+            "theta_final.pt",
+            "run optimize first (or use an existing run directory) and pass checkpoints/best.pt or checkpoints/latest.pt to --checkpoint",
         )
     return message
 

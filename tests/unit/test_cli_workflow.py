@@ -3021,6 +3021,7 @@ def test_cli_sample_raw_theta_checkpoint_error_suggests_real_checkpoints(
     assert "checkpoints/best.pt" in captured.err
     assert "checkpoints/latest.pt" in captured.err
     assert "not theta_final.pt" in captured.err
+    assert "suggestion:" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -3839,6 +3840,7 @@ def test_cli_checkpoint_info_raw_theta_error_suggests_real_checkpoints(
     assert "checkpoints/best.pt" in captured.err
     assert "checkpoints/latest.pt" in captured.err
     assert "not theta_final.pt" in captured.err
+    assert "suggestion:" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
