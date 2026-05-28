@@ -347,6 +347,27 @@ def _release_readiness_issues(root: Path) -> list[str]:
     return issues
 
 
+def _validation_envelope_issues(root: Path) -> list[str]:
+    envelope = root / "docs" / "validation-envelope.md"
+    if not envelope.is_file():
+        return []
+
+    text = envelope.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "runtime envelope",
+        "peak memory",
+        "final nll",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/validation-envelope.md must document validation evidence term: "
+                + phrase
+            )
+    return issues
+
+
 def _quickstart_lifecycle_issues(root: Path) -> list[str]:
     quickstart = root / "docs" / "bioinformatics-quickstart.md"
     if not quickstart.is_file():
@@ -532,6 +553,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_platform_matrix_issues(project_root))
     issues.extend(_readme_cli_exit_code_issues(project_root))
     issues.extend(_release_readiness_issues(project_root))
+    issues.extend(_validation_envelope_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 

@@ -28,11 +28,14 @@ Use `scripts/run_long_validation.py` with these default guardrails:
 - `--min-families 2`
 - `--min-species 261`
 - `--max-elapsed-s 3600`
+- `--observed-peak-memory-gib ...` and `--max-observed-peak-memory-gib ...`
+  when release evidence includes an explicit peak memory envelope.
 - `--max-final-nll-bits-abs 1000000000`
 
-The generated report (`gpurec.long_validation_report.v1`) is benchmark
-evidence. It is not a guaranteed runtime/performance contract for all GPU
-models, drivers, or CUDA stacks.
+The generated report (`gpurec.long_validation_report.v1`) should capture runtime
+envelope, peak memory evidence (when measured), and final NLL range bounds.
+It is benchmark evidence, not a guaranteed runtime/performance contract for all
+GPU models, drivers, or CUDA stacks.
 
 ## Publication Evidence
 

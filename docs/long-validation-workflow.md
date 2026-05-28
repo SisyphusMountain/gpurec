@@ -26,6 +26,8 @@ python scripts/run_long_validation.py \
   --min-families 2 \
   --min-species 261 \
   --max-elapsed-s 3600 \
+  --observed-peak-memory-gib 20.5 \
+  --max-observed-peak-memory-gib 24 \
   --max-final-nll-bits-abs 1000000000
 ```
 
@@ -45,6 +47,8 @@ The output report JSON (`gpurec.long_validation_report.v1`) captures:
 
 - command list, return codes, elapsed time, and captured stdout/stderr,
 - observed summary metrics (`families`, `species`, `final_nll_bits`, `elapsed_s`),
+- optional observed peak memory (`observed_peak_memory_gib`) from external GPU
+  telemetry such as `nvidia-smi`,
 - sampling shape (`xml_files` vs expected `families_sampled * samples_per_family`),
 - selected threshold settings used for the run.
 

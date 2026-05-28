@@ -302,7 +302,15 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "validation-envelope.md").write_text(
-            "# Validation Envelope\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Validation Envelope",
+                    "",
+                    "Runtime envelope, peak memory evidence, and final NLL range.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_troubleshooting:
         (root / "docs" / "troubleshooting.md").parent.mkdir(
@@ -896,6 +904,30 @@ def test_release_metadata_check_requires_validation_envelope(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/validation-envelope.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_validation_envelope_evidence_terms(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "validation-envelope.md").write_text(
+        "# Validation Envelope\n\nEvidence.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document validation evidence term: runtime envelope" in result.stdout
+    assert "must document validation evidence term: peak memory" in result.stdout
+    assert "must document validation evidence term: final nll" in result.stdout
     assert result.stderr == ""
 
 

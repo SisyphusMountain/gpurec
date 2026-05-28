@@ -118,6 +118,24 @@ def _parse_args() -> argparse.Namespace:
         help="Fail if summary species is below this value.",
     )
     parser.add_argument(
+        "--observed-peak-memory-gib",
+        type=float,
+        default=None,
+        help=(
+            "Optional observed peak GPU memory (GiB) recorded from external "
+            "telemetry (for example nvidia-smi)."
+        ),
+    )
+    parser.add_argument(
+        "--max-observed-peak-memory-gib",
+        type=float,
+        default=None,
+        help=(
+            "Optional upper bound for --observed-peak-memory-gib. Ignored "
+            "when observed peak memory is not provided."
+        ),
+    )
+    parser.add_argument(
         "--skip-artifact-validator",
         action="store_true",
         help="Skip scripts/validate_output_artifacts.py (for dry-run or mocked environments).",
@@ -261,6 +279,34 @@ def main() -> int:
         raise RuntimeError(
             f"summary.species {species} is below minimum {args.min_species}"
         )
+    if args.max_observed_peak_memory_gib is not None:
+        if args.max_observed_peak_memory_gib <= 0:
+            raise RuntimeError(
+                "--max-observed-peak-memory-gib must be positive when provided"
+            )
+        if args.observed_peak_memory_gib is None:
+            raise RuntimeError(
+                "--max-observed-peak-memory-gib requires "
+                "--observed-peak-memory-gib"
+            )
+    if args.observed_peak_memory_gib is not None:
+        if not math.isfinite(args.observed_peak_memory_gib):
+            raise RuntimeError(
+                "--observed-peak-memory-gib must be finite when provided"
+            )
+        if args.observed_peak_memory_gib <= 0:
+            raise RuntimeError(
+                "--observed-peak-memory-gib must be positive when provided"
+            )
+        if (
+            args.max_observed_peak_memory_gib is not None
+            and args.observed_peak_memory_gib > args.max_observed_peak_memory_gib
+        ):
+            raise RuntimeError(
+                "--observed-peak-memory-gib "
+                f"{args.observed_peak_memory_gib} exceeds "
+                f"--max-observed-peak-memory-gib {args.max_observed_peak_memory_gib}"
+            )
 
     xml_files = sampling_summary.get("xml_files")
     expected_xml = int(sampling_summary.get("families_sampled", 0)) * int(
@@ -292,6 +338,8 @@ def main() -> int:
             "max_final_nll_bits_abs": args.max_final_nll_bits_abs,
             "min_families": args.min_families,
             "min_species": args.min_species,
+            "observed_peak_memory_gib": args.observed_peak_memory_gib,
+            "max_observed_peak_memory_gib": args.max_observed_peak_memory_gib,
         },
         "commands": commands,
         "observed": {
@@ -304,6 +352,7 @@ def main() -> int:
             "status": summary.get("status"),
             "reason": summary.get("reason"),
             "run_manifest_route": run_manifest.get("route"),
+            "observed_peak_memory_gib": args.observed_peak_memory_gib,
         },
     }
 
