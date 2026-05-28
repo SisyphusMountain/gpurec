@@ -386,6 +386,43 @@ def _with_suggestion(message: str, suggestion: str) -> str:
     return f"{message}; suggestion: {suggestion_text}"
 
 
+_SUGGEST_RUN_OPTIMIZE_FAILURE = (
+    "inspect optimize diagnostics, then retry optimize or run validate-config --check-preprocess to isolate input/native setup failures"
+)
+_SUGGEST_RUN_OPTIMIZE_PREP = (
+    "inspect optimize diagnostics, then retry run or use optimize first to isolate optimization failures before sampling"
+)
+_SUGGEST_RUN_BACKTRACK_PREP = (
+    "install or point to a compatible backtracking artifact via --backtrack-binary/GPUREC_BACKTRACK_BIN, "
+    "run backtrack-check, then rerun run"
+)
+_SUGGEST_MISSING_SAMPLE_CHECKPOINT = (
+    "resume optimization to produce checkpoints/latest.pt or checkpoints/best.pt, then rerun run or invoke sample --checkpoint explicitly"
+)
+_SUGGEST_REQUIRE_CUDA_BACKWARD_READY = (
+    "add --check-preprocess to run CPU preprocessing before enforcing CUDA backward readiness"
+)
+_SUGGEST_VALIDATE_CUDA_BACKWARD = (
+    "rerun without --require-cuda-backward-ready to inspect config and preprocessing results before enforcing the CUDA backward gate"
+)
+
+
+def _suggested_command_error(
+    parser: argparse.ArgumentParser,
+    message: str,
+    suggestion: str,
+) -> None:
+    parser.error(_with_suggestion(message, suggestion))
+
+
+def _suggested_exit_error(
+    parser: argparse.ArgumentParser,
+    error: Exception | str,
+    suggestion: str,
+) -> None:
+    _exit_runtime_error(parser, _with_suggestion(str(error), suggestion))
+
+
 def _exit_unless_final_check_ok(
     parser: argparse.ArgumentParser,
     status: object,
@@ -3140,12 +3177,8 @@ def main(argv: list[str] | None = None) -> None:
         try:
             result = _run_optimize_command(config, invocation_argv)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(
-                command_parser,
-                _with_suggestion(
-                    str(exc),
-                    "inspect optimize diagnostics, then retry optimize or run validate-config --check-preprocess to isolate input/native setup failures",
-                ),
+            _suggested_exit_error(
+                command_parser, exc, _SUGGEST_RUN_OPTIMIZE_FAILURE
             )
         print(
             f"{_optimization_result_text(result)} "
@@ -3175,11 +3208,10 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "validate-config":
         if args.require_cuda_backward_ready and not args.check_preprocess:
-            command_parser.error(
-                _with_suggestion(
-                    "--require-cuda-backward-ready requires --check-preprocess",
-                    "add --check-preprocess to run CPU preprocessing before enforcing CUDA backward readiness",
-                )
+            _suggested_command_error(
+                command_parser,
+                "--require-cuda-backward-ready requires --check-preprocess",
+                _SUGGEST_REQUIRE_CUDA_BACKWARD_READY,
             )
         try:
             raw_config_data = _resolved_run_config_data_from_args(args)
@@ -3238,7 +3270,7 @@ def main(argv: list[str] | None = None) -> None:
                         "cuda_backward_ready=false "
                         f"{cuda_backward_reason}; retained CUDA backward requires "
                         "more than 256 postorder species nodes",
-                        "rerun without --require-cuda-backward-ready to inspect config and preprocessing results before enforcing the CUDA backward gate",
+                        _SUGGEST_VALIDATE_CUDA_BACKWARD,
                     )
                 )
         if args.json:
@@ -3292,11 +3324,10 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "validate-inputs":
         if args.require_cuda_backward_ready and not args.check_preprocess:
-            command_parser.error(
-                _with_suggestion(
-                    "--require-cuda-backward-ready requires --check-preprocess",
-                    "add --check-preprocess to run CPU preprocessing before enforcing CUDA backward readiness",
-                )
+            _suggested_command_error(
+                command_parser,
+                "--require-cuda-backward-ready requires --check-preprocess",
+                _SUGGEST_REQUIRE_CUDA_BACKWARD_READY,
             )
         config = SimpleNamespace(
             species_tree=args.species_tree.expanduser().resolve(),
@@ -3319,7 +3350,7 @@ def main(argv: list[str] | None = None) -> None:
                     _with_suggestion(
                         "input validation failed; fix input issues before checking "
                         "CUDA backward readiness",
-                        "rerun validate-inputs --json to review issue codes and actions, then fix input contracts before enabling --require-cuda-backward-ready",
+                        _SUGGEST_VALIDATE_CUDA_BACKWARD,
                     )
                 )
             preprocess_text = (
@@ -3341,7 +3372,7 @@ def main(argv: list[str] | None = None) -> None:
                         "cuda_backward_ready=false "
                         f"{_optional_text('cuda_backward_ready_reason', reason)}; "
                         "retained CUDA backward requires more than 256 postorder species nodes",
-                        "rerun without --require-cuda-backward-ready to inspect input validation and preprocessing details before enforcing the CUDA backward gate",
+                        _SUGGEST_VALIDATE_CUDA_BACKWARD,
                     )
                 )
         if args.json:
@@ -3755,12 +3786,10 @@ def main(argv: list[str] | None = None) -> None:
             package_version=package_version,
         )
         if not backtrack_payload.get("ok"):
-            _exit_runtime_error(
+            _suggested_exit_error(
                 command_parser,
-                _with_suggestion(
-                    str(backtrack_payload.get("error")),
-                    "install or point to a compatible backtracking artifact via --backtrack-binary/GPUREC_BACKTRACK_BIN, then rerun backtrack-check",
-                ),
+                str(backtrack_payload.get("error")),
+                "install or point to a compatible backtracking artifact via --backtrack-binary/GPUREC_BACKTRACK_BIN, then rerun backtrack-check",
             )
         payload = {
             "backtracking_available": True,
@@ -3788,12 +3817,10 @@ def main(argv: list[str] | None = None) -> None:
             package_version=package_version,
         )
         if not preprocess_payload.get("ok"):
-            _exit_runtime_error(
+            _suggested_exit_error(
                 command_parser,
-                _with_suggestion(
-                    str(preprocess_payload.get("error")),
-                    "install or point to a compatible preprocessing native library via --preprocess-native-lib/GPUREC_PREPROCESS_NATIVE_LIB, then rerun preprocess-check",
-                ),
+                str(preprocess_payload.get("error")),
+                "install or point to a compatible preprocessing native library via --preprocess-native-lib/GPUREC_PREPROCESS_NATIVE_LIB, then rerun preprocess-check",
             )
         preprocess_native_lib = preprocess_payload.get("path")
         payload = {
@@ -3871,22 +3898,18 @@ def main(argv: list[str] | None = None) -> None:
         try:
             _ensure_backtracking_available(args.backtrack_binary)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(
+            _suggested_exit_error(
                 command_parser,
-                _with_suggestion(
-                    str(exc),
-                    "install or point to a compatible backtracking artifact via --backtrack-binary/GPUREC_BACKTRACK_BIN, run backtrack-check, then rerun run",
-                ),
+                exc,
+                _SUGGEST_RUN_BACKTRACK_PREP,
             )
         try:
             opt_result = _run_optimize_command(run_config, invocation_argv)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(
+            _suggested_exit_error(
                 command_parser,
-                _with_suggestion(
-                    str(exc),
-                    "inspect optimize diagnostics, then retry run or use optimize first to isolate optimization failures before sampling",
-                ),
+                exc,
+                _SUGGEST_RUN_OPTIMIZE_PREP,
             )
         if opt_result.status == "failed":
             print(
@@ -3952,7 +3975,7 @@ def main(argv: list[str] | None = None) -> None:
                 _with_suggestion(
                     "optimization completed but no sampling checkpoint was found "
                     f"at {checkpoint}",
-                    "resume optimization to produce checkpoints/latest.pt or checkpoints/best.pt, then rerun run or invoke sample --checkpoint explicitly",
+                    _SUGGEST_MISSING_SAMPLE_CHECKPOINT,
                 ),
             )
         try:
