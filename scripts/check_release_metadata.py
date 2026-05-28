@@ -356,7 +356,7 @@ def _platform_matrix_issues(root: Path) -> list[str]:
         issues.append(
             "docs/platform-matrix.md must document the primary supported configuration"
         )
-    matrix_terms = ("python", "pytorch", "cuda", "triton", "gpu", "rust")
+    matrix_terms = ("python", "pytorch", "cuda", "triton", "gpu", "rust", "compiler")
     for term in matrix_terms:
         if term not in text:
             issues.append(

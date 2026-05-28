@@ -17,6 +17,7 @@ NVIDIA GPU runtime, and source-built native preprocessing/backtracking artifacts
 | Native preprocess | source crate build (`crates/gpurec-preprocess`) | Production support is source-only; Rust/Cargo must be available in the target environment. |
 | Native backtracking | source crate build (`crates/gpurec-backtrack`) | Production support is source-only; Rust/Cargo must be available in the target environment. |
 | Rust toolchain | stable toolchain available (for source builds/CLI artifacts) | Source checkout and source-archive workflows use `cargo` for Rust builds. |
+| Compiler toolchain | Rust compiler (`rustc`) available via stable Cargo toolchain | Native crates compile in the target environment as part of source-supported installs. |
 
 ## Installation Matrix
 

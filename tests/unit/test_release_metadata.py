@@ -256,7 +256,7 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "Primary supported configuration uses Linux x86_64,",
                     "Python 3.10-3.12, PyTorch + Triton, CUDA-capable NVIDIA GPU runtime, and",
-                    "source-built native preprocessing/backtracking artifacts with Rust toolchain.",
+                    "source-built native preprocessing/backtracking artifacts with Rust compiler toolchain.",
                     "",
                     "## Offline Installation Policy",
                     "",
@@ -1143,6 +1143,7 @@ def test_release_metadata_check_requires_platform_matrix_core_terms(
     assert "must document matrix term: triton" in result.stdout
     assert "must document matrix term: gpu" in result.stdout
     assert "must document matrix term: rust" in result.stdout
+    assert "must document matrix term: compiler" in result.stdout
     assert result.stderr == ""
 
 
