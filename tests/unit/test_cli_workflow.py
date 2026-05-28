@@ -2008,6 +2008,8 @@ def test_cli_validate_inputs_can_require_cuda_backward_ready(
     assert exc_info.value.code == 2
     assert "cuda_backward_ready=false" in captured.err
     assert "more than 256 postorder species nodes" in captured.err
+    assert "suggestion:" in captured.err
+    assert "rerun without --require-cuda-backward-ready" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -2453,6 +2455,8 @@ def test_cli_validate_config_can_require_cuda_backward_readiness(
     assert "cuda_backward_ready=false" in captured.err
     assert "requires_s_gt_256" in captured.err
     assert "more than 256 postorder species nodes" in captured.err
+    assert "suggestion:" in captured.err
+    assert "rerun without --require-cuda-backward-ready" in captured.err
     assert "Traceback" not in captured.err
 
 

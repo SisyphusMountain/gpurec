@@ -378,6 +378,13 @@ def _exit_runtime_error(parser: argparse.ArgumentParser, message: str) -> None:
     parser.exit(status=1, message=f"error: {message}\n")
 
 
+def _with_suggestion(message: str, suggestion: str) -> str:
+    suggestion_text = suggestion.strip()
+    if not suggestion_text:
+        return message
+    return f"{message}; suggestion: {suggestion_text}"
+
+
 def _exit_unless_final_check_ok(
     parser: argparse.ArgumentParser,
     status: object,
@@ -3188,9 +3195,12 @@ def main(argv: list[str] | None = None) -> None:
                 and not summary["cuda_backward_ready"]
             ):
                 command_parser.error(
-                    "cuda_backward_ready=false "
-                    f"{cuda_backward_reason}; retained CUDA backward requires "
-                    "more than 256 postorder species nodes"
+                    _with_suggestion(
+                        "cuda_backward_ready=false "
+                        f"{cuda_backward_reason}; retained CUDA backward requires "
+                        "more than 256 postorder species nodes",
+                        "rerun without --require-cuda-backward-ready to inspect config and preprocessing results before enforcing the CUDA backward gate",
+                    )
                 )
         if args.json:
             payload: dict[str, Any] = {
@@ -3282,9 +3292,12 @@ def main(argv: list[str] | None = None) -> None:
                     or summary.get("preprocess_error")
                 )
                 command_parser.error(
-                    "cuda_backward_ready=false "
-                    f"{_optional_text('cuda_backward_ready_reason', reason)}; "
-                    "retained CUDA backward requires more than 256 postorder species nodes"
+                    _with_suggestion(
+                        "cuda_backward_ready=false "
+                        f"{_optional_text('cuda_backward_ready_reason', reason)}; "
+                        "retained CUDA backward requires more than 256 postorder species nodes",
+                        "rerun without --require-cuda-backward-ready to inspect input validation and preprocessing details before enforcing the CUDA backward gate",
+                    )
                 )
         if args.json:
             print(json.dumps(_ensure_json_ready(summary), indent=2), flush=True)
