@@ -29,6 +29,10 @@ file as the map for deeper context.
 - `known-limitations.md`: explicit production constraints for CUDA readiness,
   size-dependent backward gates, parser subset boundaries, and native artifact
   dependencies.
+- `glossary.md`: stable definitions for D/T/L terms, optimization modes, route
+  metadata, solver budgets, and checkpoint terminology used in user docs.
+- `workflow-examples/`: a runnable, deterministic end-to-end mini dataset plus
+  Snakemake, Nextflow, and Slurm workflow starter templates.
 - `optimization-workflow-call-graph.md`: current production call graph for
   `validate-config`, AleRax preprocessing, resident likelihood/gradient
   evaluation, optimizer phases, checkpoints, and final artifacts.
@@ -64,8 +68,11 @@ file as the map for deeper context.
   limitation blocks.
 - `../examples/README.md`: source-checkout/source-archive CUDA flat JSON
   config/parser fixtures for the genewise `hessian-sgd` and specieswise
-  `adagrad-restarts` production defaults. This example directory is not a CPU fallback
-  and not an end-to-end optimizer smoke while Pi backward requires `S > 256`.
+  `adagrad-restarts` production defaults. This example directory is not a CPU fallback,
+  is not an end-to-end optimizer smoke, and Pi backward requires `S > 256`.
+- `../docs/workflow-examples/input-validation-fixtures/`: minimal public
+  AleRax input fixtures for `validate-inputs`, including both valid and failing
+  cases.
 - `../Dockerfile`: minimal CUDA runtime/deployment image with native artifact
   build and environment defaults.
 - `../configs/hogenom_ccp_wandb.yaml`: checkout-local HOGENOM Hydra/W&B

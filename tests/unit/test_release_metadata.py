@@ -1206,21 +1206,15 @@ def test_release_readiness_documents_sampling_binary_distribution_contract():
 
     for token in (
         "Sampling Binary Distribution Contract",
-        "Wheels intentionally do not ship the Rust backtracking binary",
-        "Installed `gpurec sample`, the sampling phase of `gpurec run`, and",
-        "`gpurec backtrack-check` require a compatible prebuilt binary",
-        "`gpurec-backtrack`, selected",
-        "`GPUREC_BACKTRACK_BIN`",
-        "`--backtrack-binary`",
+        "Source-only installation is the supported production path.",
+        "`gpurec sample`, the sampling phase of `gpurec run`, and",
+        "`gpurec backtrack-check` must fail with actionable diagnostics",
         "Source archives include `crates/gpurec-backtrack/`",
-        "locked\n  source-archive `cargo run` fallback",
+        "locked\n  `cargo run` fallback",
         "requires Rust/Cargo",
         "pinned `rustree` git dependency",
         "`GPUREC_BACKTRACK_NATIVE_LIB`",
         "does not replace the CLI binary requirement",
-        "Release notes and deployment docs must state the wheel-only",
-        "update the README, package-data checks,\n  installed-wheel smoke, and source-archive smoke together",
-        "release contract, not a separate no-publish blocker.",
     ):
         assert token in guide
 
@@ -1230,18 +1224,12 @@ def test_release_readiness_documents_preprocess_native_distribution_contract():
 
     for token in (
         "Preprocessing Native Extension Contract",
-        "Wheels intentionally do not ship the Rust preprocessing crate sources",
-        "platform-specific PyO3 extension",
-        "Installed `gpurec validate-config\n  --check-preprocess`, `gpurec optimize`, `gpurec run`, and",
-        "`gpurec preprocess-check` require a compatible prebuilt native preprocessing",
-        "`GPUREC_PREPROCESS_NATIVE_LIB`",
-        "`--preprocess-native-lib`",
+        "Source-only installation is the supported production path.",
+        "`gpurec validate-config --check-preprocess`, `gpurec optimize`, `gpurec run`,",
+        "`gpurec preprocess-check` must fail with actionable diagnostics",
         "Source archives include `crates/gpurec-preprocess/`",
-        "source-archive Cargo build fallback for the native extension",
+        "Cargo build fallback for the native extension",
         "requires Rust/Cargo",
-        "wheel-only external native\n  extension requirement",
-        "bundled platform wheels",
-        "update the README, package-data\n  checks, installed-wheel smoke, and source-archive smoke together",
     ):
         assert token in guide
 
@@ -1451,30 +1439,21 @@ def test_readme_scopes_example_config_to_source_artifacts():
 def test_readme_documents_installed_sampling_binary_setup():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+    normalized_readme = " ".join(readme.split())
     normalized_guide = " ".join(guide.split())
 
-    for text in (readme, guide):
-        normalized = " ".join(text.split())
-        assert "Wheels" in normalized
-        assert "do not ship" in normalized
-    assert "prebuilt binary" in normalized
-    assert "### Sampling Binary Setup" in readme
+    assert "source-based installation only for production use" in normalized_readme
+    assert "Source-only installation is the supported production path." in guide
     assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
-    assert (
-        "`config-template`, `validate-config`,\n  `optimize`, "
-        "`summary-info`, `checkpoint-info`, `sample`, `run`, and\n  "
-        "`preprocess-check`/`backtrack-check` commands"
-    ) in readme
     assert "gpurec validate-config --config examples/minimal-run-config.json" in readme
     assert "--check-preprocess" in readme
     assert "retained Rust parser to run on\nCPU" in readme
     assert "CPU-safe path/reference preflight" in readme
-    assert "In a wheel-only\ninstall" in readme
     assert "Workflow preprocessing is implemented by\nthe native Rust" in readme
-    assert "wheel-only deployments should point `GPUREC_PREPROCESS_NATIVE_LIB`" in readme
-    assert "Use `gpurec preprocess-check` to validate that native\nextension path" in readme
+    assert "Use `gpurec preprocess-check` and `gpurec backtrack-check`" in readme
     assert "### Preprocessing Native Extension Setup" in readme
-    assert "export GPUREC_PREPROCESS_NATIVE_LIB=\"/opt/gpurec/lib/libgpurec_preprocess.so\"" in readme
+    assert "cargo build --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml" in readme
+    assert "GPUREC_PREPROCESS_NATIVE_LIB" in normalized_guide
     assert "gpurec preprocess-check" in readme
     assert "--preprocess-native-lib" in readme
     assert (
@@ -1493,7 +1472,7 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert 'backend="native"' in readme
     assert "The same `GPUREC_BACKTRACK_BIN` environment variable" in readme
     assert "fallback works from a source checkout or unpacked\nsource archive" in readme
-    assert "source-archive `cargo run` fallback" in normalized_guide
+    assert "locked `cargo run` fallback" in normalized_guide
     assert (
         "installed `gpurec config-template --help`"
         in normalized_guide

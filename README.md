@@ -15,7 +15,8 @@ stochastic RecPhyloXML sampling.
   backtracking.
 - `gpurec` CLI entry point with `config-template`, `validate-config`,
   `optimize`, `summary-info`, `checkpoint-info`, `sample`, `run`, and
-  `preprocess-check`, `backtrack-check`, and `doctor` commands.
+  `preprocess-check`/`backtrack-check` commands.
+- `gpurec doctor` performs a one-time Python/Torch/Triton/toolchain preflight.
 - Standard PyTorch optimizers over `model.theta`, including `torch.optim.Adam`.
 - `gpurec.optimization.BatchedLBFGS` for row-wise genewise polishing.
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree
@@ -43,16 +44,23 @@ pip install -e ".[dev]"
 ```
 
 The CUDA kernels import Triton directly, so Triton is a core dependency rather
-than an optional extra.  Install a PyTorch build that matches the local CUDA
-runtime before installing `gpurec`.  Workflow preprocessing is implemented by
-the native Rust `crates/gpurec-preprocess` extension.  Source checkouts and
-unpacked source archives can build it with Cargo from the crate manifest;
-wheel-only deployments should point `GPUREC_PREPROCESS_NATIVE_LIB` at a
-compatible prebuilt extension before running `validate-config --check-preprocess`,
-`optimize`, or `run`. Use `gpurec preprocess-check` to validate that native
-extension path or the source-tree Cargo build fallback without reading dataset
-files. `GPUREC_PREPROCESS_BIN` is reserved for the subprocess adapter and
-profiling helpers; it is not a workflow model-construction fallback.
+than an optional extra. Install a PyTorch build that matches the local CUDA
+runtime before installing `gpurec`. Workflow preprocessing is implemented by
+the native Rust `crates/gpurec-preprocess` extension and sampling uses the
+native Rust `crates/gpurec-backtrack` binary.
+
+`gpurec` currently supports source-based installation only for production use.
+Install from a source checkout or source archive with Rust/Cargo available so
+the native artifacts can be built in the target environment:
+
+```bash
+pip install .
+```
+
+Use `gpurec preprocess-check` and `gpurec backtrack-check` to validate native
+artifact availability before running data workflows. `GPUREC_PREPROCESS_BIN` is
+reserved for the subprocess adapter and profiling helpers; it is not a workflow
+model-construction fallback.
 
 When all native dependencies are available, run `gpurec doctor` once before the
 first long run to validate Python/Torch/Triton availability, preprocessing and
@@ -76,10 +84,12 @@ The image installs `gpurec` from source and prebuilds:
 - `crates/gpurec-preprocess` shared library
 - `gpurec-backtrack` CLI binary
 
-When using release wheels, set `GPUREC_PREPROCESS_NATIVE_LIB` and
-`GPUREC_BACKTRACK_BIN` to the deployed artifact paths in the runtime container.
 The image is a starting point only; adjust base images and pinned runtime
 dependencies for your cluster policy.
+
+The repository examples and bundled workflow templates are not a CPU fallback,
+are not an end-to-end optimizer smoke, and the retained CUDA backward path
+requires `S > 256` for its fused execution path.
 
 ## Basic Optimization
 
@@ -380,6 +390,8 @@ summarizes when to keep those defaults and when to validate a calibrated
 specieswise composite route.
 For the shortest user-facing flow, use
 [`docs/bioinformatics-quickstart.md`](docs/bioinformatics-quickstart.md). The
+tracked end-to-end mini tutorial is under
+[`docs/workflow-examples`](docs/workflow-examples/README.md).
 known constraints for this release-grade workflow are documented in
 [`docs/known-limitations.md`](docs/known-limitations.md).
 For the complete `RunConfig` field and CLI flag reference, see

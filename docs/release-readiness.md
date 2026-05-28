@@ -9,47 +9,97 @@ packaging assumptions covered by current automated build steps.
   `pyproject.toml` license metadata, and an OSI MIT license classifier.
 - Governance artifacts are present and current: `CHANGELOG.md`, `CITATION.cff`,
   `docs/release-notes.md`, and a CUDA-capable deployment recipe (`Dockerfile`).
-- Build source and wheel artifacts from a clean checkout and install them in a
-  fresh environment with a PyTorch build that matches the target CUDA runtime.
+- Build source artifacts from a clean checkout and install them in a fresh
+  environment with a PyTorch build that matches the target CUDA runtime.
 
 ## Preprocessing Native Extension Contract
 
 The current release contract is explicit rather than unresolved:
 
-- Wheels intentionally do not ship the Rust preprocessing crate sources or a
-  platform-specific PyO3 extension. Installed `gpurec validate-config
-  --check-preprocess`, `gpurec optimize`, `gpurec run`, and
-  `gpurec preprocess-check` require a compatible prebuilt native preprocessing
-  extension selected with `GPUREC_PREPROCESS_NATIVE_LIB` or
-  `--preprocess-native-lib` for the check command.
+- Source-only installation is the supported production path.
 - Source archives include `crates/gpurec-preprocess/` and support the locked
-  source-archive Cargo build fallback for the native extension. That fallback
-  requires Rust/Cargo.
-- Release notes and deployment docs must state the wheel-only external native
-  extension requirement unless a future packaging change ships and smokes
-  bundled platform wheels. Any such change must update the README, package-data
-  checks, installed-wheel smoke, and source-archive smoke together.
+  Cargo build fallback for the native extension. That fallback requires
+  Rust/Cargo.
+- `gpurec validate-config --check-preprocess`, `gpurec optimize`, `gpurec run`,
+  and `gpurec preprocess-check` must fail with actionable diagnostics when the
+  native preprocess artifact is unavailable or version-incompatible.
 
 ## Sampling Binary Distribution Contract
 
 The current release contract is explicit rather than unresolved:
 
-- Wheels intentionally do not ship the Rust backtracking binary or Rust crate
-  sources.  Installed `gpurec sample`, the sampling phase of `gpurec run`, and
-  `gpurec backtrack-check` require a compatible prebuilt binary for
-  `gpurec-backtrack`, selected with `GPUREC_BACKTRACK_BIN` or
-  `--backtrack-binary`.
+- Source-only installation is the supported production path.
 - Source archives include `crates/gpurec-backtrack/` and support the locked
-  source-archive `cargo run` fallback.  That fallback requires Rust/Cargo and
+  `cargo run` fallback. That fallback requires Rust/Cargo and
   fetches the pinned `rustree` git dependency declared by the crate lockfile.
 - Python backtracking helpers with native backend resolution may use a
   compatible external PyO3 library selected with `GPUREC_BACKTRACK_NATIVE_LIB`.
   This does not replace the CLI binary requirement for `gpurec sample`,
   `gpurec run`, or `gpurec backtrack-check`.
-- Release notes and deployment docs must state the wheel-only external-binary
-  requirement unless a future packaging change ships and smokes a bundled
-  binary.  Any such change must update the README, package-data checks,
-  installed-wheel smoke, and source-archive smoke together.
+- `gpurec sample`, the sampling phase of `gpurec run`, and
+  `gpurec backtrack-check` must fail with actionable diagnostics when the
+  backtracking binary is unavailable or version-incompatible.
+
+## Dependency Inventory And Vulnerability Scans
+
+Release artifacts should include a reproducible dependency manifest before a
+public artifact is published. Track it as `dist/dependency-inventory.json` when
+building the wheel/source bundle:
+
+```bash
+python scripts/generate_dependency_inventory.py \
+  --output dist/dependency-inventory.json \
+  --check-git-dependency-pins
+```
+
+The inventory includes the Python dependency declaration block (`pyproject.toml`)
+and locked Rust dependency entries from `crates/*/Cargo.toml` and
+`crates/*/Cargo.lock`, including git source pins and resolved package entries.
+
+Capture a dependency scan snapshot for publication audit history:
+
+```bash
+cat > dist/python-dependencies.txt <<'EOF'
+torch>=2.0
+triton>=2.1
+EOF
+python -m pip install pip-audit
+pip-audit -r dist/python-dependencies.txt | tee dist/pip-audit.txt
+```
+
+If rustsec tooling is available in the build environment, include a locked lockfile
+scan for both Rust crates:
+
+```bash
+if command -v cargo-audit >/dev/null 2>&1; then
+  cargo-audit --file crates/gpurec-preprocess/Cargo.lock | tee dist/cargo-audit-preprocess.txt
+  cargo-audit --file crates/gpurec-backtrack/Cargo.lock | tee dist/cargo-audit-backtrack.txt
+else
+  echo "cargo-audit unavailable; document the intentional gap in this release log"
+fi
+```
+
+Keep these generated files as part of the internal release evidence directory for
+post-incident comparison and reproducibility.
+
+Before release handoff, add a quick artifact sanity pass over the final output
+directory with the local validator script so structural regression in `summary.json`,
+`history.jsonl`, checkpoint payloads, TSV exports, and `run_manifest.json` is
+caught before packaging checks begin:
+
+```bash
+python scripts/validate_output_artifacts.py \
+  --summary "${out_dir}/summary.json" \
+  --history "${out_dir}/history.jsonl" \
+  --checkpoint "${out_dir}/checkpoints/latest.pt" \
+  --run-manifest "${out_dir}/run_manifest.json" \
+  --tsv "${out_dir}/rates_final.tsv" \
+  --tsv "${out_dir}/per_fam_likelihoods.tsv" \
+  --json
+```
+
+For older one-off scripts or benchmark outputs, include only the `--tsv` and
+`--summary` flags that match what is present for that workflow.
 
 ## Maintainer Build Path
 

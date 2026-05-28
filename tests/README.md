@@ -32,6 +32,8 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_origination_probs.py \
   tests/unit/test_optimization_workflow.py \
   tests/unit/test_alerax_family_input.py \
+  tests/unit/test_artifacts_validator.py \
+  tests/unit/test_dependency_inventory.py \
   tests/unit/test_cli_workflow.py \
   tests/unit/test_core_backward.py \
   tests/unit/test_forward_output_intent.py \

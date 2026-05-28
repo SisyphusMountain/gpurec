@@ -12,8 +12,8 @@ what combinations are expected to work based on CI and release checks.
 | PyTorch | `torch >= 2.0` | Must match the local CUDA runtime installed in the target environment. |
 | Triton | `triton >= 2.1` | Core dependency for CUDA execution. |
 | Hardware | NVIDIA CUDA GPU | GPU is required for the production likelihood path; no full CPU fallback is published. |
-| Native preprocess | `GPUREC_PREPROCESS_NATIVE_LIB` (wheels) or source crate build | Installed wheels never include compiled preprocessing artifacts. Source builds may use Cargo fallback from `crates/gpurec-preprocess`. |
-| Native backtracking | `GPUREC_BACKTRACK_BIN` (wheels) or source crate build | Installed wheels never include the CLI artifact. Source builds may use Cargo fallback from `crates/gpurec-backtrack`. |
+| Native preprocess | source crate build (`crates/gpurec-preprocess`) | Production support is source-only; Rust/Cargo must be available in the target environment. |
+| Native backtracking | source crate build (`crates/gpurec-backtrack`) | Production support is source-only; Rust/Cargo must be available in the target environment. |
 | Rust toolchain | stable toolchain available (for source builds/CLI artifacts) | Source checkout and source-archive workflows use `cargo` for Rust builds. |
 
 ## Installation Matrix
@@ -21,14 +21,13 @@ what combinations are expected to work based on CI and release checks.
 | Workflow | Linux | Python | Native requirements | Expected command path |
 | --- | --- | --- | --- | --- |
 | Source checkout / source archive | ✅ | `3.10` `3.11` `3.12` | `cargo` for native crate builds. | `pip install .` or `pip install -e ".[dev]"` then use `gpurec` CLI/`GPUREC_*` vars as needed. |
-| Source-only install (data + GPU) | ✅ | `3.10` `3.11` `3.12` | native artifacts installed via env vars or built from crates | `pip install .` |
-| Wheel install | ✅ | `3.10` `3.12` (package CI path) | set `GPUREC_PREPROCESS_NATIVE_LIB` and `GPUREC_BACKTRACK_BIN` before running runtime commands | `pip install --no-deps dist/*.whl` |
+| Source-only install (data + GPU) | ✅ | `3.10` `3.11` `3.12` | `cargo` for native crate builds | `pip install .` |
 | Container image (`Dockerfile`) | ✅ | image-local Python pinned by image base | image prebuilds native artifacts from source | `docker build -t gpurec .` |
 
 ## Why these constraints exist
 
 - The production likelihood and optimizer route is CUDA-first and GPU-only today.
-- Native preprocess and backtracking are externalized for wheel installs by design.
+- Native preprocess and backtracking are built from source as part of the supported install path.
 - The parser and CUDA kernels are validated against the current production route and
   platform in repository release checks.
 
