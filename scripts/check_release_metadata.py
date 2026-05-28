@@ -1061,6 +1061,9 @@ def _slurm_example_lifecycle_issues(root: Path) -> list[str]:
         "summary.json",
         "history.jsonl",
         "stderr/stdout",
+        "environment modules",
+        "cuda visibility",
+        "output paths",
     )
     issues: list[str] = []
     for phrase in required_phrases:

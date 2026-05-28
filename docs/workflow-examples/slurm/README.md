@@ -18,5 +18,8 @@ The script:
 Update resource requests (`--gres`, `--cpus-per-task`, memory, queue) for your
 cluster profile.
 
+Document environment modules, CUDA visibility, and output paths in your Slurm
+submission wrapper so runs are reproducible across cluster partitions.
+
 When asking for support, collect `run_config.json`, `summary.json`,
 `history.jsonl`, and full stderr/stdout logs from the scheduler job.
