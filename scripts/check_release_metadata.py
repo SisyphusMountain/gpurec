@@ -230,6 +230,10 @@ def _release_notes_version_issues(project: dict[str, Any], root: Path) -> list[s
             issues.append(
                 "docs/release-notes.md must include a 'Migration notes' section"
             )
+        if "release artifact notes" not in lower_text:
+            issues.append(
+                "docs/release-notes.md must include a 'Release artifact notes' section"
+            )
 
     return issues
 
