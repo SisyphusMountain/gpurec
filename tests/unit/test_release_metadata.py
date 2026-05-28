@@ -281,7 +281,17 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "input-preparation.md").write_text(
-            "# Input Preparation\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Input Preparation",
+                    "",
+                    "Use --max-families to sample the first `N` families.",
+                    "Use preprocess outputs as a memory estimate and tune",
+                    "clade_budget plus family_chunk_size for large runs.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_output_artifacts:
         (root / "docs" / "output-artifacts.md").parent.mkdir(
@@ -853,6 +863,32 @@ def test_release_metadata_check_requires_input_preparation(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/input-preparation.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_input_preparation_large_dataset_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "input-preparation.md").write_text(
+        "# Input Preparation\n\nBasic notes.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document large-dataset phrase: max-families" in result.stdout
+    assert "must document large-dataset phrase: sample the first `n` families" in result.stdout
+    assert "must document large-dataset phrase: memory estimate" in result.stdout
+    assert "must document large-dataset phrase: clade_budget" in result.stdout
+    assert "must document large-dataset phrase: family_chunk_size" in result.stdout
     assert result.stderr == ""
 
 

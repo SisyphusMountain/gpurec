@@ -165,3 +165,32 @@ Use `docs/workflow-examples/input-validation-fixtures/` for a quick
 
 The bad fixture commands intentionally fail with machine-readable issue entries and
 consistent exit status, making them suitable for automation checks.
+
+## Large Family Sets
+
+For large datasets, validate a small family window first, then scale:
+
+```bash
+gpurec validate-inputs \
+  --species-tree species_tree.nwk \
+  --families-file families.txt \
+  --start 0 \
+  --max-families 25 \
+  --check-preprocess \
+  --json
+```
+
+Use `--start` and `--max-families` to sample the first `N` families (or later
+windows) before full optimization.
+
+Use the preprocess report counts as a memory estimate input:
+
+- larger `preprocessed_species_nodes`, per-family clade counts, and split counts
+  usually require more GPU memory,
+- a single very large family can dominate resident-batch memory.
+
+If memory pressure appears during optimization, tune these run-config controls:
+
+- lower `clade_budget` to force smaller resident batches,
+- set a positive `family_chunk_size` so the workflow does not try to keep one
+  oversized all-family resident batch.

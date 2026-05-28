@@ -392,6 +392,29 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
     return issues
 
 
+def _input_preparation_large_dataset_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "input-preparation.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "max-families",
+        "sample the first `n` families",
+        "memory estimate",
+        "clade_budget",
+        "family_chunk_size",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/input-preparation.md must document large-dataset phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _quickstart_lifecycle_issues(root: Path) -> list[str]:
     quickstart = root / "docs" / "bioinformatics-quickstart.md"
     if not quickstart.is_file():
@@ -579,6 +602,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_release_readiness_issues(project_root))
     issues.extend(_validation_envelope_issues(project_root))
     issues.extend(_troubleshooting_recovery_issues(project_root))
+    issues.extend(_input_preparation_large_dataset_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
