@@ -36,6 +36,12 @@ from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
 SUBPROCESS_TIMEOUT = 30
+_VALIDATION_FIXTURE_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "workflow-examples"
+    / "input-validation-fixtures"
+)
 _PRODUCTION_ROUTE_CONTRACT: dict[str, object] = production_default_route_contract()
 _PRODUCTION_BATCH_ROUTE: dict[str, object] = {
     "batch_packing": "depth_first_fit",
@@ -1400,6 +1406,434 @@ def test_cli_validate_inputs_rejects_invalid_mapping_file(tmp_path: Path, capsys
         issue["code"] == "invalid_mapping_file" for issue in payload["issues"]
     )
     assert captured.err == ""
+
+
+def test_cli_validate_inputs_rejects_duplicate_family_names(tmp_path: Path, capsys):
+    (tmp_path / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
+    (tmp_path / "a.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+    (tmp_path / "b.nwk").write_text("(c:1,d:1);\n", encoding="utf-8")
+    (tmp_path / "a.map").write_text("A:a\nB:b\n", encoding="utf-8")
+    (tmp_path / "b.map").write_text("A:c\nB:d\n", encoding="utf-8")
+    (tmp_path / "families.txt").write_text(
+        "\n".join(
+            [
+                "[FAMILIES]",
+                "- duplicated",
+                f"starting_gene_tree = {tmp_path / 'a.nwk'}",
+                f"mapping = {tmp_path / 'a.map'}",
+                "- duplicated",
+                f"starting_gene_tree = {tmp_path / 'b.nwk'}",
+                f"mapping = {tmp_path / 'b.map'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert payload["issues"] == [
+        {
+            "code": "families_file_parse_error",
+            "message": (
+                "duplicate AleRax family name 'duplicated' in "
+                f"{tmp_path / 'families.txt'}"
+            ),
+            "action": "Fix the families file syntax and retry.",
+            "path": str((tmp_path / "families.txt").resolve()),
+        }
+    ]
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("bad_line", "expected"),
+    [
+        ("gene_trees = missing.nwk", "unknown AleRax family key"),
+        ("mapping missing.map", "invalid AleRax family line"),
+        ("mapping =", "empty AleRax family value"),
+    ],
+)
+def test_cli_validate_inputs_rejects_malformed_family_lines(
+    tmp_path: Path,
+    capsys,
+    bad_line: str,
+    expected: str,
+):
+    (tmp_path / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
+    (tmp_path / "g.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+    (tmp_path / "m.map").write_text("A:a\nB:b\n", encoding="utf-8")
+    (tmp_path / "families.txt").write_text(
+        "\n".join(
+            [
+                "[FAMILIES]",
+                "- fam0",
+                "starting_gene_tree = g.nwk",
+                bad_line,
+                f"mapping = {tmp_path / 'm.map'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert any(issue["code"] == "families_file_parse_error" for issue in payload["issues"])
+    assert any(expected in issue["message"] for issue in payload["issues"])
+
+
+def test_cli_validate_inputs_rejects_duplicate_gene_assignments_in_mapping(
+    tmp_path: Path,
+    capsys,
+):
+    (tmp_path / "sp.nwk").write_text("(A:1,B:1, C:1)Root;\n", encoding="utf-8")
+    (tmp_path / "g.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+    (tmp_path / "dups.map").write_text("A:a\nB:a\n", encoding="utf-8")
+    (tmp_path / "families.txt").write_text(
+        "\n".join(
+            [
+                "[FAMILIES]",
+                "- fam0",
+                "starting_gene_tree = g.nwk",
+                f"mapping = {tmp_path / 'dups.map'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert any(
+        issue["code"] == "invalid_mapping_file"
+        and "dups.map" in issue["path"]
+        for issue in payload["issues"]
+    )
+    assert captured.err == ""
+
+
+def test_cli_validate_inputs_rejects_missing_mapping_file(tmp_path: Path, capsys):
+    write_tiny_alerax_inputs(
+        tmp_path,
+        species_tree="(A:1,B:1)Root;\n",
+        gene_tree_name="g.nwk",
+        family_lines=("starting_gene_tree = g.nwk", "mapping = missing.map"),
+    )
+    (tmp_path / "g.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert any(
+        issue["code"] == "missing_mapping_file"
+        and "missing.map" in issue["path"]
+        for issue in payload["issues"]
+    )
+
+
+@pytest.mark.parametrize(
+    "families_text",
+    [
+        "",
+        "\n# comment only\n   \n[FAMILIES]\n\n",
+    ],
+)
+def test_cli_validate_inputs_rejects_empty_or_whitespace_family_manifest(
+    tmp_path: Path,
+    capsys,
+    families_text: str,
+):
+    (tmp_path / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
+    (tmp_path / "families.txt").write_text(families_text, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert any(issue["code"] == "families_file_parse_error" for issue in payload["issues"])
+    assert any("empty family selection" in issue["message"] for issue in payload["issues"])
+    assert captured.err == ""
+
+
+def test_cli_validate_inputs_reports_preprocess_error_for_unknown_mapping_species(tmp_path: Path, capsys):
+    (tmp_path / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
+    (tmp_path / "g.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+    (tmp_path / "map.tsv").write_text("A:a\nC:b\n", encoding="utf-8")
+    (tmp_path / "families.txt").write_text(
+        "\n".join(
+            [
+                "[FAMILIES]",
+                "- fam0",
+                "starting_gene_tree = g.nwk",
+                f"mapping = {tmp_path / 'map.tsv'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--check-preprocess",
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert any(
+        issue["code"] == "preprocess_error"
+        and "not found for gene leaf b" in issue["message"]
+        for issue in payload["issues"]
+    )
+
+
+def test_cli_validate_inputs_large_manifest_slice_reports_stable_counts(
+    tmp_path: Path,
+    capsys,
+):
+    (tmp_path / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
+    family_lines = ["[FAMILIES]"]
+    for idx in range(40):
+        name = f"fam_{idx:04d}"
+        gene_path = tmp_path / f"{name}.nwk"
+        map_path = tmp_path / f"{name}.map"
+        gene_path.write_text("(a:1,b:1);\n", encoding="utf-8")
+        map_path.write_text("A:a\nB:b\n", encoding="utf-8")
+        family_lines.extend(
+            [
+                f"- {name}",
+                f"starting_gene_tree = {gene_path}",
+                f"mapping = {map_path}",
+            ]
+        )
+    (tmp_path / "families.txt").write_text("\n".join(family_lines) + "\n", encoding="utf-8")
+
+    main(
+        [
+            "validate-inputs",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--start",
+            "13",
+            "--max-families",
+            "7",
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["valid_inputs"] is True
+    assert payload["start"] == 13
+    assert payload["max_families"] == 7
+    assert payload["families"] == 7
+    assert payload["mapped_families"] == 7
+    assert payload["gene_tree_files"] == 7
+    assert len(payload["family_reports"]) == 7
+    assert payload["family_reports"][0]["name"] == "fam_0013"
+    assert payload["family_reports"][-1]["name"] == "fam_0019"
+
+
+def test_cli_validate_inputs_rejects_unsupported_newick_dialect(tmp_path: Path, capsys):
+    (tmp_path / "sp.nwk").write_text("(A:1,B:1,C:1)Root;\n", encoding="utf-8")
+    (tmp_path / "g.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+    (tmp_path / "map.tsv").write_text("A:a\nB:b\n", encoding="utf-8")
+    (tmp_path / "families.txt").write_text(
+        "\n".join(
+            [
+                "[FAMILIES]",
+                "- fam0",
+                "starting_gene_tree = g.nwk",
+                f"mapping = {tmp_path / 'map.tsv'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--check-preprocess",
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["preprocess_checked"] is True
+    assert payload["valid_inputs"] is False
+    assert any(
+        issue["code"] == "preprocess_error"
+        and "Species tree must be strictly binary" in issue["message"]
+        for issue in payload["issues"]
+    )
+    assert any(issue["code"] == "preprocess_error" for issue in payload["issues"])
+
+
+def test_cli_validate_inputs_public_validation_fixture_valid(capsys):
+    fixture = _VALIDATION_FIXTURE_DIR / "valid"
+    main(
+        [
+            "validate-inputs",
+            "--species-tree",
+            str(fixture / "species_tree.nwk"),
+            "--families-file",
+            str(fixture / "families.txt"),
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["valid_inputs"] is True
+    assert payload["families"] == 2
+    assert payload["mapped_families"] == 2
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "extra_args", "expected_issue_code", "expected_fragment"),
+    [
+        (
+            "duplicate-family-names",
+            [],
+            "families_file_parse_error",
+            "duplicate AleRax family name",
+        ),
+        (
+            "missing-mapping",
+            [],
+            "missing_mapping_file",
+            "mapping file path does not exist",
+        ),
+        (
+            "malformed-newick",
+            ["--check-preprocess"],
+            "preprocess_error",
+            "Unexpected end while parsing children",
+        ),
+        (
+            "unsupported-species-topology",
+            ["--check-preprocess"],
+            "preprocess_error",
+            "Species tree must be strictly binary",
+        ),
+    ],
+)
+def test_cli_validate_inputs_public_validation_fixture_rejects_errors(
+    capsys,
+    fixture_name: str,
+    extra_args: list[str],
+    expected_issue_code: str,
+    expected_fragment: str,
+):
+    fixture = _VALIDATION_FIXTURE_DIR / fixture_name
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-inputs",
+                "--species-tree",
+                str(fixture / "species_tree.nwk"),
+                "--families-file",
+                str(fixture / "families.txt"),
+                "--json",
+                *extra_args,
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exc_info.value.code == 1
+    assert payload["valid_inputs"] is False
+    assert any(
+        issue["code"] == expected_issue_code
+        and expected_fragment in issue["message"]
+        for issue in payload["issues"]
+    )
 
 
 def test_cli_validate_inputs_can_require_cuda_backward_ready(
@@ -5890,6 +6324,107 @@ def test_cli_backtrack_check_delegates_binary_preflight(
     assert captured.out == "backtracking_available=true\n"
     assert captured.err == ""
     assert calls == [binary]
+
+
+def test_backtrack_command_path_resolves_explicit_binary_path(tmp_path: Path):
+    binary = tmp_path / "gpurec-backtrack"
+    binary.write_text("#!/bin/sh\necho backtrack\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    assert gpurec_cli._backtrack_command_path(binary) == str(binary)
+
+
+def test_backtrack_command_path_resolves_cargo_fallback_manifest(tmp_path: Path, monkeypatch):
+    manifest = tmp_path / "crates" / "Cargo.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("[package]\nname=\"gpurec-backtrack\"\n", encoding="utf-8")
+
+    def fake_backtrack_command(
+        *,
+        cargo_manifest=None,
+        backtrack_binary=None,
+    ) -> list[str]:
+        return [
+            "cargo",
+            "run",
+            "--locked",
+            "--quiet",
+            "--manifest-path",
+            str(manifest),
+            "--",
+        ]
+
+    monkeypatch.setattr("gpurec.backtracking._backtrack_command", fake_backtrack_command)
+
+    assert gpurec_cli._backtrack_command_path(None) == str(manifest)
+
+
+def test_doctor_backtracking_readiness_resolves_explicit_binary_path(
+    tmp_path: Path,
+    monkeypatch,
+):
+    binary = tmp_path / "gpurec-backtrack"
+    binary.write_text("#!/bin/sh\necho backtrack\n", encoding="utf-8")
+    binary.chmod(0o755)
+    monkeypatch.setattr(
+        "gpurec.cli._ensure_backtracking_available",
+        lambda backtrack_binary: None,
+    )
+    monkeypatch.setattr(
+        "gpurec.backtracking._manifest_version",
+        lambda: gpurec.__version__,
+    )
+
+    payload = gpurec_cli._doctor_backtracking_readiness(
+        binary,
+        package_version=gpurec.__version__,
+    )
+
+    assert payload["ok"] is True
+    assert payload["path"] == str(binary)
+
+
+def test_doctor_backtracking_readiness_falls_back_to_cargo_manifest(
+    tmp_path: Path,
+    monkeypatch,
+):
+    manifest = tmp_path / "crates" / "Cargo.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("[package]\nname=\"gpurec-backtrack\"\n", encoding="utf-8")
+
+    def fake_backtrack_command(
+        *,
+        cargo_manifest=None,
+        backtrack_binary=None,
+    ) -> list[str]:
+        assert backtrack_binary is None
+        return [
+            "cargo",
+            "run",
+            "--locked",
+            "--quiet",
+            "--manifest-path",
+            str(manifest),
+            "--",
+        ]
+
+    monkeypatch.setattr("gpurec.backtracking._backtrack_command", fake_backtrack_command)
+    monkeypatch.setattr(
+        "gpurec.cli._ensure_backtracking_available",
+        lambda backtrack_binary: None,
+    )
+    monkeypatch.setattr(
+        "gpurec.backtracking._manifest_version",
+        lambda: gpurec.__version__,
+    )
+
+    payload = gpurec_cli._doctor_backtracking_readiness(
+        None,
+        package_version=gpurec.__version__,
+    )
+
+    assert payload["ok"] is True
+    assert payload["path"] == str(manifest)
 
 
 def test_cli_backtrack_check_reports_missing_binary_without_traceback(
