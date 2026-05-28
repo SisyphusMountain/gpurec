@@ -260,6 +260,8 @@ def _policy_document_issues(root: Path) -> list[str]:
             "native artifact",
             "release and patch policy",
             "older tags may receive backports",
+            "summary.json",
+            "run_manifest.json",
         )
         for phrase in support_window_phrases:
             if phrase not in text:
