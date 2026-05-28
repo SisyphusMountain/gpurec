@@ -391,6 +391,10 @@ def _platform_matrix_issues(root: Path) -> list[str]:
         issues.append(
             "docs/platform-matrix.md must document the primary supported configuration"
         )
+    if "single readiness command" not in text:
+        issues.append(
+            "docs/platform-matrix.md must document single readiness command guidance"
+        )
     matrix_terms = (
         "python",
         "pytorch",
