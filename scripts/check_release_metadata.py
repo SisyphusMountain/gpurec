@@ -274,6 +274,7 @@ def _policy_document_issues(root: Path) -> list[str]:
             "gpurec doctor --json",
             "known-limitations.md",
             "release notes",
+            "version/tag",
             "installation method",
             "command line",
             "stderr/stdout",

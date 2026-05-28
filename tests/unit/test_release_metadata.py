@@ -216,6 +216,7 @@ def _write_complete_release_metadata_fixture(
                     "Support evidence includes run_config.json, history.jsonl, summary.json, and run_manifest.json.",
                     "Support evidence includes checkpoint metadata when applicable.",
                     "Support evidence includes gpurec doctor --json readiness output.",
+                    "Support evidence includes installed version/tag details.",
                     "Support evidence includes installation method details.",
                     "Support evidence includes command line invocation details.",
                     "Support evidence includes full stderr/stdout logs.",
@@ -868,6 +869,7 @@ def test_release_metadata_check_requires_support_policy_support_window_phrases(
     assert "must document support-window phrase: gpurec doctor --json" in result.stdout
     assert "must document support-window phrase: known-limitations.md" in result.stdout
     assert "must document support-window phrase: release notes" in result.stdout
+    assert "must document support-window phrase: version/tag" in result.stdout
     assert "must document support-window phrase: installation method" in result.stdout
     assert "must document support-window phrase: command line" in result.stdout
     assert "must document support-window phrase: stderr/stdout" in result.stdout
