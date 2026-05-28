@@ -365,6 +365,10 @@ def _publication_checklist_issues(root: Path) -> list[str]:
         issues.append(
             "docs/publication-checklist.md must mention provenance evidence guidance"
         )
+    if "binary provenance" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention binary provenance evidence guidance"
+        )
     return issues
 
 
