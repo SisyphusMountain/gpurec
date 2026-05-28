@@ -304,6 +304,14 @@ def _publication_checklist_issues(root: Path) -> list[str]:
         issues.append(
             "docs/publication-checklist.md must mention gpurec summary-info --summary ... --json"
         )
+    if "history.jsonl" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention history.jsonl"
+        )
+    if "checkpoints/" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention checkpoints/ archive guidance"
+        )
     return issues
 
 

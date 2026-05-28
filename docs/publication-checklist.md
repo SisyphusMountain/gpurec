@@ -13,7 +13,7 @@ Use this checklist before submitting results that depend on `gpurec`.
 ## Reproducibility Artifacts
 
 - Archive `run_config.json`, `run_manifest.json`, `summary.json`,
-  `history.jsonl`, and the selected sampling checkpoint.
+  `history.jsonl`, `checkpoints/`, and the selected sampling checkpoint.
 - Archive native-toolchain provenance when applicable (Rust/Cargo versions,
   backtracking binary path/version, preprocessing native library path/version).
 - Keep dependency inventory and vulnerability scan outputs generated during
