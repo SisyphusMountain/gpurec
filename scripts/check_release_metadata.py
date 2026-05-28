@@ -664,6 +664,7 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "without inspecting python source",
         "workflow managers can distinguish",
         "incompatible config",
+        "interrupted optimization",
     )
     issues: list[str] = []
     for phrase in required_phrases:
