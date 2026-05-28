@@ -28,6 +28,9 @@ production operators can stay on supported surfaces.
 - `production-likelihood-optimization-strategy.md`: production policy for
   choosing and validating genewise and specieswise likelihood optimization
   routes without overfitting to HOGENOM or `test_trees_1000`.
+- `production-grade-slimdown-plan.md`: operating plan for keeping production
+  quality work tied to active Python line-count reduction, smaller runtime
+  surfaces, and centralized diagnostics instead of exception-handling sprawl.
 - `known-limitations.md`: explicit production constraints for CUDA readiness,
   size-dependent backward gates, parser subset boundaries, and native artifact
   dependencies.
