@@ -3,7 +3,7 @@
 These examples show the same end-to-end gpurec sequence in different runtime
 contexts:
 
-- `end-to-end-tutorial/`: tracked mini public dataset and a ready-to-run `run.json`
+- `end-to-end-tutorial/`: tracked mini public dataset and a deterministic, ready-to-run `run.json`
 - `snakemake/`: preflight → optimize → sample workflow
 - `nextflow/`: equivalent process chain for Nextflow pipelines
 - `slurm/`: simple scheduler entrypoint with checkpoint resume logic

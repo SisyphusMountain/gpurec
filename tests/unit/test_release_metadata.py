@@ -485,6 +485,7 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# Workflow Examples",
                     "",
+                    "Tracked mini public dataset with deterministic workflow fixtures.",
                     "Snakemake and Nextflow references fail fast on bad config,",
                     "resume from a checkpoint, and reject non-converged outputs.",
                     "",
@@ -2216,6 +2217,8 @@ def test_release_metadata_check_requires_workflow_examples_overview_gate_phrases
         "must document acceptance-gate phrase: reject non-converged outputs"
         in result.stdout
     )
+    assert "must document acceptance-gate phrase: tracked mini public dataset" in result.stdout
+    assert "must document acceptance-gate phrase: deterministic" in result.stdout
     assert result.stderr == ""
 
 

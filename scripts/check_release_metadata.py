@@ -908,6 +908,8 @@ def _workflow_examples_overview_gate_issues(root: Path) -> list[str]:
         "fail fast",
         "resume from a checkpoint",
         "reject non-converged outputs",
+        "tracked mini public dataset",
+        "deterministic",
     )
     issues: list[str] = []
     for phrase in required_phrases:
