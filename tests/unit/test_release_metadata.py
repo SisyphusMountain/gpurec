@@ -486,6 +486,7 @@ def _write_complete_release_metadata_fixture(
                     "Use likely cause and next action columns in issue triage tables.",
                     "Authoritative files: summary.json, history.jsonl, checkpoints/latest.pt.",
                     "Include an insufficient CUDA memory example with mitigation steps.",
+                    "Include nonconvergence, final-check failure, nonfinite objective, and missing native binary examples.",
                     "",
                 ]
             ),
@@ -2076,6 +2077,10 @@ def test_release_metadata_check_requires_troubleshooting_recovery_phrases(
     assert "must document failure-recovery phrase: history.jsonl" in result.stdout
     assert "must document failure-recovery phrase: checkpoints/latest.pt" in result.stdout
     assert "must document failure-recovery phrase: insufficient cuda memory" in result.stdout
+    assert "must document failure-recovery phrase: nonconvergence" in result.stdout
+    assert "must document failure-recovery phrase: final-check failure" in result.stdout
+    assert "must document failure-recovery phrase: nonfinite objective" in result.stdout
+    assert "must document failure-recovery phrase: missing native binary" in result.stdout
     assert result.stderr == ""
 
 

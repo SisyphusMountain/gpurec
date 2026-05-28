@@ -650,6 +650,10 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "history.jsonl",
         "checkpoints/latest.pt",
         "insufficient cuda memory",
+        "nonconvergence",
+        "final-check failure",
+        "nonfinite objective",
+        "missing native binary",
     )
     issues: list[str] = []
     for phrase in required_phrases:
