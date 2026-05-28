@@ -19,6 +19,8 @@ sample, archive.
   `gpurec preprocess-check`, `gpurec backtrack-check`, and `gpurec doctor`.
 - If you are deploying to cluster/container workflows: start from the project
   `Dockerfile` or your site CUDA base image, then run the same readiness checks.
+- If your lab standardizes on conda/mamba: capture an explicit conda
+  environment file and run the same readiness checks after environment solve.
 - If you require fully offline installation: treat it as unsupported for the
   default production contract and follow the offline policy in
   `docs/platform-matrix.md`.
