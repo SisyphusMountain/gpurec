@@ -323,6 +323,8 @@ def _write_complete_release_metadata_fixture(
                     "Installation decision tree for source checkout or source archive,",
                     "wheel-only environment, cluster/container workflows, and",
                     "offline installation policy.",
+                    "Run gpurec preprocess-check and gpurec backtrack-check",
+                    "as installation verification commands.",
                     "Structured JSON mode includes gpurec doctor --json,",
                     "gpurec validate-config --config run.json --json,",
                     "gpurec summary-info --summary output_gpurec/summary.json --json,",
@@ -1281,6 +1283,8 @@ def test_release_metadata_check_requires_quickstart_installation_decision_tree_p
     assert "must document installation-decision phrase: wheel-only environment" in result.stdout
     assert "must document installation-decision phrase: cluster/container workflows" in result.stdout
     assert "must document installation-decision phrase: offline installation" in result.stdout
+    assert "must document installation-decision phrase: gpurec preprocess-check" in result.stdout
+    assert "must document installation-decision phrase: gpurec backtrack-check" in result.stdout
     assert result.stderr == ""
 
 
