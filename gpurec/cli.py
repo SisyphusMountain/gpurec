@@ -394,7 +394,10 @@ def _exit_unless_final_check_ok(
 ) -> None:
     if status == "ok":
         return
-    message = f"{subject} final check status is {status!r}; expected 'ok'"
+    message = _with_suggestion(
+        f"{subject} final check status is {status!r}; expected 'ok'",
+        "inspect final-check diagnostics via summary-info/checkpoint-info and rerun with adjusted solver/optimizer settings",
+    )
     if action is not None:
         message = f"{message}; {action}"
     parser.exit(status=1, message=f"{message}\n")
@@ -3142,9 +3145,12 @@ def main(argv: list[str] | None = None) -> None:
             command_parser.exit(
                 status=1,
                 message=(
-                    "optimization status is "
-                    f"{result.status!r}; expected 'converged'"
-                    "\n"
+                    _with_suggestion(
+                        "optimization status is "
+                        f"{result.status!r}; expected 'converged'",
+                        "inspect summary/checkpoint diagnostics and resume with higher steps or adjusted optimizer settings",
+                    )
+                    + "\n"
                 ),
             )
         if args.require_final_check_ok:
@@ -3713,9 +3719,12 @@ def main(argv: list[str] | None = None) -> None:
             command_parser.exit(
                 status=1,
                 message=(
-                    "summary status is "
-                    f"{payload.get('status')!r}; expected 'converged'"
-                    "\n"
+                    _with_suggestion(
+                        "summary status is "
+                        f"{payload.get('status')!r}; expected 'converged'",
+                        "review summary status/reason and resume optimization before enforcing converged-only gates",
+                    )
+                    + "\n"
                 ),
             )
         if args.require_final_check_ok:
@@ -3865,9 +3874,13 @@ def main(argv: list[str] | None = None) -> None:
             command_parser.exit(
                 status=1,
                 message=(
-                    "optimization status is "
-                    f"{opt_result.status!r}; expected 'converged'; "
-                    "refusing to sample\n"
+                    _with_suggestion(
+                        "optimization status is "
+                        f"{opt_result.status!r}; expected 'converged'; "
+                        "refusing to sample",
+                        "resume or rerun optimization until converged before invoking run-level sampling gates",
+                    )
+                    + "\n"
                 ),
             )
         if args.require_final_check_ok and getattr(

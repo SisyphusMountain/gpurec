@@ -4725,6 +4725,7 @@ def test_cli_summary_info_require_converged_fails_after_printing_summary(
     assert "status=not_converged" in captured.out
     assert "reason=max_steps" in captured.out
     assert "summary status is 'not_converged'; expected 'converged'" in captured.err
+    assert "suggestion:" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -4788,6 +4789,7 @@ def test_cli_summary_info_require_final_check_ok_fails_after_printing_summary(
     assert "final_check_status=failed" in captured.out
     assert "final_check_reason=nonfinite_check_gradient" in captured.out
     assert "summary final check status is 'failed'; expected 'ok'" in captured.err
+    assert "suggestion:" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -5690,6 +5692,7 @@ def test_cli_optimize_require_converged_fails_after_printing_status(
     assert "final_nll_bits=12.000000" in captured.out
     assert "best_nll_bits=11.000000" in captured.out
     assert "optimization status is 'not_converged'; expected 'converged'" in captured.err
+    assert "suggestion:" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -5758,6 +5761,7 @@ def test_cli_optimize_require_final_check_ok_fails_after_printing_status(
     assert "final_check_status=skipped" in captured.out
     assert "final_check_source=not_evaluated" in captured.out
     assert "optimization final check status is 'skipped'; expected 'ok'" in captured.err
+    assert "suggestion:" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -6240,6 +6244,7 @@ def test_cli_run_require_converged_refuses_not_converged_sampling(
         "optimization status is 'not_converged'; expected 'converged'; "
         "refusing to sample"
     ) in captured.err
+    assert "suggestion:" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -6287,10 +6292,9 @@ def test_cli_run_require_final_check_ok_refuses_unchecked_sampling(
     assert "final_check_source=not_evaluated" in captured.out
     assert "sampled_families" not in captured.out
     assert "sample_out_dir" not in captured.out
-    assert (
-        "optimization final check status is 'disabled'; expected 'ok'; "
-        "refusing to sample"
-    ) in captured.err
+    assert "optimization final check status is 'disabled'; expected 'ok'" in captured.err
+    assert "refusing to sample" in captured.err
+    assert "suggestion:" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
