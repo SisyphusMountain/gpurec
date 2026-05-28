@@ -317,6 +317,7 @@ def _write_complete_release_metadata_fixture(
                     "gpurec validate-config --config run.json --json,",
                     "gpurec summary-info --summary output_gpurec/summary.json --json,",
                     "and gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json.",
+                    "RNG behavior keeps a sampling seed for reproducibility.",
                     "",
                 ]
             ),
@@ -1162,6 +1163,41 @@ def test_release_metadata_check_requires_quickstart_json_mode_phrases(
         "must document json-mode phrase: gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json"
         in result.stdout
     )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_quickstart_rng_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "bioinformatics-quickstart.md").write_text(
+        "\n".join(
+            [
+                "# Bioinformatics Quickstart",
+                "",
+                "Create config, validate, run, resume, inspect, sample, archive.",
+                "Installation decision tree for source checkout or source archive,",
+                "wheel-only environment, cluster/container workflows, and",
+                "offline installation policy.",
+                "Structured JSON mode includes gpurec doctor --json.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document rng phrase: rng behavior" in result.stdout
+    assert "must document rng phrase: seed" in result.stdout
+    assert "must document rng phrase: reproducibility" in result.stdout
     assert result.stderr == ""
 
 

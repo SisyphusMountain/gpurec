@@ -119,6 +119,11 @@ Use the output checkpoint for sampling-ready state:
 gpurec sample --checkpoint output_gpurec/checkpoints/latest.pt --samples 50
 ```
 
+## RNG Behavior
+
+Set a sampling `--seed` and keep it in run records when reproducibility is
+required.
+
 Keep the output directory and RNG settings explicit for reproducibility.
 
 ## Archive
