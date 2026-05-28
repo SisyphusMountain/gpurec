@@ -101,6 +101,24 @@ python scripts/validate_output_artifacts.py \
 For older one-off scripts or benchmark outputs, include only the `--tsv` and
 `--summary` flags that match what is present for that workflow.
 
+## Release Checklist Tiers
+
+Use this checklist split before publication:
+
+1. Quick PR checks:
+   CPU unit gate, command-help smoke, parser/preflight smoke, and metadata
+   checker in CI (`cpu-unit.yml`).
+2. Nightly checks:
+   scheduled GPU validation workflow (`gpu-validation.yml`) plus dependency
+   inventory and audit snapshots.
+3. Release-candidate checks:
+   run `scripts/run_long_validation.py` on
+   `docs/workflow-examples/end-to-end-tutorial/run.json`, archive the report,
+   and verify it satisfies [validation-envelope.md](validation-envelope.md).
+4. Final publication checks:
+   clean-checkout build, source/wheel artifact checks, release notes update,
+   changelog/citation/license confirmation, and attached release evidence bundle.
+
 ## Maintainer Build Path
 
 GPU validation is enforced in `.github/workflows/gpu-validation.yml` for

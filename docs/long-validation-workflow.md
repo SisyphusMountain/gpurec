@@ -50,3 +50,6 @@ The output report JSON (`gpurec.long_validation_report.v1`) captures:
 
 Treat this report as benchmark evidence, not a hard performance guarantee across
 all hardware.
+
+For release-candidate acceptance bounds and evidence requirements, see
+[validation-envelope.md](validation-envelope.md).

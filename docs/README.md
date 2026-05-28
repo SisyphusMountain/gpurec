@@ -35,6 +35,8 @@ file as the map for deeper context.
   Snakemake, Nextflow, and Slurm workflow starter templates.
 - `long-validation-workflow.md`: reproducible pre-release validation bundle over
   the public end-to-end dataset with report and threshold checks.
+- `validation-envelope.md`: release-candidate acceptance envelope for public
+  long-validation counts, status, runtime/NLL guardrails, and evidence capture.
 - `optimization-workflow-call-graph.md`: current production call graph for
   `validate-config`, AleRax preprocessing, resident likelihood/gradient
   evaluation, optimizer phases, checkpoints, and final artifacts.
