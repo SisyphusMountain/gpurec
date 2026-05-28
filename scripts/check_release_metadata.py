@@ -421,6 +421,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "nightly checks",
         "release-candidate checks",
         "final publication checks",
+        "sha256sum dist/* > dist/sha256sums",
     )
     issues: list[str] = []
     for phrase in required_phrases:
