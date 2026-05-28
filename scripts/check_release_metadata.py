@@ -1052,6 +1052,7 @@ def _slurm_example_lifecycle_issues(root: Path) -> list[str]:
         "gpurec validate-config",
         "--check-preprocess",
         "gpurec optimize",
+        "resume",
         "output_gpurec/checkpoints/latest.pt",
         "gpurec sample",
     )

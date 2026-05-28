@@ -649,6 +649,7 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "gpurec validate-config --check-preprocess",
                     "gpurec optimize",
+                    "resume from output_gpurec/checkpoints/latest.pt",
                     "output_gpurec/checkpoints/latest.pt",
                     "gpurec sample",
                     "",
@@ -2411,6 +2412,7 @@ def test_release_metadata_check_requires_slurm_lifecycle_phrases(
     assert "must document lifecycle phrase: gpurec validate-config" in result.stdout
     assert "must document lifecycle phrase: --check-preprocess" in result.stdout
     assert "must document lifecycle phrase: gpurec optimize" in result.stdout
+    assert "must document lifecycle phrase: resume" in result.stdout
     assert (
         "must document lifecycle phrase: output_gpurec/checkpoints/latest.pt"
         in result.stdout
