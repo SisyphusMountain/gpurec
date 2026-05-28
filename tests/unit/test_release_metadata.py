@@ -659,6 +659,7 @@ def _write_complete_release_metadata_fixture(
                     "resume from output_gpurec/checkpoints/latest.pt",
                     "output_gpurec/checkpoints/latest.pt",
                     "gpurec sample",
+                    "When asking for support, collect run_config.json, summary.json, history.jsonl, and stderr/stdout logs.",
                     "",
                 ]
             ),
@@ -2426,6 +2427,11 @@ def test_release_metadata_check_requires_slurm_lifecycle_phrases(
         in result.stdout
     )
     assert "must document lifecycle phrase: gpurec sample" in result.stdout
+    assert "must document lifecycle phrase: when asking for support" in result.stdout
+    assert "must document lifecycle phrase: run_config.json" in result.stdout
+    assert "must document lifecycle phrase: summary.json" in result.stdout
+    assert "must document lifecycle phrase: history.jsonl" in result.stdout
+    assert "must document lifecycle phrase: stderr/stdout" in result.stdout
     assert result.stderr == ""
 
 

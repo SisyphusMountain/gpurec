@@ -1056,6 +1056,11 @@ def _slurm_example_lifecycle_issues(root: Path) -> list[str]:
         "resume",
         "output_gpurec/checkpoints/latest.pt",
         "gpurec sample",
+        "when asking for support",
+        "run_config.json",
+        "summary.json",
+        "history.jsonl",
+        "stderr/stdout",
     )
     issues: list[str] = []
     for phrase in required_phrases:

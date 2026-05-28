@@ -17,3 +17,6 @@ The script:
 
 Update resource requests (`--gres`, `--cpus-per-task`, memory, queue) for your
 cluster profile.
+
+When asking for support, collect `run_config.json`, `summary.json`,
+`history.jsonl`, and full stderr/stdout logs from the scheduler job.
