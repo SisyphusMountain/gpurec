@@ -206,6 +206,7 @@ def _write_complete_release_metadata_fixture(
                     "Release process includes public benchmark gates and evidence summaries.",
                     "Help and import smoke tests remain CPU-safe during release checks.",
                     "CI rejects obvious lint errors before release publication.",
+                    "CI rejects unused imports in public modules.",
                     "CI rejects broken type annotations in public modules.",
                     "CI rejects accidental public-surface drift before release publication.",
                     "CI maintains a generated CLI help snapshot for stable flags and exits.",
@@ -2945,6 +2946,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: public benchmark gates" in result.stdout
     assert "must document release gate phrase: help and import smoke tests remain cpu-safe" in result.stdout
     assert "must document release gate phrase: ci rejects obvious lint errors" in result.stdout
+    assert "must document release gate phrase: unused imports" in result.stdout
     assert "must document release gate phrase: broken type annotations in public modules" in result.stdout
     assert "must document release gate phrase: accidental public-surface drift" in result.stdout
     assert "must document release gate phrase: generated cli help snapshot" in result.stdout

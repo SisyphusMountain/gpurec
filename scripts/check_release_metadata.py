@@ -543,6 +543,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "public benchmark gates",
         "help and import smoke tests remain cpu-safe",
         "ci rejects obvious lint errors",
+        "unused imports",
         "broken type annotations in public modules",
         "accidental public-surface drift",
         "generated cli help snapshot",

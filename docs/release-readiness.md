@@ -27,6 +27,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - Release artifacts are smoke-tested outside the repository before publication.
 - Help and import smoke tests remain CPU-safe during release checks.
 - CI rejects obvious lint errors before release publication.
+- CI rejects unused imports in public modules.
 - CI rejects broken type annotations in public modules.
 - CI rejects accidental public-surface drift before release publication.
 - CI maintains a generated CLI help snapshot for stable flags and exits.
