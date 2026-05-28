@@ -25,6 +25,8 @@ retained outputs and publication bundles.
 Document thread controls for preprocessing and PyTorch execution (for example
 `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and `TORCH_NUM_THREADS`) in the Slurm
 wrapper or module profile.
+Configure cache and temporary-file locations (for example `TMPDIR`,
+`XDG_CACHE_HOME`, or scheduler scratch paths) to match cluster policy.
 
 When asking for support, collect `run_config.json`, `summary.json`,
 `history.jsonl`, and full stderr/stdout logs from the scheduler job.

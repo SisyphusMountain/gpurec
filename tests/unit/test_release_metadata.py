@@ -663,6 +663,7 @@ def _write_complete_release_metadata_fixture(
                     "Document environment modules, CUDA visibility, and output paths for cluster runs.",
                     "Choose local scratch for hot intermediates and shared network storage for retained outputs.",
                     "Document thread controls for preprocessing and PyTorch execution.",
+                    "Configure cache and temporary-file locations per cluster policy.",
                     "",
                 ]
             ),
@@ -2443,6 +2444,8 @@ def test_release_metadata_check_requires_slurm_lifecycle_phrases(
     assert "must document lifecycle phrase: thread controls" in result.stdout
     assert "must document lifecycle phrase: preprocessing" in result.stdout
     assert "must document lifecycle phrase: pytorch" in result.stdout
+    assert "must document lifecycle phrase: cache" in result.stdout
+    assert "must document lifecycle phrase: temporary-file locations" in result.stdout
     assert result.stderr == ""
 
 
