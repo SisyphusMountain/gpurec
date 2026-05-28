@@ -554,6 +554,30 @@ def _quickstart_installation_decision_tree_issues(root: Path) -> list[str]:
     return issues
 
 
+def _known_limitations_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "known-limitations.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "cuda",
+        "s > 256",
+        "newick subset",
+        "wheel",
+        "external",
+        "bf16",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/known-limitations.md must document limitation phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _end_to_end_tutorial_public_command_issues(root: Path) -> list[str]:
     tutorial = root / "docs" / "workflow-examples" / "end-to-end-tutorial" / "README.md"
     if not tutorial.is_file():
@@ -746,6 +770,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_output_artifact_flow_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
     issues.extend(_quickstart_installation_decision_tree_issues(project_root))
+    issues.extend(_known_limitations_issues(project_root))
     issues.extend(_end_to_end_tutorial_public_command_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 

@@ -259,7 +259,18 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "known-limitations.md").write_text(
-            "# Known Limitations\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Known Limitations",
+                    "",
+                    "CUDA-only production route with S > 256 gate.",
+                    "Parser Newick subset limits are explicit.",
+                    "Wheel installs may require external native artifacts.",
+                    "bf16 remains experimental.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_bioinformatics_quickstart:
         (root / "docs" / "bioinformatics-quickstart.md").parent.mkdir(
@@ -823,6 +834,33 @@ def test_release_metadata_check_requires_known_limitations(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/known-limitations.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_known_limitations_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "known-limitations.md").write_text(
+        "# Known Limitations\n\nGeneral constraints.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document limitation phrase: cuda" in result.stdout
+    assert "must document limitation phrase: s > 256" in result.stdout
+    assert "must document limitation phrase: newick subset" in result.stdout
+    assert "must document limitation phrase: wheel" in result.stdout
+    assert "must document limitation phrase: external" in result.stdout
+    assert "must document limitation phrase: bf16" in result.stdout
     assert result.stderr == ""
 
 
