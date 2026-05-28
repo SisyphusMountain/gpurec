@@ -439,6 +439,7 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "Organized by symptom for operator triage.",
                     "Retryable runtime failures vs input contract failures.",
+                    "Use likely cause and next action columns in issue triage tables.",
                     "Authoritative files: summary.json, history.jsonl, checkpoints/latest.pt.",
                     "",
                 ]
@@ -1906,6 +1907,8 @@ def test_release_metadata_check_requires_troubleshooting_recovery_phrases(
     assert "must document failure-recovery phrase: by symptom" in result.stdout
     assert "must document failure-recovery phrase: retryable runtime failures" in result.stdout
     assert "must document failure-recovery phrase: input contract failures" in result.stdout
+    assert "must document failure-recovery phrase: likely cause" in result.stdout
+    assert "must document failure-recovery phrase: next action" in result.stdout
     assert "must document failure-recovery phrase: authoritative files" in result.stdout
     assert "must document failure-recovery phrase: summary.json" in result.stdout
     assert "must document failure-recovery phrase: history.jsonl" in result.stdout
