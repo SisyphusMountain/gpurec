@@ -546,7 +546,8 @@ def _write_complete_release_metadata_fixture(
                     "Issue entries include file path, family name, affected label,",
                     "expected format, and next action.",
                     "Structured reports cover every family with missing mapping,",
-                    "duplicate family name, rejected tree, and species coverage.",
+                    "duplicate family name, duplicate species mappings,",
+                    "rejected tree, and species coverage.",
                     "",
                 ]
             ),
@@ -2138,6 +2139,7 @@ def test_release_metadata_check_requires_input_validation_fixture_category_phras
     assert "must document category phrase: every family" in result.stdout
     assert "must document category phrase: missing mapping" in result.stdout
     assert "must document category phrase: duplicate family name" in result.stdout
+    assert "must document category phrase: duplicate species mappings" in result.stdout
     assert "must document category phrase: rejected tree" in result.stdout
     assert "must document category phrase: species coverage" in result.stdout
     assert result.stderr == ""

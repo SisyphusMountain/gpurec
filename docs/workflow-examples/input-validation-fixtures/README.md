@@ -62,4 +62,5 @@ Each issue entry is expected to include: file path, family name, affected label,
 expected format, and next action.
 
 Structured reports should cover every family with issue categories such as
-missing mapping, duplicate family name, rejected tree, and species coverage.
+missing mapping, duplicate family name, duplicate species mappings, rejected tree,
+and species coverage.

@@ -1074,6 +1074,7 @@ def _input_validation_fixture_category_issues(root: Path) -> list[str]:
         "every family",
         "missing mapping",
         "duplicate family name",
+        "duplicate species mappings",
         "rejected tree",
         "species coverage",
     )
