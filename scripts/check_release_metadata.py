@@ -206,6 +206,36 @@ def _release_notes_version_issues(project: dict[str, Any], root: Path) -> list[s
     return issues
 
 
+def _policy_document_issues(root: Path) -> list[str]:
+    issues: list[str] = []
+
+    support_policy = root / "docs" / "support-policy.md"
+    if support_policy.is_file():
+        text = support_policy.read_text(encoding="utf-8").lower()
+        if "production" not in text:
+            issues.append(
+                "docs/support-policy.md must describe production support scope"
+            )
+        if "latest release tag" not in text:
+            issues.append(
+                "docs/support-policy.md must describe latest release tag support"
+            )
+
+    versioning_policy = root / "docs" / "versioning-policy.md"
+    if versioning_policy.is_file():
+        text = versioning_policy.read_text(encoding="utf-8").lower()
+        if "semantic versioning" not in text:
+            issues.append(
+                "docs/versioning-policy.md must state semantic versioning policy"
+            )
+        if "major.minor.patch" not in text:
+            issues.append(
+                "docs/versioning-policy.md must describe MAJOR.MINOR.PATCH semantics"
+            )
+
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -339,6 +369,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_release_artifact_issues(project_root))
     issues.extend(_citation_metadata_issues(project, project_root))
     issues.extend(_release_notes_version_issues(project, project_root))
+    issues.extend(_policy_document_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)

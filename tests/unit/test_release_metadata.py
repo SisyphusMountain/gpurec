@@ -155,14 +155,32 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "support-policy.md").write_text(
-            "# Support Policy\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Support Policy",
+                    "",
+                    "production support scope applies to documented surfaces.",
+                    "The latest release tag is the primary supported line.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_versioning_policy:
         (root / "docs" / "versioning-policy.md").parent.mkdir(
             parents=True, exist_ok=True
         )
         (root / "docs" / "versioning-policy.md").write_text(
-            "# Versioning Policy\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Versioning Policy",
+                    "",
+                    "This project follows semantic versioning.",
+                    "Version format is MAJOR.MINOR.PATCH.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_publication_checklist:
         (root / "docs" / "publication-checklist.md").parent.mkdir(
@@ -448,6 +466,29 @@ def test_release_metadata_check_requires_support_policy(tmp_path: Path):
     assert result.stderr == ""
 
 
+def test_release_metadata_check_requires_support_policy_scope_statements(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "support-policy.md").write_text(
+        "# Support Policy\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must describe production support scope" in result.stdout
+    assert "must describe latest release tag support" in result.stdout
+    assert result.stderr == ""
+
+
 def test_release_metadata_check_requires_versioning_policy(tmp_path: Path):
     _write_complete_release_metadata_fixture(tmp_path, create_versioning_policy=False)
 
@@ -461,6 +502,29 @@ def test_release_metadata_check_requires_versioning_policy(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/versioning-policy.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_versioning_policy_semver_statements(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "versioning-policy.md").write_text(
+        "# Versioning Policy\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must state semantic versioning policy" in result.stdout
+    assert "must describe MAJOR.MINOR.PATCH semantics" in result.stdout
     assert result.stderr == ""
 
 
