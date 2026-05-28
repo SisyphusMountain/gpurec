@@ -294,6 +294,17 @@ def _policy_document_issues(root: Path) -> list[str]:
             issues.append(
                 "docs/versioning-policy.md must define backport support expectations"
             )
+        version_consistency_phrases = (
+            "pyproject.toml",
+            "gpurec.__version__",
+            "release notes heading",
+        )
+        for phrase in version_consistency_phrases:
+            if phrase not in text:
+                issues.append(
+                    "docs/versioning-policy.md must document version-consistency phrase: "
+                    + phrase
+                )
 
     return issues
 

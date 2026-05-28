@@ -225,6 +225,8 @@ def _write_complete_release_metadata_fixture(
                     "Version format is MAJOR.MINOR.PATCH.",
                     "The latest release tag is the primary supported line.",
                     "Backports to older tags are best-effort.",
+                    "Version consistency checks include pyproject.toml,",
+                    "gpurec.__version__, and release notes heading alignment.",
                     "",
                 ]
             ),
@@ -861,6 +863,9 @@ def test_release_metadata_check_requires_versioning_policy_semver_statements(
     assert "must describe MAJOR.MINOR.PATCH semantics" in result.stdout
     assert "must define latest release tag support line" in result.stdout
     assert "must define backport support expectations" in result.stdout
+    assert "must document version-consistency phrase: pyproject.toml" in result.stdout
+    assert "must document version-consistency phrase: gpurec.__version__" in result.stdout
+    assert "must document version-consistency phrase: release notes heading" in result.stdout
     assert result.stderr == ""
 
 
