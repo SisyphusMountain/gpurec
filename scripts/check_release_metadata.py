@@ -695,6 +695,9 @@ def _end_to_end_tutorial_public_command_issues(root: Path) -> list[str]:
     required_phrases = (
         "first successful run tutorial",
         "uses only public commands",
+        "tracked or downloadable dataset",
+        "writes outputs",
+        "samples recphyloxml",
         "gpurec validate-config",
         "gpurec optimize",
         "gpurec sample",

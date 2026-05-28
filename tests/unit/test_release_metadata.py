@@ -476,6 +476,7 @@ def _write_complete_release_metadata_fixture(
                     "# End-to-End Tutorial",
                     "",
                     "First successful run tutorial uses only public commands.",
+                    "Tracked or downloadable dataset that writes outputs and samples RecPhyloXML.",
                     "gpurec validate-config",
                     "gpurec optimize",
                     "gpurec sample",
@@ -1710,6 +1711,9 @@ def test_release_metadata_check_requires_end_to_end_tutorial_public_command_phra
     assert result.returncode == 1
     assert "must document tutorial phrase: first successful run tutorial" in result.stdout
     assert "must document tutorial phrase: uses only public commands" in result.stdout
+    assert "must document tutorial phrase: tracked or downloadable dataset" in result.stdout
+    assert "must document tutorial phrase: writes outputs" in result.stdout
+    assert "must document tutorial phrase: samples recphyloxml" in result.stdout
     assert "must document tutorial phrase: gpurec validate-config" in result.stdout
     assert "must document tutorial phrase: gpurec optimize" in result.stdout
     assert "must document tutorial phrase: gpurec sample" in result.stdout

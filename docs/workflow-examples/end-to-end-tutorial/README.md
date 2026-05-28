@@ -3,6 +3,8 @@
 This workflow uses a redistributable synthetic dataset that is intentionally
 small and deterministic. The species tree has >256 taxa so it can pass the
 `S > 256` CUDA backward gate once CUDA is available.
+It serves as a tracked or downloadable dataset tutorial that validates config,
+runs optimization, writes outputs, and samples RecPhyloXML.
 
 This is the first successful run tutorial and uses only public commands
 (`gpurec ...`) plus the tracked dataset generator in this folder.
