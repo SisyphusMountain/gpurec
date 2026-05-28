@@ -162,6 +162,9 @@ required machine path for automation.
 
 ## Contract Stability, versioning, deprecation
 
+Compatibility policy scope covers config fields, CLI flags, Python imports, and
+output artifacts.
+
 - This contract currently applies to the current `gpurec` release line and is
   versioned as API contract `v1`.
 - Future contract additions are added by release notes and docs; removals or
@@ -169,5 +172,7 @@ required machine path for automation.
   communication.
 - Backward-incompatible behavior changes are announced explicitly in release
   notes, including migration steps and replacement call patterns.
-- A feature can enter deprecation by adding a public warning in docs and
+- A feature can enter deprecation by adding deprecation warnings in docs and
   retaining old behavior for at least one full release cycle where practical.
+- Release notes must include migration notes for removed or replaced supported
+  behavior.
