@@ -661,6 +661,7 @@ def _write_complete_release_metadata_fixture(
                     "gpurec sample",
                     "When asking for support, collect run_config.json, summary.json, history.jsonl, and stderr/stdout logs.",
                     "Document environment modules, CUDA visibility, and output paths for cluster runs.",
+                    "Choose local scratch for hot intermediates and shared network storage for retained outputs.",
                     "",
                 ]
             ),
@@ -2436,6 +2437,8 @@ def test_release_metadata_check_requires_slurm_lifecycle_phrases(
     assert "must document lifecycle phrase: environment modules" in result.stdout
     assert "must document lifecycle phrase: cuda visibility" in result.stdout
     assert "must document lifecycle phrase: output paths" in result.stdout
+    assert "must document lifecycle phrase: local scratch" in result.stdout
+    assert "must document lifecycle phrase: shared network storage" in result.stdout
     assert result.stderr == ""
 
 
