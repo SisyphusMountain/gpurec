@@ -381,6 +381,12 @@ def _write_complete_release_metadata_fixture(
                     "# Long Validation Workflow",
                     "",
                     "Use this report as benchmark evidence, not a hard performance guarantee.",
+                    "gpurec doctor --json",
+                    "gpurec validate-config --check-preprocess --require-cuda-backward-ready",
+                    "gpurec optimize --require-final-check-ok",
+                    "gpurec summary-info --require-converged --require-final-check-ok",
+                    "gpurec sample --checkpoint",
+                    "scripts/validate_output_artifacts.py",
                     "",
                 ]
             ),
@@ -1629,6 +1635,52 @@ def test_release_metadata_check_requires_long_validation_evidence_scope_phrases(
     assert "must document evidence-scope phrase: benchmark evidence" in result.stdout
     assert (
         "must document evidence-scope phrase: not a hard performance guarantee"
+        in result.stdout
+    )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_long_validation_command_sequence_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "long-validation-workflow.md").write_text(
+        "\n".join(
+            [
+                "# Long Validation Workflow",
+                "",
+                "Use this report as benchmark evidence, not a hard performance guarantee.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document command-sequence phrase: gpurec doctor --json" in result.stdout
+    assert (
+        "must document command-sequence phrase: gpurec validate-config --check-preprocess --require-cuda-backward-ready"
+        in result.stdout
+    )
+    assert (
+        "must document command-sequence phrase: gpurec optimize --require-final-check-ok"
+        in result.stdout
+    )
+    assert (
+        "must document command-sequence phrase: gpurec summary-info --require-converged --require-final-check-ok"
+        in result.stdout
+    )
+    assert "must document command-sequence phrase: gpurec sample --checkpoint" in result.stdout
+    assert (
+        "must document command-sequence phrase: scripts/validate_output_artifacts.py"
         in result.stdout
     )
     assert result.stderr == ""

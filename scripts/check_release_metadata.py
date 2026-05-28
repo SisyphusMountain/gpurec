@@ -451,6 +451,30 @@ def _long_validation_evidence_scope_issues(root: Path) -> list[str]:
     return issues
 
 
+def _long_validation_command_sequence_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "long-validation-workflow.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "gpurec doctor --json",
+        "gpurec validate-config --check-preprocess --require-cuda-backward-ready",
+        "gpurec optimize --require-final-check-ok",
+        "gpurec summary-info --require-converged --require-final-check-ok",
+        "gpurec sample --checkpoint",
+        "scripts/validate_output_artifacts.py",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/long-validation-workflow.md must document command-sequence phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _troubleshooting_recovery_issues(root: Path) -> list[str]:
     guide = root / "docs" / "troubleshooting.md"
     if not guide.is_file():
@@ -1196,6 +1220,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_release_readiness_issues(project_root))
     issues.extend(_validation_envelope_issues(project_root))
     issues.extend(_long_validation_evidence_scope_issues(project_root))
+    issues.extend(_long_validation_command_sequence_issues(project_root))
     issues.extend(_troubleshooting_recovery_issues(project_root))
     issues.extend(_input_preparation_large_dataset_issues(project_root))
     issues.extend(_input_preparation_conversion_issues(project_root))
