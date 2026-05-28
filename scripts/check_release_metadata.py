@@ -266,6 +266,7 @@ def _policy_document_issues(root: Path) -> list[str]:
             "older tags may receive backports",
             "summary.json",
             "run_manifest.json",
+            "checkpoint metadata",
         )
         for phrase in support_window_phrases:
             if phrase not in text:
