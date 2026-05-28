@@ -38,6 +38,7 @@ required per family.  Both `starting_gene_tree` and `gene_tree` entries are
 loaded as gene-tree inputs for that family, so use additional `gene_tree`
 lines when a family has multiple sampled or bootstrap trees.  Family names
 must be unique.
+Production family files should be structured for multiple families, multiple trees per family, and explicit mapping files.
 
 Relative gene-tree and mapping paths are resolved relative to the family file,
 not the process working directory.  Put the family file next to its tree
