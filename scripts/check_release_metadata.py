@@ -1019,6 +1019,7 @@ def _workflow_examples_overview_gate_issues(root: Path) -> list[str]:
         "nextflow",
         "fail fast",
         "--check-preprocess",
+        "--require-converged",
         "resume from a checkpoint",
         "reject non-converged outputs",
         "tracked mini public dataset",
