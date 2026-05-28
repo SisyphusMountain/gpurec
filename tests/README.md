@@ -47,6 +47,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_hogenom_multifidelity_adagrad.py \
   tests/unit/test_lbfgsb.py \
   tests/unit/test_lbfgsb_schilling_conformance.py \
+  tests/unit/test_long_validation_runner.py \
   tests/unit/test_origination_prior.py \
   tests/unit/test_parameter_layout.py \
   tests/unit/test_projected_lbfgs.py \

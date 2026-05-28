@@ -46,5 +46,8 @@ HOGENOM experiment needs that behavior.
 | `compare_backtracking_alerax_events.py` | Checkout-local AleRax comparison helper. | Keep for validation runs that have AleRax output and local HOGENOM data. |
 | `export_hogenom_rates_from_checkpoint.py` | HOGENOM checkpoint rate exporter. | Keep as a utility for local analysis; promote only if rate-export format becomes a supported CLI feature. |
 | `visualize_hogenom_loss_landscape.py` | Checkout-local HOGENOM landscape visualizer. | HOGENOM research analysis that plots per-family D/L/T loss contours around supplied or locally optimized anchors, writing CSV summaries and PNG/PDF panels under `output_gpurec_loss_landscape`. Keep unless promoted into a supported diagnostics command. |
+| `generate_dependency_inventory.py` | Release hygiene utility. | Keep as release-scoped supply-chain evidence generation and dependency-manifest snapshot command. |
+| `validate_output_artifacts.py` | Artifact validation utility. | Keep as release and handoff QA for `summary.json`, `history.jsonl`, checkpoints, TSV outputs, and `run_manifest.json`. |
+| `run_long_validation.py` | Release-candidate long validation runner. | Keep as a reproducible pre-release GPU workflow command over the public end-to-end dataset. It orchestrates `doctor`, `validate-config`, `optimize`, `summary-info`, and `sample`, writes a machine-readable report, and enforces configured runtime/NLL/count thresholds. |
 | `plot_hogenom_rates.R` | Optional plotting helper. | Keep with the `hogenom` extra/documented plotting dependencies. |
 | `check_release_metadata.py` | Release metadata gate. | Keep as release hygiene, not as part of the HOGENOM experiment surface. |

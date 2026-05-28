@@ -33,6 +33,8 @@ file as the map for deeper context.
   metadata, solver budgets, and checkpoint terminology used in user docs.
 - `workflow-examples/`: a runnable, deterministic end-to-end mini dataset plus
   Snakemake, Nextflow, and Slurm workflow starter templates.
+- `long-validation-workflow.md`: reproducible pre-release validation bundle over
+  the public end-to-end dataset with report and threshold checks.
 - `optimization-workflow-call-graph.md`: current production call graph for
   `validate-config`, AleRax preprocessing, resident likelihood/gradient
   evaluation, optimizer phases, checkpoints, and final artifacts.
