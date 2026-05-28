@@ -537,6 +537,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "backtracking artifacts",
         "dependency manifest",
         "dependency scan snapshot",
+        "sbom",
         "help and import smoke tests remain cpu-safe",
         "ci rejects obvious lint errors",
         "broken type annotations in public modules",
