@@ -341,6 +341,10 @@ def _write_complete_release_metadata_fixture(
                     "and reconciliations/.",
                     "Input/output flow uses validate-config --check-preprocess,",
                     "gpurec optimize, gpurec sample, and reconciliations/*.xml.",
+                    "run_manifest.json records package version, native artifact",
+                    "metadata, PyTorch version, CUDA availability, GPU name,",
+                    "command line invocation, config hash, random seed fields,",
+                    "and selected route metadata.",
                     "",
                 ]
             ),
@@ -1197,6 +1201,46 @@ def test_release_metadata_check_requires_output_artifact_flow_phrases(
     assert "must document flow phrase: gpurec optimize" in result.stdout
     assert "must document flow phrase: gpurec sample" in result.stdout
     assert "must document flow phrase: reconciliations/*.xml" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_output_artifact_run_manifest_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "output-artifacts.md").write_text(
+        "\n".join(
+            [
+                "# Output Artifacts",
+                "",
+                "Example output snippets.",
+                "Run directory structure.",
+                "Input/output flow.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document run-manifest phrase: run_manifest.json" in result.stdout
+    assert "must document run-manifest phrase: package version" in result.stdout
+    assert "must document run-manifest phrase: native artifact" in result.stdout
+    assert "must document run-manifest phrase: pytorch version" in result.stdout
+    assert "must document run-manifest phrase: cuda availability" in result.stdout
+    assert "must document run-manifest phrase: gpu name" in result.stdout
+    assert "must document run-manifest phrase: command line invocation" in result.stdout
+    assert "must document run-manifest phrase: config hash" in result.stdout
+    assert "must document run-manifest phrase: random seed" in result.stdout
+    assert "must document run-manifest phrase: selected route" in result.stdout
     assert result.stderr == ""
 
 

@@ -25,6 +25,11 @@ the end of the optimization phase.
 | `checkpoints/latest.pt` | `optimize`, optimization phase of `run` | Versioned checkpoint for resume. | Carries config metadata, effective route metadata, theta, optimizer state when available, progress, status, last row, family names, and species names. |
 | `checkpoints/best.pt` | `optimize`, optimization phase of `run` | Versioned checkpoint at the best accepted NLL. | Preferred checkpoint for downstream sampling when present. |
 
+`run_manifest.json` minimum reproducibility contract includes package version,
+native artifact version metadata, PyTorch version, CUDA availability, GPU name,
+command line invocation, config hash, random seed evidence, and selected route
+metadata.
+
 ## Example Output Snippets
 
 `summary.json` (trimmed):
