@@ -769,6 +769,7 @@ Triton-only.
 | `GPUREC_PREPROCESS_BIN` | Optional path to the Rust preprocessing CLI used by the subprocess adapter and profiling helpers. |
 | `GPUREC_BACKTRACK_BIN` | Path to the Rust backtracking binary used by `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
 | `GPUREC_BACKTRACK_NATIVE_LIB` | Optional path to a prebuilt native Rust backtracking extension used by Python helper calls with `backend="native"` or native `auto` resolution. |
+| `GPUREC_TORCH_SEED` | Optional non-negative integer seed applied at optimization-run startup; `run_manifest.json` records the requested seed and source. |
 | `GPUREC_ALERAX_COMPAT` | Compatibility guard; differentiable model optimization supports only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | GPU memory-budget margins used by uniform chunk planning. |
 

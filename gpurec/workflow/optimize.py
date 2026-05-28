@@ -425,6 +425,8 @@ _FINAL_ARTIFACT_FILES = (
 )
 _RUN_CONFIG_ARTIFACT_FILE = "run_config.json"
 _RUN_MANIFEST_ARTIFACT_FILE = "run_manifest.json"
+_TORCH_SEED_ENV = "GPUREC_TORCH_SEED"
+_MAX_TORCH_SEED = (1 << 63) - 1
 _ACTIVE_BATCH_LBFGS_STALL_PATIENCE = 3
 _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
 _FD_NEWTON_LARGE_BATCH_MAX_LS = 8
@@ -963,6 +965,33 @@ def _run_manifest_hash(config: RunConfig) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _runtime_seed_context_from_environment() -> dict[str, Any]:
+    raw = os.environ.get(_TORCH_SEED_ENV)
+    if raw is None:
+        return {
+            "seeded": False,
+            "seed_source": None,
+            "requested_torch_seed": None,
+        }
+    value = raw.strip()
+    if not value:
+        raise ValueError(f"{_TORCH_SEED_ENV} must be a non-empty integer")
+    try:
+        seed = int(value, 10)
+    except ValueError as exc:
+        raise ValueError(f"{_TORCH_SEED_ENV} must be an integer") from exc
+    if seed < 0:
+        raise ValueError(f"{_TORCH_SEED_ENV} must be non-negative")
+    if seed > _MAX_TORCH_SEED:
+        raise ValueError(f"{_TORCH_SEED_ENV} must be <= {_MAX_TORCH_SEED}")
+    torch.manual_seed(seed)
+    return {
+        "seeded": True,
+        "seed_source": _TORCH_SEED_ENV,
+        "requested_torch_seed": seed,
+    }
+
+
 def _build_run_manifest(
     config: RunConfig,
     *,
@@ -972,6 +1001,7 @@ def _build_run_manifest(
     summary: dict[str, Any],
     started_wall_time: float,
     elapsed_wall_s: float,
+    runtime_seed_context: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -1004,7 +1034,9 @@ def _build_run_manifest(
         },
         "reproducibility": {
             "torch_seed": int(torch.initial_seed()),
-            "seeded": False,
+            "seeded": bool(runtime_seed_context.get("seeded", False)),
+            "seed_source": runtime_seed_context.get("seed_source"),
+            "requested_torch_seed": runtime_seed_context.get("requested_torch_seed"),
         },
         "selections": {
             "families": summary.get("families"),
@@ -3028,6 +3060,7 @@ class OptimizationRunner:
         if self.history_jsonl.exists() and config.resume_from is None:
             self.history_jsonl.unlink()
 
+        runtime_seed_context = _runtime_seed_context_from_environment()
         model = self.build_model()
         adagrad_restart_specs: tuple[AdagradRestartPhase, ...] = ()
         adagrad_restart_step_limit: int | None = None
@@ -5488,6 +5521,7 @@ class OptimizationRunner:
                 summary=summary,
                 started_wall_time=started,
                 elapsed_wall_s=final_status["elapsed_s"],
+                runtime_seed_context=runtime_seed_context,
             )
             _write_final_artifacts(
                 config,

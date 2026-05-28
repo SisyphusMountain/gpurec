@@ -226,11 +226,12 @@ hygiene checks compare tracked package reads against it.
 | `GPUREC_ALERAX_COMPAT` | User-facing compatibility | Compatibility guard read by API validation; supported differentiable optimization accepts only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | User-facing | Memory-budget margins for uniform chunk planning. |
 | `GPUREC_PREPROCESS_BIN`, `GPUREC_PREPROCESS_NATIVE_LIB` | User-facing discovery | Optional Rust preprocessing CLI/native-library discovery while source builds and prebuilt artifacts coexist. |
+| `GPUREC_TORCH_SEED` | User-facing | Optional deterministic seed for optimization/runtime startup; recorded in run-manifest reproducibility metadata when set. |
 
 Supported environment flags are limited to `GPUREC_BACKTRACK_BIN`,
 `GPUREC_BACKTRACK_NATIVE_LIB`, `GPUREC_ALERAX_COMPAT`,
 `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB`,
-`GPUREC_PREPROCESS_BIN`, and `GPUREC_PREPROCESS_NATIVE_LIB`.  Scheduler backend
+`GPUREC_PREPROCESS_BIN`, `GPUREC_PREPROCESS_NATIVE_LIB`, and `GPUREC_TORCH_SEED`.  Scheduler backend
 selection, preprocess cache locations, backward CUDA/Triton selectors, and
 kernel launch tuning are not supported environment contracts.
 

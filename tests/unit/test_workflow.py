@@ -7407,6 +7407,44 @@ def test_optimization_runner_writes_run_manifest_with_command_metadata(
     )
     assert manifest["reproducibility"]["seeded"] is False
     assert isinstance(manifest["reproducibility"]["torch_seed"], int)
+    assert manifest["reproducibility"]["seed_source"] is None
+    assert manifest["reproducibility"]["requested_torch_seed"] is None
+
+
+def test_optimization_runner_run_manifest_records_torch_seed_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("GPUREC_TORCH_SEED", "1234")
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        mode="specieswise",
+    )
+    runner = _WorkflowSpecieswiseOptimizerModeRunner(config)
+
+    runner.run()
+
+    manifest_path = config.out_dir / optimize_workflow._RUN_MANIFEST_ARTIFACT_FILE
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    reproducibility = manifest["reproducibility"]
+
+    assert reproducibility["seeded"] is True
+    assert reproducibility["seed_source"] == "GPUREC_TORCH_SEED"
+    assert reproducibility["requested_torch_seed"] == 1234
+    assert reproducibility["torch_seed"] == 1234
+
+
+def test_runtime_seed_context_from_environment_rejects_invalid_seed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("GPUREC_TORCH_SEED", "bad")
+    with pytest.raises(ValueError, match="GPUREC_TORCH_SEED must be an integer"):
+        optimize_workflow._runtime_seed_context_from_environment()
+
+    monkeypatch.setenv("GPUREC_TORCH_SEED", "-1")
+    with pytest.raises(ValueError, match="GPUREC_TORCH_SEED must be non-negative"):
+        optimize_workflow._runtime_seed_context_from_environment()
 
 
 def test_optimization_runner_adagrad_restarts_specieswise_uses_schedule(
