@@ -400,6 +400,14 @@ def _platform_matrix_issues(root: Path) -> list[str]:
         issues.append(
             "docs/platform-matrix.md must document gpurec doctor readiness command guidance"
         )
+    if "gpurec preprocess-check" not in text:
+        issues.append(
+            "docs/platform-matrix.md must document gpurec preprocess-check readiness command guidance"
+        )
+    if "gpurec backtrack-check" not in text:
+        issues.append(
+            "docs/platform-matrix.md must document gpurec backtrack-check readiness command guidance"
+        )
     matrix_terms = (
         "python",
         "pytorch",
