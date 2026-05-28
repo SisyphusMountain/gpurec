@@ -665,6 +665,7 @@ def _write_complete_release_metadata_fixture(
                     "Document thread controls for preprocessing and PyTorch execution.",
                     "Configure cache and temporary-file locations per cluster policy.",
                     "Keep logs useful when stderr/stdout are captured by schedulers.",
+                    "Document GPU memory requirements and estimate them before launch.",
                     "",
                 ]
             ),
@@ -2448,6 +2449,8 @@ def test_release_metadata_check_requires_slurm_lifecycle_phrases(
     assert "must document lifecycle phrase: cache" in result.stdout
     assert "must document lifecycle phrase: temporary-file locations" in result.stdout
     assert "must document lifecycle phrase: captured by schedulers" in result.stdout
+    assert "must document lifecycle phrase: gpu memory requirements" in result.stdout
+    assert "must document lifecycle phrase: estimate them before launch" in result.stdout
     assert result.stderr == ""
 
 

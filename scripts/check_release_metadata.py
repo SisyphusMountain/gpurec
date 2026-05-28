@@ -1072,6 +1072,8 @@ def _slurm_example_lifecycle_issues(root: Path) -> list[str]:
         "cache",
         "temporary-file locations",
         "captured by schedulers",
+        "gpu memory requirements",
+        "estimate them before launch",
     )
     issues: list[str] = []
     for phrase in required_phrases:
