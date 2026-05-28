@@ -6,6 +6,7 @@ import torch
 from gpurec.core.model import (
     GeneDataset,
     parse_alerax_family_file,
+    parse_alerax_family_file_with_paths,
     parse_alerax_mapping_file,
 )
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
@@ -290,6 +291,84 @@ def test_alerax_mapping_file_rejects_duplicate_gene_assignments(tmp_path):
         parse_alerax_mapping_file(mapping)
 
 
+def test_alerax_mapping_file_accepts_whitespace_comments_and_duplicate_species(tmp_path):
+    mapping = _write(
+        tmp_path / "fam.map",
+        "\n".join(
+            [
+                "# comment line",
+                " SpeciesA : gene1 ; gene2 ;  ",
+                "",
+                "SpeciesB:gene3",
+                "SpeciesA:gene4",
+                "   # trailing comment line",
+                "",
+            ]
+        )
+        + "\n",
+    )
+
+    parsed = parse_alerax_mapping_file(mapping)
+    assert parsed == {
+        "gene1": "SpeciesA",
+        "gene2": "SpeciesA",
+        "gene3": "SpeciesB",
+        "gene4": "SpeciesA",
+    }
+
+
+def test_alerax_mapping_file_empty_or_comment_only_is_empty_mapping(tmp_path):
+    mapping = _write(
+        tmp_path / "empty.map",
+        "\n".join(["", "   ", "# one", "   # two", ""]),
+    )
+    assert parse_alerax_mapping_file(mapping) == {}
+
+
+def test_alerax_family_file_large_manifest_selection_is_stable(tmp_path):
+    family_lines = ["[FAMILIES]"]
+    expected_names: list[str] = []
+    expected_tree_paths: list[list[str]] = []
+    expected_mapping_paths: list[str] = []
+    for idx in range(120):
+        name = f"fam_{idx:04d}"
+        gene_name = f"{name}.nwk"
+        map_name = f"{name}.map"
+        _write(tmp_path / gene_name, "(a:1,b:1);\n")
+        _write(tmp_path / map_name, "A:a\nB:b\n")
+        family_lines.extend(
+            [
+                f"- {name}",
+                f"starting_gene_tree = {gene_name}",
+                f"mapping = {map_name}",
+            ]
+        )
+        if 33 <= idx < 40:
+            expected_names.append(name)
+            expected_tree_paths.append([str((tmp_path / gene_name).resolve())])
+            expected_mapping_paths.append(str((tmp_path / map_name).resolve()))
+    families = _write(tmp_path / "families.txt", "\n".join(family_lines) + "\n")
+
+    names, tree_paths, mapping_paths = parse_alerax_family_file_with_paths(
+        families,
+        start=33,
+        max_families=7,
+    )
+    assert names == expected_names
+    assert tree_paths == expected_tree_paths
+    assert mapping_paths == expected_mapping_paths
+
+    names_full, tree_paths_full, maps_full = parse_alerax_family_file(
+        families,
+        start=33,
+        max_families=7,
+    )
+    assert names_full == expected_names
+    assert tree_paths_full == expected_tree_paths
+    assert len(maps_full) == 7
+    assert all(mapping == {"a": "A", "b": "B"} for mapping in maps_full)
+
+
 def test_gene_dataset_accepts_documented_simple_newick_subset(tmp_path):
     species_tree = _write(
         tmp_path / "sp.nwk",
@@ -318,6 +397,44 @@ def test_gene_dataset_accepts_documented_simple_newick_subset(tmp_path):
     assert dataset.S == 5
     assert int(family["N_splits"]) > 0
     assert set(map(int, family["leaf_col_index"].tolist())) == {0, 1, 3}
+
+
+@pytest.mark.parametrize(
+    "branch_length",
+    [
+        "0",
+        "1",
+        ".5",
+        "1.",
+        "1e-3",
+        "+2.0E-1",
+        "-0.0",
+    ],
+)
+def test_gene_dataset_accepts_supported_branch_length_variants(
+    tmp_path: Path,
+    branch_length: str,
+):
+    species_tree = _write(
+        tmp_path / "sp.nwk",
+        f"((A:{branch_length},B:{branch_length})AB:{branch_length},C:{branch_length})Root;",
+    )
+    gene_tree = _write(
+        tmp_path / "gene.nwk",
+        f"(a:{branch_length},b:{branch_length},c:{branch_length})GeneRoot;",
+    )
+    dataset = GeneDataset(
+        species_tree,
+        [[str(gene_tree)]],
+        genewise=False,
+        specieswise=False,
+        dtype=torch.float64,
+        device="cpu",
+        family_names=["fam0"],
+        leaf_species_maps=[{"a": "A", "b": "B", "c": "C"}],
+    )
+    assert dataset.S == 5
+    assert int(dataset.families[0]["N_splits"]) > 0
 
 
 @pytest.mark.parametrize(
