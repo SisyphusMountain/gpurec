@@ -96,6 +96,7 @@ def _write_complete_release_metadata_fixture(
     create_docs_readme: bool = True,
     create_production_optimization_guide: bool = True,
     create_glossary: bool = True,
+    create_workflow_examples: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -220,6 +221,46 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "glossary.md").write_text(
             "# Glossary\n", encoding="utf-8"
+        )
+    if create_workflow_examples:
+        (root / "docs" / "workflow-examples" / "README.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "workflow-examples" / "README.md").write_text(
+            "# Workflow Examples\n", encoding="utf-8"
+        )
+        (root / "docs" / "workflow-examples" / "end-to-end-tutorial").mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "workflow-examples" / "end-to-end-tutorial" / "README.md").write_text(
+            "# End-to-End Tutorial\n", encoding="utf-8"
+        )
+        (root / "docs" / "workflow-examples" / "end-to-end-tutorial" / "run.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        (root / "docs" / "workflow-examples" / "input-validation-fixtures").mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "workflow-examples" / "input-validation-fixtures" / "README.md").write_text(
+            "# Input Validation Fixtures\n", encoding="utf-8"
+        )
+        (root / "docs" / "workflow-examples" / "snakemake").mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "workflow-examples" / "snakemake" / "README.md").write_text(
+            "# Snakemake Example\n", encoding="utf-8"
+        )
+        (root / "docs" / "workflow-examples" / "nextflow").mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "workflow-examples" / "nextflow" / "README.md").write_text(
+            "# Nextflow Example\n", encoding="utf-8"
+        )
+        (root / "docs" / "workflow-examples" / "slurm").mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "workflow-examples" / "slurm" / "README.md").write_text(
+            "# Slurm Example\n", encoding="utf-8"
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
@@ -598,6 +639,45 @@ def test_release_metadata_check_requires_glossary(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/glossary.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_workflow_examples_readme(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        create_workflow_examples=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/workflow-examples/README.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_workflow_examples_run_config(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "workflow-examples" / "end-to-end-tutorial" / "run.json").unlink()
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "missing required release artifact: "
+        "docs/workflow-examples/end-to-end-tutorial/run.json"
+    ) in result.stdout
     assert result.stderr == ""
 
 

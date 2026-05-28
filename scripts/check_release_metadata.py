@@ -44,6 +44,13 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/README.md",
     "docs/production-optimization-guide.md",
     "docs/glossary.md",
+    "docs/workflow-examples/README.md",
+    "docs/workflow-examples/end-to-end-tutorial/README.md",
+    "docs/workflow-examples/end-to-end-tutorial/run.json",
+    "docs/workflow-examples/input-validation-fixtures/README.md",
+    "docs/workflow-examples/snakemake/README.md",
+    "docs/workflow-examples/nextflow/README.md",
+    "docs/workflow-examples/slurm/README.md",
 )
 
 
