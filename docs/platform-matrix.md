@@ -49,6 +49,7 @@ Offline installation is not currently supported as a production guarantee.
 ## Compatibility Gates (Recommended Before Long Runs)
 
 - `gpurec doctor` (single readiness command)
+- `gpurec doctor --json` (machine-readable readiness report)
 - `gpurec preprocess-check` and `gpurec backtrack-check`
 - `gpurec validate-config --config ... --check-preprocess --require-cuda-backward-ready`
 

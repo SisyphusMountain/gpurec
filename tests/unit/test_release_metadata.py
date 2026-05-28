@@ -276,6 +276,7 @@ def _write_complete_release_metadata_fixture(
                     "Python 3.10-3.12, PyTorch + Triton, CUDA-capable NVIDIA GPU runtime, and",
                     "source-only, source-built native preprocessing/backtracking artifacts with Rust/Cargo compiler toolchain.",
                     "Use gpurec doctor as the single readiness command before long runs.",
+                    "Use gpurec doctor --json for machine-readable readiness output.",
                     "Use gpurec preprocess-check and gpurec backtrack-check",
                     "for native artifact readiness checks.",
                     "",
@@ -1231,6 +1232,7 @@ def test_release_metadata_check_requires_platform_matrix_core_terms(
     assert result.returncode == 1
     assert "must document single readiness command guidance" in result.stdout
     assert "must document gpurec doctor readiness command guidance" in result.stdout
+    assert "must document gpurec doctor --json readiness command guidance" in result.stdout
     assert "must document gpurec preprocess-check readiness command guidance" in result.stdout
     assert "must document gpurec backtrack-check readiness command guidance" in result.stdout
     assert "must document matrix term: python" in result.stdout

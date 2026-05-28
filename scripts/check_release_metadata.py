@@ -408,6 +408,10 @@ def _platform_matrix_issues(root: Path) -> list[str]:
         issues.append(
             "docs/platform-matrix.md must document gpurec doctor readiness command guidance"
         )
+    if "gpurec doctor --json" not in text:
+        issues.append(
+            "docs/platform-matrix.md must document gpurec doctor --json readiness command guidance"
+        )
     if "gpurec preprocess-check" not in text:
         issues.append(
             "docs/platform-matrix.md must document gpurec preprocess-check readiness command guidance"
