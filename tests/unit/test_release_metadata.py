@@ -419,6 +419,20 @@ def test_required_release_artifacts_exist_in_repository():
     assert missing == []
 
 
+def test_required_release_artifacts_contract_is_normalized_and_stable():
+    checker = _load_check_release_metadata_module()
+    artifacts = list(checker.REQUIRED_RELEASE_ARTIFACTS)
+
+    assert artifacts == sorted(artifacts)
+    assert len(artifacts) == len(set(artifacts))
+    for artifact in artifacts:
+        assert artifact == artifact.strip()
+        assert artifact
+        assert not artifact.startswith("/")
+        assert "\\" not in artifact
+        assert ".." not in Path(artifact).parts
+
+
 def test_top_level_package_version_matches_project_metadata():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.M)
