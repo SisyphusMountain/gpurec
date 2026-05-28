@@ -314,6 +314,14 @@ def _publication_checklist_issues(root: Path) -> list[str]:
         issues.append(
             "docs/publication-checklist.md must mention checkpoints/ archive guidance"
         )
+    if "known-limitations.md" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention known-limitations.md reporting guidance"
+        )
+    if "release-notes.md" not in text or "migration notes" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention release-notes.md migration notes guidance"
+        )
     return issues
 
 
