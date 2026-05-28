@@ -211,6 +211,7 @@ def _write_complete_release_metadata_fixture(
                     "CI rejects accidental public-surface drift before release publication.",
                     "Optional heavy dependencies do not load during gpurec --help.",
                     "CI maintains a generated CLI help snapshot for stable flags and exits.",
+                    "CI includes parser-level assertions for important flags and exit behavior.",
                     "CI enforces docstring requirements for public APIs.",
                     "Release artifacts are signed and checksummed before publication.",
                     "Output artifacts have stable schemas or documented compatibility rules.",
@@ -2952,6 +2953,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: accidental public-surface drift" in result.stdout
     assert "must document release gate phrase: optional heavy dependencies do not load during gpurec --help" in result.stdout
     assert "must document release gate phrase: generated cli help snapshot" in result.stdout
+    assert "must document release gate phrase: parser-level assertions for important flags and exit behavior" in result.stdout
     assert "must document release gate phrase: docstring requirements for public apis" in result.stdout
     assert "must document release gate phrase: signed" in result.stdout
     assert "must document release gate phrase: stable schemas" in result.stdout

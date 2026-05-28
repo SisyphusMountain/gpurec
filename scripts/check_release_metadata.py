@@ -548,6 +548,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "accidental public-surface drift",
         "optional heavy dependencies do not load during gpurec --help",
         "generated cli help snapshot",
+        "parser-level assertions for important flags and exit behavior",
         "docstring requirements for public apis",
         "signed",
         "stable schemas",

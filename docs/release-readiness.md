@@ -32,6 +32,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - CI rejects accidental public-surface drift before release publication.
 - Optional heavy dependencies do not load during gpurec --help or metadata inspection.
 - CI maintains a generated CLI help snapshot for stable flags and exits.
+- CI includes parser-level assertions for important flags and exit behavior.
 - CI enforces docstring requirements for public APIs.
 - Release artifacts are signed and checksummed before publication.
 - Release artifacts include an SBOM or equivalent dependency inventory export.
