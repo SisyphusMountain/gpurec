@@ -1065,12 +1065,14 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/production-optimization-guide.md",
         "docs/professionalization-audit-progress.tex",
         "docs/release-readiness.md",
+        "docs/release-notes.md",
         "docs/long-validation-workflow.md",
         "docs/validation-envelope.md",
         "docs/support-policy.md",
         "docs/versioning-policy.md",
         "docs/publication-checklist.md",
         "docs/troubleshooting.md",
+        "docs/glossary.md",
         "docs/workflow-examples/README.md",
         "docs/workflow-examples/end-to-end-tutorial/README.md",
         "docs/workflow-examples/end-to-end-tutorial/run.json",
@@ -1113,6 +1115,23 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "wheel includes forbidden paths",
     ):
         assert required in artifact_check
+
+
+def test_cpu_sdist_required_docs_cover_release_metadata_required_docs():
+    workflow = _load_cpu_ci_workflow()
+    package = workflow["jobs"]["package"]
+    artifact_check = _step_run(package, "Check artifact package data")
+    checker = _load_check_release_metadata_module()
+
+    required_release_docs = [
+        artifact
+        for artifact in checker.REQUIRED_RELEASE_ARTIFACTS
+        if artifact.startswith("docs/")
+    ]
+    for doc_path in required_release_docs:
+        assert (
+            doc_path in artifact_check
+        ), f"required release doc missing from sdist gate: {doc_path}"
 
     assert _workflow_step(
         package,
