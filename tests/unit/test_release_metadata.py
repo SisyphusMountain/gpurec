@@ -202,6 +202,7 @@ def _write_complete_release_metadata_fixture(
                     "Release artifacts include a reproducible dependency manifest and dependency scan snapshot.",
                     "Help and import smoke tests remain CPU-safe during release checks.",
                     "CI rejects obvious lint errors before release publication.",
+                    "CI rejects broken type annotations in public modules.",
                     "Output artifacts have stable schemas or documented compatibility rules.",
                     "Known limitations are prominent and accurate.",
                     "CLI errors are actionable for common input, native binary, CUDA, and convergence failures.",
@@ -2932,6 +2933,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: dependency scan snapshot" in result.stdout
     assert "must document release gate phrase: help and import smoke tests remain cpu-safe" in result.stdout
     assert "must document release gate phrase: ci rejects obvious lint errors" in result.stdout
+    assert "must document release gate phrase: broken type annotations in public modules" in result.stdout
     assert "must document release gate phrase: stable schemas" in result.stdout
     assert "must document release gate phrase: compatibility rules" in result.stdout
     assert "must document release gate phrase: known limitations" in result.stdout
