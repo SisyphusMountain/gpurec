@@ -36,6 +36,8 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/api-contract.md",
     "docs/known-limitations.md",
     "docs/bioinformatics-quickstart.md",
+    "docs/input-preparation.md",
+    "docs/output-artifacts.md",
 )
 
 

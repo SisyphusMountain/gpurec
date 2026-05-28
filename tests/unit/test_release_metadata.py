@@ -88,6 +88,8 @@ def _write_complete_release_metadata_fixture(
     create_api_contract: bool = True,
     create_known_limitations: bool = True,
     create_bioinformatics_quickstart: bool = True,
+    create_input_preparation: bool = True,
+    create_output_artifacts: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -156,6 +158,20 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "bioinformatics-quickstart.md").write_text(
             "# Bioinformatics Quickstart\n", encoding="utf-8"
+        )
+    if create_input_preparation:
+        (root / "docs" / "input-preparation.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "input-preparation.md").write_text(
+            "# Input Preparation\n", encoding="utf-8"
+        )
+    if create_output_artifacts:
+        (root / "docs" / "output-artifacts.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "output-artifacts.md").write_text(
+            "# Output Artifacts\n", encoding="utf-8"
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
@@ -374,6 +390,44 @@ def test_release_metadata_check_requires_bioinformatics_quickstart(tmp_path: Pat
         "missing required release artifact: docs/bioinformatics-quickstart.md"
         in result.stdout
     )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_input_preparation(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        create_input_preparation=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/input-preparation.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_output_artifacts_doc(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        create_output_artifacts=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/output-artifacts.md" in result.stdout
     assert result.stderr == ""
 
 
