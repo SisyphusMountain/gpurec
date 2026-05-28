@@ -1890,9 +1890,17 @@ def _run_config_from_args(
     *,
     validate_input_paths: bool = True,
 ) -> RunConfig:
-    data = _config_data(args.config)
+    data = _resolved_run_config_data_from_args(args)
     from gpurec.workflow.config import RunConfig
 
+    config = RunConfig.from_dict(data)
+    if validate_input_paths:
+        _validate_run_config_input_paths(config)
+    return config
+
+
+def _resolved_run_config_data_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    data = _config_data(args.config)
     for name in _run_config_cli_override_fields():
         _set_if_present(data, args, name)
     missing = [
@@ -1902,10 +1910,52 @@ def _run_config_from_args(
     ]
     if missing:
         raise ValueError(f"missing required optimize option(s): {', '.join(missing)}")
-    config = RunConfig.from_dict(data)
-    if validate_input_paths:
-        _validate_run_config_input_paths(config)
-    return config
+    return data
+
+
+def _run_config_explanation(
+    config: RunConfig,
+    *,
+    raw_config_data: dict[str, Any],
+    route_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    provided_fields = sorted(str(name) for name in raw_config_data)
+    effective = config.to_dict()
+    inferred_defaults = sorted(
+        name for name in effective if name not in raw_config_data
+    )
+
+    optimizer_source = "explicit"
+    if "optimizer" not in raw_config_data:
+        optimizer_source = "default"
+    elif str(raw_config_data.get("optimizer", "")).strip().lower() == "auto":
+        optimizer_source = "mode-default-from-auto"
+
+    return {
+        "provided_fields": provided_fields,
+        "inferred_default_fields": inferred_defaults,
+        "optimizer_resolution": {
+            "source": optimizer_source,
+            "mode": config.mode,
+            "effective_optimizer": config.optimizer,
+            "mode_default_optimizer": route_metadata.get("mode_default_optimizer"),
+            "uses_mode_default_optimizer": route_metadata.get(
+                "uses_mode_default_optimizer"
+            ),
+        },
+        "route_resolution": {
+            "uses_production_default_route": route_metadata.get(
+                "uses_production_default_route"
+            ),
+            "production_default_basis": route_metadata.get(
+                "production_default_basis"
+            ),
+            "batch_packing": route_metadata.get("batch_packing"),
+            "family_chunk_size": route_metadata.get("family_chunk_size"),
+            "clade_budget": route_metadata.get("clade_budget"),
+        },
+        "effective_config": _ensure_json_ready(effective),
+    }
 
 
 def _preflight_run_config(
@@ -2675,6 +2725,14 @@ def build_parser() -> argparse.ArgumentParser:
             "the retained CUDA backward S > 256 gate."
         ),
     )
+    validate_parser.add_argument(
+        "--explain-config",
+        action="store_true",
+        help=(
+            "Include effective-config defaults and route/optimizer resolution "
+            "details to explain why selected defaults were chosen."
+        ),
+    )
     validate_parser.set_defaults(_command_parser=validate_parser)
 
     validate_inputs_parser = sub.add_parser(
@@ -3004,7 +3062,10 @@ def main(argv: list[str] | None = None) -> None:
                 "--require-cuda-backward-ready requires --check-preprocess"
             )
         try:
-            config = _run_config_from_args(args, validate_input_paths=False)
+            raw_config_data = _resolved_run_config_data_from_args(args)
+            from gpurec.workflow.config import RunConfig
+
+            config = RunConfig.from_dict(raw_config_data)
             route_metadata = _require_config_route_gates(
                 command_parser,
                 config,
@@ -3022,6 +3083,15 @@ def main(argv: list[str] | None = None) -> None:
             route_metadata
             if route_metadata is not None
             else _config_route_metadata(config)
+        )
+        explanation = (
+            _run_config_explanation(
+                config,
+                raw_config_data=raw_config_data,
+                route_metadata=route_metadata_for_report,
+            )
+            if args.explain_config
+            else None
         )
         preprocess_text = ""
         if args.check_preprocess:
@@ -3074,8 +3144,17 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 payload["preprocess_checked"] = False
             payload["route"] = _ensure_json_ready(route_metadata_for_report)
+            if explanation is not None:
+                payload["explain_config"] = explanation
             print(json.dumps(_ensure_json_ready(payload), indent=2), flush=True)
         else:
+            explain_text = ""
+            if explanation is not None:
+                explain_text = (
+                    " explain_config=true "
+                    f"optimizer_source={explanation['optimizer_resolution']['source']} "
+                    f"default_fields={len(explanation['inferred_default_fields'])}"
+                )
             print(
                 "valid_config=true "
                 f"mode={config.mode} optimizer={config.optimizer} "
@@ -3084,7 +3163,7 @@ def main(argv: list[str] | None = None) -> None:
                 f"mapped_families={summary['mapped_families']} "
                 f"{_validate_config_route_text(config, route_metadata=route_metadata)} "
                 f"device={config.device} {_optional_text('out_dir', config.out_dir)}"
-                f"{preprocess_text}",
+                f"{preprocess_text}{explain_text}",
                 flush=True,
             )
         return

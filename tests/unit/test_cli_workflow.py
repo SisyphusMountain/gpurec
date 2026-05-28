@@ -144,6 +144,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         expected_parser_dests
         | {
             "check_preprocess",
+            "explain_config",
             "require_cuda_backward_ready",
             "require_mode_default_optimizer",
             "require_production_default_route",
@@ -1397,6 +1398,70 @@ def test_cli_validate_config_emits_json_without_preprocess(
     assert payload["preprocess_checked"] is False
     assert "preprocessed_families" not in payload
     assert "preprocessed_species_nodes" not in payload
+
+
+def test_cli_validate_config_explain_config_emits_json_explanation(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    main(
+        [
+            "validate-config",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--device",
+            "cuda",
+            "--json",
+            "--explain-config",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["valid_config"] is True
+    assert "explain_config" in payload
+    explain = payload["explain_config"]
+    assert "effective_config" in explain
+    assert explain["effective_config"]["mode"] == "genewise"
+    assert explain["optimizer_resolution"]["effective_optimizer"] == "hessian-sgd"
+    assert explain["optimizer_resolution"]["mode_default_optimizer"] == "hessian-sgd"
+    assert explain["optimizer_resolution"]["uses_mode_default_optimizer"] is True
+    assert "species_tree" in explain["provided_fields"]
+    assert "optimizer" in explain["inferred_default_fields"]
+
+
+def test_cli_validate_config_explain_config_emits_text_summary(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    main(
+        [
+            "validate-config",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--device",
+            "cuda",
+            "--explain-config",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "valid_config=true" in captured.out
+    assert "explain_config=true" in captured.out
+    assert "optimizer_source=default" in captured.out
+    assert "default_fields=" in captured.out
 
 
 def test_cli_validate_inputs_emits_json_report(tmp_path: Path, capsys):
