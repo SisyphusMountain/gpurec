@@ -212,6 +212,7 @@ def _write_complete_release_metadata_fixture(
                     "Support window covers Python, PyTorch, CUDA, and native artifact versions.",
                     "Release and patch policy: older tags may receive backports.",
                     "Support scope follows api-contract.md guarantees.",
+                    "Support window references platform-matrix.md as the environment source of truth.",
                     "Support evidence includes run_config.json, history.jsonl, summary.json, and run_manifest.json.",
                     "Support evidence includes checkpoint metadata when applicable.",
                     "Support evidence includes gpurec doctor --json readiness output.",
@@ -858,6 +859,7 @@ def test_release_metadata_check_requires_support_policy_support_window_phrases(
     assert "must document support-window phrase: release and patch policy" in result.stdout
     assert "must document support-window phrase: older tags may receive backports" in result.stdout
     assert "must document support-window phrase: api-contract.md" in result.stdout
+    assert "must document support-window phrase: platform-matrix.md" in result.stdout
     assert "must document support-window phrase: run_config.json" in result.stdout
     assert "must document support-window phrase: history.jsonl" in result.stdout
     assert "must document support-window phrase: summary.json" in result.stdout
