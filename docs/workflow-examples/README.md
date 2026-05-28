@@ -13,6 +13,7 @@ contexts:
 Snakemake and Nextflow examples are production workflow-manager references that:
 
 - fail fast on bad config during preflight
+- run `gpurec validate-config --check-preprocess` in the preflight stage
 - resume from a checkpoint after interruptions
 - reject non-converged outputs before sampling
 
