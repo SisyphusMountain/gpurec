@@ -131,6 +131,7 @@ def _citation_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
     has_cff_version = False
     has_title = False
     has_repository_code = False
+    citation_repository_code: str | None = None
     preferred_version: str | None = None
     in_preferred = False
     preferred_indent = 0
@@ -151,6 +152,7 @@ def _citation_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
             has_title = True
         if stripped.startswith("repository-code:"):
             has_repository_code = True
+            citation_repository_code = stripped.split(":", 1)[1].strip().strip('"').strip("'")
         if stripped.startswith("version:"):
             value = stripped.split(":", 1)[1].strip().strip('"').strip("'")
             if in_preferred and preferred_version is None:
@@ -180,6 +182,17 @@ def _citation_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
             "CITATION.cff preferred-citation version must match pyproject version "
             f"({preferred_version!r} != {project_version!r})"
         )
+
+    project_urls = project.get("urls")
+    if isinstance(project_urls, dict):
+        repository_url = project_urls.get("Repository")
+        if isinstance(repository_url, str) and citation_repository_code is not None:
+            if citation_repository_code != repository_url:
+                issues.append(
+                    "CITATION.cff repository-code must match "
+                    "pyproject [project.urls].Repository "
+                    f"({citation_repository_code!r} != {repository_url!r})"
+                )
 
     return issues
 

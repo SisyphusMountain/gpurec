@@ -1226,6 +1226,35 @@ def test_release_metadata_check_requires_citation_repository_code_field(
     assert result.stderr == ""
 
 
+def test_release_metadata_check_requires_citation_repository_url_match(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text(
+        citation.read_text(encoding="utf-8").replace(
+            'repository-code: "https://example.invalid/repo"',
+            'repository-code: "https://example.invalid/other"',
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "CITATION.cff repository-code must match "
+        "pyproject [project.urls].Repository"
+    ) in result.stdout
+    assert result.stderr == ""
+
+
 def test_release_metadata_check_requires_citation_preferred_version_match(
     tmp_path: Path,
 ):
