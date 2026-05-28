@@ -249,8 +249,8 @@ def _write_complete_release_metadata_fixture(
                     "# Platform Matrix",
                     "",
                     "Primary supported configuration uses Linux x86_64,",
-                    "Python 3.10-3.12, CUDA-capable NVIDIA GPU runtime, and",
-                    "source-built native preprocessing/backtracking artifacts.",
+                    "Python 3.10-3.12, PyTorch + Triton, CUDA-capable NVIDIA GPU runtime, and",
+                    "source-built native preprocessing/backtracking artifacts with Rust toolchain.",
                     "",
                     "## Offline Installation Policy",
                     "",
@@ -1019,6 +1019,44 @@ def test_release_metadata_check_requires_platform_matrix_primary_configuration(
 
     assert result.returncode == 1
     assert "must document the primary supported configuration" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_platform_matrix_core_terms(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "platform-matrix.md").write_text(
+        "\n".join(
+            [
+                "# Platform Matrix",
+                "",
+                "Primary supported configuration is documented.",
+                "",
+                "## Offline Installation Policy",
+                "",
+                "Offline installation is not currently supported as a production guarantee.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document matrix term: python" in result.stdout
+    assert "must document matrix term: pytorch" in result.stdout
+    assert "must document matrix term: cuda" in result.stdout
+    assert "must document matrix term: triton" in result.stdout
+    assert "must document matrix term: gpu" in result.stdout
+    assert "must document matrix term: rust" in result.stdout
     assert result.stderr == ""
 
 
