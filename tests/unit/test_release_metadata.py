@@ -196,6 +196,7 @@ def _write_complete_release_metadata_fixture(
                     "Build release artifacts from a clean checkout before tagging.",
                     "Install and smoke release artifacts in a fresh environment.",
                     "Smoke the installed wheel from outside the checkout.",
+                    "A fresh install must run a readiness command successfully before release sign-off.",
                     "Checksums, provenance evidence, and binary provenance records are required.",
                     "sha256sum dist/* > dist/SHA256SUMS",
                     "",
@@ -2839,6 +2840,8 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: clean checkout" in result.stdout
     assert "must document release gate phrase: fresh environment" in result.stdout
     assert "must document release gate phrase: outside the checkout" in result.stdout
+    assert "must document release gate phrase: fresh install" in result.stdout
+    assert "must document release gate phrase: readiness command successfully" in result.stdout
     assert "must document release gate phrase: checksums" in result.stdout
     assert "must document release gate phrase: provenance" in result.stdout
     assert "must document release gate phrase: binary provenance" in result.stdout

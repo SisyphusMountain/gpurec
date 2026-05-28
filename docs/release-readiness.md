@@ -228,6 +228,8 @@ gpurec doctor --json
 
 The release readiness command set must confirm writable output directory checks
 as part of `gpurec doctor` readiness evidence before long GPU runs.
+A fresh install must run a readiness command successfully before release
+publication.
 
 The checker validates required project metadata, required URLs and
 classifiers, the `gpurec = "gpurec.cli:main"` console-script entry point,

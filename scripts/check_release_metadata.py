@@ -530,6 +530,8 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "clean checkout",
         "fresh environment",
         "outside the checkout",
+        "fresh install",
+        "readiness command successfully",
         "checksums",
         "provenance",
         "binary provenance",
