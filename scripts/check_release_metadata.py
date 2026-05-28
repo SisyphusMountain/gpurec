@@ -660,6 +660,8 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "checkpoints",
         "run-directory inspection",
         "repair",
+        "recover or safely discard",
+        "without inspecting python source",
     )
     issues: list[str] = []
     for phrase in required_phrases:

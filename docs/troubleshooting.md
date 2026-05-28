@@ -20,6 +20,8 @@ vs input contract failures.
 After a failed run, the authoritative files are `summary.json`,
 `history.jsonl`, and `checkpoints/latest.pt`. Use them to decide whether to
 resume, retune, or discard the run directory.
+With these artifacts and commands, operators can recover or safely discard
+failed runs without inspecting Python source.
 If failure happens during partial final artifact publication, resume from
 `checkpoints/latest.pt` after preserving existing artifacts for comparison.
 

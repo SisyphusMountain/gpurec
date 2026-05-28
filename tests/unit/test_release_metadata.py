@@ -490,6 +490,7 @@ def _write_complete_release_metadata_fixture(
                     "Include resume guidance after partial final artifact publication.",
                     "Failure states remain machine-readable in summaries and checkpoints.",
                     "Document run-directory inspection and repair guidance.",
+                    "Operators can recover or safely discard failed runs without inspecting Python source.",
                     "",
                 ]
             ),
@@ -2090,6 +2091,8 @@ def test_release_metadata_check_requires_troubleshooting_recovery_phrases(
     assert "must document failure-recovery phrase: checkpoints" in result.stdout
     assert "must document failure-recovery phrase: run-directory inspection" in result.stdout
     assert "must document failure-recovery phrase: repair" in result.stdout
+    assert "must document failure-recovery phrase: recover or safely discard" in result.stdout
+    assert "must document failure-recovery phrase: without inspecting python source" in result.stdout
     assert result.stderr == ""
 
 
