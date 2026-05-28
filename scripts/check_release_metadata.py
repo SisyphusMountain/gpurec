@@ -545,6 +545,8 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "realistic dataset",
         "validated, optimized, inspected, resumed, and sampled",
         "documented commands",
+        "gpu validation has passed",
+        "production route",
         "checksums",
         "provenance",
         "binary provenance",

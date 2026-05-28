@@ -18,6 +18,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - CLI errors are actionable for common input, native binary, CUDA, and
   convergence failures.
 - A realistic dataset can be validated, optimized, inspected, resumed, and sampled using documented commands.
+- GPU validation has passed for the production route.
 - Offline installation policy is documented and current in
   `docs/platform-matrix.md`.
 - Build source artifacts from a clean checkout and install them in a fresh environment
