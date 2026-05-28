@@ -1617,6 +1617,18 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         assert required in artifact_check
 
 
+def test_cpu_ci_runs_release_metadata_checker_before_build():
+    workflow = _load_cpu_ci_workflow()
+    steps = workflow["jobs"]["package"]["steps"]
+    names = [step.get("name") for step in steps]
+
+    assert "Run release metadata checker" in names
+    assert "Build source and wheel artifacts" in names
+    assert names.index("Run release metadata checker") < names.index(
+        "Build source and wheel artifacts"
+    )
+
+
 def test_cpu_sdist_required_artifacts_cover_release_metadata_required_artifacts():
     workflow = _load_cpu_ci_workflow()
     package = workflow["jobs"]["package"]
