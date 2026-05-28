@@ -275,6 +275,14 @@ def _policy_document_issues(root: Path) -> list[str]:
             issues.append(
                 "docs/versioning-policy.md must describe MAJOR.MINOR.PATCH semantics"
             )
+        if "latest release tag" not in text:
+            issues.append(
+                "docs/versioning-policy.md must define latest release tag support line"
+            )
+        if "backports" not in text or "best-effort" not in text:
+            issues.append(
+                "docs/versioning-policy.md must define backport support expectations"
+            )
 
     return issues
 

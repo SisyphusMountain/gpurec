@@ -218,6 +218,8 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "This project follows semantic versioning.",
                     "Version format is MAJOR.MINOR.PATCH.",
+                    "The latest release tag is the primary supported line.",
+                    "Backports to older tags are best-effort.",
                     "",
                 ]
             ),
@@ -846,6 +848,8 @@ def test_release_metadata_check_requires_versioning_policy_semver_statements(
     assert result.returncode == 1
     assert "must state semantic versioning policy" in result.stdout
     assert "must describe MAJOR.MINOR.PATCH semantics" in result.stdout
+    assert "must define latest release tag support line" in result.stdout
+    assert "must define backport support expectations" in result.stdout
     assert result.stderr == ""
 
 
