@@ -117,6 +117,57 @@ def _release_artifact_issues(root: Path) -> list[str]:
     return issues
 
 
+def _citation_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
+    citation = root / "CITATION.cff"
+    if not citation.is_file():
+        return []
+
+    project_version = project.get("version")
+    if not isinstance(project_version, str) or not project_version.strip():
+        return []
+
+    top_level_version: str | None = None
+    preferred_version: str | None = None
+    in_preferred = False
+    preferred_indent = 0
+    for raw_line in citation.read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if stripped.startswith("preferred-citation:"):
+            in_preferred = True
+            preferred_indent = indent
+            continue
+        if in_preferred and indent <= preferred_indent:
+            in_preferred = False
+        if stripped.startswith("version:"):
+            value = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+            if in_preferred and preferred_version is None:
+                preferred_version = value
+            elif top_level_version is None:
+                top_level_version = value
+
+    issues: list[str] = []
+    if top_level_version is None:
+        issues.append("CITATION.cff must declare a top-level version")
+    elif top_level_version != project_version:
+        issues.append(
+            "CITATION.cff top-level version must match pyproject version "
+            f"({top_level_version!r} != {project_version!r})"
+        )
+
+    if preferred_version is None:
+        issues.append("CITATION.cff preferred-citation must declare a version")
+    elif preferred_version != project_version:
+        issues.append(
+            "CITATION.cff preferred-citation version must match pyproject version "
+            f"({preferred_version!r} != {project_version!r})"
+        )
+
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -248,6 +299,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_url_metadata_issues(project))
     issues.extend(_script_metadata_issues(project))
     issues.extend(_release_artifact_issues(project_root))
+    issues.extend(_citation_metadata_issues(project, project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)

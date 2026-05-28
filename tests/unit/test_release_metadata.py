@@ -110,7 +110,21 @@ def _write_complete_release_metadata_fixture(
     if create_changelog:
         (root / "CHANGELOG.md").write_text("# Changelog\n", encoding="utf-8")
     if create_citation:
-        (root / "CITATION.cff").write_text("cff-version: 1.2.0\n", encoding="utf-8")
+        (root / "CITATION.cff").write_text(
+            "\n".join(
+                [
+                    "cff-version: 1.2.0",
+                    'title: "fixture"',
+                    'version: "0.0.0"',
+                    "preferred-citation:",
+                    '  title: "fixture"',
+                    '  type: software',
+                    '  version: "0.0.0"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
     if create_release_notes:
         (root / "docs" / "release-notes.md").parent.mkdir(
             parents=True, exist_ok=True
@@ -827,6 +841,55 @@ def test_release_metadata_check_requires_readme_metadata(tmp_path: Path):
     assert result.returncode == 1
     assert "must declare readme metadata" in result.stdout
     assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_citation_top_level_version_match(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text(
+        citation.read_text(encoding="utf-8").replace('"0.0.0"', '"9.9.9"', 1),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "CITATION.cff top-level version must match pyproject version" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_citation_preferred_version_match(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text(
+        citation.read_text(encoding="utf-8").replace('  version: "0.0.0"', '  version: "9.9.9"', 1),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "CITATION.cff preferred-citation version must match pyproject version"
+        in result.stdout
+    )
     assert result.stderr == ""
 
 
