@@ -35,6 +35,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - CI includes parser-level assertions for important flags and exit behavior.
 - CI enforces docstring requirements for public APIs.
 - Release artifacts are signed and checksummed before publication.
+- Binary artifacts are traced to source revisions and build settings.
 - Release artifacts include an SBOM or equivalent dependency inventory export.
 - Release process includes dependency vulnerability scanning evidence.
 - A fresh machine can reproduce the documented validation run.

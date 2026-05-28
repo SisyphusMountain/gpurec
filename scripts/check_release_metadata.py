@@ -551,6 +551,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "parser-level assertions for important flags and exit behavior",
         "docstring requirements for public apis",
         "signed",
+        "traced to source revisions and build settings",
         "stable schemas",
         "compatibility rules",
         "known limitations",
