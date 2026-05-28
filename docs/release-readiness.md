@@ -84,6 +84,12 @@ fi
 Keep these generated files as part of the internal release evidence directory for
 post-incident comparison and reproducibility.
 
+Generate and archive checksums for release artifacts:
+
+```bash
+sha256sum dist/* > dist/SHA256SUMS
+```
+
 Before release handoff, add a quick artifact sanity pass over the final output
 directory with the local validator script so structural regression in `summary.json`,
 `history.jsonl`, checkpoint payloads, TSV exports, and `run_manifest.json` is

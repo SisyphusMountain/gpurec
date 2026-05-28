@@ -859,3 +859,5 @@ Project governance files are: `CHANGELOG.md`, `CITATION.cff`,
 `docs/release-notes.md`, `docs/support-policy.md`,
 `docs/versioning-policy.md`, `docs/publication-checklist.md`, and top-level
 `LICENSE`.
+Release provenance expectations, including `dist/SHA256SUMS`, are documented in
+[`docs/release-readiness.md`](docs/release-readiness.md).

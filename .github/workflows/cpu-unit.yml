@@ -135,6 +135,11 @@ jobs:
             echo "cargo-audit unavailable; skipping rust-audit scan" | tee dist/cargo-audit-skip.txt
           fi
 
+      - name: Generate artifact checksums
+        run: |
+          sha256sum dist/* > dist/SHA256SUMS
+          test -s dist/SHA256SUMS
+
       - name: Check artifact metadata
         run: python -m twine check dist/*
 

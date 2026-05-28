@@ -604,6 +604,9 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
     assert "python -m build" in build
 
     assert _step_run(package, "Check artifact metadata") == "python -m twine check dist/*"
+    checksums = _step_run(package, "Generate artifact checksums")
+    assert "sha256sum dist/* > dist/SHA256SUMS" in checksums
+    assert "test -s dist/SHA256SUMS" in checksums
 
     artifact_check = _step_run(package, "Check artifact package data")
     for required in (
