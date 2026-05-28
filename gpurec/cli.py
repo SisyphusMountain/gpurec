@@ -3749,7 +3749,13 @@ def main(argv: list[str] | None = None) -> None:
             package_version=package_version,
         )
         if not backtrack_payload.get("ok"):
-            _exit_runtime_error(command_parser, str(backtrack_payload.get("error")))
+            _exit_runtime_error(
+                command_parser,
+                _with_suggestion(
+                    str(backtrack_payload.get("error")),
+                    "install or point to a compatible backtracking artifact via --backtrack-binary/GPUREC_BACKTRACK_BIN, then rerun backtrack-check",
+                ),
+            )
         payload = {
             "backtracking_available": True,
             "backtrack_binary": (
@@ -3778,7 +3784,10 @@ def main(argv: list[str] | None = None) -> None:
         if not preprocess_payload.get("ok"):
             _exit_runtime_error(
                 command_parser,
-                str(preprocess_payload.get("error")),
+                _with_suggestion(
+                    str(preprocess_payload.get("error")),
+                    "install or point to a compatible preprocessing native library via --preprocess-native-lib/GPUREC_PREPROCESS_NATIVE_LIB, then rerun preprocess-check",
+                ),
             )
         preprocess_native_lib = preprocess_payload.get("path")
         payload = {

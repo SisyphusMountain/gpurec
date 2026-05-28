@@ -6702,6 +6702,8 @@ def test_cli_backtrack_check_reports_missing_binary_without_traceback(
     assert exc_info.value.code == 1
     assert "GPUREC_BACKTRACK_BIN" in captured.err
     assert "--backtrack-binary" in captured.err
+    assert "suggestion:" in captured.err
+    assert "rerun backtrack-check" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -6748,6 +6750,8 @@ def test_cli_preprocess_check_reports_missing_native_without_traceback(
     assert exc_info.value.code == 1
     assert "GPUREC_PREPROCESS_NATIVE_LIB" in captured.err
     assert "--preprocess-native-lib" in captured.err
+    assert "suggestion:" in captured.err
+    assert "rerun preprocess-check" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -6827,6 +6831,8 @@ def test_cli_backtrack_check_reports_version_incompatibility(tmp_path, capsys, m
         "incompatible native artifact contract version"
         in captured.err
     )
+    assert "suggestion:" in captured.err
+    assert "rerun backtrack-check" in captured.err
 
 
 def test_cli_preprocess_check_reports_version_incompatibility(
@@ -6854,6 +6860,8 @@ def test_cli_preprocess_check_reports_version_incompatibility(
         "incompatible native artifact contract version"
         in captured.err
     )
+    assert "suggestion:" in captured.err
+    assert "rerun preprocess-check" in captured.err
 
 
 def test_cli_doctor_reports_ready_json(tmp_path: Path, capsys, monkeypatch):
