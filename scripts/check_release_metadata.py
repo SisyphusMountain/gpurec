@@ -1034,6 +1034,7 @@ def _api_contract_json_mode_issues(root: Path) -> list[str]:
         "checkpoint-info",
         "summary-info",
         "json mode emits single json objects with stable keys",
+        "required machine path for automation",
     )
     issues: list[str] = []
     for phrase in required_phrases:

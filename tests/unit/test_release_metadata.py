@@ -289,6 +289,7 @@ def _write_complete_release_metadata_fixture(
                     "`--json` mode is supported by validate-config, doctor,",
                     "checkpoint-info, and summary-info.",
                     "JSON mode emits single JSON objects with stable keys.",
+                    "JSON mode is the required machine path for automation.",
                     "Compatibility policy covers config fields, CLI flags,",
                     "Python imports, and output artifacts.",
                     "Deprecation warnings and migration notes are required",
@@ -2456,6 +2457,10 @@ def test_release_metadata_check_requires_api_contract_json_output_phrases(
     assert "must document json-output contract phrase: summary-info" in result.stdout
     assert (
         "must document json-output contract phrase: json mode emits single json objects with stable keys"
+        in result.stdout
+    )
+    assert (
+        "must document json-output contract phrase: required machine path for automation"
         in result.stdout
     )
     assert result.stderr == ""
