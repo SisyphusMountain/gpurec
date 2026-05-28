@@ -1106,6 +1106,7 @@ def _nextflow_example_gate_issues(root: Path) -> list[str]:
         "reject non-converged outputs",
         "--require-converged",
         "--require-final-check-ok",
+        "gpurec sample",
     )
     issues: list[str] = []
     for phrase in required_phrases:

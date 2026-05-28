@@ -638,6 +638,7 @@ def _write_complete_release_metadata_fixture(
                     "gpurec validate-config --check-preprocess",
                     "--require-converged",
                     "--require-final-check-ok",
+                    "gpurec sample",
                     "",
                 ]
             ),
@@ -2480,6 +2481,7 @@ def test_release_metadata_check_requires_nextflow_gate_phrases(
     assert "must document gate phrase: reject non-converged outputs" in result.stdout
     assert "must document gate phrase: --require-converged" in result.stdout
     assert "must document gate phrase: --require-final-check-ok" in result.stdout
+    assert "must document gate phrase: gpurec sample" in result.stdout
     assert result.stderr == ""
 
 
