@@ -247,6 +247,10 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# Platform Matrix",
                     "",
+                    "Primary supported configuration uses Linux x86_64,",
+                    "Python 3.10-3.12, CUDA-capable NVIDIA GPU runtime, and",
+                    "source-built native preprocessing/backtracking artifacts.",
+                    "",
                     "## Offline Installation Policy",
                     "",
                     "Offline installation is not currently supported as a production guarantee.",
@@ -947,6 +951,37 @@ def test_release_metadata_check_requires_platform_matrix_offline_policy_statemen
 
     assert result.returncode == 1
     assert "must explicitly state current offline-installation support policy" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_platform_matrix_primary_configuration(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "platform-matrix.md").write_text(
+        "\n".join(
+            [
+                "# Platform Matrix",
+                "",
+                "## Offline Installation Policy",
+                "",
+                "Offline installation is not currently supported as a production guarantee.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document the primary supported configuration" in result.stdout
     assert result.stderr == ""
 
 

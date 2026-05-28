@@ -314,6 +314,10 @@ def _platform_matrix_issues(root: Path) -> list[str]:
         issues.append(
             "docs/platform-matrix.md must explicitly state current offline-installation support policy"
         )
+    if "primary supported configuration" not in text:
+        issues.append(
+            "docs/platform-matrix.md must document the primary supported configuration"
+        )
     return issues
 
 

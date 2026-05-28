@@ -2,6 +2,8 @@
 
 This page defines what this repository explicitly supports for production use and
 what combinations are expected to work based on CI and release checks.
+The primary supported configuration is Linux x86_64, Python 3.10-3.12, CUDA-capable
+NVIDIA GPU runtime, and source-built native preprocessing/backtracking artifacts.
 
 ## Supported Runtime Matrix
 
