@@ -6859,3 +6859,25 @@ print(json.dumps({"before": before, "after": after, "exit_code": exit_code}))
     assert payload["before"] == {"torch": False, "triton": False}
     assert payload["after"] == {"torch": False, "triton": False}
     assert payload["exit_code"] == 0
+
+
+def test_cli_top_level_help_lists_expected_public_subcommands(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["--help"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    for command in (
+        "config-template",
+        "validate-inputs",
+        "validate-config",
+        "optimize",
+        "run",
+        "sample",
+        "summary-info",
+        "checkpoint-info",
+        "doctor",
+        "preprocess-check",
+        "backtrack-check",
+    ):
+        assert command in captured.out
