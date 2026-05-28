@@ -35,6 +35,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - Release artifacts include an SBOM or equivalent dependency inventory export.
 - Release process includes dependency vulnerability scanning evidence.
 - A fresh machine can reproduce the documented validation run.
+- Release process includes public benchmark gates and evidence summaries.
 
 ## Preprocessing Native Extension Contract
 
