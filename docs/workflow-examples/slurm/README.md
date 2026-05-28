@@ -27,6 +27,8 @@ Document thread controls for preprocessing and PyTorch execution (for example
 wrapper or module profile.
 Configure cache and temporary-file locations (for example `TMPDIR`,
 `XDG_CACHE_HOME`, or scheduler scratch paths) to match cluster policy.
+Keep logs useful when stderr/stdout are captured by schedulers by preserving
+command lines, checkpoint paths, and gate-failure stderr text in job logs.
 
 When asking for support, collect `run_config.json`, `summary.json`,
 `history.jsonl`, and full stderr/stdout logs from the scheduler job.

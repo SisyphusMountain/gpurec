@@ -664,6 +664,7 @@ def _write_complete_release_metadata_fixture(
                     "Choose local scratch for hot intermediates and shared network storage for retained outputs.",
                     "Document thread controls for preprocessing and PyTorch execution.",
                     "Configure cache and temporary-file locations per cluster policy.",
+                    "Keep logs useful when stderr/stdout are captured by schedulers.",
                     "",
                 ]
             ),
@@ -2446,6 +2447,7 @@ def test_release_metadata_check_requires_slurm_lifecycle_phrases(
     assert "must document lifecycle phrase: pytorch" in result.stdout
     assert "must document lifecycle phrase: cache" in result.stdout
     assert "must document lifecycle phrase: temporary-file locations" in result.stdout
+    assert "must document lifecycle phrase: captured by schedulers" in result.stdout
     assert result.stderr == ""
 
 
