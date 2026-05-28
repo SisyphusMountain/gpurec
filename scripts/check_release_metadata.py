@@ -505,6 +505,7 @@ def _long_validation_evidence_scope_issues(root: Path) -> list[str]:
     required_phrases = (
         "benchmark evidence",
         "not a hard performance guarantee",
+        "not a guaranteed performance contract",
     )
     issues: list[str] = []
     for phrase in required_phrases:

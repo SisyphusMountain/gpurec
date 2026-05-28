@@ -403,7 +403,8 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# Long Validation Workflow",
                     "",
-                    "Use this report as benchmark evidence, not a hard performance guarantee.",
+                    "Use this report as benchmark evidence, not a hard performance guarantee",
+                    "and not a guaranteed performance contract.",
                     "gpurec doctor --json",
                     "gpurec validate-config --check-preprocess --require-cuda-backward-ready",
                     "gpurec optimize --require-final-check-ok",
@@ -1778,6 +1779,10 @@ def test_release_metadata_check_requires_long_validation_evidence_scope_phrases(
     assert "must document evidence-scope phrase: benchmark evidence" in result.stdout
     assert (
         "must document evidence-scope phrase: not a hard performance guarantee"
+        in result.stdout
+    )
+    assert (
+        "must document evidence-scope phrase: not a guaranteed performance contract"
         in result.stdout
     )
     assert result.stderr == ""
