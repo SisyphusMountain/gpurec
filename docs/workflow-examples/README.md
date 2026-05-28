@@ -10,6 +10,12 @@ contexts:
 - `input-validation-fixtures/`: tiny valid and invalid AleRax input fixtures for
   `validate-inputs` smoke checks with expected parsing and preprocessing failures.
 
+Snakemake and Nextflow examples are production workflow-manager references that:
+
+- fail fast on bad config during preflight
+- resume from a checkpoint after interruptions
+- reject non-converged outputs before sampling
+
 From the repository root:
 
 ```bash

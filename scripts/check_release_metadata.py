@@ -687,6 +687,29 @@ def _nextflow_example_gate_issues(root: Path) -> list[str]:
     return issues
 
 
+def _workflow_examples_overview_gate_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "workflow-examples" / "README.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "snakemake",
+        "nextflow",
+        "fail fast",
+        "resume from a checkpoint",
+        "reject non-converged outputs",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/workflow-examples/README.md must document acceptance-gate phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _optimization_guide_goal_defaults_issues(root: Path) -> list[str]:
     guide = root / "docs" / "production-optimization-guide.md"
     if not guide.is_file():
@@ -861,6 +884,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_slurm_example_lifecycle_issues(project_root))
     issues.extend(_snakemake_example_gate_issues(project_root))
     issues.extend(_nextflow_example_gate_issues(project_root))
+    issues.extend(_workflow_examples_overview_gate_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]

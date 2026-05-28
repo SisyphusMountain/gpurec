@@ -408,7 +408,16 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "workflow-examples" / "README.md").write_text(
-            "# Workflow Examples\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Workflow Examples",
+                    "",
+                    "Snakemake and Nextflow references fail fast on bad config,",
+                    "resume from a checkpoint, and reject non-converged outputs.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
         (root / "docs" / "workflow-examples" / "end-to-end-tutorial").mkdir(
             parents=True, exist_ok=True
@@ -1553,6 +1562,38 @@ def test_release_metadata_check_requires_nextflow_gate_phrases(
     assert "must document gate phrase: --check-preprocess" in result.stdout
     assert "must document gate phrase: --require-converged" in result.stdout
     assert "must document gate phrase: --require-final-check-ok" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_workflow_examples_overview_gate_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "workflow-examples" / "README.md").write_text(
+        "# Workflow Examples\n\nOverview only.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document acceptance-gate phrase: snakemake" in result.stdout
+    assert "must document acceptance-gate phrase: nextflow" in result.stdout
+    assert "must document acceptance-gate phrase: fail fast" in result.stdout
+    assert (
+        "must document acceptance-gate phrase: resume from a checkpoint"
+        in result.stdout
+    )
+    assert (
+        "must document acceptance-gate phrase: reject non-converged outputs"
+        in result.stdout
+    )
     assert result.stderr == ""
 
 
