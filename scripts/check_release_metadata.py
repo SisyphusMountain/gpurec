@@ -248,6 +248,19 @@ def _policy_document_issues(root: Path) -> list[str]:
             issues.append(
                 "docs/support-policy.md must describe latest release tag support"
             )
+        support_window_phrases = (
+            "support window",
+            "python",
+            "pytorch",
+            "cuda",
+            "native artifact",
+        )
+        for phrase in support_window_phrases:
+            if phrase not in text:
+                issues.append(
+                    "docs/support-policy.md must document support-window phrase: "
+                    + phrase
+                )
 
     versioning_policy = root / "docs" / "versioning-policy.md"
     if versioning_policy.is_file():

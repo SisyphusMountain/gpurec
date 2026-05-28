@@ -22,6 +22,18 @@ The supported environment matrix is versioned in
 - CUDA-capable GPU runtime with compatible PyTorch and Triton.
 - Source-based installation with Rust/Cargo available to build native artifacts.
 
+## Support Window
+
+The active support window tracks explicitly documented versions for:
+
+- Python runtime versions.
+- PyTorch runtime compatibility.
+- CUDA runtime/toolkit compatibility.
+- Native artifact versions (preprocessing and backtracking).
+
+The latest release tag and [`platform-matrix.md`](platform-matrix.md) define
+the current support window bounds for production triage.
+
 ## Release And Patch Policy
 
 - `production` is the active stabilization branch.

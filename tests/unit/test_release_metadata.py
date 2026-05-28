@@ -193,6 +193,7 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "production support scope applies to documented surfaces.",
                     "The latest release tag is the primary supported line.",
+                    "Support window covers Python, PyTorch, CUDA, and native artifact versions.",
                     "",
                 ]
             ),
@@ -636,6 +637,40 @@ def test_release_metadata_check_requires_support_policy_scope_statements(
     assert result.returncode == 1
     assert "must describe production support scope" in result.stdout
     assert "must describe latest release tag support" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_support_policy_support_window_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "support-policy.md").write_text(
+        "\n".join(
+            [
+                "# Support Policy",
+                "",
+                "production support scope applies to documented surfaces.",
+                "The latest release tag is the primary supported line.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document support-window phrase: support window" in result.stdout
+    assert "must document support-window phrase: python" in result.stdout
+    assert "must document support-window phrase: pytorch" in result.stdout
+    assert "must document support-window phrase: cuda" in result.stdout
+    assert "must document support-window phrase: native artifact" in result.stdout
     assert result.stderr == ""
 
 
