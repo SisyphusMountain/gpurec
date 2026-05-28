@@ -155,6 +155,7 @@ jobs:
           required_sdist = required_wheel + [
               "docs/README.md",
               "docs/input-preparation.md",
+              "docs/api-contract.md",
               "docs/lean-fast-path.md",
               "docs/optimization-workflow-call-graph.md",
               "docs/output-artifacts.md",
