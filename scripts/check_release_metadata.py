@@ -823,6 +823,7 @@ def _quickstart_installation_decision_tree_issues(root: Path) -> list[str]:
         "wheel-only environment",
         "cluster/container workflows",
         "offline installation",
+        "gpurec doctor",
         "gpurec preprocess-check",
         "gpurec backtrack-check",
     )
