@@ -28,6 +28,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - Help and import smoke tests remain CPU-safe during release checks.
 - CI rejects obvious lint errors before release publication.
 - CI rejects broken type annotations in public modules.
+- CI rejects accidental public-surface drift before release publication.
 
 ## Preprocessing Native Extension Contract
 
