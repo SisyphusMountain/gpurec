@@ -2082,11 +2082,26 @@ def _workflow_dry_run_text(
         f"mapped_families={summary.get('mapped_families', 0)} "
         f"preprocessed_families={summary.get('preprocessed_families', 0)} "
         f"preprocessed_species_nodes={summary.get('preprocessed_species_nodes', 0)} "
+        f"estimated_memory_bytes={_dry_run_memory_estimate_bytes(summary, route_metadata)} "
         f"cuda_backward_ready={str(cuda_ready).lower() if isinstance(cuda_ready, bool) else 'null'} "
         f"{_optional_text('cuda_backward_ready_reason', summary.get('cuda_backward_ready_reason'))} "
         f"{_validate_config_route_text(config, route_metadata=route_metadata)} "
         f"device={config.device} {_optional_text('out_dir', config.out_dir)}"
     )
+
+
+def _dry_run_memory_estimate_bytes(
+    summary: dict[str, object],
+    route_metadata: dict[str, Any],
+) -> int:
+    families = int(summary.get("preprocessed_families", 0) or 0)
+    species_nodes = int(summary.get("preprocessed_species_nodes", 0) or 0)
+    if families <= 0 or species_nodes <= 0:
+        return 0
+    chunk_size = int(route_metadata.get("family_chunk_size", 0) or 0)
+    active_families = families if chunk_size <= 0 else min(families, chunk_size)
+    bytes_per_species_node = 256
+    return active_families * species_nodes * bytes_per_species_node
 
 
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:

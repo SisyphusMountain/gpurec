@@ -403,6 +403,7 @@ def _write_complete_release_metadata_fixture(
                     "and gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json.",
                     "Use gpurec validate-config --explain-config to show effective defaults.",
                     "Use gpurec optimize --dry-run; it estimates route and inputs without running optimization.",
+                    "Dry-run output includes a memory estimate for planning.",
                     "RNG behavior keeps a sampling seed for reproducibility.",
                     "",
                 ]
@@ -1587,6 +1588,7 @@ def test_release_metadata_check_requires_quickstart_json_mode_phrases(
     assert "must document json-mode phrase: --explain-config" in result.stdout
     assert "must document json-mode phrase: --dry-run" in result.stdout
     assert "must document json-mode phrase: estimates route" in result.stdout
+    assert "must document json-mode phrase: memory estimate" in result.stdout
     assert "must document json-mode phrase: without running optimization" in result.stdout
     assert result.stderr == ""
 

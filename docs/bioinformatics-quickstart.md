@@ -66,7 +66,8 @@ gpurec validate-config --config run.json --explain-config
 gpurec optimize --config run.json --dry-run
 ```
 
-`--dry-run` estimates route and input/preprocess counts without running optimization.
+`--dry-run` estimates route, input/preprocess counts, and a memory estimate
+without running optimization.
 
 ## Create Config
 

@@ -1028,6 +1028,7 @@ def _quickstart_json_mode_issues(root: Path) -> list[str]:
         "--explain-config",
         "--dry-run",
         "estimates route",
+        "memory estimate",
         "without running optimization",
     )
     issues: list[str] = []

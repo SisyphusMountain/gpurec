@@ -5233,6 +5233,7 @@ def test_cli_optimize_dry_run_skips_optimizer_and_reports_preflight(
     assert "command=optimize" in captured.out
     assert "preprocessed_families=1" in captured.out
     assert "preprocessed_species_nodes=3" in captured.out
+    assert "estimated_memory_bytes=768" in captured.out
     assert "cuda_backward_ready=false" in captured.out
     assert captured.err == ""
 
@@ -6094,6 +6095,7 @@ def test_cli_run_dry_run_skips_backtracking_optimize_and_sample(
     assert "command=run" in captured.out
     assert "preprocessed_families=1" in captured.out
     assert "preprocessed_species_nodes=3" in captured.out
+    assert "estimated_memory_bytes=768" in captured.out
     assert "cuda_backward_ready=false" in captured.out
     assert captured.err == ""
 
