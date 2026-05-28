@@ -107,7 +107,10 @@ GPU validation is enforced in `.github/workflows/gpu-validation.yml` for
 `pull_request` and `push` events (protected branches `main` and `production`).
 Those required runs must execute on a CUDA-capable self-hosted runner and fail
 if CUDA is unavailable. The weekly scheduled run remains a non-blocking drift
-check that can skip when no CUDA runtime is exposed.
+check that can skip when no CUDA runtime is exposed. The required run also
+enforces artifact-structure checks (`summary.json`, `history.jsonl`,
+`run_manifest.json`, checkpoint, and TSV outputs) and numeric/time thresholds
+for the realistic CUDA smoke fixture.
 
 The CPU GitHub Actions workflow includes a packaging job that installs
 `.[release]` on Python 3.10 and 3.12, builds source and wheel artifacts, runs

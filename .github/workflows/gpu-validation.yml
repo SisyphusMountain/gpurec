@@ -83,6 +83,7 @@ jobs:
         run: |
           set -e
           smoke_out=$(mktemp -d)
+          echo "SMOKE_OUT=$smoke_out" >> "$GITHUB_ENV"
           config=$smoke_out/genuine-cuda-smoke.json
           gpurec config-template \
             --mode genewise \
@@ -108,3 +109,61 @@ jobs:
             --checkpoint-every 1
           gpurec summary-info --summary "$smoke_out/opt/summary.json" --require-mode-default-optimizer
           gpurec checkpoint-info --checkpoint "$smoke_out/opt/checkpoints/latest.pt" --require-final-check-ok
+
+      - name: Validate CUDA smoke artifacts
+        if: steps.cuda-check.outputs.skip != '1'
+        run: |
+          set -e
+          python scripts/validate_output_artifacts.py \
+            --summary "$smoke_out/opt/summary.json" \
+            --history "$smoke_out/opt/history.jsonl" \
+            --checkpoint "$smoke_out/opt/checkpoints/latest.pt" \
+            --run-manifest "$smoke_out/opt/run_manifest.json" \
+            --tsv "$smoke_out/opt/rates_final.tsv" \
+            --tsv "$smoke_out/opt/per_fam_likelihoods.tsv"
+
+      - name: Enforce CUDA smoke thresholds
+        if: steps.cuda-check.outputs.skip != '1'
+        env:
+          GPUREC_GPU_SMOKE_MAX_ELAPSED_S: "3600"
+          GPUREC_GPU_SMOKE_MAX_FINAL_NLL_BITS: "1000000000"
+        run: |
+          set -e
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          smoke_out = os.environ["SMOKE_OUT"]
+          summary = json.loads(Path(smoke_out + "/opt/summary.json").read_text(encoding="utf-8"))
+          history_rows = [
+              json.loads(line)
+              for line in Path(smoke_out + "/opt/history.jsonl").read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          if not history_rows:
+              raise SystemExit("history.jsonl is empty")
+
+          elapsed = summary.get("elapsed_s")
+          if elapsed is None or not isinstance(elapsed, (int, float)) or not math.isfinite(float(elapsed)):
+              raise SystemExit(f"summary elapsed_s is invalid: {elapsed!r}")
+          max_elapsed = float(os.environ["GPUREC_GPU_SMOKE_MAX_ELAPSED_S"])
+          if float(elapsed) > max_elapsed:
+              raise SystemExit(f"summary elapsed_s {elapsed} exceeds threshold {max_elapsed}")
+
+          final_nll_bits = summary.get("final_nll_bits")
+          if final_nll_bits is None or not isinstance(final_nll_bits, (int, float)) or not math.isfinite(float(final_nll_bits)):
+              raise SystemExit(f"summary final_nll_bits is invalid: {final_nll_bits!r}")
+          max_abs_nll = float(os.environ["GPUREC_GPU_SMOKE_MAX_FINAL_NLL_BITS"])
+          if abs(float(final_nll_bits)) > max_abs_nll:
+              raise SystemExit(
+                  f"summary final_nll_bits {final_nll_bits} exceeds absolute threshold {max_abs_nll}"
+              )
+
+          final_grad_inf = summary.get("final_grad_inf")
+          if final_grad_inf is not None and (
+              not isinstance(final_grad_inf, (int, float)) or not math.isfinite(float(final_grad_inf))
+          ):
+              raise SystemExit(f"summary final_grad_inf is invalid: {final_grad_inf!r}")
+          PY
