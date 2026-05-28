@@ -2572,6 +2572,8 @@ def test_cli_validate_config_rejects_missing_gene_tree_before_cuda(
     assert exc_info.value.code == 2
     assert "missing gene-tree path" in captured.err
     assert "missing_gene.nwk" in captured.err
+    assert "suggestion:" in captured.err
+    assert "fix starting_gene_tree entries" in captured.err
     assert "CUDA" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -4769,6 +4771,8 @@ def test_cli_summary_info_reports_missing_path_without_traceback(
     assert exc_info.value.code == 2
     assert "--summary path does not exist or is not a file" in captured.err
     assert str(summary) in captured.err
+    assert "suggestion:" in captured.err
+    assert "output_gpurec/summary.json" in captured.err
     assert "Traceback" not in captured.err
 
 

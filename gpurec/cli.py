@@ -1207,11 +1207,19 @@ def _validate_run_config_input_paths(config: RunConfig) -> None:
         ("--families-file", config.families_file),
     ):
         if not path.is_file():
-            raise ValueError(f"{option} path does not exist or is not a file: {path}")
+            raise ValueError(
+                _with_suggestion(
+                    f"{option} path does not exist or is not a file: {path}",
+                    f"verify the path or regenerate a template with `gpurec config-template` and update {option}",
+                )
+            )
     if config.resume_from is not None and not config.resume_from.is_file():
         raise ValueError(
-            "--resume-from path does not exist or is not a file: "
-            f"{config.resume_from}"
+            _with_suggestion(
+                "--resume-from path does not exist or is not a file: "
+                f"{config.resume_from}",
+                "use a checkpoint path such as output_gpurec/checkpoints/latest.pt",
+            )
         )
 
 
@@ -1237,8 +1245,11 @@ def _validate_run_config_family_references(config: RunConfig) -> dict[str, int]:
         )
         suffix = "" if len(missing) <= 5 else f"; ... {len(missing) - 5} more"
         raise ValueError(
-            "AleRax family file references missing gene-tree path(s): "
-            f"{preview}{suffix}"
+            _with_suggestion(
+                "AleRax family file references missing gene-tree path(s): "
+                f"{preview}{suffix}",
+                "fix starting_gene_tree entries in the [FAMILIES] file so each referenced path exists",
+            )
         )
     return {
         "families": len(family_names),
@@ -1581,7 +1592,10 @@ def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:
     path = checkpoint.expanduser().resolve()
     if not path.is_file():
         raise ValueError(
-            f"--checkpoint path does not exist or is not a file: {path}"
+            _with_suggestion(
+                f"--checkpoint path does not exist or is not a file: {path}",
+                "use an optimization checkpoint such as output_gpurec/checkpoints/latest.pt",
+            )
         )
 
 
@@ -1589,7 +1603,10 @@ def _validate_summary_path(summary: Path) -> None:
     path = summary.expanduser().resolve()
     if not path.is_file():
         raise ValueError(
-            f"--summary path does not exist or is not a file: {path}"
+            _with_suggestion(
+                f"--summary path does not exist or is not a file: {path}",
+                "point to output_gpurec/summary.json from a completed or in-progress run directory",
+            )
         )
 
 
