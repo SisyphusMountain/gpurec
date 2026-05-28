@@ -968,6 +968,28 @@ def _api_contract_compatibility_policy_issues(root: Path) -> list[str]:
     return issues
 
 
+def _api_contract_exit_code_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "api-contract.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "exit status `0`",
+        "exit status `1`",
+        "exit status `2`",
+        "runtime and route-validation failures",
+        "cli parse/config errors",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/api-contract.md must document exit-code phrase: " + phrase
+            )
+    return issues
+
+
 def _input_validation_fixture_issue_shape_issues(root: Path) -> list[str]:
     guide = root / "docs" / "workflow-examples" / "input-validation-fixtures" / "README.md"
     if not guide.is_file():
@@ -1264,6 +1286,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_workflow_examples_overview_gate_issues(project_root))
     issues.extend(_api_contract_json_mode_issues(project_root))
     issues.extend(_api_contract_compatibility_policy_issues(project_root))
+    issues.extend(_api_contract_exit_code_issues(project_root))
     issues.extend(_input_validation_fixture_issue_shape_issues(project_root))
     issues.extend(_input_validation_fixture_category_issues(project_root))
     issues.extend(_input_validation_fixture_cpu_safe_issues(project_root))

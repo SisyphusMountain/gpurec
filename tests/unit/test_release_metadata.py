@@ -280,6 +280,9 @@ def _write_complete_release_metadata_fixture(
                     "Python imports, and output artifacts.",
                     "Deprecation warnings and migration notes are required",
                     "before removing supported behavior.",
+                    "Exit status `0` indicates success.",
+                    "Exit status `1` indicates runtime and route-validation failures.",
+                    "Exit status `2` indicates CLI parse/config errors.",
                     "",
                 ]
             ),
@@ -2342,6 +2345,50 @@ def test_release_metadata_check_requires_api_contract_compatibility_phrases(
     assert "must document compatibility phrase: output artifacts" in result.stdout
     assert "must document compatibility phrase: deprecation warnings" in result.stdout
     assert "must document compatibility phrase: migration notes" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_api_contract_exit_code_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "api-contract.md").write_text(
+        "\n".join(
+            [
+                "# API Contract",
+                "",
+                "## CLI output modes",
+                "",
+                "`--json` mode is supported by validate-config, doctor,",
+                "checkpoint-info, and summary-info.",
+                "JSON mode emits single JSON objects with stable keys.",
+                "Compatibility policy covers config fields, CLI flags,",
+                "Python imports, and output artifacts.",
+                "Deprecation warnings and migration notes are required",
+                "before removing supported behavior.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document exit-code phrase: exit status `0`" in result.stdout
+    assert "must document exit-code phrase: exit status `1`" in result.stdout
+    assert "must document exit-code phrase: exit status `2`" in result.stdout
+    assert (
+        "must document exit-code phrase: runtime and route-validation failures"
+        in result.stdout
+    )
+    assert "must document exit-code phrase: cli parse/config errors" in result.stdout
     assert result.stderr == ""
 
 
