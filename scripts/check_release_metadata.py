@@ -286,6 +286,24 @@ def _publication_checklist_issues(root: Path) -> list[str]:
     return issues
 
 
+def _platform_matrix_issues(root: Path) -> list[str]:
+    matrix = root / "docs" / "platform-matrix.md"
+    if not matrix.is_file():
+        return []
+
+    text = matrix.read_text(encoding="utf-8").lower()
+    issues: list[str] = []
+    if "offline installation policy" not in text:
+        issues.append(
+            "docs/platform-matrix.md must include an 'Offline Installation Policy' section"
+        )
+    if "offline installation is not currently supported as a production guarantee" not in text:
+        issues.append(
+            "docs/platform-matrix.md must explicitly state current offline-installation support policy"
+        )
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -421,6 +439,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_release_notes_version_issues(project, project_root))
     issues.extend(_policy_document_issues(project_root))
     issues.extend(_publication_checklist_issues(project_root))
+    issues.extend(_platform_matrix_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)
