@@ -24,6 +24,7 @@ A release candidate can be built from a clean checkout by following one checklis
   `docs/platform-matrix.md`.
 - Build source artifacts from a clean checkout and install them in a fresh environment
   with a PyTorch build that matches the target CUDA runtime.
+- Release artifacts are smoke-tested outside the repository before publication.
 
 ## Preprocessing Native Extension Contract
 

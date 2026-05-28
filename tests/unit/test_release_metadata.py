@@ -196,6 +196,7 @@ def _write_complete_release_metadata_fixture(
                     "Build release artifacts from a clean checkout before tagging.",
                     "Install and smoke release artifacts in a fresh environment.",
                     "Smoke the installed wheel from outside the checkout.",
+                    "Release artifacts are smoke-tested outside the repository.",
                     "A fresh install must run a readiness command successfully before release sign-off.",
                     "Installation docs cover native preprocessing and backtracking artifacts.",
                     "Output artifacts have stable schemas or documented compatibility rules.",
@@ -2915,6 +2916,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: clean checkout" in result.stdout
     assert "must document release gate phrase: fresh environment" in result.stdout
     assert "must document release gate phrase: outside the checkout" in result.stdout
+    assert "must document release gate phrase: outside the repository" in result.stdout
     assert "must document release gate phrase: fresh install" in result.stdout
     assert "must document release gate phrase: readiness command successfully" in result.stdout
     assert "must document release gate phrase: native preprocessing" in result.stdout
