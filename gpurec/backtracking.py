@@ -332,6 +332,29 @@ def _native_library_path(cargo_manifest: str | Path = _BACKTRACK_MANIFEST) -> Pa
     return (manifest.parent / "target" / "release" / "libgpurec_backtrack.so").resolve()
 
 
+def _manifest_version(cargo_manifest: str | Path = _BACKTRACK_MANIFEST) -> str | None:
+    """Return the Rust crate version from Cargo.toml if it can be read."""
+
+    manifest = Path(cargo_manifest)
+    if not manifest.exists():
+        return None
+    try:
+        try:
+            import tomllib
+        except ModuleNotFoundError:
+            import tomli as tomllib  # type: ignore[assignment]
+
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        package = data.get("package")
+        if isinstance(package, dict):
+            version = package.get("version")
+            if isinstance(version, str):
+                return version
+    except Exception:
+        return None
+    return None
+
+
 def _build_native_extension(cargo_manifest: str | Path = _BACKTRACK_MANIFEST) -> None:
     if shutil.which("cargo") is None:
         raise RuntimeError(

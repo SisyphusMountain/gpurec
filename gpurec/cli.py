@@ -105,29 +105,78 @@ def _doctor_triton_readiness() -> dict[str, Any]:
     return check
 
 
+def _add_version_contract_fields(
+    check: dict[str, Any],
+    *,
+    expected_version: str | None,
+    package_version: str,
+) -> dict[str, Any]:
+    check["expected_version"] = expected_version
+    check["package_version"] = package_version
+    if expected_version is None:
+        check["version_compatible"] = None
+        return check
+    check["version_compatible"] = expected_version == package_version
+    if check.get("ok") and not check["version_compatible"]:
+        check["ok"] = False
+        check["error"] = (
+            "incompatible native artifact contract version: "
+            f"expected {expected_version!r}, package version is {package_version!r}"
+        )
+    return check
+
+
 def _doctor_preprocessing_readiness(
     preprocess_native_lib: Path | None,
+    package_version: str,
 ) -> dict[str, Any]:
     check: dict[str, Any] = {"ok": False}
+    from gpurec.core import preprocess_rust
+
+    expected_version = preprocess_rust._manifest_version()
     try:
         path = _ensure_preprocessing_available(preprocess_native_lib)
         check["ok"] = True
         check["path"] = str(path)
+        _add_version_contract_fields(
+            check,
+            expected_version=expected_version,
+            package_version=package_version,
+        )
     except Exception as exc:
         check["error"] = str(exc)
+        _add_version_contract_fields(
+            check=check,
+            expected_version=expected_version,
+            package_version=package_version,
+        )
     return check
 
 
 def _doctor_backtracking_readiness(
     backtrack_binary: Path | None,
+    package_version: str,
 ) -> dict[str, Any]:
     check: dict[str, Any] = {"ok": False}
+    from gpurec import backtracking
+
+    expected_version = backtracking._manifest_version()
     try:
         _ensure_backtracking_available(backtrack_binary)
         check["ok"] = True
         check["path"] = str(backtrack_binary) if backtrack_binary is not None else None
+        _add_version_contract_fields(
+            check,
+            expected_version=expected_version,
+            package_version=package_version,
+        )
     except Exception as exc:
         check["error"] = str(exc)
+        _add_version_contract_fields(
+            check,
+            expected_version=expected_version,
+            package_version=package_version,
+        )
     return check
 
 
@@ -171,8 +220,14 @@ def _doctor_readiness_report(
         },
         "torch": _doctor_torch_readiness(),
         "triton": _doctor_triton_readiness(),
-        "preprocess": _doctor_preprocessing_readiness(preprocess_native_lib),
-        "backtracking": _doctor_backtracking_readiness(backtrack_binary),
+        "preprocess": _doctor_preprocessing_readiness(
+            preprocess_native_lib,
+            package_version=__version__,
+        ),
+        "backtracking": _doctor_backtracking_readiness(
+            backtrack_binary,
+            package_version=__version__,
+        ),
         "out_dir": _doctor_output_dir_readiness(out_dir),
     }
     ready = all(check["ok"] for check in checks.values())
@@ -220,6 +275,18 @@ def _doctor_readiness_text(report: dict[str, Any]) -> str:
                 "preprocess_error",
                 preprocess_check.get("error") if not preprocess_check.get("ok") else None,
             ),
+            _optional_text(
+                "preprocess_expected_version",
+                preprocess_check.get("expected_version"),
+            ),
+            _optional_text(
+                "preprocess_package_version",
+                preprocess_check.get("package_version"),
+            ),
+            _optional_bool_text(
+                "preprocess_version_compatible",
+                preprocess_check.get("version_compatible"),
+            ),
             _optional_bool_text(
                 "backtracking_available",
                 backtrack_check.get("ok"),
@@ -228,6 +295,18 @@ def _doctor_readiness_text(report: dict[str, Any]) -> str:
             _optional_text(
                 "backtracking_error",
                 backtrack_check.get("error") if not backtrack_check.get("ok") else None,
+            ),
+            _optional_text(
+                "backtracking_expected_version",
+                backtrack_check.get("expected_version"),
+            ),
+            _optional_text(
+                "backtracking_package_version",
+                backtrack_check.get("package_version"),
+            ),
+            _optional_bool_text(
+                "backtracking_version_compatible",
+                backtrack_check.get("version_compatible"),
             ),
             _optional_bool_text("out_dir_writable", out_dir_check.get("ok")),
             _optional_text("out_dir", out_dir_check.get("path")),
@@ -3418,46 +3497,54 @@ def main(argv: list[str] | None = None) -> None:
             )
         return
     if args.command == "backtrack-check":
-        try:
-            _ensure_backtracking_available(args.backtrack_binary)
-        except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(command_parser, str(exc))
+        from gpurec import __version__ as package_version
+
+        backtrack_payload = _doctor_backtracking_readiness(
+            args.backtrack_binary,
+            package_version=package_version,
+        )
+        if not backtrack_payload.get("ok"):
+            _exit_runtime_error(command_parser, str(backtrack_payload.get("error")))
+        payload = {
+            "backtracking_available": True,
+            "backtrack_binary": (
+                str(args.backtrack_binary)
+                if args.backtrack_binary is not None
+                else None
+            ),
+            "expected_version": backtrack_payload.get("expected_version"),
+            "package_version": backtrack_payload.get("package_version"),
+            "version_compatible": backtrack_payload.get("version_compatible"),
+        }
+        if backtrack_payload.get("path") is not None:
+            payload["backtrack_binary"] = backtrack_payload.get("path")
         if args.json:
-            print(
-                json.dumps(
-                    {
-                        "backtracking_available": True,
-                        "backtrack_binary": (
-                            str(args.backtrack_binary)
-                            if args.backtrack_binary is not None
-                            else None
-                        ),
-                    },
-                    indent=2,
-                ),
-                flush=True,
-            )
+            print(json.dumps(payload, indent=2), flush=True)
         else:
             print("backtracking_available=true", flush=True)
         return
     if args.command == "preprocess-check":
-        try:
-            preprocess_native_lib = _ensure_preprocessing_available(
-                args.preprocess_native_lib,
+        from gpurec import __version__ as package_version
+
+        preprocess_payload = _doctor_preprocessing_readiness(
+            args.preprocess_native_lib,
+            package_version=package_version,
+        )
+        if not preprocess_payload.get("ok"):
+            _exit_runtime_error(
+                command_parser,
+                str(preprocess_payload.get("error")),
             )
-        except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(command_parser, str(exc))
+        preprocess_native_lib = preprocess_payload.get("path")
+        payload = {
+            "preprocessing_available": True,
+            "preprocess_native_lib": str(preprocess_native_lib),
+            "expected_version": preprocess_payload.get("expected_version"),
+            "package_version": preprocess_payload.get("package_version"),
+            "version_compatible": preprocess_payload.get("version_compatible"),
+        }
         if args.json:
-            print(
-                json.dumps(
-                    {
-                        "preprocessing_available": True,
-                        "preprocess_native_lib": str(preprocess_native_lib),
-                    },
-                    indent=2,
-                ),
-                flush=True,
-            )
+            print(json.dumps(payload, indent=2), flush=True)
         else:
             print(
                 "preprocessing_available=true "

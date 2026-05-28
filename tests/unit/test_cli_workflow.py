@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import gpurec
 import gpurec.cli as gpurec_cli
 import gpurec.workflow.model_factory as workflow_model_factory
 from gpurec.cli import (
@@ -5981,6 +5982,9 @@ def test_cli_backtrack_check_delegates_binary_preflight_json(
     payload = json.loads(captured.out)
     assert payload["backtracking_available"] is True
     assert payload["backtrack_binary"] == str(binary)
+    assert payload["expected_version"] == gpurec.__version__
+    assert payload["package_version"] == gpurec.__version__
+    assert payload["version_compatible"] is True
     assert calls == [binary]
     assert captured.err == ""
 
@@ -6005,8 +6009,60 @@ def test_cli_preprocess_check_delegates_native_preflight_json(
     payload = json.loads(captured.out)
     assert payload["preprocessing_available"] is True
     assert payload["preprocess_native_lib"] == str(native_lib)
+    assert payload["expected_version"] == gpurec.__version__
+    assert payload["package_version"] == gpurec.__version__
+    assert payload["version_compatible"] is True
     assert calls == [native_lib]
     assert captured.err == ""
+
+
+def test_cli_backtrack_check_reports_version_incompatibility(tmp_path, capsys, monkeypatch):
+    binary = tmp_path / "gpurec-backtrack"
+    monkeypatch.setattr(
+        "gpurec.cli._ensure_backtracking_available",
+        lambda backtrack_binary: None,
+    )
+    monkeypatch.setattr(
+        "gpurec.backtracking._manifest_version",
+        lambda: "0.0.0-incompatible",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["backtrack-check", "--backtrack-binary", str(binary), "--json"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert (
+        "incompatible native artifact contract version"
+        in captured.err
+    )
+
+
+def test_cli_preprocess_check_reports_version_incompatibility(
+    tmp_path,
+    capsys,
+    monkeypatch,
+):
+    native_lib = tmp_path / "libgpurec_preprocess.so"
+
+    def fake_preflight(preprocess_native_lib: Path | None) -> Path:
+        return native_lib
+
+    monkeypatch.setattr("gpurec.cli._ensure_preprocessing_available", fake_preflight)
+    monkeypatch.setattr(
+        "gpurec.core.preprocess_rust._manifest_version",
+        lambda: "0.0.0-incompatible",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["preprocess-check", "--preprocess-native-lib", str(tmp_path / "missing"), "--json"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert (
+        "incompatible native artifact contract version"
+        in captured.err
+    )
 
 
 def test_cli_doctor_reports_ready_json(tmp_path: Path, capsys, monkeypatch):
