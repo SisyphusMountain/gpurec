@@ -661,6 +661,8 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "checkpoints",
         "run-directory inspection",
         "repair",
+        "summary-info",
+        "checkpoint-info",
         "recover or safely discard",
         "without inspecting python source",
         "workflow managers can distinguish",
