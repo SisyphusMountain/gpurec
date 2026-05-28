@@ -4,6 +4,7 @@ This checklist records release requirements, manual release decisions, and the
 packaging assumptions covered by current automated build steps.
 A release candidate can be built from a clean checkout by following one checklist: this document.
 The package metadata checker passes before publication.
+Semantic versioning expectations are documented before publication.
 
 ## Required Before Redistribution
 

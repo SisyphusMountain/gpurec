@@ -528,6 +528,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "final publication checks",
         "one checklist",
         "package metadata checker passes",
+        "semantic versioning expectations",
         "clean checkout",
         "fresh environment",
         "outside the checkout",
