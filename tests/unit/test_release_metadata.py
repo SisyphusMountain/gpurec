@@ -244,6 +244,7 @@ def _write_complete_release_metadata_fixture(
                     "Record gpurec doctor --json and gpurec summary-info --summary output_gpurec/summary.json --json.",
                     "Archive history.jsonl and checkpoints/ for rerun audit trails.",
                     "Report known-limitations.md caveats and release-notes.md migration notes.",
+                    "Run scripts/validate_output_artifacts.py before publication.",
                     "",
                 ]
             ),
@@ -1022,6 +1023,39 @@ def test_release_metadata_check_requires_publication_checklist_reporting_referen
     assert result.returncode == 1
     assert "must mention known-limitations.md reporting guidance" in result.stdout
     assert "must mention release-notes.md migration notes guidance" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_publication_checklist_artifact_validator_reference(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "publication-checklist.md").write_text(
+        "\n".join(
+            [
+                "# Publication Checklist",
+                "",
+                "Reference CITATION.cff for software citation metadata.",
+                "Archive run_manifest.json and summary.json for reproducibility.",
+                "Record gpurec doctor --json and gpurec summary-info --summary output_gpurec/summary.json --json.",
+                "Archive history.jsonl and checkpoints/ for rerun audit trails.",
+                "Report known-limitations.md caveats and release-notes.md migration notes.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must mention scripts/validate_output_artifacts.py gate" in result.stdout
     assert result.stderr == ""
 
 

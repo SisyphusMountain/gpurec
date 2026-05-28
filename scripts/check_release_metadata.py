@@ -341,6 +341,10 @@ def _publication_checklist_issues(root: Path) -> list[str]:
         issues.append(
             "docs/publication-checklist.md must mention release-notes.md migration notes guidance"
         )
+    if "scripts/validate_output_artifacts.py" not in text:
+        issues.append(
+            "docs/publication-checklist.md must mention scripts/validate_output_artifacts.py gate"
+        )
     return issues
 
 
