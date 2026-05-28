@@ -541,6 +541,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "ci rejects obvious lint errors",
         "broken type annotations in public modules",
         "accidental public-surface drift",
+        "generated cli help snapshot",
         "stable schemas",
         "compatibility rules",
         "known limitations",

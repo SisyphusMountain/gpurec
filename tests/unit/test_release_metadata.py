@@ -204,6 +204,7 @@ def _write_complete_release_metadata_fixture(
                     "CI rejects obvious lint errors before release publication.",
                     "CI rejects broken type annotations in public modules.",
                     "CI rejects accidental public-surface drift before release publication.",
+                    "CI maintains a generated CLI help snapshot for stable flags and exits.",
                     "Output artifacts have stable schemas or documented compatibility rules.",
                     "Known limitations are prominent and accurate.",
                     "CLI errors are actionable for common input, native binary, CUDA, and convergence failures.",
@@ -2936,6 +2937,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: ci rejects obvious lint errors" in result.stdout
     assert "must document release gate phrase: broken type annotations in public modules" in result.stdout
     assert "must document release gate phrase: accidental public-surface drift" in result.stdout
+    assert "must document release gate phrase: generated cli help snapshot" in result.stdout
     assert "must document release gate phrase: stable schemas" in result.stdout
     assert "must document release gate phrase: compatibility rules" in result.stdout
     assert "must document release gate phrase: known limitations" in result.stdout

@@ -29,6 +29,7 @@ A release candidate can be built from a clean checkout by following one checklis
 - CI rejects obvious lint errors before release publication.
 - CI rejects broken type annotations in public modules.
 - CI rejects accidental public-surface drift before release publication.
+- CI maintains a generated CLI help snapshot for stable flags and exits.
 
 ## Preprocessing Native Extension Contract
 
