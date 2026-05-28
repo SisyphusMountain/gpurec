@@ -451,6 +451,7 @@ def _write_complete_release_metadata_fixture(
                     "# Documentation Map",
                     "",
                     "This map separates stable user workflows from HOGENOM-only research scripts.",
+                    "Use CLI help as primary user-facing command reference.",
                     "",
                 ]
             ),
@@ -2332,6 +2333,7 @@ def test_release_metadata_check_requires_docs_map_scope_phrases(
     assert result.returncode == 1
     assert "must document scope phrase: stable user workflows" in result.stdout
     assert "must document scope phrase: hogenom-only research scripts" in result.stdout
+    assert "must document scope phrase: cli help" in result.stdout
     assert result.stderr == ""
 
 

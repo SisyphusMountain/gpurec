@@ -1112,6 +1112,7 @@ def _docs_map_user_vs_research_scope_issues(root: Path) -> list[str]:
     required_phrases = (
         "stable user workflows",
         "hogenom-only research scripts",
+        "cli help",
     )
     issues: list[str] = []
     for phrase in required_phrases:
