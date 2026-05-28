@@ -400,7 +400,15 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "README.md").write_text(
-            "# Documentation Map\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Documentation Map",
+                    "",
+                    "This map separates stable user workflows from HOGENOM-only research scripts.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_production_optimization_guide:
         (root / "docs" / "production-optimization-guide.md").parent.mkdir(
@@ -1741,6 +1749,29 @@ def test_release_metadata_check_requires_workflow_examples_overview_gate_phrases
         "must document acceptance-gate phrase: reject non-converged outputs"
         in result.stdout
     )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_docs_map_scope_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "README.md").write_text(
+        "# Documentation Map\n\nGeneral docs index.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document scope phrase: stable user workflows" in result.stdout
+    assert "must document scope phrase: hogenom-only research scripts" in result.stdout
     assert result.stderr == ""
 
 

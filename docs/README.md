@@ -3,6 +3,8 @@
 This directory contains current workflow notes, audit records, and historical
 performance logs.  Treat the main `README.md` as the user entry point and this
 file as the map for deeper context.
+This map separates stable user workflows from HOGENOM-only research scripts so
+production operators can stay on supported surfaces.
 
 ## Current Operating Notes
 
