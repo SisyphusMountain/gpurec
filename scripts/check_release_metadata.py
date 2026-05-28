@@ -1049,6 +1049,7 @@ def _slurm_example_lifecycle_issues(root: Path) -> list[str]:
 
     text = guide.read_text(encoding="utf-8").lower()
     required_phrases = (
+        "validate inputs",
         "gpurec validate-config",
         "--check-preprocess",
         "gpurec optimize",

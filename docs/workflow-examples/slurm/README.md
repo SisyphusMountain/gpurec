@@ -8,7 +8,8 @@ sbatch run-gpurec.sbatch
 
 The script:
 
-1. Runs `gpurec validate-config --check-preprocess` with the same hard preflight gates.
+1. Validate inputs by running `gpurec validate-config --check-preprocess`
+   with the same hard preflight gates.
 2. Runs `gpurec optimize`; resume from `output_gpurec/checkpoints/latest.pt`
    if present, with convergence/final-check gates enabled.
 3. Runs `gpurec summary-info` and `gpurec checkpoint-info` hard gates.

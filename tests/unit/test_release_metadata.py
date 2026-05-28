@@ -647,6 +647,7 @@ def _write_complete_release_metadata_fixture(
                 [
                     "# Slurm Example",
                     "",
+                    "Validate inputs before optimization.",
                     "gpurec validate-config --check-preprocess",
                     "gpurec optimize",
                     "resume from output_gpurec/checkpoints/latest.pt",
@@ -2409,6 +2410,7 @@ def test_release_metadata_check_requires_slurm_lifecycle_phrases(
     )
 
     assert result.returncode == 1
+    assert "must document lifecycle phrase: validate inputs" in result.stdout
     assert "must document lifecycle phrase: gpurec validate-config" in result.stdout
     assert "must document lifecycle phrase: --check-preprocess" in result.stdout
     assert "must document lifecycle phrase: gpurec optimize" in result.stdout
