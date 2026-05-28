@@ -43,6 +43,16 @@ For development:
 pip install -e ".[dev]"
 ```
 
+Development quality gates:
+
+```bash
+python -m ruff check gpurec tests/unit
+python -m mypy --config-file=pyproject.toml --follow-imports=skip gpurec
+python -m pytest -q tests/unit
+```
+
+The CPU CI workflow runs the same lint/type/unit gate on pull requests.
+
 The CUDA kernels import Triton directly, so Triton is a core dependency rather
 than an optional extra. Install a PyTorch build that matches the local CUDA
 runtime before installing `gpurec`. Workflow preprocessing is implemented by
