@@ -618,6 +618,29 @@ def _end_to_end_tutorial_public_command_issues(root: Path) -> list[str]:
     return issues
 
 
+def _slurm_example_lifecycle_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "workflow-examples" / "slurm" / "README.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "gpurec validate-config",
+        "--check-preprocess",
+        "gpurec optimize",
+        "output_gpurec/checkpoints/latest.pt",
+        "gpurec sample",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/workflow-examples/slurm/README.md must document lifecycle phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _optimization_guide_goal_defaults_issues(root: Path) -> list[str]:
     guide = root / "docs" / "production-optimization-guide.md"
     if not guide.is_file():
@@ -789,6 +812,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_quickstart_installation_decision_tree_issues(project_root))
     issues.extend(_known_limitations_issues(project_root))
     issues.extend(_end_to_end_tutorial_public_command_issues(project_root))
+    issues.extend(_slurm_example_lifecycle_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]

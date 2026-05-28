@@ -455,7 +455,18 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "workflow-examples" / "slurm" / "README.md").write_text(
-            "# Slurm Example\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Slurm Example",
+                    "",
+                    "gpurec validate-config --check-preprocess",
+                    "gpurec optimize",
+                    "output_gpurec/checkpoints/latest.pt",
+                    "gpurec sample",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_optimization_workflow_call_graph:
         (root / "docs" / "optimization-workflow-call-graph.md").parent.mkdir(
@@ -1439,6 +1450,35 @@ def test_release_metadata_check_requires_end_to_end_tutorial_public_command_phra
     assert "must document tutorial phrase: gpurec validate-config" in result.stdout
     assert "must document tutorial phrase: gpurec optimize" in result.stdout
     assert "must document tutorial phrase: gpurec sample" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_slurm_lifecycle_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "workflow-examples" / "slurm" / "README.md").write_text(
+        "# Slurm Example\n\nsbatch run-gpurec.sbatch\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document lifecycle phrase: gpurec validate-config" in result.stdout
+    assert "must document lifecycle phrase: --check-preprocess" in result.stdout
+    assert "must document lifecycle phrase: gpurec optimize" in result.stdout
+    assert (
+        "must document lifecycle phrase: output_gpurec/checkpoints/latest.pt"
+        in result.stdout
+    )
+    assert "must document lifecycle phrase: gpurec sample" in result.stdout
     assert result.stderr == ""
 
 
