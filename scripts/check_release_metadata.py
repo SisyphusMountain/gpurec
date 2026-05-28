@@ -42,6 +42,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/validation-envelope.md",
     "docs/troubleshooting.md",
     "docs/README.md",
+    "docs/production-optimization-guide.md",
 )
 
 
