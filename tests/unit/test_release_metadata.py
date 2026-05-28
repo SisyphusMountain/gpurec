@@ -485,6 +485,7 @@ def _write_complete_release_metadata_fixture(
                     "Retryable runtime failures vs input contract failures.",
                     "Use likely cause and next action columns in issue triage tables.",
                     "Authoritative files: summary.json, history.jsonl, checkpoints/latest.pt.",
+                    "Include an insufficient CUDA memory example with mitigation steps.",
                     "",
                 ]
             ),
@@ -2074,6 +2075,7 @@ def test_release_metadata_check_requires_troubleshooting_recovery_phrases(
     assert "must document failure-recovery phrase: summary.json" in result.stdout
     assert "must document failure-recovery phrase: history.jsonl" in result.stdout
     assert "must document failure-recovery phrase: checkpoints/latest.pt" in result.stdout
+    assert "must document failure-recovery phrase: insufficient cuda memory" in result.stdout
     assert result.stderr == ""
 
 

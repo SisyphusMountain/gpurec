@@ -127,6 +127,8 @@ final artifacts.
 
 The optimized likelihood and gradient path currently requires CUDA. If model
 construction or final evaluation runs out of memory:
+This includes insufficient CUDA memory failures (OOM during model construction
+or final validation).
 
 - Lower `clade_budget` to build smaller resident batches.
 - Set a positive `family_chunk_size` when one large all-family batch is too

@@ -649,6 +649,7 @@ def _troubleshooting_recovery_issues(root: Path) -> list[str]:
         "summary.json",
         "history.jsonl",
         "checkpoints/latest.pt",
+        "insufficient cuda memory",
     )
     issues: list[str] = []
     for phrase in required_phrases:
