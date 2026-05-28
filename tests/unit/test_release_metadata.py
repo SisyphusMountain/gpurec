@@ -398,7 +398,18 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "workflow-examples" / "end-to-end-tutorial" / "README.md").write_text(
-            "# End-to-End Tutorial\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# End-to-End Tutorial",
+                    "",
+                    "First successful run tutorial uses only public commands.",
+                    "gpurec validate-config",
+                    "gpurec optimize",
+                    "gpurec sample",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
         (root / "docs" / "workflow-examples" / "end-to-end-tutorial" / "run.json").write_text(
             "{}\n", encoding="utf-8"
@@ -1325,6 +1336,32 @@ def test_release_metadata_check_requires_workflow_examples_dataset_generator(
         "missing required release artifact: "
         "docs/workflow-examples/end-to-end-tutorial/generate_dataset.py"
     ) in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_end_to_end_tutorial_public_command_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "workflow-examples" / "end-to-end-tutorial" / "README.md").write_text(
+        "# End-to-End Tutorial\n\nRun this workflow.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document tutorial phrase: first successful run tutorial" in result.stdout
+    assert "must document tutorial phrase: uses only public commands" in result.stdout
+    assert "must document tutorial phrase: gpurec validate-config" in result.stdout
+    assert "must document tutorial phrase: gpurec optimize" in result.stdout
+    assert "must document tutorial phrase: gpurec sample" in result.stdout
     assert result.stderr == ""
 
 
