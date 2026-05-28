@@ -10,6 +10,19 @@ sample, archive.
 
 ## Install
 
+## Installation Decision Tree
+
+- If you are running from a source checkout or source archive with Rust/Cargo
+  available: use `pip install .` and continue with `gpurec doctor`.
+- If you are using a wheel-only environment: set
+  `GPUREC_PREPROCESS_NATIVE_LIB` and `GPUREC_BACKTRACK_BIN`, then run
+  `gpurec preprocess-check`, `gpurec backtrack-check`, and `gpurec doctor`.
+- If you are deploying to cluster/container workflows: start from the project
+  `Dockerfile` or your site CUDA base image, then run the same readiness checks.
+- If you require fully offline installation: treat it as unsupported for the
+  default production contract and follow the offline policy in
+  `docs/platform-matrix.md`.
+
 From a source checkout:
 
 ```bash

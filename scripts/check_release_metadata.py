@@ -485,6 +485,29 @@ def _quickstart_lifecycle_issues(root: Path) -> list[str]:
     return issues
 
 
+def _quickstart_installation_decision_tree_issues(root: Path) -> list[str]:
+    quickstart = root / "docs" / "bioinformatics-quickstart.md"
+    if not quickstart.is_file():
+        return []
+
+    text = quickstart.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "installation decision tree",
+        "source checkout or source archive",
+        "wheel-only environment",
+        "cluster/container workflows",
+        "offline installation",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/bioinformatics-quickstart.md must document installation-decision phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _optimization_guide_goal_defaults_issues(root: Path) -> list[str]:
     guide = root / "docs" / "production-optimization-guide.md"
     if not guide.is_file():
@@ -651,6 +674,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_output_artifact_snippet_issues(project_root))
     issues.extend(_output_artifact_directory_structure_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
+    issues.extend(_quickstart_installation_decision_tree_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
