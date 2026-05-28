@@ -10,6 +10,8 @@ upgrade notes for downstream consumers.
   - Summary of major user-visible behavior changes.
   - Notable bug fixes and validation gates added or changed.
   - Dependency and Python/Torch/CUDA support updates.
+  - Tested platform matrix and validation hardware/software notes.
+  - Benchmark evidence summary and scope disclaimer.
   - Known limitations carried into the release.
   - Migration notes for config/CLI surface changes.
   - Release artifact notes (wheel/source expectations and native binaries).
@@ -39,6 +41,11 @@ Keep this file updated whenever `CHANGELOG.md` is appended.
 - Fixed
   - Artifact gate edge cases for mode/route mismatches and structured status
     formatting.
+- Tested platform matrix and validation hardware/software notes
+  - Linux x86_64, Python 3.12, PyTorch 2.6.0+cu124, CUDA 12.4, Triton 3.2.
+- Benchmark evidence summary and scope disclaimer
+  - Release validation evidence is benchmark evidence for this tested matrix,
+    not a guaranteed performance contract for all hardware or datasets.
 - Known limitations
   - CUDA path is required for the retained optimizer path and `S > 256` backward
     gate.
@@ -51,4 +58,3 @@ Keep this file updated whenever `CHANGELOG.md` is appended.
   - New release governance files introduced:
     `CHANGELOG.md`, `CITATION.cff`, `LICENSE`, `Dockerfile`, and
     `docs/release-notes.md`.
-

@@ -238,6 +238,14 @@ def _release_notes_version_issues(project: dict[str, Any], root: Path) -> list[s
             issues.append(
                 "docs/release-notes.md must include dependency/python/torch/cuda support-update guidance"
             )
+        if "tested platform matrix" not in lower_text:
+            issues.append(
+                "docs/release-notes.md must include tested platform matrix guidance"
+            )
+        if "benchmark evidence" not in lower_text:
+            issues.append(
+                "docs/release-notes.md must include benchmark evidence guidance"
+            )
 
     return issues
 
