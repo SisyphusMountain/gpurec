@@ -3,6 +3,11 @@
 This page is the shortest path for running `gpurec` end-to-end on public
 AleRax-style inputs.
 
+## Run Lifecycle
+
+Follow this lifecycle in order: create config, validate, run, resume, inspect,
+sample, archive.
+
 ## Install
 
 From a source checkout:
@@ -28,16 +33,18 @@ gpurec preprocess-check
 gpurec backtrack-check
 ```
 
-## Validate Inputs
+## Create Config
 
-1. Prepare a rooted species tree and an AleRax `[FAMILIES]` file.
-2. Generate a mode-specific starter config and edit file paths:
+Start from a mode-specific template and edit the paths:
 
 ```bash
 gpurec config-template --mode genewise --output run.json
 ```
 
-3. Preflight both static and parser/compute contracts:
+## Validate
+
+Prepare a rooted species tree and an AleRax `[FAMILIES]` file, then preflight
+the config:
 
 ```bash
 gpurec validate-config --config run.json --require-mode-default-optimizer
@@ -48,7 +55,7 @@ Use `--require-production-default-route` instead of
 `--require-mode-default-optimizer` only when you also require the shipped
 HOGENOM/`test_trees_1000` objective, gradient, and resident-batch route.
 
-## Run Optimization
+## Run
 
 Start from the same `run.json` used for preflight:
 
@@ -59,7 +66,15 @@ gpurec optimize --config run.json --require-mode-default-optimizer
 Add `--require-final-check-ok` to make final high-fidelity likelihood/gradient
 validation failures gate success explicitly.
 
-## Inspect Output
+## Resume
+
+To continue an interrupted run, point the same config at a checkpoint:
+
+```bash
+gpurec optimize --config run.json --resume-from output_gpurec/checkpoints/latest.pt --require-mode-default-optimizer
+```
+
+## Inspect
 
 Every optimization writes checkpoints, history, and summary metadata:
 
@@ -72,7 +87,7 @@ gpurec summary-info --summary output_gpurec/summary.json --require-final-check-o
 Add `--require-production-default-route` to preflight the same route metadata
 if the workflow is part of a production release check.
 
-## Sample Reconciliations
+## Sample
 
 Use the output checkpoint for sampling-ready state:
 
@@ -81,6 +96,17 @@ gpurec sample --checkpoint output_gpurec/checkpoints/latest.pt --samples 50
 ```
 
 Keep the output directory and RNG settings explicit for reproducibility.
+
+## Archive
+
+Archive the run directory artifacts needed for reproducibility and triage:
+
+- `run_config.json`
+- `run_manifest.json`
+- `summary.json`
+- `history.jsonl`
+- `checkpoints/`
+- sampled RecPhyloXML and event TSV outputs
 
 ## Next checks
 

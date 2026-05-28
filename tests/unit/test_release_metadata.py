@@ -266,7 +266,15 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "bioinformatics-quickstart.md").write_text(
-            "# Bioinformatics Quickstart\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Bioinformatics Quickstart",
+                    "",
+                    "Create config, validate, run, resume, inspect, sample, archive.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_input_preparation:
         (root / "docs" / "input-preparation.md").parent.mkdir(
@@ -771,6 +779,34 @@ def test_release_metadata_check_requires_bioinformatics_quickstart(tmp_path: Pat
         "missing required release artifact: docs/bioinformatics-quickstart.md"
         in result.stdout
     )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_quickstart_lifecycle_stages(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "bioinformatics-quickstart.md").write_text(
+        "# Bioinformatics Quickstart\n\nInstall only.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document lifecycle stage: create config" in result.stdout
+    assert "must document lifecycle stage: validate" in result.stdout
+    assert "must document lifecycle stage: run" in result.stdout
+    assert "must document lifecycle stage: resume" in result.stdout
+    assert "must document lifecycle stage: inspect" in result.stdout
+    assert "must document lifecycle stage: sample" in result.stdout
+    assert "must document lifecycle stage: archive" in result.stdout
     assert result.stderr == ""
 
 

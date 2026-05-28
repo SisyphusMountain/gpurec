@@ -347,6 +347,31 @@ def _release_readiness_issues(root: Path) -> list[str]:
     return issues
 
 
+def _quickstart_lifecycle_issues(root: Path) -> list[str]:
+    quickstart = root / "docs" / "bioinformatics-quickstart.md"
+    if not quickstart.is_file():
+        return []
+
+    text = quickstart.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "create config",
+        "validate",
+        "run",
+        "resume",
+        "inspect",
+        "sample",
+        "archive",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/bioinformatics-quickstart.md must document lifecycle stage: "
+                + phrase
+            )
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -485,6 +510,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_platform_matrix_issues(project_root))
     issues.extend(_readme_cli_exit_code_issues(project_root))
     issues.extend(_release_readiness_issues(project_root))
+    issues.extend(_quickstart_lifecycle_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)
