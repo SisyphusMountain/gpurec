@@ -323,7 +323,17 @@ def _write_complete_release_metadata_fixture(
             parents=True, exist_ok=True
         )
         (root / "docs" / "production-optimization-guide.md").write_text(
-            "# Production Optimization Guide\n", encoding="utf-8"
+            "\n".join(
+                [
+                    "# Production Optimization Guide",
+                    "",
+                    "Recommended defaults by user goal: exploratory run,",
+                    "production genewise run, production specieswise run,",
+                    "diagnostics-only global run.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
     if create_glossary:
         (root / "docs" / "glossary.md").parent.mkdir(
@@ -946,6 +956,36 @@ def test_release_metadata_check_requires_production_optimization_guide(
     assert result.returncode == 1
     assert (
         "missing required release artifact: docs/production-optimization-guide.md"
+        in result.stdout
+    )
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_user_goal_defaults_in_optimization_guide(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "production-optimization-guide.md").write_text(
+        "# Production Optimization Guide\n\nDefaults.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document user-goal default: exploratory run" in result.stdout
+    assert "must document user-goal default: production genewise run" in result.stdout
+    assert (
+        "must document user-goal default: production specieswise run" in result.stdout
+    )
+    assert (
+        "must document user-goal default: diagnostics-only global run"
         in result.stdout
     )
     assert result.stderr == ""

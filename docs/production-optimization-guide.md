@@ -141,6 +141,22 @@ History rows record `optimizer/hessian_sgd_validation_step`,
 | `specieswise` | `adagrad-restarts` | Specieswise rates share a single full objective; the HOGENOM route reached the accepted basin fastest with multifidelity Adagrad and explicit state resets. |
 | `global` | `adam` | The global surface is small and shared. Adam remains the conservative default. |
 
+## Recommended Defaults By User Goal
+
+Use these presets before dataset-specific tuning:
+
+- Exploratory run: start with `mode=global`, `optimizer=auto`, and modest
+  `steps` to validate parser/mapping contracts and objective behavior quickly.
+- Production genewise run: use `mode=genewise`, `optimizer=auto` (resolves to
+  `hessian-sgd`), and enforce `--require-mode-default-optimizer` during
+  preflight and optimization.
+- Production specieswise run: use `mode=specieswise`, `optimizer=auto`
+  (resolves to `adagrad-restarts`), then keep the default restart schedule
+  unless a calibrated dataset profile is documented.
+- Diagnostics-only global run: use `mode=global` for shared-rate comparisons
+  and smoke diagnostics, but treat this route as outside strict
+  `--require-production-default-route` release gates.
+
 Route metadata records the chosen default as `mode_default_optimizer` and
 whether the resolved `optimizer` currently matches it as
 `uses_mode_default_optimizer`. It also records

@@ -372,6 +372,28 @@ def _quickstart_lifecycle_issues(root: Path) -> list[str]:
     return issues
 
 
+def _optimization_guide_goal_defaults_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "production-optimization-guide.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "exploratory run",
+        "production genewise run",
+        "production specieswise run",
+        "diagnostics-only global run",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/production-optimization-guide.md must document user-goal default: "
+                + phrase
+            )
+    return issues
+
+
 def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
     urls = project.get("urls") or {}
     if not isinstance(urls, dict):
@@ -511,6 +533,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_readme_cli_exit_code_issues(project_root))
     issues.extend(_release_readiness_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
+    issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)
