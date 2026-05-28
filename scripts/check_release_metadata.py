@@ -52,6 +52,8 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/workflow-examples/snakemake/README.md",
     "docs/workflow-examples/nextflow/README.md",
     "docs/workflow-examples/slurm/README.md",
+    "docs/optimization-workflow-call-graph.md",
+    "docs/lean-fast-path.md",
 )
 
 
