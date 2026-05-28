@@ -10,7 +10,8 @@ The process chain mirrors the same checkpoints used by the Snakemake example:
 
 1. `validate` (preflight)
 2. `optimize` (gated production run)
-3. `sample` (checkpoint-based sampling)
+3. `inspect` (`summary-info` and `checkpoint-info` hard gates)
+4. `sample` (checkpoint-based sampling)
 
 Tune sample count and random seed through Nextflow params:
 

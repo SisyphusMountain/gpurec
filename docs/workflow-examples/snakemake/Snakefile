@@ -36,13 +36,32 @@ rule optimize:
         """
         gpurec optimize --config {RUN_CONFIG} \
           --require-mode-default-optimizer \
+          --require-converged \
           --require-final-check-ok
+        """
+
+
+rule inspect:
+    input:
+        summary = rules.optimize.output.summary,
+        checkpoint = rules.optimize.output.best_ckpt,
+    output:
+        marker = "output_gpurec/.inspect_ok",
+    shell:
+        """
+        gpurec summary-info --summary {input.summary} \
+          --require-converged \
+          --require-final-check-ok
+        gpurec checkpoint-info --checkpoint {input.checkpoint} \
+          --require-final-check-ok
+        touch {output.marker}
         """
 
 
 rule sample:
     input:
         checkpoint = rules.optimize.output.best_ckpt,
+        marker = rules.inspect.output.marker,
     output:
         rec_dir = directory("output_gpurec/reconciliations"),
     shell:

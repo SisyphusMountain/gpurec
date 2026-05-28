@@ -32,13 +32,33 @@ process optimize {
         gpurec optimize \
           --config ${params.run_config} \
           --require-mode-default-optimizer \
+          --require-converged \
           --require-final-check-ok
+        """
+}
+
+process inspect {
+    tag 'gpurec-inspect'
+    input:
+        path summary from optimize.out.summary
+        path checkpoint from optimize.out.best_ckpt
+    output:
+        path('inspect.ok'), emit: ready
+    script:
+        """
+        gpurec summary-info --summary ${summary} \
+          --require-converged \
+          --require-final-check-ok
+        gpurec checkpoint-info --checkpoint ${checkpoint} \
+          --require-final-check-ok
+        touch inspect.ok
         """
 }
 
 process sample {
     tag 'gpurec-sample'
     input:
+        path ready from inspect.out.ready
         path checkpoint from optimize.out.best_ckpt
     output:
         path 'output_gpurec/reconciliations'
@@ -55,5 +75,6 @@ process sample {
 workflow {
     validate = validateConfig()
     optimized = optimize(validate.out.ready)
+    inspected = inspect(optimized.out.summary, optimized.out.best_ckpt)
     sample(optimized.out.best_ckpt)
 }

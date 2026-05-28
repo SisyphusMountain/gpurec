@@ -247,3 +247,24 @@ def test_minimal_run_config_outputs_are_gitignored():
             timeout=SUBPROCESS_TIMEOUT,
         )
         assert result.returncode == 0, relative
+
+
+def test_workflow_examples_include_post_optimization_quality_gates():
+    snakemake = (
+        ROOT / "docs" / "workflow-examples" / "snakemake" / "Snakefile"
+    ).read_text(encoding="utf-8")
+    nextflow = (
+        ROOT / "docs" / "workflow-examples" / "nextflow" / "main.nf"
+    ).read_text(encoding="utf-8")
+
+    assert "gpurec optimize --config {RUN_CONFIG} \\" in snakemake
+    assert "--require-converged \\" in snakemake
+    assert "gpurec summary-info --summary {input.summary} \\" in snakemake
+    assert "gpurec checkpoint-info --checkpoint {input.checkpoint} \\" in snakemake
+    assert "--require-final-check-ok" in snakemake
+
+    assert "process inspect {" in nextflow
+    assert "gpurec optimize \\" in nextflow
+    assert "--require-converged \\" in nextflow
+    assert "gpurec summary-info --summary ${summary} \\" in nextflow
+    assert "gpurec checkpoint-info --checkpoint ${checkpoint} \\" in nextflow
