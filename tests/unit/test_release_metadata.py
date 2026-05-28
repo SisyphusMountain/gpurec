@@ -390,7 +390,7 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "Create config, validate, run, resume, inspect, sample, archive.",
                     "Installation decision tree for source checkout or source archive,",
-                    "wheel-only environment, cluster/container workflows, conda, and",
+                    "wheel-only environment, cluster/container workflows, conda/mamba, and",
                     "offline installation policy.",
                     "Run gpurec doctor as the first readiness command.",
                     "Run gpurec preprocess-check and gpurec backtrack-check",
@@ -1518,6 +1518,7 @@ def test_release_metadata_check_requires_quickstart_installation_decision_tree_p
     assert "must document installation-decision phrase: wheel-only environment" in result.stdout
     assert "must document installation-decision phrase: cluster/container workflows" in result.stdout
     assert "must document installation-decision phrase: conda" in result.stdout
+    assert "must document installation-decision phrase: mamba" in result.stdout
     assert "must document installation-decision phrase: offline installation" in result.stdout
     assert "must document installation-decision phrase: gpurec doctor" in result.stdout
     assert "must document installation-decision phrase: gpurec preprocess-check" in result.stdout

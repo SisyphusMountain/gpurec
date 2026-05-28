@@ -996,6 +996,7 @@ def _quickstart_installation_decision_tree_issues(root: Path) -> list[str]:
         "wheel-only environment",
         "cluster/container workflows",
         "conda",
+        "mamba",
         "offline installation",
         "gpurec doctor",
         "gpurec preprocess-check",
