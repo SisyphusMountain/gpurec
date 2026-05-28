@@ -165,6 +165,8 @@ jobs:
               "docs/production-optimization-guide.md",
               "docs/professionalization-audit-progress.tex",
               "docs/release-readiness.md",
+              "docs/long-validation-workflow.md",
+              "docs/validation-envelope.md",
               "docs/support-policy.md",
               "docs/versioning-policy.md",
               "docs/publication-checklist.md",

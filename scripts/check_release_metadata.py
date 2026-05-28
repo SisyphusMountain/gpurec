@@ -38,6 +38,8 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/bioinformatics-quickstart.md",
     "docs/input-preparation.md",
     "docs/output-artifacts.md",
+    "docs/long-validation-workflow.md",
+    "docs/validation-envelope.md",
 )
 
 
