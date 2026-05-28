@@ -11,8 +11,8 @@ This page tracks constraints that should be visible before launch.
   as end-to-end CUDA optimization smokes.
 - The retained parser accepts a deliberately narrow Newick subset:
   unquoted labels, optional branch lengths, ordinary species-tree topologies,
-  and no nested comments, NHX/BEAST metadata, unary species nodes, or non-binary
-  species trees.
+  and no quoted labels, embedded delimiters, nested comments, NHX/BEAST metadata,
+  unary species nodes, or non-binary species trees.
 - Native preprocessing and native backtracking are required at runtime for full
   workflow commands. Wheels that do not bundle them require compatible external
   artifacts (`GPUREC_PREPROCESS_NATIVE_LIB`, `GPUREC_BACKTRACK_BIN`) or source

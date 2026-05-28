@@ -309,7 +309,8 @@ def _write_complete_release_metadata_fixture(
                     "# Known Limitations",
                     "",
                     "CUDA-only production route with S > 256 gate.",
-                    "Parser Newick subset limits are explicit.",
+                    "Parser Newick subset limits are explicit: unsupported quoted labels",
+                    "and embedded delimiters.",
                     "Wheel installs may require external native artifacts.",
                     "bf16 remains experimental.",
                     "",
@@ -1255,6 +1256,8 @@ def test_release_metadata_check_requires_known_limitations_phrases(
     assert "must document limitation phrase: cuda" in result.stdout
     assert "must document limitation phrase: s > 256" in result.stdout
     assert "must document limitation phrase: newick subset" in result.stdout
+    assert "must document limitation phrase: quoted labels" in result.stdout
+    assert "must document limitation phrase: embedded delimiters" in result.stdout
     assert "must document limitation phrase: wheel" in result.stdout
     assert "must document limitation phrase: external" in result.stdout
     assert "must document limitation phrase: bf16" in result.stdout

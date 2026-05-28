@@ -832,6 +832,8 @@ def _known_limitations_issues(root: Path) -> list[str]:
         "cuda",
         "s > 256",
         "newick subset",
+        "quoted labels",
+        "embedded delimiters",
         "wheel",
         "external",
         "bf16",
