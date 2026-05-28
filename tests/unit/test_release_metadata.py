@@ -186,7 +186,7 @@ def _write_complete_release_metadata_fixture(
                     "Nightly checks",
                     "Release-candidate checks",
                     "Final publication checks",
-                    "Checksums and provenance evidence are required.",
+                    "Checksums, provenance evidence, and binary provenance records are required.",
                     "sha256sum dist/* > dist/SHA256SUMS",
                     "",
                 ]
@@ -2712,6 +2712,7 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: final publication checks" in result.stdout
     assert "must document release gate phrase: checksums" in result.stdout
     assert "must document release gate phrase: provenance" in result.stdout
+    assert "must document release gate phrase: binary provenance" in result.stdout
     assert "must document release gate phrase: sha256sum dist/* > dist/sha256sums" in result.stdout
     assert result.stderr == ""
 

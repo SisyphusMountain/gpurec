@@ -92,9 +92,9 @@ Generate and archive checksums for release artifacts:
 sha256sum dist/* > dist/SHA256SUMS
 ```
 
-Record release artifact provenance alongside checksums in the release evidence
-bundle so maintainers can trace which clean checkout, toolchain, and commands
-produced the published artifacts.
+Record release artifact provenance and binary provenance alongside checksums in
+the release evidence bundle so maintainers can trace which clean checkout,
+toolchain, and commands produced the published artifacts.
 
 Before release handoff, add a quick artifact sanity pass over the final output
 directory with the local validator script so structural regression in `summary.json`,
