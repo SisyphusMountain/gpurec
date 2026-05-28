@@ -92,6 +92,7 @@ def _write_complete_release_metadata_fixture(
     create_output_artifacts: bool = True,
     create_long_validation_workflow: bool = True,
     create_validation_envelope: bool = True,
+    create_troubleshooting: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -188,6 +189,13 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "validation-envelope.md").write_text(
             "# Validation Envelope\n", encoding="utf-8"
+        )
+    if create_troubleshooting:
+        (root / "docs" / "troubleshooting.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "troubleshooting.md").write_text(
+            "# Troubleshooting\n", encoding="utf-8"
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
@@ -485,6 +493,25 @@ def test_release_metadata_check_requires_validation_envelope(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/validation-envelope.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_troubleshooting_doc(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        create_troubleshooting=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "missing required release artifact: docs/troubleshooting.md" in result.stdout
     assert result.stderr == ""
 
 

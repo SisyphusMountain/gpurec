@@ -40,6 +40,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/output-artifacts.md",
     "docs/long-validation-workflow.md",
     "docs/validation-envelope.md",
+    "docs/troubleshooting.md",
 )
 
 
