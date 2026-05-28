@@ -162,8 +162,8 @@ required machine path for automation.
 
 ## Contract Stability, versioning, deprecation
 
-Compatibility policy scope covers config fields, CLI flags, Python imports, and
-output artifacts.
+Compatibility policy scope covers config fields, CLI flags (including
+`--dry-run` and `--explain-config`), Python imports, and output artifacts.
 
 - This contract currently applies to the current `gpurec` release line and is
   versioned as API contract `v1`.

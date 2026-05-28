@@ -349,6 +349,7 @@ def _write_complete_release_metadata_fixture(
                     "JSON mode emits single JSON objects with stable keys.",
                     "JSON mode is the required machine path for automation.",
                     "Compatibility policy covers config fields, CLI flags,",
+                    "including --dry-run and --explain-config,",
                     "Python imports, and output artifacts.",
                     "Deprecation warnings and migration notes are required",
                     "before removing supported behavior.",
@@ -400,6 +401,8 @@ def _write_complete_release_metadata_fixture(
                     "gpurec validate-config --config run.json --json,",
                     "gpurec summary-info --summary output_gpurec/summary.json --json,",
                     "and gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json.",
+                    "Use gpurec validate-config --explain-config to show effective defaults.",
+                    "Use gpurec optimize --dry-run; it estimates route and inputs without running optimization.",
                     "RNG behavior keeps a sampling seed for reproducibility.",
                     "",
                 ]
@@ -1581,6 +1584,10 @@ def test_release_metadata_check_requires_quickstart_json_mode_phrases(
         "must document json-mode phrase: gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json"
         in result.stdout
     )
+    assert "must document json-mode phrase: --explain-config" in result.stdout
+    assert "must document json-mode phrase: --dry-run" in result.stdout
+    assert "must document json-mode phrase: estimates route" in result.stdout
+    assert "must document json-mode phrase: without running optimization" in result.stdout
     assert result.stderr == ""
 
 
@@ -2868,6 +2875,8 @@ def test_release_metadata_check_requires_api_contract_compatibility_phrases(
     assert "must document compatibility phrase: compatibility policy" in result.stdout
     assert "must document compatibility phrase: config fields" in result.stdout
     assert "must document compatibility phrase: cli flags" in result.stdout
+    assert "must document compatibility phrase: --dry-run" in result.stdout
+    assert "must document compatibility phrase: --explain-config" in result.stdout
     assert "must document compatibility phrase: python imports" in result.stdout
     assert "must document compatibility phrase: output artifacts" in result.stdout
     assert "must document compatibility phrase: deprecation warnings" in result.stdout

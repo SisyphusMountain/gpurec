@@ -1025,6 +1025,10 @@ def _quickstart_json_mode_issues(root: Path) -> list[str]:
         "gpurec validate-config --config run.json --json",
         "gpurec summary-info --summary output_gpurec/summary.json --json",
         "gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json",
+        "--explain-config",
+        "--dry-run",
+        "estimates route",
+        "without running optimization",
     )
     issues: list[str] = []
     for phrase in required_phrases:
@@ -1277,6 +1281,8 @@ def _api_contract_compatibility_policy_issues(root: Path) -> list[str]:
         "compatibility policy",
         "config fields",
         "cli flags",
+        "--dry-run",
+        "--explain-config",
         "python imports",
         "output artifacts",
         "deprecation warnings",

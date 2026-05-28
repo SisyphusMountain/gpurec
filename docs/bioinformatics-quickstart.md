@@ -59,6 +59,15 @@ gpurec summary-info --summary output_gpurec/summary.json --json
 gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json
 ```
 
+For config interpretation and route checks before launching CUDA work:
+
+```bash
+gpurec validate-config --config run.json --explain-config
+gpurec optimize --config run.json --dry-run
+```
+
+`--dry-run` estimates route and input/preprocess counts without running optimization.
+
 ## Create Config
 
 Start from a mode-specific template and edit the paths:
