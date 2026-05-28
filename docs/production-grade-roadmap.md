@@ -67,7 +67,7 @@ bioinformatics users.
 | Establish GPU validation | The inspected CI workflow is CPU-focused. Production correctness depends on CUDA kernels and GPU memory behavior. | Add mandatory or scheduled GPU CI for the retained likelihood/gradient path, small CUDA fixtures, and at least one realistic-size benchmark fixture or replay. |
 | Resolve small-species behavior | The docs state the retained Pi backward path requires `S > 256`; tiny examples are parser/config fixtures, not optimizer smokes. This will surprise users with small species trees. | Either implement a CPU/Torch/Triton fallback for `S <= 256`, or make the limitation impossible to miss in install docs, quickstart, templates, validation errors, and publication guidance. |
 | Ship a real end-to-end tutorial | Existing examples intentionally do not run optimization end to end. Bioinformaticians need one complete path. | Add a tracked or downloadable dataset that passes `validate-config --check-preprocess --require-cuda-backward-ready`, runs optimization, writes outputs, and samples RecPhyloXML. |
-| Freeze public API and CLI contract | The repo has careful internal/public classification, but production users need stability. | Declare supported CLI commands, Python imports, config fields, output schemas, environment variables, and deprecation policy in one versioned API contract. |
+| Freeze public API and CLI contract | The repo has careful internal/public classification, but production users need stability. | Completed via [`api-contract.md`](api-contract.md) with versioned public CLI/Python/env/artifact/deprecation surface. |
 
 ## P1 Work Needed For A Usable Bioinformatics Tool
 

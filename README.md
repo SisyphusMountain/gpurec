@@ -15,7 +15,7 @@ stochastic RecPhyloXML sampling.
   backtracking.
 - `gpurec` CLI entry point with `config-template`, `validate-config`,
   `optimize`, `summary-info`, `checkpoint-info`, `sample`, `run`, and
-  `preprocess-check`/`backtrack-check` commands.
+  `preprocess-check`, `backtrack-check`, and `doctor` commands.
 - Standard PyTorch optimizers over `model.theta`, including `torch.optim.Adam`.
 - `gpurec.optimization.BatchedLBFGS` for row-wise genewise polishing.
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree
@@ -53,6 +53,10 @@ compatible prebuilt extension before running `validate-config --check-preprocess
 extension path or the source-tree Cargo build fallback without reading dataset
 files. `GPUREC_PREPROCESS_BIN` is reserved for the subprocess adapter and
 profiling helpers; it is not a workflow model-construction fallback.
+
+When all native dependencies are available, run `gpurec doctor` once before the
+first long run to validate Python/Torch/Triton availability, preprocessing and
+backtracking readiness, and output directory writability in one command.
 
 For the checkout-local HOGENOM experiment scripts:
 
@@ -813,6 +817,11 @@ See `docs/README.md` for the current documentation map.  It separates current
 operating notes from historical performance and research logs.
 Use `docs/production-grade-roadmap.md` and `docs/release-readiness.md` when
 checking release readiness.
+`docs/api-contract.md` captures the versioned public API/CLI contract for
+supported commands, imports, config fields, artifacts, environment variables, and
+deprecation policy.
+`docs/platform-matrix.md` documents the supported OS/Python/PyTorch/Triton/
+GPU combinations and wheel/source installation expectations.
 For source data layout and preflight validation, see
 [`docs/input-preparation.md`](docs/input-preparation.md).
 For run triage, see [`docs/troubleshooting.md`](docs/troubleshooting.md).

@@ -23,6 +23,7 @@ export GPUREC_BACKTRACK_BIN=/path/to/gpurec-backtrack
 Then verify availability without reading input files:
 
 ```bash
+gpurec doctor
 gpurec preprocess-check
 gpurec backtrack-check
 ```

@@ -15,6 +15,11 @@ file as the map for deeper context.
 - `run-config-reference.md`: maintained field-by-field `RunConfig` and CLI
   flag reference, including optimizer scoping and completed-checkpoint resume
   semantics.
+- `platform-matrix.md`: explicit Linux/Python/PyTorch/Triton/GPU/rust-native
+  support and installation matrix with recommended preflight commands.
+- `api-contract.md`: public API and CLI contract for versioned user-visible
+  behavior, including command set, import surface, config precedence, environment
+  variables, output artifacts, exit behavior, and deprecation policy.
 - `input-preparation.md`: bioinformatician-facing guide for species trees,
   AleRax `[FAMILIES]` records, gene-tree files, mapping files, JSON config path
   resolution, and `validate-config --check-preprocess` preflight validation.
@@ -112,3 +117,4 @@ use internals to guard behavior, but those imports are not public API evidence.
 The current narrow exception is direct `GeneDataset(..., leaf_species_maps=...)`
 construction for custom gene-leaf to species mapping when `from_trees` prefix
 fallback and AleRax `mapping` entries are not sufficient.
+For a complete public-interface statement, see [`api-contract.md`](api-contract.md).
