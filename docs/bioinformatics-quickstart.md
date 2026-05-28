@@ -46,6 +46,17 @@ gpurec preprocess-check
 gpurec backtrack-check
 ```
 
+## Structured JSON Mode
+
+For workflow-manager automation, use `--json` instead of parsing status lines:
+
+```bash
+gpurec doctor --json
+gpurec validate-config --config run.json --json
+gpurec summary-info --summary output_gpurec/summary.json --json
+gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json
+```
+
 ## Create Config
 
 Start from a mode-specific template and edit the paths:

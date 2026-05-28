@@ -302,6 +302,10 @@ def _write_complete_release_metadata_fixture(
                     "Installation decision tree for source checkout or source archive,",
                     "wheel-only environment, cluster/container workflows, and",
                     "offline installation policy.",
+                    "Structured JSON mode includes gpurec doctor --json,",
+                    "gpurec validate-config --config run.json --json,",
+                    "gpurec summary-info --summary output_gpurec/summary.json --json,",
+                    "and gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json.",
                     "",
                 ]
             ),
@@ -1034,6 +1038,49 @@ def test_release_metadata_check_requires_quickstart_installation_decision_tree_p
     assert "must document installation-decision phrase: wheel-only environment" in result.stdout
     assert "must document installation-decision phrase: cluster/container workflows" in result.stdout
     assert "must document installation-decision phrase: offline installation" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_quickstart_json_mode_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "bioinformatics-quickstart.md").write_text(
+        "\n".join(
+            [
+                "# Bioinformatics Quickstart",
+                "",
+                "Create config, validate, run, resume, inspect, sample, archive.",
+                "Installation decision tree for source checkout or source archive.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document json-mode phrase: structured json mode" in result.stdout
+    assert "must document json-mode phrase: gpurec doctor --json" in result.stdout
+    assert (
+        "must document json-mode phrase: gpurec validate-config --config run.json --json"
+        in result.stdout
+    )
+    assert (
+        "must document json-mode phrase: gpurec summary-info --summary output_gpurec/summary.json --json"
+        in result.stdout
+    )
+    assert (
+        "must document json-mode phrase: gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json"
+        in result.stdout
+    )
     assert result.stderr == ""
 
 

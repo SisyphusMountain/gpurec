@@ -599,6 +599,29 @@ def _quickstart_installation_decision_tree_issues(root: Path) -> list[str]:
     return issues
 
 
+def _quickstart_json_mode_issues(root: Path) -> list[str]:
+    quickstart = root / "docs" / "bioinformatics-quickstart.md"
+    if not quickstart.is_file():
+        return []
+
+    text = quickstart.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "structured json mode",
+        "gpurec doctor --json",
+        "gpurec validate-config --config run.json --json",
+        "gpurec summary-info --summary output_gpurec/summary.json --json",
+        "gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt --json",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/bioinformatics-quickstart.md must document json-mode phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _known_limitations_issues(root: Path) -> list[str]:
     guide = root / "docs" / "known-limitations.md"
     if not guide.is_file():
@@ -933,6 +956,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_output_artifact_run_manifest_contract_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
     issues.extend(_quickstart_installation_decision_tree_issues(project_root))
+    issues.extend(_quickstart_json_mode_issues(project_root))
     issues.extend(_known_limitations_issues(project_root))
     issues.extend(_end_to_end_tutorial_public_command_issues(project_root))
     issues.extend(_slurm_example_lifecycle_issues(project_root))
