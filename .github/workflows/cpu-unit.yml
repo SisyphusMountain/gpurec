@@ -165,6 +165,7 @@ jobs:
               "docs/versioning-policy.md",
               "docs/publication-checklist.md",
               "docs/troubleshooting.md",
+              "scripts/generate_dependency_inventory.py",
               "examples/README.md",
               "examples/minimal-run-config.json",
               "examples/specieswise-adagrad-restarts-config.json",

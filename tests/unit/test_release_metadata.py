@@ -626,6 +626,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/versioning-policy.md",
         "docs/publication-checklist.md",
         "docs/troubleshooting.md",
+        "scripts/generate_dependency_inventory.py",
         "examples/README.md",
         "examples/minimal-run-config.json",
         "examples/specieswise-adagrad-restarts-config.json",
