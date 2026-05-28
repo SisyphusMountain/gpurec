@@ -201,6 +201,7 @@ def _write_complete_release_metadata_fixture(
                     "Output artifacts have stable schemas or documented compatibility rules.",
                     "Known limitations are prominent and accurate.",
                     "CLI errors are actionable for common input, native binary, CUDA, and convergence failures.",
+                    "A realistic dataset can be validated, optimized, inspected, resumed, and sampled using documented commands.",
                     "Checksums, provenance evidence, and binary provenance records are required.",
                     "sha256sum dist/* > dist/SHA256SUMS",
                     "",
@@ -2856,6 +2857,9 @@ def test_release_metadata_check_requires_release_readiness_gate_phrases(
     assert "must document release gate phrase: common input" in result.stdout
     assert "must document release gate phrase: native binary" in result.stdout
     assert "must document release gate phrase: convergence failures" in result.stdout
+    assert "must document release gate phrase: realistic dataset" in result.stdout
+    assert "must document release gate phrase: validated, optimized, inspected, resumed, and sampled" in result.stdout
+    assert "must document release gate phrase: documented commands" in result.stdout
     assert "must document release gate phrase: checksums" in result.stdout
     assert "must document release gate phrase: provenance" in result.stdout
     assert "must document release gate phrase: binary provenance" in result.stdout
