@@ -568,6 +568,7 @@ def _release_readiness_issues(root: Path) -> list[str]:
         "production route",
         "exact tested platform matrix",
         "benchmark evidence",
+        "native preprocessing and backtracking are provided",
         "checksums",
         "provenance",
         "binary provenance",
