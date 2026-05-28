@@ -515,6 +515,8 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "Issue entries include file path, family name, affected label,",
                     "expected format, and next action.",
+                    "Structured reports cover every family with missing mapping,",
+                    "duplicate family name, rejected tree, and species coverage.",
                     "",
                 ]
             ),
@@ -1873,6 +1875,46 @@ def test_release_metadata_check_requires_input_validation_fixture_issue_shape_ph
     assert "must document issue-shape phrase: affected label" in result.stdout
     assert "must document issue-shape phrase: expected format" in result.stdout
     assert "must document issue-shape phrase: next action" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_input_validation_fixture_category_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (
+        tmp_path
+        / "docs"
+        / "workflow-examples"
+        / "input-validation-fixtures"
+        / "README.md"
+    ).write_text(
+        "\n".join(
+            [
+                "# Input Validation Fixtures",
+                "",
+                "Issue entries include file path, family name, affected label,",
+                "expected format, and next action.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document category phrase: every family" in result.stdout
+    assert "must document category phrase: missing mapping" in result.stdout
+    assert "must document category phrase: duplicate family name" in result.stdout
+    assert "must document category phrase: rejected tree" in result.stdout
+    assert "must document category phrase: species coverage" in result.stdout
     assert result.stderr == ""
 
 
