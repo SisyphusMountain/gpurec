@@ -30,6 +30,9 @@ native artifact version metadata, PyTorch version, CUDA availability, GPU name,
 command line invocation, config hash, random seed evidence, and selected route
 metadata.
 
+`theta_final.pt` remains for inspection only; use checkpoint artifacts when a
+checkpoint is required for resume, route checks, or sampling.
+
 ## Example Output Snippets
 
 `summary.json` (trimmed):

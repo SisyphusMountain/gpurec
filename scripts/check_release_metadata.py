@@ -591,6 +591,27 @@ def _output_artifact_run_manifest_contract_issues(root: Path) -> list[str]:
     return issues
 
 
+def _output_artifact_theta_checkpoint_boundary_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "output-artifacts.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "theta_final.pt",
+        "for inspection only",
+        "checkpoint is required",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/output-artifacts.md must document theta/checkpoint phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _quickstart_lifecycle_issues(root: Path) -> list[str]:
     quickstart = root / "docs" / "bioinformatics-quickstart.md"
     if not quickstart.is_file():
@@ -1091,6 +1112,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_output_artifact_directory_structure_issues(project_root))
     issues.extend(_output_artifact_flow_issues(project_root))
     issues.extend(_output_artifact_run_manifest_contract_issues(project_root))
+    issues.extend(_output_artifact_theta_checkpoint_boundary_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
     issues.extend(_quickstart_installation_decision_tree_issues(project_root))
     issues.extend(_quickstart_json_mode_issues(project_root))
