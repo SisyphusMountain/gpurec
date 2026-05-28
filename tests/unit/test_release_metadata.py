@@ -99,6 +99,7 @@ def _write_complete_release_metadata_fixture(
     create_workflow_examples: bool = True,
     create_optimization_workflow_call_graph: bool = True,
     create_lean_fast_path: bool = True,
+    create_professionalization_audit_progress: bool = True,
     urls_block: str | None = None,
     scripts_block: str | None = None,
     project_extra: str = "",
@@ -280,6 +281,13 @@ def _write_complete_release_metadata_fixture(
         )
         (root / "docs" / "lean-fast-path.md").write_text(
             "# Lean Fast Path\n", encoding="utf-8"
+        )
+    if create_professionalization_audit_progress:
+        (root / "docs" / "professionalization-audit-progress.tex").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "docs" / "professionalization-audit-progress.tex").write_text(
+            "% professionalization audit fixture\n", encoding="utf-8"
         )
     readme_block = f"{readme_line}\n" if readme_line else ""
     if urls_block is None:
@@ -768,6 +776,30 @@ def test_release_metadata_check_requires_lean_fast_path_doc(tmp_path: Path):
 
     assert result.returncode == 1
     assert "missing required release artifact: docs/lean-fast-path.md" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_professionalization_audit_progress(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        create_professionalization_audit_progress=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert (
+        "missing required release artifact: "
+        "docs/professionalization-audit-progress.tex"
+    ) in result.stdout
     assert result.stderr == ""
 
 

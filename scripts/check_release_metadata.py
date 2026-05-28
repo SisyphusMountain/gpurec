@@ -54,6 +54,7 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/workflow-examples/slurm/README.md",
     "docs/optimization-workflow-call-graph.md",
     "docs/lean-fast-path.md",
+    "docs/professionalization-audit-progress.tex",
 )
 
 
