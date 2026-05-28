@@ -98,6 +98,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[release]"
 
+      - name: Run release metadata checker
+        run: python scripts/check_release_metadata.py
+
       - name: Build source and wheel artifacts
         run: |
           rm -rf dist

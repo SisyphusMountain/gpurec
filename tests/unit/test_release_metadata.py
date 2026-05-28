@@ -1340,6 +1340,10 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
     install = _step_run(package, "Install package, runtime, and release dependencies")
     assert 'python -m pip install -e ".[release]"' in install
 
+    assert _step_run(package, "Run release metadata checker") == (
+        "python scripts/check_release_metadata.py"
+    )
+
     build = _step_run(package, "Build source and wheel artifacts")
     assert "rm -rf dist" in build
     assert "python -m build" in build
