@@ -304,6 +304,8 @@ def _write_complete_release_metadata_fixture(
                     "",
                     "Example output snippets for summary.json, rates_final.tsv,",
                     "per_fam_likelihoods.tsv, and a RecPhyloXML output snippet.",
+                    "Run directory structure uses output_gpurec/, checkpoints/,",
+                    "and reconciliations/.",
                     "",
                 ]
             ),
@@ -943,6 +945,31 @@ def test_release_metadata_check_requires_output_artifact_snippet_phrases(
     assert "must document output snippet phrase: rates_final.tsv" in result.stdout
     assert "must document output snippet phrase: per_fam_likelihoods.tsv" in result.stdout
     assert "must document output snippet phrase: recphyloxml output snippet" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_output_artifact_directory_structure_phrases(
+    tmp_path: Path,
+):
+    _write_complete_release_metadata_fixture(tmp_path)
+    (tmp_path / "docs" / "output-artifacts.md").write_text(
+        "# Output Artifacts\n\nExample output snippets.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert "must document directory-structure phrase: run directory structure" in result.stdout
+    assert "must document directory-structure phrase: output_gpurec/" in result.stdout
+    assert "must document directory-structure phrase: checkpoints/" in result.stdout
+    assert "must document directory-structure phrase: reconciliations/" in result.stdout
     assert result.stderr == ""
 
 

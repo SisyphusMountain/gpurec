@@ -67,6 +67,35 @@ RecPhyloXML output snippet (`reconciliations/all/*_sample_*.xml`):
 </recGeneTree>
 ```
 
+## Run Directory Structure
+
+Typical `out_dir` layout after `gpurec run`:
+
+```text
+output_gpurec/
+  run_config.json
+  summary.json
+  run_manifest.json
+  history.jsonl
+  optimization_history.csv
+  rates_final.tsv
+  per_fam_likelihoods.tsv
+  theta_final.pt
+  checkpoints/
+    latest.pt
+    best.pt
+  reconciliations/
+    summary.json
+    event_counts.tsv
+    totalSpeciesEventCounts.txt
+    totalTransfers.txt
+    all/
+      <family>_sample_<index>.xml
+```
+
+Use this structure for archive/reproducibility checks and workflow-manager
+handoff between optimize, inspect, and sample stages.
+
 The primary objective is negative log-likelihood in bits:
 `likelihood/data_nll_bits`. The corresponding log-likelihood is
 `likelihood/log_likelihood_bits`. Gradient summaries use `grad/*`; projected

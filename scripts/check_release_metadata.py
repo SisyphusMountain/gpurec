@@ -438,6 +438,28 @@ def _output_artifact_snippet_issues(root: Path) -> list[str]:
     return issues
 
 
+def _output_artifact_directory_structure_issues(root: Path) -> list[str]:
+    guide = root / "docs" / "output-artifacts.md"
+    if not guide.is_file():
+        return []
+
+    text = guide.read_text(encoding="utf-8").lower()
+    required_phrases = (
+        "run directory structure",
+        "output_gpurec/",
+        "checkpoints/",
+        "reconciliations/",
+    )
+    issues: list[str] = []
+    for phrase in required_phrases:
+        if phrase not in text:
+            issues.append(
+                "docs/output-artifacts.md must document directory-structure phrase: "
+                + phrase
+            )
+    return issues
+
+
 def _quickstart_lifecycle_issues(root: Path) -> list[str]:
     quickstart = root / "docs" / "bioinformatics-quickstart.md"
     if not quickstart.is_file():
@@ -627,6 +649,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues.extend(_troubleshooting_recovery_issues(project_root))
     issues.extend(_input_preparation_large_dataset_issues(project_root))
     issues.extend(_output_artifact_snippet_issues(project_root))
+    issues.extend(_output_artifact_directory_structure_issues(project_root))
     issues.extend(_quickstart_lifecycle_issues(project_root))
     issues.extend(_optimization_guide_goal_defaults_issues(project_root))
 
