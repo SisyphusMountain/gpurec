@@ -24,6 +24,18 @@ what combinations are expected to work based on CI and release checks.
 | Source-only install (data + GPU) | ✅ | `3.10` `3.11` `3.12` | `cargo` for native crate builds | `pip install .` |
 | Container image (`Dockerfile`) | ✅ | image-local Python pinned by image base | image prebuilds native artifacts from source | `docker build -t gpurec .` |
 
+## Offline Installation Policy
+
+Offline installation is not currently supported as a production guarantee.
+
+- Source-only installation requires Rust/Cargo for native builds.
+- The backtracking crate lockfile includes a pinned git dependency
+  (`rustree`), so clean offline environments cannot be guaranteed without a
+  pre-populated cargo/git cache mirror.
+- If offline deployment is required, treat it as an environment-specific
+  packaging task and validate with `gpurec doctor`, `preprocess-check`, and
+  `backtrack-check` before production runs.
+
 ## Why these constraints exist
 
 - The production likelihood and optimizer route is CUDA-first and GPU-only today.

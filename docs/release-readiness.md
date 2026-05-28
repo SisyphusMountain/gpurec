@@ -11,6 +11,8 @@ packaging assumptions covered by current automated build steps.
   `docs/release-notes.md`, `docs/support-policy.md`,
   `docs/versioning-policy.md`, `docs/publication-checklist.md`, and a
   CUDA-capable deployment recipe (`Dockerfile`).
+- Offline installation policy is documented and current in
+  `docs/platform-matrix.md`.
 - Build source artifacts from a clean checkout and install them in a fresh
   environment with a PyTorch build that matches the target CUDA runtime.
 

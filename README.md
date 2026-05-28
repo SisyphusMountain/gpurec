@@ -58,6 +58,8 @@ than an optional extra. Install a PyTorch build that matches the local CUDA
 runtime before installing `gpurec`. Workflow preprocessing is implemented by
 the native Rust `crates/gpurec-preprocess` extension and sampling uses the
 native Rust `crates/gpurec-backtrack` binary.
+Offline installation is not currently supported as a production guarantee;
+see `docs/platform-matrix.md` for constraints and required caveats.
 
 `gpurec` currently supports source-based installation only for production use.
 Install from a source checkout or source archive with Rust/Cargo available so

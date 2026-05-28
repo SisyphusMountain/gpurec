@@ -1283,6 +1283,21 @@ def test_release_readiness_documents_resolved_license_readiness():
     assert "Decide the Rust backtracking binary distribution model" not in guide
 
 
+def test_platform_matrix_documents_offline_installation_policy():
+    matrix_doc = (ROOT / "docs" / "platform-matrix.md").read_text(encoding="utf-8")
+
+    for token in (
+        "Offline Installation Policy",
+        "Offline installation is not currently supported as a production guarantee.",
+        "pinned git dependency",
+        "pre-populated cargo/git cache mirror",
+        "gpurec doctor",
+        "preprocess-check",
+        "backtrack-check",
+    ):
+        assert token in matrix_doc
+
+
 def test_release_readiness_documents_sampling_binary_distribution_contract():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
 
@@ -1525,7 +1540,13 @@ def test_readme_documents_installed_sampling_binary_setup():
     normalized_guide = " ".join(guide.split())
 
     assert "source-based installation only for production use" in normalized_readme
+    assert (
+        "Offline installation is not currently supported as a production guarantee"
+        in readme
+    )
     assert "Source-only installation is the supported production path." in guide
+    assert "Offline installation policy is documented and current in" in guide
+    assert "docs/platform-matrix.md" in guide
     assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
     assert "gpurec validate-config --config examples/minimal-run-config.json" in readme
     assert "--check-preprocess" in readme
