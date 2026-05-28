@@ -254,6 +254,8 @@ def _policy_document_issues(root: Path) -> list[str]:
             "pytorch",
             "cuda",
             "native artifact",
+            "release and patch policy",
+            "older tags may receive backports",
         )
         for phrase in support_window_phrases:
             if phrase not in text:

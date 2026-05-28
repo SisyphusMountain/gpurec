@@ -201,6 +201,7 @@ def _write_complete_release_metadata_fixture(
                     "production support scope applies to documented surfaces.",
                     "The latest release tag is the primary supported line.",
                     "Support window covers Python, PyTorch, CUDA, and native artifact versions.",
+                    "Release and patch policy: older tags may receive backports.",
                     "",
                 ]
             ),
@@ -798,6 +799,8 @@ def test_release_metadata_check_requires_support_policy_support_window_phrases(
     assert "must document support-window phrase: pytorch" in result.stdout
     assert "must document support-window phrase: cuda" in result.stdout
     assert "must document support-window phrase: native artifact" in result.stdout
+    assert "must document support-window phrase: release and patch policy" in result.stdout
+    assert "must document support-window phrase: older tags may receive backports" in result.stdout
     assert result.stderr == ""
 
 
