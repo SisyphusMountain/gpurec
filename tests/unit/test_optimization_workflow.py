@@ -555,6 +555,28 @@ def test_optimize_reexports_workflow_run_state_classes():
         assert getattr(optimize_module, name) is getattr(_run_state, name)
 
 
+def test_transitions_reexports_workflow_transition_type_classes():
+    import importlib
+    from dataclasses import is_dataclass
+
+    transition_types = importlib.import_module("gpurec.workflow._transition_types")
+    transitions = importlib.import_module("gpurec.workflow._transitions")
+
+    for name in (
+        "IterationTransition",
+        "IterationTransitionExecution",
+        "IterationTransitionOps",
+        "IterationStatusTransitionExecution",
+        "IterationTransitionContext",
+        "IterationTransitionInputs",
+    ):
+        transition_type = getattr(transition_types, name)
+        assert getattr(transitions, name) is transition_type
+        assert is_dataclass(transition_type)
+
+    assert transition_types.IterationTransitionOps.__dataclass_params__.frozen
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

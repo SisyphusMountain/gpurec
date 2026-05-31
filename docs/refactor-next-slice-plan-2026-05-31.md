@@ -9,9 +9,9 @@ Status note: the shared bounded optimizer helper slice, workflow
 `BatchFinalCache`, workflow transition ops bundle, workflow loop-policy
 extraction, API model-builder extraction, API genewise streaming helper, API
 resident runtime helper, LBFGSB fallback helper extraction, and workflow
-run-state helper extraction have since landed. See
-`docs/workflow-run-state-refactor-plan-2026-05-31.md` for the latest workflow
-slice.
+run-state helper extraction, and workflow transition DTO extraction have since
+landed. See `docs/workflow-transition-types-refactor-plan-2026-05-31.md` for
+the latest workflow slice.
 
 The historical split had already reduced the two original largest files
 substantially. The remaining large production groups at the time were:

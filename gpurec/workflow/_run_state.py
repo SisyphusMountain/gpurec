@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from ._rows import _IterationArtifactsInputs, _IterationArtifactsState
-from ._transitions import IterationTransitionContext
+from ._transition_types import IterationTransitionContext
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
         _StepIterationPlan,
         _StepPlanningState,
     )
-    from ._transitions import IterationTransitionOps
+    from ._transition_types import IterationTransitionOps
     from .config import RunConfig
 
 

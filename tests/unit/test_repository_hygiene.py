@@ -3078,6 +3078,7 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/config.py": "Public flat `RunConfig`",
         "gpurec/workflow/optimize.py": "Public runner implementation",
         "gpurec/workflow/_run_state.py": "Internal optimizer run-state plumbing",
+        "gpurec/workflow/_transition_types.py": "Internal workflow transition DTOs",
         "gpurec/workflow/sampling.py": "Public runner implementation",
         "gpurec/workflow/checkpoint.py": "Supported lower-level checkpoint tooling",
         "gpurec/workflow/_artifact_publish.py": "Internal staged-artifact publication",
@@ -3129,6 +3130,11 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
             "private workflow state containers",
             "not a public workflow API surface",
         ),
+        "gpurec/workflow/_transition_types.py": (
+            "Internal workflow transition DTOs",
+            "private transition data containers",
+            "not a public workflow API surface",
+        ),
     }
     for path, tokens in internal_docstring_tokens.items():
         module = ast.parse((root / path).read_text(encoding="utf-8"))
@@ -3144,6 +3150,30 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
                     "optimize",
                     "gpurec.workflow.optimize",
                 }, path
+
+    transition_types = ast.parse(
+        (root / "gpurec" / "workflow" / "_transition_types.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    forbidden_modules = {
+        "_transitions",
+        "gpurec.workflow._transitions",
+        "_run_state",
+        "gpurec.workflow._run_state",
+        "optimize",
+        "gpurec.workflow.optimize",
+    }
+    for node in ast.walk(transition_types):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert node.module not in forbidden_modules
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name not in forbidden_modules
+
+    import gpurec.workflow as workflow_package
+
+    assert "_transition_types" not in workflow_package.__all__
 
 
 def test_newick_input_subset_is_documented_on_public_surfaces():

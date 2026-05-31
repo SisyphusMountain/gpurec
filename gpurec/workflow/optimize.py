@@ -76,9 +76,11 @@ from ._step_plan import (
 )
 from ._solver_stage import SolverStageController
 from ._transitions import (
+    apply_iteration_transition,
+)
+from ._transition_types import (
     IterationTransitionInputs,
     IterationTransitionOps,
-    apply_iteration_transition,
 )
 from .config import (
     AdagradRestartPhase,
