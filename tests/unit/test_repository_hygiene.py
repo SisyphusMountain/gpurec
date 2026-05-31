@@ -596,11 +596,17 @@ def test_internal_optimization_helper_modules_document_support_boundary():
             root / "gpurec" / "optimization" / "_batched_lbfgs_history.py"
         ).read_text(encoding="utf-8")
     )
+    line_search_module = ast.parse(
+        (
+            root / "gpurec" / "optimization" / "_line_search_interpolation.py"
+        ).read_text(encoding="utf-8")
+    )
     fallback_doc = " ".join((ast.get_docstring(fallback_module) or "").split())
     subspace_doc = " ".join((ast.get_docstring(subspace_module) or "").split())
     batched_history_doc = " ".join(
         (ast.get_docstring(batched_history_module) or "").split()
     )
+    line_search_doc = " ".join((ast.get_docstring(line_search_module) or "").split())
     fallback_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
         for node in fallback_module.body
@@ -650,6 +656,14 @@ def test_internal_optimization_helper_modules_document_support_boundary():
         in batched_history_docstrings["BatchedLBFGSHistoryMixin"]
     )
 
+    for token in (
+        "Internal line-search interpolation helpers",
+        "private optimization support",
+        "not a public import surface",
+        "optimizer state, closure evaluation, and history updates stay in",
+    ):
+        assert token in line_search_doc
+
     subspace_top_level_imports = []
     for node in subspace_module.body:
         if isinstance(node, ast.Import):
@@ -689,7 +703,31 @@ def test_internal_optimization_helper_modules_document_support_boundary():
         ("from", "torch", ("Tensor",)),
     ]
 
-    for module in (fallback_module, subspace_module, batched_history_module):
+    line_search_top_level_imports = []
+    for node in line_search_module.body:
+        if isinstance(node, ast.Import):
+            line_search_top_level_imports.extend(
+                ("import", alias.name, None) for alias in node.names
+            )
+        if isinstance(node, ast.ImportFrom) and node.module:
+            line_search_top_level_imports.append(
+                (
+                    "from",
+                    node.module,
+                    tuple(alias.name for alias in node.names),
+                )
+            )
+    assert line_search_top_level_imports == [
+        ("import", "torch", None),
+        ("from", "torch", ("Tensor",)),
+    ]
+
+    for module in (
+        fallback_module,
+        subspace_module,
+        batched_history_module,
+        line_search_module,
+    ):
         for node in ast.walk(module):
             if isinstance(node, ast.ImportFrom) and node.module:
                 assert not node.module.startswith("gpurec.api")

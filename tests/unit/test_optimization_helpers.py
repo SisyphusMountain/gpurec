@@ -4,6 +4,7 @@ import math
 
 import pytest
 import torch
+from torch.optim import lbfgs as torch_lbfgs
 
 from gpurec.optimization._armijo import armijo_accepts, armijo_required_decrease
 from gpurec.optimization._bounds import (
@@ -17,6 +18,73 @@ from gpurec.optimization._closures import (
     loss_vector_tensor,
     scalar_loss_tensor,
 )
+from gpurec.optimization._line_search_interpolation import _cubic_interpolate
+
+
+def _quadratic_line_samples(
+    x1: torch.Tensor,
+    x2: torch.Tensor,
+    center: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    f1 = (x1 - center).square()
+    g1 = 2 * (x1 - center)
+    f2 = (x2 - center).square()
+    g2 = 2 * (x2 - center)
+    return f1, g1, f2, g2
+
+
+def test_cubic_interpolate_matches_torch_scalar_rows():
+    x1 = torch.tensor([0.0, 2.0, -1.0], dtype=torch.float64)
+    x2 = torch.tensor([1.0, -1.0, 2.0], dtype=torch.float64)
+    center = torch.tensor([0.25, 0.5, 0.75], dtype=torch.float64)
+    f1, g1, f2, g2 = _quadratic_line_samples(x1, x2, center)
+
+    actual = _cubic_interpolate(x1, f1, g1, x2, f2, g2)
+    expected = torch.stack(
+        [
+            torch_lbfgs._cubic_interpolate(
+                x1[idx],
+                f1[idx],
+                g1[idx],
+                x2[idx],
+                f2[idx],
+                g2[idx],
+            )
+            for idx in range(x1.numel())
+        ]
+    )
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_cubic_interpolate_clamps_tensor_bounds():
+    x1 = torch.tensor([0.0, 0.0], dtype=torch.float64)
+    x2 = torch.tensor([1.0, 1.0], dtype=torch.float64)
+    center = torch.tensor([2.0, -1.0], dtype=torch.float64)
+    f1, g1, f2, g2 = _quadratic_line_samples(x1, x2, center)
+    lower = torch.tensor([0.2, 0.2], dtype=torch.float64)
+    upper = torch.tensor([0.6, 0.6], dtype=torch.float64)
+
+    actual = _cubic_interpolate(x1, f1, g1, x2, f2, g2, bounds=(lower, upper))
+
+    torch.testing.assert_close(actual, torch.tensor([0.6, 0.2], dtype=torch.float64))
+
+
+def test_cubic_interpolate_degenerate_or_nonfinite_falls_back_to_midpoint():
+    x1 = torch.tensor([1.0, 0.0], dtype=torch.float64)
+    x2 = torch.tensor([1.0, 2.0], dtype=torch.float64)
+    f1 = torch.tensor([0.0, float("nan")], dtype=torch.float64)
+    g1 = torch.tensor([1.0, 1.0], dtype=torch.float64)
+    f2 = torch.tensor([2.0, 3.0], dtype=torch.float64)
+    g2 = torch.tensor([1.0, 1.0], dtype=torch.float64)
+    lower = torch.tensor([0.0, 1.0], dtype=torch.float64)
+    upper = torch.tensor([2.0, 3.0], dtype=torch.float64)
+
+    actual = _cubic_interpolate(x1, f1, g1, x2, f2, g2, bounds=(lower, upper))
+
+    torch.testing.assert_close(actual, torch.tensor([1.0, 2.0], dtype=torch.float64))
+    assert bool(torch.all(actual >= lower))
+    assert bool(torch.all(actual <= upper))
 
 
 def test_project_flat_handles_scalar_and_tensor_bounds():
