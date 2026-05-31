@@ -939,6 +939,44 @@ def test_gene_recon_configure_pi_adjoint_warmstart_updates_static_state():
     assert static.pi_adjoint_pending_cache is None
 
 
+def test_gene_recon_apply_pi_adjoint_warmstart_config_remains_inherited_method():
+    cached = object()
+    pending = object()
+    static = SimpleNamespace(
+        pi_adjoint_warmstart=False,
+        pi_adjoint_cache=cached,
+        pi_adjoint_pending_cache=pending,
+        pi_adjoint_cache_update_mode="immediate",
+        pi_fixed_point_relaxation=1.0,
+    )
+    model = SimpleNamespace(
+        _pi_adjoint_warmstart=True,
+        _pi_adjoint_cache_update_mode="stage",
+        _pi_fixed_point_relaxation=1.25,
+    )
+
+    GeneReconModel._apply_pi_adjoint_warmstart_config(
+        model,
+        static,
+        clear_cache=False,
+    )
+
+    assert static.pi_adjoint_warmstart is True
+    assert static.pi_adjoint_cache_update_mode == "stage"
+    assert static.pi_fixed_point_relaxation == pytest.approx(1.25)
+    assert static.pi_adjoint_cache is cached
+    assert static.pi_adjoint_pending_cache is pending
+
+    GeneReconModel._apply_pi_adjoint_warmstart_config(
+        model,
+        static,
+        clear_cache=True,
+    )
+
+    assert static.pi_adjoint_cache is None
+    assert static.pi_adjoint_pending_cache is None
+
+
 def test_gene_recon_configure_pi_adjoint_warmstart_rejects_invalid_mode():
     model = GeneReconModel.__new__(GeneReconModel)
     model._pi_adjoint_warmstart = False
@@ -4104,6 +4142,23 @@ def test_gene_recon_configure_solver_iterations_can_restore_adaptive_e():
     assert static.fixed_iters_E is None
     assert static.fixed_iters_Pi == 64
     assert static.neumann_terms == 64
+
+
+def test_gene_recon_solver_stat_records_returns_copied_stats():
+    stats = {"Pi_iters": 6, "E_iters": 8}
+    model = SimpleNamespace(
+        cached_static_states=[
+            SimpleNamespace(last_solver_stats=stats),
+            SimpleNamespace(last_solver_stats=None),
+        ],
+    )
+
+    records = GeneReconModel.solver_stat_records(model)
+
+    assert records == [stats]
+    assert records[0] is not stats
+    records[0]["Pi_iters"] = 12
+    assert stats["Pi_iters"] == 6
 
 
 @pytest.mark.parametrize(
