@@ -16,6 +16,7 @@ def test_lbfgsb_private_fallback_methods_remain_on_optimizer_instances():
     optimizer = LBFGSB([x], lower_bound=-1.0, upper_bound=1.0)
 
     for name in (
+        "_backtracking_line_search",
         "_projected_gradient_direction",
         "_projected_gradient_sign_direction",
         "_projected_gradient_topk_sign_direction",
@@ -30,6 +31,94 @@ def test_lbfgsb_private_fallback_methods_remain_on_optimizer_instances():
         "_adaptive_projected_gradient_alpha",
     ):
         assert callable(getattr(optimizer, name, None)), name
+
+
+def test_lbfgsb_backtracking_line_search_contract_accepts_rejects_and_restores():
+    x = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float64))
+    optimizer = LBFGSB([x], lower_bound=-2.0, upper_bound=2.0)
+    flat = x.detach().clone()
+    loss = 0.5 * flat.square().sum()
+    grad = flat.clone()
+    direction = -grad
+
+    accepted_probes: list[torch.Tensor] = []
+
+    def quadratic_loss() -> torch.Tensor:
+        accepted_probes.append(x.detach().clone())
+        return 0.5 * x.detach().square().sum()
+
+    accepted = optimizer._backtracking_line_search(
+        closure=quadratic_loss,
+        loss_closure=quadratic_loss,
+        flat=flat,
+        loss=loss,
+        grad=grad,
+        direction=direction,
+        initial_alpha=1.0,
+        max_ls=3,
+        c1=1e-4,
+        shrink=0.5,
+        tolerance_change=0.0,
+        lower_bound=-2.0,
+        upper_bound=2.0,
+    )
+
+    assert accepted.accepted is True
+    torch.testing.assert_close(accepted.flat, torch.zeros_like(flat))
+    torch.testing.assert_close(accepted.loss, torch.zeros((), dtype=torch.float64))
+    assert accepted.alpha == pytest.approx(1.0)
+    torch.testing.assert_close(
+        accepted.delta, torch.tensor([-1.0], dtype=torch.float64)
+    )
+    assert accepted.directional_derivative == pytest.approx(-1.0)
+    assert accepted.step_inf == pytest.approx(1.0)
+    assert accepted.decrease == pytest.approx(0.5)
+    assert accepted.loss_evals == 1
+    assert accepted.next_alpha == pytest.approx(0.5)
+    assert accepted.armijo_required_decrease == pytest.approx(1e-4)
+    assert len(accepted_probes) == 1
+    torch.testing.assert_close(accepted_probes[0], torch.zeros_like(flat))
+    torch.testing.assert_close(x.detach(), flat)
+
+    rejected_probes: list[torch.Tensor] = []
+
+    def unchanged_loss() -> torch.Tensor:
+        rejected_probes.append(x.detach().clone())
+        return loss.detach().clone()
+
+    rejected = optimizer._backtracking_line_search(
+        closure=unchanged_loss,
+        loss_closure=unchanged_loss,
+        flat=flat,
+        loss=loss,
+        grad=grad,
+        direction=direction,
+        initial_alpha=1.0,
+        max_ls=2,
+        c1=1e-4,
+        shrink=0.5,
+        tolerance_change=0.0,
+        lower_bound=-2.0,
+        upper_bound=2.0,
+    )
+
+    assert rejected.accepted is False
+    torch.testing.assert_close(rejected.flat, flat)
+    torch.testing.assert_close(rejected.loss, loss)
+    assert rejected.alpha == pytest.approx(0.0)
+    torch.testing.assert_close(rejected.delta, torch.zeros_like(flat))
+    assert rejected.directional_derivative == pytest.approx(0.0)
+    assert rejected.step_inf == pytest.approx(0.0)
+    assert rejected.decrease == pytest.approx(0.0)
+    assert rejected.loss_evals == 2
+    assert rejected.next_alpha == pytest.approx(0.25)
+    assert rejected.armijo_required_decrease == pytest.approx(5e-5)
+    assert len(rejected_probes) == 2
+    torch.testing.assert_close(
+        torch.stack(rejected_probes),
+        torch.tensor([[0.0], [0.5]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(x.detach(), flat)
 
 
 def test_lbfgsb_private_subspace_methods_remain_on_optimizer_instances():
