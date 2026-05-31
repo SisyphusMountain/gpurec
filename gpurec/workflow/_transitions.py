@@ -54,7 +54,6 @@ def build_batch_transition_checkpoint_status(
 
 def execute_iteration_transition(
     *,
-    config: RunConfig,
     transition: IterationTransition,
     status: dict[str, str] | None,
     model: GeneReconModel,
@@ -73,13 +72,10 @@ def execute_iteration_transition(
     phase: str,
     objective: float,
     row_best_nll: float | None,
-    row_best_step: int | None,
     row: dict[str, Any],
     checkpoint_status: dict[str, Any],
     solver: SolverStageController,
     batch_final_cache: BatchFinalCache | None,
-    batchwise_hessian_sgd: bool,
-    best_checkpoint: Path,
     latest_checkpoint: Path,
     log_every: int,
     checkpoint_every: int | None,
@@ -150,7 +146,6 @@ def execute_iteration_transition(
         optimizer_out = None
         restart_state.active_phase_index = None
         batch_state.optimizer_batch_index = None
-        objective_state.reset_tracking()
         resume_info_out = {}
         planning_state_out = replace(
             planning_state_out,
@@ -286,7 +281,6 @@ def execute_iteration_full_transition(
     )
 
     transition_result = execute_iteration_transition(
-        config=context.config,
         transition=pre_transition,
         status=inputs.status,
         model=context.model,
@@ -305,13 +299,10 @@ def execute_iteration_full_transition(
         phase=inputs.phase,
         objective=inputs.objective,
         row_best_nll=inputs.row_best_nll,
-        row_best_step=inputs.row_best_step,
         row=inputs.row,
         checkpoint_status=inputs.checkpoint_status,
         solver=context.solver,
         batch_final_cache=context.batch_final_cache,
-        batchwise_hessian_sgd=context.batchwise_hessian_sgd,
-        best_checkpoint=context.best_checkpoint,
         latest_checkpoint=context.latest_checkpoint,
         log_every=context.log_every,
         checkpoint_every=context.checkpoint_every,
@@ -449,6 +440,8 @@ def execute_step_status_transition(
         objective_state.reset_tracking()
         adaptive_state.last_checked_converged_count = 0
 
+        continue_loop = False
+        break_loop = True
         if checkpoint_every:
             transition_status = build_batch_transition_checkpoint_status(
                 checkpoint_status,
@@ -474,30 +467,13 @@ def execute_step_status_transition(
                 model,
                 batch_state.solver_stage,
             )
-            return IterationStatusTransitionExecution(
-                status=status_out,
-                continue_loop=True,
-                break_loop=False,
-                optimizer=optimizer,
-                fd_newton_hessian_state=fd_newton_hessian_state,
-                hessian_sgd_line_search_active=hessian_sgd_line_search_active,
-                hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
-                resume_info={},
-                planning_state=replace(
-                    planning_state,
-                    active_batch_index=batch_state.active_index,
-                    active_optimizer_batch_index=None,
-                    current_phase="lbfgsb" if phase == "lbfgsb" else current_phase,
-                    previous_objective=objective_state.previous_objective,
-                    stable_loss_steps=0,
-                ),
-                current_phase=current_phase,
-            )
+            continue_loop = True
+            break_loop = False
 
         return IterationStatusTransitionExecution(
             status=status_out,
-            continue_loop=False,
-            break_loop=True,
+            continue_loop=continue_loop,
+            break_loop=break_loop,
             optimizer=optimizer,
             fd_newton_hessian_state=fd_newton_hessian_state,
             hessian_sgd_line_search_active=hessian_sgd_line_search_active,
@@ -895,7 +871,7 @@ def execute_iteration_post_step_transition(
         batch_state_active_index=batch_state.active_index,
         can_lbfgsb_retry=can_lbfgsb_retry,
     )
-    transition_result = execute_step_status_transition(
+    return execute_step_status_transition(
         config=config,
         transition=pre_transition,
         status=status_out,
@@ -926,16 +902,4 @@ def execute_iteration_post_step_transition(
         checkpoint_every=checkpoint_every,
         ops=ops,
         adaptive_state=adaptive_state,
-    )
-    return IterationStatusTransitionExecution(
-        status=transition_result.status,
-        continue_loop=transition_result.continue_loop,
-        break_loop=transition_result.break_loop,
-        optimizer=transition_result.optimizer,
-        fd_newton_hessian_state=transition_result.fd_newton_hessian_state,
-        hessian_sgd_line_search_active=transition_result.hessian_sgd_line_search_active,
-        hessian_sgd_low_accept_steps=transition_result.hessian_sgd_low_accept_steps,
-        resume_info=transition_result.resume_info,
-        planning_state=transition_result.planning_state,
-        current_phase=transition_result.current_phase,
     )

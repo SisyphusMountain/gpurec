@@ -762,8 +762,15 @@ def _transition_test_inputs(
     )
 
 
+@pytest.mark.parametrize(
+    ("checkpoint_every", "expect_continue", "expect_break"),
+    [(1, True, False), (0, False, True)],
+)
 def test_next_batch_transition_resets_active_batch_and_checkpoint_status(
     tmp_path: Path,
+    checkpoint_every: int,
+    expect_continue: bool,
+    expect_break: bool,
 ):
     save_calls: list[dict[str, object]] = []
     model = SimpleNamespace(
@@ -820,7 +827,7 @@ def test_next_batch_transition_resets_active_batch_and_checkpoint_status(
             current_phase="adam-fd-newton",
             best_checkpoint=tmp_path / "best.pt",
             latest_checkpoint=tmp_path / "latest.pt",
-            checkpoint_every=1,
+            checkpoint_every=checkpoint_every,
             log_every=10,
             ops=_transition_test_ops(save_calls),
         ),
@@ -832,8 +839,8 @@ def test_next_batch_transition_resets_active_batch_and_checkpoint_status(
         ),
     )
 
-    assert result.continue_loop is True
-    assert result.break_loop is False
+    assert result.continue_loop is expect_continue
+    assert result.break_loop is expect_break
     assert result.optimizer is None
     assert result.fd_newton_hessian_state is None
     assert result.hessian_sgd_line_search_active is False
@@ -845,29 +852,32 @@ def test_next_batch_transition_resets_active_batch_and_checkpoint_status(
     assert objective_state.previous_objective is None
     assert objective_state.stable_loss_steps == 0
     assert adaptive_state.last_checked_converged_count == 0
-    assert model.selected_batches == [1]
-    assert model.cleared_runtime == 1
-    assert solver_calls == [(model, "warmup")]
+    assert model.selected_batches == ([1] if checkpoint_every else [])
+    assert getattr(model, "cleared_runtime", 0) == (1 if checkpoint_every else 0)
+    assert solver_calls == ([(model, "warmup")] if checkpoint_every else [])
     assert result.planning_state.active_batch_index == 1
     assert result.planning_state.active_optimizer_batch_index is None
     assert result.planning_state.previous_objective is None
     assert result.planning_state.stable_loss_steps == 0
-    assert save_calls[0]["path"] == tmp_path / "latest.pt"
-    assert save_calls[0]["optimizer"] is None
-    assert save_calls[0]["next_step"] == 12
-    assert save_calls[0]["status"] == {
-        "wrapped": {
-            "status": "running",
-            "reason": "running",
-            "active_batch_index": 1,
-            "active_solver_stage": "warmup",
-            "active_batch_local_step": 0,
-            "previous_objective": None,
-            "stable_loss_steps": 0,
-            "best_nll_bits": None,
-            "best_step": None,
+    if checkpoint_every:
+        assert save_calls[0]["path"] == tmp_path / "latest.pt"
+        assert save_calls[0]["optimizer"] is None
+        assert save_calls[0]["next_step"] == 12
+        assert save_calls[0]["status"] == {
+            "wrapped": {
+                "status": "running",
+                "reason": "running",
+                "active_batch_index": 1,
+                "active_solver_stage": "warmup",
+                "active_batch_local_step": 0,
+                "previous_objective": None,
+                "stable_loss_steps": 0,
+                "best_nll_bits": None,
+                "best_step": None,
+            }
         }
-    }
+    else:
+        assert save_calls == []
 
 
 def test_step_stopping_transition_saves_active_checkpoint_fields(tmp_path: Path):
