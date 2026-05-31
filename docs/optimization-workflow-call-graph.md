@@ -53,10 +53,10 @@ loading the Rust preprocessing extension, or touching CUDA.
 | `specieswise` | `[species, 3]` | `adagrad-restarts` | Shared full-model closure with specieswise Adagrad restart phases and final high-budget check. |
 | `global` | `[3]` | `adam` | Shared-theta uniform route through the scalar full-loss closure. |
 
-The source of truth for defaults is
-`MODE_DEFAULT_OPTIMIZERS` (`gpurec/workflow/config.py:36`). Mode validation and
-optimizer compatibility live in `RunConfig` (`gpurec/workflow/config.py:915`
-and `gpurec/workflow/config.py:991`).
+The source of truth for auto-optimizer defaults is `MODE_DEFAULT_OPTIMIZERS` in
+`gpurec/workflow/_route_defaults.py`. `gpurec.workflow.config` keeps public
+facade wrappers for callers, while mode validation and optimizer compatibility
+remain in `RunConfig`.
 
 `optimizer=auto` resolves to `hessian-sgd` for `mode=genewise`,
 `adagrad-restarts` for `mode=specieswise`, and `adam` for `mode=global`.

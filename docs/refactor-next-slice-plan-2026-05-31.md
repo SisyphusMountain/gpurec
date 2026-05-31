@@ -19,6 +19,11 @@ while keeping `UniformChunkedReconModel`, `UniformChunkMetadata`, chunk/state
 containers, and old private import aliases in `gpurec/api/uniform_chunked.py`.
 See `docs/api-uniform-chunked-eval-refactor-plan-2026-05-31.md`.
 
+Status note: the workflow route-defaults slice moved production route/default
+audit policy into `gpurec/workflow/_route_defaults.py` while keeping
+`gpurec.workflow.config` as the public import and monkeypatch surface. See
+`docs/workflow-route-defaults-refactor-plan-2026-05-31.md`.
+
 The historical split had already reduced the two original largest files
 substantially. The remaining large production groups at the time were:
 

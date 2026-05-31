@@ -1710,23 +1710,29 @@ def test_project_readme_documents_workflow_optimizer_modes():
 
 def test_effective_route_metadata_reuses_production_route_contract_source():
     root = Path(__file__).resolve().parents[2]
-    source = (root / "gpurec" / "workflow" / "config.py").read_text(
+    config_source = (root / "gpurec" / "workflow" / "config.py").read_text(
+        encoding="utf-8"
+    )
+    route_defaults_source = (
+        root / "gpurec" / "workflow" / "_route_defaults.py"
+    ).read_text(
         encoding="utf-8"
     )
 
-    assert "def production_default_route_contract()" in source
-    assert "def production_default_route_contract_fields()" in source
+    assert "def production_default_route_contract()" in config_source
+    assert "def production_default_route_contract_fields()" in config_source
     assert "production_default_route_contract_fields," in (
         root / "gpurec" / "_cli_helpers.py"
     ).read_text(encoding="utf-8")
-    assert "**_PRODUCTION_DEFAULT_ROUTE_CONTRACT" in source
+    assert "**_PRODUCTION_DEFAULT_ROUTE_CONTRACT" in route_defaults_source
     for token in (
         '"negative_log_likelihood_bits"',
         '"implicit_first_order_adjoint"',
         '"base2_log_dlt_rates"',
         '"hogenom_and_test_trees_1000"',
     ):
-        assert source.count(token) == 1
+        assert route_defaults_source.count(token) == 1
+        assert token not in config_source
 
 
 def test_config_template_reuses_production_optimizer_profile_source():
@@ -3079,6 +3085,9 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/optimize.py": "Public runner implementation",
         "gpurec/workflow/_run_state.py": "Internal optimizer run-state plumbing",
         "gpurec/workflow/_transition_types.py": "Internal workflow transition DTOs",
+        "gpurec/workflow/_route_defaults.py": (
+            "Internal production route/default policy helper"
+        ),
         "gpurec/workflow/sampling.py": "Public runner implementation",
         "gpurec/workflow/checkpoint.py": "Supported lower-level checkpoint tooling",
         "gpurec/workflow/_artifact_publish.py": "Internal staged-artifact publication",
@@ -3135,6 +3144,11 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
             "private transition data containers",
             "not a public workflow API surface",
         ),
+        "gpurec/workflow/_route_defaults.py": (
+            "Internal production route/default policy helpers",
+            "Public callers should keep importing",
+            "not a public workflow shortcut",
+        ),
     }
     for path, tokens in internal_docstring_tokens.items():
         module = ast.parse((root / path).read_text(encoding="utf-8"))
@@ -3174,6 +3188,7 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
     import gpurec.workflow as workflow_package
 
     assert "_transition_types" not in workflow_package.__all__
+    assert "_route_defaults" not in workflow_package.__all__
 
 
 def test_newick_input_subset_is_documented_on_public_surfaces():
