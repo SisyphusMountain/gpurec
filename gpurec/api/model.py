@@ -46,6 +46,7 @@ from ._batch_specs import (
     _cancel_batch_specs_from_retained_rust as _cancel_batch_specs_from_retained_rust_impl,
     _should_use_compact_retained_preprocess as _should_use_compact_retained_preprocess_impl,
     _build_family_schedule_stats as _build_family_schedule_stats_impl,
+    _family_index_chunks as _family_index_chunks_impl,
 )
 from ._model_config import SolverSettings
 from ._model_builders import (
@@ -122,6 +123,7 @@ _finish_batch_specs_from_retained_rust = _finish_batch_specs_from_retained_rust_
 _cancel_batch_specs_from_retained_rust = _cancel_batch_specs_from_retained_rust_impl
 _should_use_compact_retained_preprocess = _should_use_compact_retained_preprocess_impl
 _build_family_schedule_stats = _build_family_schedule_stats_impl
+_family_index_chunks = _family_index_chunks_impl
 _default_theta_init = _default_theta_init_impl
 
 # Keep canonical tensor validators and static-build helpers authoritative.
