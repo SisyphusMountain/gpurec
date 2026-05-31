@@ -32,8 +32,9 @@ imports from `gpurec.workflow.config` continue to work.
 - `_schedules.py` may import small validation helpers and route-default
   constants, but must not import `gpurec.workflow.config`,
   `gpurec.workflow.optimize`, or runtime orchestration helpers.
-- `config.py` remains the owner of `RunConfig`, JSON loading, path
-  normalization, device/dtype parsing, and public facade names.
+- `config.py` remains the owner of `RunConfig`, device/dtype parsing, and
+  public facade names. JSON/path loading is classified separately under the
+  private `_config_io.py` helper.
 - Schedule dataclasses keep their legacy public identity through
   `gpurec.workflow.config` for introspection and pickle compatibility.
 - Workflow runtime modules can keep importing from `config.py` unless moving to

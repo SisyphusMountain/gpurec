@@ -28,7 +28,8 @@ existing imports from `gpurec.workflow.config` continue to work.
 ## Boundaries
 
 - `config.py` remains the owner of `RunConfig`, `SamplingConfig`, scalar field
-  normalization, JSON loading, and public workflow config helpers.
+  normalization, and public workflow config helpers. JSON loading is now
+  classified separately under the private `_config_io.py` helper.
 - `_route_defaults.py` remains private and must not be added to
   `gpurec.workflow.__all__` or top-level `gpurec`.
 - Route-contract constants should have one source of truth; hygiene tests
