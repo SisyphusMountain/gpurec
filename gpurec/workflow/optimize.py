@@ -46,10 +46,7 @@ from ._step_execution import (
     execute_optimization_step,
 )
 from ._step_execution import _restore_theta_if_nonfinite_update
-from ._phase import (
-    _continues_after_adagrad_restart_prefix,
-    _uses_adagrad_restart_prefix,
-)
+from ._phase import _uses_adagrad_restart_prefix
 from ._runtime_state import (
     _apply_resume_checkpoint_state,
     _resume_state_from_payload,
@@ -61,6 +58,7 @@ from ._run_state import (
     RestartRunState,
     _OptimizationRunState,
 )
+from ._run_setup import _derive_workflow_run_setup
 from ._optimizer_factory import (
     _make_optimizer,
     _refresh_optimizer_runtime_options,
@@ -84,12 +82,8 @@ from ._transition_types import (
     IterationTransitionOps,
 )
 from .config import (
-    AdagradRestartPhase,
-    LossStopPhase,
     RunConfig,
     adagrad_restart_schedule_specs,
-    adagrad_restart_schedule_total_steps,
-    loss_stop_schedule_specs,
 )
 from .diagnostics import (
     append_jsonl,
@@ -459,38 +453,19 @@ class OptimizationRunner:
 
         runtime_seed_context = _runtime_seed_context_from_environment()
         model = self.build_model()
-        adagrad_restart_specs: tuple[AdagradRestartPhase, ...] = ()
-        adagrad_restart_step_limit: int | None = None
-        if _uses_adagrad_restart_prefix(config.optimizer):
-            adagrad_restart_specs = adagrad_restart_schedule_specs(
-                config.adagrad_restart_schedule,
-            )
-            adagrad_restart_step_limit = adagrad_restart_schedule_total_steps(
-                config.adagrad_restart_schedule,
-            )
+        run_setup = _derive_workflow_run_setup(
+            config,
+            batchwise_active_optimizer_phases=_BATCHWISE_ACTIVE_OPTIMIZERS,
+        )
+        adagrad_restart_specs = run_setup.adagrad_restart_specs
+        adagrad_restart_step_limit = run_setup.adagrad_restart_step_limit
+        lbfgsb_loss_schedule = run_setup.lbfgsb_loss_schedule
+        adagrad_restart_dynamic_enabled = run_setup.adagrad_restart_dynamic_enabled
+        batchwise_active_optimizer = run_setup.batchwise_active_optimizer
+        batchwise_batched_lbfgs = run_setup.batchwise_batched_lbfgs
+        batchwise_fd_newton = run_setup.batchwise_fd_newton
+        batchwise_hessian_sgd = run_setup.batchwise_hessian_sgd
         started = time.perf_counter()
-        lbfgsb_loss_schedule: tuple[LossStopPhase, ...] = (
-            loss_stop_schedule_specs(config.lbfgsb_loss_change_tol_schedule)
-            if config.lbfgsb_loss_change_tol_schedule is not None
-            else ()
-        )
-        adagrad_restart_dynamic_enabled = (
-            _uses_adagrad_restart_prefix(config.optimizer)
-            and config.adagrad_restart_phase_loss_patience > 0
-        )
-        batchwise_active_optimizer = (
-            config.mode == "genewise"
-            and config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
-        )
-        batchwise_batched_lbfgs = (
-            config.mode == "genewise" and config.optimizer == "batched-lbfgs"
-        )
-        batchwise_fd_newton = (
-            config.mode == "genewise" and config.optimizer == "adam-fd-newton"
-        )
-        batchwise_hessian_sgd = (
-            config.mode == "genewise" and config.optimizer == "hessian-sgd"
-        )
         planning_context = _StepPlanningContext(
             solver=self.solver_stage,
             config=config,
@@ -645,15 +620,7 @@ class OptimizationRunner:
                 self.solver_stage.configure_active_stage(model, batch_state.solver_stage)
             solver_stage_scope = batchwise_active_optimizer or global_solver_warmup
 
-            optimization_stop_step = config.steps
-            if (
-                adagrad_restart_step_limit is not None
-                and not _continues_after_adagrad_restart_prefix(config.optimizer)
-            ):
-                optimization_stop_step = min(
-                    optimization_stop_step,
-                    adagrad_restart_step_limit,
-                )
+            optimization_stop_step = run_setup.optimization_stop_step(config)
 
             initial_plan = prepare_initial_optimization_plan(
                 planning_context,
