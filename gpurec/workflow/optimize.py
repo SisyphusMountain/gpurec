@@ -13,9 +13,6 @@ from . import _artifacts as _artifact_module
 from . import _evaluation as _evaluation_module
 from . import _finalization as _finalization_module
 from ._cleanup import close_model_after_error
-from ._metadata import (
-    checkpoint_status_dict,
-)
 from .checkpoint import (
     load_checkpoint,
     restore_model_theta,
@@ -54,8 +51,8 @@ from ._phase import (
     _uses_adagrad_restart_prefix,
 )
 from ._runtime_state import (
+    _apply_resume_checkpoint_state,
     _resume_state_from_payload,
-    _validate_resume_progress,
 )
 from ._run_state import (
     BatchRunState,
@@ -481,7 +478,6 @@ class OptimizationRunner:
             _uses_adagrad_restart_prefix(config.optimizer)
             and config.adagrad_restart_phase_loss_patience > 0
         )
-        adagrad_restart_dynamic_state_loaded = False
         batchwise_active_optimizer = (
             config.mode == "genewise"
             and config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
@@ -501,7 +497,7 @@ class OptimizationRunner:
             adagrad_restart_specs=adagrad_restart_specs,
             adagrad_restart_step_limit=adagrad_restart_step_limit,
             adagrad_restart_dynamic_enabled=adagrad_restart_dynamic_enabled,
-            adagrad_restart_dynamic_state_loaded=adagrad_restart_dynamic_state_loaded,
+            adagrad_restart_dynamic_state_loaded=False,
             batchwise_active_optimizer=batchwise_active_optimizer,
             batchwise_active_optimizer_phases=frozenset(_BATCHWISE_ACTIVE_OPTIMIZERS),
             batchwise_batched_lbfgs=batchwise_batched_lbfgs,
@@ -609,98 +605,27 @@ class OptimizationRunner:
 
         try:
             if config.resume_from is not None:
-                run_state.resume_payload = load_checkpoint(
-                    config.resume_from,
-                    map_location="cpu",
-                )
-                validate_checkpoint_model_compatibility(
-                    path=config.resume_from,
+                resume_application = _apply_resume_checkpoint_state(
                     config=config,
                     model=model,
-                    payload=run_state.resume_payload,
+                    run_state=run_state,
+                    planning_context=planning_context,
+                    lbfgsb_loss_schedule=lbfgsb_loss_schedule,
+                    solver_warmup_enabled=solver_warmup_enabled,
+                    batchwise_active_optimizer=batchwise_active_optimizer,
+                    adagrad_restart_dynamic_enabled=adagrad_restart_dynamic_enabled,
+                    adaptive_rebatch_enabled=adaptive_rebatch_enabled,
+                    adaptive_state=adaptive_state,
+                    load_checkpoint=(
+                        lambda path: load_checkpoint(path, map_location="cpu")
+                    ),
+                    validate_checkpoint_model_compatibility=(
+                        validate_checkpoint_model_compatibility
+                    ),
+                    restore_model_theta=restore_model_theta,
                 )
-                resume_state = _resume_state_from_payload(
-                    config.resume_from,
-                    run_state.resume_payload,
-                )
-                _validate_resume_progress(
-                    config.resume_from,
-                    resume_state,
-                    configured_steps=config.steps,
-                )
-                restore_model_theta(model, run_state.resume_payload)
-                run_state.start_step = resume_state.start_step
-                objective_state.best_nll = resume_state.best_nll
-                objective_state.best_step = resume_state.best_step
-                objective_state.previous_objective = resume_state.previous_objective
-                objective_state.stable_loss_steps = resume_state.stable_loss_steps
-                lbfgsb_state.fallback_used_count = resume_state.lbfgsb_fallback_used_count
-                lbfgsb_state.loss_schedule_index = min(
-                    int(resume_state.lbfgsb_loss_schedule_index),
-                    max(0, len(lbfgsb_loss_schedule) - 1),
-                )
-                lbfgsb_state.best_retry_count = resume_state.lbfgsb_best_retry_count
-                resume_status = checkpoint_status_dict(
-                    config.resume_from,
-                    run_state.resume_payload,
-                )
-                if (
-                    run_state.start_step < config.steps
-                    and resume_status.get("status") != "running"
-                ):
-                    objective_state.reset_tracking()
-                batch_state.active_index = resume_state.active_batch_index
-                batch_state.solver_stage = resume_state.active_solver_stage
-                batch_state.local_step = resume_state.active_batch_local_step
-                if adagrad_restart_dynamic_enabled:
-                    if resume_state.adagrad_restart_dynamic_phase_index is not None:
-                        restart_state.phase_index = int(
-                            resume_state.adagrad_restart_dynamic_phase_index
-                        )
-                    if resume_state.adagrad_restart_dynamic_phase_start_step is not None:
-                        restart_state.phase_start_step = int(
-                            resume_state.adagrad_restart_dynamic_phase_start_step
-                        )
-                    adagrad_restart_dynamic_state_loaded = (
-                        resume_state.adagrad_restart_dynamic_phase_index is not None
-                        and resume_state.adagrad_restart_dynamic_phase_start_step
-                        is not None
-                    )
-                    planning_context = replace(
-                        planning_context,
-                        adagrad_restart_dynamic_state_loaded=(
-                            adagrad_restart_dynamic_state_loaded
-                        ),
-                    )
-                if adaptive_rebatch_enabled:
-                    resume_replan_indices = adaptive_state.restore_from_resume(
-                        model=model,
-                        resume_state=resume_state,
-                        active_batch_index=batch_state.active_index,
-                        checkpoint_path=str(config.resume_from),
-                    )
-                    if (
-                        resume_replan_indices is not None
-                        and adaptive_rebatch_enabled
-                        and resume_replan_indices
-                    ):
-                        model.replan_resident_batches(resume_replan_indices)
-                if batch_state.solver_stage not in {"warmup", "full"}:
-                    raise RuntimeError(
-                        f"checkpoint {config.resume_from} has invalid active_solver_stage"
-                    )
-                if batch_state.solver_stage == "warmup" and not solver_warmup_enabled:
-                    batch_state.solver_stage = "full"
-                if batchwise_active_optimizer:
-                    batch_state.best_nll = objective_state.best_nll
-                    batch_state.best_step = objective_state.best_step
-                    objective_state.reset_best()
-                planning_state = run_state.update_planning_state(
-                    current_phase="warmup" if solver_warmup_enabled else "full",
-                    optimizer=run_state.optimizer,
-                    active_optimizer_batch_index=batch_state.optimizer_batch_index,
-                    active_adagrad_restart_phase_index=restart_state.active_phase_index,
-                )
+                planning_context = resume_application.planning_context
+                planning_state = resume_application.planning_state
 
             if batchwise_active_optimizer:
                 if batch_state.active_index >= len(model.batch_metadata):

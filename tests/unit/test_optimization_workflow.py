@@ -18,10 +18,15 @@ from gpurec.workflow._run_state import (
     LBFGSBRunState,
     ObjectiveState,
     RestartRunState,
+    _OptimizationRunState,
 )
-from gpurec.workflow._runtime_state import _ResumeState, _resume_state_from_payload
+from gpurec.workflow._runtime_state import (
+    _ResumeState,
+    _apply_resume_checkpoint_state,
+    _resume_state_from_payload,
+)
 from gpurec.workflow._stopping_policy import _active_batch_patience
-from gpurec.workflow._step_plan import _StepPlanningState
+from gpurec.workflow._step_plan import _StepPlanningContext, _StepPlanningState
 from gpurec.workflow._transitions import (
     IterationTransitionContext,
     IterationTransitionInputs,
@@ -1105,3 +1110,164 @@ def test_resume_state_from_payload_rejects_invalid_metadata(
 
     with pytest.raises(RuntimeError, match=message):
         _resume_state_from_payload(tmp_path / "resume.pt", payload)
+
+
+def test_apply_resume_checkpoint_state_updates_run_state_and_planning_context(
+    tmp_path: Path,
+):
+    events: list[str] = []
+
+    class Model:
+        def __init__(self):
+            self.replanned_indices = None
+
+        def replan_resident_batches(self, indices):
+            events.append("replan")
+            self.replanned_indices = tuple(indices)
+
+    class AdaptiveState:
+        def __init__(self):
+            self.restore_call = None
+
+        def restore_from_resume(
+            self,
+            *,
+            model,
+            resume_state,
+            active_batch_index,
+            checkpoint_path,
+        ):
+            events.append("adaptive")
+            self.restore_call = {
+                "model": model,
+                "resume_state": resume_state,
+                "active_batch_index": active_batch_index,
+                "checkpoint_path": checkpoint_path,
+            }
+            return [5, 8]
+
+    config = SimpleNamespace(resume_from=tmp_path / "resume.pt", steps=9)
+    payload = {
+        "step": 2,
+        "next_step": 3,
+        "status": {
+            "status": "running",
+            "best_nll_bits": 12.5,
+            "best_step": 2,
+            "previous_objective": 14.0,
+            "stable_loss_steps": 6,
+            "active_batch_index": 3,
+            "active_solver_stage": "warmup",
+            "active_batch_local_step": 4,
+            "adagrad_restart_dynamic_phase_index": 2,
+            "adagrad_restart_dynamic_phase_start_step": 11,
+            "lbfgsb_fallback_used_count": 7,
+            "lbfgsb_loss_schedule_index": 99,
+            "lbfgsb_best_retry_count": 2,
+        },
+    }
+    planning_state = _StepPlanningState(
+        restart_dynamic_phase_index=0,
+        restart_dynamic_phase_start_step=0,
+        current_phase="",
+        active_batch_index=0,
+        active_optimizer_batch_index=None,
+        active_adagrad_restart_phase_index=None,
+        previous_objective=None,
+        stable_loss_steps=0,
+        lbfgsb_fallback_used_count=0,
+        optimizer=None,
+    )
+    run_state = _OptimizationRunState(
+        objective_state=ObjectiveState(),
+        batch_state=BatchRunState(),
+        restart_state=RestartRunState(dynamic_enabled=True),
+        lbfgsb_state=LBFGSBRunState(),
+        planning_state=planning_state,
+        current_phase="",
+        batch_final_cache=None,
+    )
+    planning_context = _StepPlanningContext(
+        solver=object(),
+        config=config,
+        adagrad_restart_specs=(),
+        adagrad_restart_step_limit=None,
+        adagrad_restart_dynamic_enabled=True,
+        adagrad_restart_dynamic_state_loaded=False,
+        batchwise_active_optimizer=True,
+        batchwise_active_optimizer_phases=frozenset({"batched-lbfgs"}),
+        batchwise_batched_lbfgs=True,
+        batchwise_fd_newton=False,
+        batchwise_hessian_sgd=False,
+        clear_cached_solver_runtime_state=lambda model: None,
+        make_optimizer=lambda model, phase: None,
+    )
+    model = Model()
+    adaptive_state = AdaptiveState()
+
+    def load_checkpoint(path):
+        events.append("load")
+        assert path == config.resume_from
+        return payload
+
+    def validate_checkpoint_model_compatibility(**kwargs):
+        events.append("validate")
+        assert kwargs == {
+            "path": config.resume_from,
+            "config": config,
+            "model": model,
+            "payload": payload,
+        }
+
+    def restore_model_theta(model_arg, payload_arg):
+        events.append("restore")
+        assert model_arg is model
+        assert payload_arg is payload
+
+    result = _apply_resume_checkpoint_state(
+        config=config,
+        model=model,
+        run_state=run_state,
+        planning_context=planning_context,
+        lbfgsb_loss_schedule=(object(), object()),
+        solver_warmup_enabled=True,
+        batchwise_active_optimizer=True,
+        adagrad_restart_dynamic_enabled=True,
+        adaptive_rebatch_enabled=True,
+        adaptive_state=adaptive_state,
+        load_checkpoint=load_checkpoint,
+        validate_checkpoint_model_compatibility=(
+            validate_checkpoint_model_compatibility
+        ),
+        restore_model_theta=restore_model_theta,
+    )
+
+    assert events == ["load", "validate", "restore", "adaptive", "replan"]
+    assert run_state.resume_payload is payload
+    assert run_state.start_step == 3
+    assert run_state.objective_state.best_nll is None
+    assert run_state.objective_state.best_step is None
+    assert run_state.objective_state.previous_objective == 14.0
+    assert run_state.objective_state.stable_loss_steps == 6
+    assert run_state.batch_state.active_index == 3
+    assert run_state.batch_state.solver_stage == "warmup"
+    assert run_state.batch_state.local_step == 4
+    assert run_state.batch_state.best_nll == 12.5
+    assert run_state.batch_state.best_step == 2
+    assert run_state.restart_state.phase_index == 2
+    assert run_state.restart_state.phase_start_step == 11
+    assert run_state.lbfgsb_state.fallback_used_count == 7
+    assert run_state.lbfgsb_state.loss_schedule_index == 1
+    assert run_state.lbfgsb_state.best_retry_count == 2
+    assert result.planning_context.adagrad_restart_dynamic_state_loaded
+    assert result.planning_state.restart_dynamic_phase_index == 2
+    assert result.planning_state.restart_dynamic_phase_start_step == 11
+    assert result.planning_state.current_phase == "warmup"
+    assert result.planning_state.active_batch_index == 3
+    assert result.planning_state.previous_objective == 14.0
+    assert result.planning_state.stable_loss_steps == 6
+    assert result.planning_state.lbfgsb_fallback_used_count == 7
+    assert adaptive_state.restore_call is not None
+    assert adaptive_state.restore_call["active_batch_index"] == 3
+    assert adaptive_state.restore_call["checkpoint_path"] == str(config.resume_from)
+    assert model.replanned_indices == (5, 8)
