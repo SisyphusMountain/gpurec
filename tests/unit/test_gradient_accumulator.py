@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from gpurec.api import model as api_model
+import gpurec.api._streaming as api_streaming
 from gpurec.api.model import GeneReconModel
 from gpurec.core.gradient_accumulator import (
     GradientAccumulator,
@@ -293,7 +293,11 @@ def test_stream_full_batches_uses_accumulator_for_genewise_batches(
             ),
         )
 
-    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+    monkeypatch.setattr(
+        api_streaming,
+        "evaluate_resident_static_state",
+        fake_evaluate_static_state,
+    )
 
     loss, grad = GeneReconModel._stream_full_batches(model, theta, need_grad=True)
 

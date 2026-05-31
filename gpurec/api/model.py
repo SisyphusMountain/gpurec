@@ -71,10 +71,6 @@ from ._static_builder import (
     _metadata_for_full_static as _metadata_for_full_static_impl,
 )
 from ._streaming import stream_full_batches as _stream_full_batches_impl
-from ._tensor_validation import (
-    _validate_genewise_loss_vector as _validate_genewise_loss_vector_impl,
-    _validate_genewise_gradient_matrix as _validate_genewise_gradient_matrix_impl,
-)
 from ._theta_init import (
     _default_theta_init as _default_theta_init_impl,
     _mode_to_flags as _mode_to_flags_impl,
@@ -85,6 +81,10 @@ from ._uniform_evaluator import (
     evaluate_resident_export_state,
     evaluate_resident_no_grad,
     evaluate_resident_static_state as _evaluate_static_state_impl,
+)
+from ._genewise_streaming import (
+    full_genewise_nll_and_grad as _full_genewise_nll_and_grad_impl,
+    full_nll_per_family as _full_nll_per_family_impl,
 )
 from ._warmup import (
     _finish_cuda_context_warmup as _finish_cuda_context_warmup_impl,
@@ -124,8 +124,6 @@ _finish_batch_specs_from_retained_rust = _finish_batch_specs_from_retained_rust_
 _cancel_batch_specs_from_retained_rust = _cancel_batch_specs_from_retained_rust_impl
 _should_use_compact_retained_preprocess = _should_use_compact_retained_preprocess_impl
 _build_family_schedule_stats = _build_family_schedule_stats_impl
-_validate_genewise_loss_vector = _validate_genewise_loss_vector_impl
-_validate_genewise_gradient_matrix = _validate_genewise_gradient_matrix_impl
 _default_theta_init = _default_theta_init_impl
 
 # Keep canonical tensor validators and static-build helpers authoritative.
@@ -1195,85 +1193,7 @@ class GeneReconModel(torch.nn.Module):
         This is the model-owned public surface for row-wise optimizers that need
         one loss and one gradient vector per gene family.
         """
-        if self._mode != "genewise":
-            raise ValueError(
-                "full_genewise_nll_and_grad() is only valid in genewise mode"
-            )
-
-        values = torch.empty(
-            (self.n_families,),
-            device=self.theta.device,
-            dtype=self.theta.dtype,
-        )
-        grad_total = torch.zeros_like(self.theta) if need_grad else None
-
-        if not self._batched_resident:
-            loss, grad = _evaluate_static_state(
-                self._active_static(),
-                self.theta,
-                need_grad=need_grad,
-                per_family=True,
-            )
-            loss = _validate_genewise_loss_vector(
-                "genewise per-family NLL",
-                loss,
-                family_count=self.n_families,
-            )
-            values.copy_(loss.to(device=values.device, dtype=values.dtype))
-            if need_grad:
-                if grad is None or grad_total is None:
-                    raise RuntimeError("internal error: missing genewise gradient")
-                grad = _validate_genewise_gradient_matrix(
-                    "genewise gradient",
-                    grad,
-                    expected_shape=tuple(int(dim) for dim in grad_total.shape),
-                )
-                grad_total.copy_(grad.to(device=grad_total.device, dtype=grad_total.dtype))
-            return values, grad_total
-
-        previous_batch = self.current_batch_index
-        try:
-            for batch_idx, metadata in enumerate(self.batch_metadata):
-                self.select_batch(batch_idx)
-                static = self._active_static()
-                theta_batch = self._active_theta()
-                batch_values, batch_grad = _evaluate_static_state(
-                    static,
-                    theta_batch,
-                    need_grad=need_grad,
-                    per_family=True,
-                )
-                batch_values = _validate_genewise_loss_vector(
-                    "genewise batch per-family NLL",
-                    batch_values,
-                    family_count=len(metadata.family_indices),
-                )
-                idx = torch.as_tensor(
-                    metadata.family_indices,
-                    dtype=torch.long,
-                    device=values.device,
-                )
-                values.index_copy_(
-                    0,
-                    idx,
-                    batch_values.to(device=values.device, dtype=values.dtype),
-                )
-                if need_grad:
-                    if batch_grad is None or grad_total is None:
-                        raise RuntimeError("internal error: missing genewise batch gradient")
-                    batch_grad = _validate_genewise_gradient_matrix(
-                        "genewise batch gradient",
-                        batch_grad,
-                        expected_shape=tuple(int(dim) for dim in theta_batch.shape),
-                    )
-                    grad_total.index_copy_(
-                        0,
-                        idx.to(device=grad_total.device),
-                        batch_grad.to(device=grad_total.device, dtype=grad_total.dtype),
-                    )
-        finally:
-            self.select_batch(previous_batch)
-        return values, grad_total
+        return _full_genewise_nll_and_grad_impl(self, need_grad=need_grad)
 
     @torch.no_grad()
     def full_nll_per_family(self) -> torch.Tensor:
@@ -1284,14 +1204,7 @@ class GeneReconModel(torch.nn.Module):
         under ``torch.no_grad()`` for diagnostic shared-theta values; those
         modes do not have independent per-family gradients.
         """
-        if self._mode != "genewise":
-            raise ValueError(
-                "full_nll_per_family() is only valid in genewise mode; use "
-                "forward(reduce='per_family') under torch.no_grad() for "
-                "shared-theta diagnostic values."
-            )
-        values, _grad = self.full_genewise_nll_and_grad(need_grad=False)
-        return values
+        return _full_nll_per_family_impl(self)
 
     @torch.no_grad()
     def reconciliation_state(self, *, original_order: bool = True) -> ReconciliationState:

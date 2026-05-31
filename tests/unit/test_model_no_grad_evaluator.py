@@ -6,6 +6,7 @@ import pytest
 import torch
 
 import gpurec.api.autograd as api_autograd
+import gpurec.api._genewise_streaming as api_genewise_streaming
 import gpurec.api._streaming as api_streaming
 import gpurec.api.model as api_model
 import gpurec.api._uniform_evaluator as api_evaluator
@@ -334,7 +335,11 @@ def test_full_genewise_nll_and_grad_rejects_bad_single_static_loss_shape(
             torch.zeros_like(theta_arg),
         )
 
-    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+    monkeypatch.setattr(
+        api_genewise_streaming,
+        "_evaluate_static_state",
+        fake_evaluate_static_state,
+    )
 
     with pytest.raises(ValueError, match="genewise per-family NLL.*shape"):
         model.full_genewise_nll_and_grad(need_grad=True)
@@ -365,7 +370,11 @@ def test_full_genewise_nll_and_grad_rejects_bad_batch_gradient_shape(
             ),
         )
 
-    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+    monkeypatch.setattr(
+        api_genewise_streaming,
+        "_evaluate_static_state",
+        fake_evaluate_static_state,
+    )
 
     with pytest.raises(ValueError, match="genewise batch gradient.*shape"):
         model.full_genewise_nll_and_grad(need_grad=True)
