@@ -19,6 +19,7 @@ import gpurec.backtracking as backtracking
 import gpurec.core.preprocess_rust as preprocess_rust
 import gpurec.entropy as entropy
 import gpurec.api._model_builders as api_model_builders
+import gpurec.api._resident_runtime as api_resident_runtime
 import gpurec.api.model as api_model
 import gpurec.api.uniform_chunked as uniform_chunked_api
 import gpurec.workflow as workflow
@@ -794,7 +795,7 @@ def test_close_prevents_later_prefetch_restart(monkeypatch):
                 "cancel_futures": cancel_futures,
             }
 
-    monkeypatch.setattr(api_model, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(api_resident_runtime, "ThreadPoolExecutor", FakeExecutor)
 
     model = GeneReconModel.__new__(GeneReconModel)
     model._batched_resident = True

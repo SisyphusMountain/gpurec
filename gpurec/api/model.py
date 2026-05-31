@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import math
 import os
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -54,6 +52,7 @@ from ._model_builders import (
     build_from_alerax_families_inputs,
     build_from_trees_inputs,
 )
+from . import _resident_runtime
 from ._model_types import (
     ActiveFamilyBatch,
     BatchMetadata,
@@ -63,10 +62,9 @@ from ._model_types import (
     _ResidentBatchSpec,
     _public_family_value,
 )
-from ._resident_cache import ResidentBatchCache, _RESIDENT_PREFETCH_WORKERS
+from ._resident_cache import ResidentBatchCache
 from ._static_builder import (
     ResidentCommonState,
-    _build_batch_static_state as _build_batch_static_state_impl,
     _build_static_state as _build_static_state_impl,
     _metadata_for_full_static as _metadata_for_full_static_impl,
 )
@@ -580,23 +578,10 @@ class GeneReconModel(torch.nn.Module):
     # Resident batch management
     # ──────────────────────────────────────────────────────────────────
     def _build_batch_static(self, batch_idx: int) -> ReconStaticState:
-        static = _build_batch_static_state_impl(
-            self._batch_specs[batch_idx],
-            dataset=self._dataset,
-            common_state=self._resident_common_state,
-            origination_prior=self._origination_prior.select_families(
-                self._batch_specs[batch_idx].family_indices,
-            ),
-            settings=self._settings,
-        )
-        self._apply_pi_adjoint_warmstart_config(static, clear_cache=False)
-        return static
+        return _resident_runtime._build_batch_static(self, batch_idx)
 
     def _shutdown_prefetch_executor_for_replan(self) -> None:
-        cache = getattr(self, "_resident_cache", None)
-        if cache is not None:
-            cache.close()
-        self._resident_cache = None
+        _resident_runtime._shutdown_prefetch_executor_for_replan(self)
 
     def replan_resident_batches(
         self,
@@ -609,159 +594,38 @@ class GeneReconModel(torch.nn.Module):
         stats, then asks the Rust planner/scheduler to regroup and regenerate
         waves for the selected original family indices.
         """
-        if not self._batched_resident or self._mode != "genewise":
-            raise RuntimeError(
-                "replan_resident_batches() requires genewise resident-batch mode"
-            )
-        indices = [integer_value("family_indices entries", value) for value in family_indices]
-        if not indices:
-            raise ValueError("family_indices must not be empty")
-        seen: set[int] = set()
-        for index in indices:
-            if index < 0 or index >= self.n_families:
-                raise IndexError(
-                    f"family index {index} out of range for {self.n_families} families"
-                )
-            if index in seen:
-                raise ValueError(f"duplicate family index {index}")
-            seen.add(index)
-        if self._family_schedule_stats is None:
-            raise RuntimeError("family scheduler stats are not available")
-
-        self._shutdown_prefetch_executor_for_replan()
-        specs = _build_batch_specs(
-            self._dataset,
-            mode=self._mode,
-            family_chunk_size=self.family_chunk_size,
-            clade_budget=self.clade_budget,
-            batch_packing=self.batch_packing,
-            max_wave_size=self.max_wave_size,
-            max_root_wave_size=self.max_root_wave_size,
-            max_dts_partial_rows=self.max_dts_partial_rows,
-            small_family_max_leaves=self.small_family_max_leaves,
-            family_indices=indices,
-            schedule_stats=self._family_schedule_stats,
-        )
-        if not specs:
-            raise ValueError("replanned resident batches must not be empty")
-        self._batch_specs = specs
-        self.batch_metadata = [spec.metadata for spec in specs]
-        self._current_batch_index = 0
-        self._resident_cache = ResidentBatchCache(
-            specs=self._batch_specs,
-            build_static=self._build_batch_static,
-            prefetch_batches=self.prefetch_batches,
-        )
-        self._resident_cache.ensure(0)
-        self._resident_cache.schedule_prefetch()
-        return list(self.batch_metadata)
+        return _resident_runtime.replan_resident_batches(self, family_indices)
 
     def _ensure_batch_static(self, batch_idx: int) -> ReconStaticState:
-        if not self._batched_resident:
-            if self._static is None:
-                raise RuntimeError("resident static state has not been built")
-            return self._static
-        if batch_idx < 0 or batch_idx >= len(self._batch_specs):
-            raise IndexError(
-                f"batch index {batch_idx} out of range for {len(self._batch_specs)} batches"
-            )
-        cache = getattr(self, "_resident_cache", None)
-        if cache is not None:
-            return cache.ensure(batch_idx)
-        raise RuntimeError("resident cache is not initialized")
+        return _resident_runtime._ensure_batch_static(self, batch_idx)
 
     def _submit_prefetch(self, batch_idx: int) -> None:
-        if batch_idx < 0 or batch_idx >= len(self._batch_specs):
-            return
-        cache = getattr(self, "_resident_cache", None)
-        if cache is not None:
-            cache.submit_prefetch(batch_idx)
-            return
-        if hasattr(self, "_batch_statics") or getattr(self, "_prefetch_closed", False):
-            self._submit_legacy_prefetch(batch_idx)
-            return
-        raise RuntimeError("resident cache is not initialized")
+        _resident_runtime._submit_prefetch(self, batch_idx)
 
     def _schedule_prefetch(self) -> None:
-        if not self._batched_resident or self.prefetch_batches == 0:
-            return
-        cache = getattr(self, "_resident_cache", None)
-        if cache is not None:
-            cache.schedule_prefetch()
-            return
-        if hasattr(self, "_batch_statics") or getattr(self, "_prefetch_closed", False):
-            self._schedule_legacy_prefetch()
-            return
-        raise RuntimeError("resident cache is not initialized")
+        _resident_runtime._schedule_prefetch(self)
 
     def _legacy_prefetch_guard(self):
-        lock = getattr(self, "_batch_lock", None)
-        return lock if lock is not None else nullcontext()
+        return _resident_runtime._legacy_prefetch_guard(self)
 
     def _submit_legacy_prefetch(self, batch_idx: int) -> None:
-        if getattr(self, "_prefetch_closed", False):
-            return
-        statics = getattr(self, "_batch_statics", None)
-        futures = getattr(self, "_batch_futures", None)
-        if statics is None:
-            raise RuntimeError("resident cache is not initialized")
-        if futures is None:
-            futures = {}
-            self._batch_futures = futures
-        if batch_idx < 0 or batch_idx >= len(statics):
-            return
-        with self._legacy_prefetch_guard():
-            if statics[batch_idx] is not None or batch_idx in futures:
-                return
-            executor = getattr(self, "_prefetch_executor", None)
-            if executor is None:
-                executor = ThreadPoolExecutor(
-                    max_workers=_RESIDENT_PREFETCH_WORKERS,
-                    thread_name_prefix="gpurec-preprocess",
-                )
-                self._prefetch_executor = executor
-            futures[batch_idx] = executor.submit(self._build_batch_static, batch_idx)
+        _resident_runtime._submit_legacy_prefetch(self, batch_idx)
 
     def _schedule_legacy_prefetch(self) -> None:
-        if getattr(self, "_prefetch_closed", False):
-            return
-        statics = getattr(self, "_batch_statics", None)
-        if statics is None:
-            raise RuntimeError("resident cache is not initialized")
-        start = self._current_batch_index + 1
-        if self.prefetch_batches == "all":
-            stop = len(statics)
-        else:
-            stop = min(len(statics), start + int(self.prefetch_batches))
-        for batch_idx in range(start, stop):
-            self._submit_legacy_prefetch(batch_idx)
+        _resident_runtime._schedule_legacy_prefetch(self)
 
     def _active_static(self) -> ReconStaticState:
-        if self._batched_resident:
-            return self._ensure_batch_static(self._current_batch_index)
-        if self._static is None:
-            raise RuntimeError("resident static state has not been built")
-        return self._static
+        return _resident_runtime._active_static(self)
 
     def _theta_for_batch_index(
         self,
         batch_idx: int,
         theta: torch.Tensor,
     ) -> torch.Tensor:
-        if not self._batched_resident or self._mode != "genewise":
-            return theta
-        idx = torch.as_tensor(
-            self._batch_specs[batch_idx].family_indices,
-            dtype=torch.long,
-            device=theta.device,
-        )
-        return theta.index_select(0, idx)
+        return _resident_runtime._theta_for_batch_index(self, batch_idx, theta)
 
     def _active_theta(self, theta: torch.Tensor | None = None) -> torch.Tensor:
-        return self._theta_for_batch_index(
-            self._current_batch_index,
-            self.theta if theta is None else theta,
-        )
+        return _resident_runtime._active_theta(self, theta)
 
     def _stream_full_batches(
         self,
@@ -809,21 +673,11 @@ class GeneReconModel(torch.nn.Module):
     @property
     def cached_static_states(self) -> list[ReconStaticState]:
         """Static states that are currently built and available for diagnostics."""
-        if self._batched_resident:
-            cache = getattr(self, "_resident_cache", None)
-            if cache is not None:
-                return cache.cached()
-            return []
-        return [] if self._static is None else [self._static]
+        return _resident_runtime.cached_static_states(self)
 
     def drop_cached_static_states(self) -> None:
         """Release built resident batch static states while keeping batch metadata."""
-        if not self._batched_resident:
-            return
-        cache = getattr(self, "_resident_cache", None)
-        if cache is not None:
-            cache.drop_statics()
-            return
+        _resident_runtime.drop_cached_static_states(self)
 
     def materialize_batches(self) -> list[BatchMetadata]:
         """Build all resident batch static states and return metadata copies.
@@ -832,17 +686,7 @@ class GeneReconModel(torch.nn.Module):
         before returning.  The returned list is a copy of ``batch_metadata``, so
         callers can inspect batch ownership without mutating model bookkeeping.
         """
-        if self._batched_resident:
-            cache = getattr(self, "_resident_cache", None)
-            if cache is not None:
-                for batch_idx in range(len(self._batch_specs)):
-                    cache.ensure(batch_idx)
-                return list(self.batch_metadata)
-            for batch_idx in range(len(self._batch_specs)):
-                self._ensure_batch_static(batch_idx)
-        elif self._static is None:
-            raise RuntimeError("resident static state has not been built")
-        return list(self.batch_metadata)
+        return _resident_runtime.materialize_batches(self)
 
     def _apply_pi_adjoint_warmstart_config(
         self,
@@ -979,21 +823,7 @@ class GeneReconModel(torch.nn.Module):
         In non-batched mode only batch ``0`` exists.  Selecting a new batch
         clears warm runtime state from the previous active batch.
         """
-        batch_index = integer_value("batch_index", batch_index)
-        if batch_index < 0 or batch_index >= len(self.batch_metadata):
-            raise IndexError(
-                f"batch index {batch_index} out of range for {len(self.batch_metadata)} batches"
-            )
-        if batch_index != self._current_batch_index:
-            self.clear()
-            self._current_batch_index = batch_index
-        cache = getattr(self, "_resident_cache", None)
-        if cache is not None and self._batched_resident:
-            cache.select(batch_index)
-        else:
-            self._ensure_batch_static(batch_index)
-        self._schedule_prefetch()
-        return self.current_batch_metadata
+        return _resident_runtime.select_batch(self, batch_index)
 
     def activate_family(self, family_index: int) -> ActiveFamilyBatch:
         """Select the resident batch containing ``family_index``.
@@ -1001,99 +831,22 @@ class GeneReconModel(torch.nn.Module):
         Returns the family offset inside the active Pi matrix plus the local
         family index used by batch-local parameter tensors.
         """
-        family_index = integer_value("family_index", family_index)
-        if family_index < 0 or family_index >= self.n_families:
-            raise IndexError(
-                f"family_index {family_index} outside 0..{self.n_families}"
-            )
-
-        if not self._batched_resident:
-            offset = 0
-            for idx in range(family_index):
-                offset += int(self._dataset.families[idx]["C"])
-            metadata = self.select_batch(0)
-            return ActiveFamilyBatch(
-                family_index=family_index,
-                batch_index=0,
-                local_family_index=family_index,
-                clade_offset=offset,
-                metadata=metadata,
-            )
-
-        for batch_idx, metadata in enumerate(self.batch_metadata):
-            family_indices = [int(idx) for idx in metadata.family_indices]
-            if family_index not in family_indices:
-                continue
-            offset = 0
-            for local_idx, idx in enumerate(family_indices):
-                if idx == family_index:
-                    metadata = self.select_batch(batch_idx)
-                    return ActiveFamilyBatch(
-                        family_index=family_index,
-                        batch_index=batch_idx,
-                        local_family_index=local_idx,
-                        clade_offset=offset,
-                        metadata=metadata,
-                    )
-                offset += int(self._dataset.families[idx]["C"])
-        raise IndexError(f"family_index {family_index} is not present in any resident batch")
+        return _resident_runtime.activate_family(self, family_index)
 
     def next(self) -> BatchMetadata:
         """Advance to the next resident batch and return its metadata."""
-        if self._current_batch_index + 1 >= len(self.batch_metadata):
-            raise StopIteration("already at the final resident batch")
-        return self.select_batch(self._current_batch_index + 1)
+        return _resident_runtime.next_batch(self)
 
     def clear(self) -> None:
         """Release active runtime caches held by the model."""
-        if self._batched_resident:
-            cache = getattr(self, "_resident_cache", None)
-            if cache is not None:
-                cache.clear_active_runtime()
-                static = cache.statics[cache.current_index]
-                if static is not None:
-                    _clear_pi_adjoint_runtime_cache(static)
-                return
-            statics = getattr(self, "_batch_statics", None)
-            if statics is not None:
-                batch_idx = getattr(self, "_current_batch_index", 0)
-                if 0 <= batch_idx < len(statics):
-                    static = statics[batch_idx]
-                    if static is not None:
-                        static.warm_E = None
-                        _clear_pi_adjoint_runtime_cache(static)
-                return
-            raise RuntimeError("resident cache is not initialized")
-            return
-        static = self._active_static()
-        static.warm_E = None
-        _clear_pi_adjoint_runtime_cache(static)
+        _resident_runtime.clear(self)
 
     def close(self) -> None:
         """Stop background batch preprocessing and drop pending futures."""
-        self._prefetch_closed = True
-        cache = getattr(self, "_resident_cache", None)
-        if cache is not None:
-            cache.close()
-            self._resident_cache = None
-        self._close_legacy_prefetch_executor()
+        _resident_runtime.close(self)
 
     def _close_legacy_prefetch_executor(self) -> None:
-        executor = getattr(self, "_prefetch_executor", None)
-        lock = getattr(self, "_batch_lock", None)
-        if lock is None:
-            self._prefetch_executor = None
-            futures = getattr(self, "_batch_futures", None)
-            if futures is not None:
-                futures.clear()
-        else:
-            with lock:
-                self._prefetch_executor = None
-                futures = getattr(self, "_batch_futures", None)
-                if futures is not None:
-                    futures.clear()
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+        _resident_runtime._close_legacy_prefetch_executor(self)
 
     def __del__(self):
         try:

@@ -373,6 +373,11 @@ def test_internal_api_helper_modules_document_support_boundary():
             encoding="utf-8"
         )
     )
+    resident_runtime_module = ast.parse(
+        (root / "gpurec" / "api" / "_resident_runtime.py").read_text(
+            encoding="utf-8"
+        )
+    )
     docs_readme = " ".join(
         (root / "docs" / "README.md").read_text(encoding="utf-8").split()
     )
@@ -381,6 +386,9 @@ def test_internal_api_helper_modules_document_support_boundary():
     )
     validation_doc = " ".join(
         (ast.get_docstring(validation_module) or "").split()
+    )
+    resident_runtime_doc = " ".join(
+        (ast.get_docstring(resident_runtime_module) or "").split()
     )
     family_layout_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
@@ -424,6 +432,22 @@ def test_internal_api_helper_modules_document_support_boundary():
         "shape, dtype, and device for the active sharing mode"
         in validation_docstrings["validate_theta_shape"]
     )
+    for token in (
+        "Resident runtime and batch lifecycle helpers",
+        "internal support for ``gpurec.api`` model methods",
+        "not a public import surface",
+    ):
+        assert token in resident_runtime_doc
+    for node in resident_runtime_module.body:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith("gpurec.workflow")
+            assert not node.module.startswith("gpurec.optimization")
+            assert node.module != "model"
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("gpurec.workflow")
+                assert not alias.name.startswith("gpurec.optimization")
+                assert alias.name != "gpurec.api.model"
     assert "Direct imports from `gpurec.core` are unstable" in docs_readme
 
 
