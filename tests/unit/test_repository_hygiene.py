@@ -3088,6 +3088,9 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/_route_defaults.py": (
             "Internal production route/default policy helper"
         ),
+        "gpurec/workflow/_schedules.py": (
+            "Internal Adagrad restart and loss-stop schedule parser helper"
+        ),
         "gpurec/workflow/sampling.py": "Public runner implementation",
         "gpurec/workflow/checkpoint.py": "Supported lower-level checkpoint tooling",
         "gpurec/workflow/_artifact_publish.py": "Internal staged-artifact publication",
@@ -3149,6 +3152,10 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
             "Public callers should keep importing",
             "not a public workflow shortcut",
         ),
+        "gpurec/workflow/_schedules.py": (
+            "Private workflow schedule parsers",
+            "Public callers should keep importing",
+        ),
     }
     for path, tokens in internal_docstring_tokens.items():
         module = ast.parse((root / path).read_text(encoding="utf-8"))
@@ -3185,10 +3192,30 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
             for alias in node.names:
                 assert alias.name not in forbidden_modules
 
+    schedules = ast.parse(
+        (root / "gpurec" / "workflow" / "_schedules.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    forbidden_schedule_modules = {
+        "config",
+        "gpurec.workflow.config",
+        "optimize",
+        "gpurec.workflow.optimize",
+        "torch",
+    }
+    for node in ast.walk(schedules):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert node.module not in forbidden_schedule_modules
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name not in forbidden_schedule_modules
+
     import gpurec.workflow as workflow_package
 
     assert "_transition_types" not in workflow_package.__all__
     assert "_route_defaults" not in workflow_package.__all__
+    assert "_schedules" not in workflow_package.__all__
 
 
 def test_newick_input_subset_is_documented_on_public_surfaces():

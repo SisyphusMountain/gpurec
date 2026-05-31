@@ -5,6 +5,7 @@ import importlib
 import json
 import math
 import os
+import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -652,6 +653,42 @@ def test_workflow_config_submodule_import_does_not_import_optimizer_or_sampling(
     assert result.returncode == 0
     assert result.stdout == ""
     assert result.stderr == ""
+
+
+def test_workflow_config_reexports_schedule_phase_classes_with_legacy_identity():
+    import gpurec.workflow._schedules as workflow_schedules
+    import gpurec.workflow.config as workflow_config
+
+    adagrad_phase = workflow_config.AdagradRestartPhase(
+        fixed_iters_e=8,
+        fixed_iters_pi=8,
+        neumann_terms=8,
+        lr=1.0,
+        steps=60,
+    )
+    loss_phase = workflow_config.LossStopPhase(
+        loss_change_tol=1e-3,
+        loss_patience=2,
+    )
+
+    assert workflow_config.AdagradRestartPhase is workflow_schedules.AdagradRestartPhase
+    assert workflow_config.LossStopPhase is workflow_schedules.LossStopPhase
+    assert workflow_config.AdagradRestartPhase.__module__ == "gpurec.workflow.config"
+    assert workflow_config.LossStopPhase.__module__ == "gpurec.workflow.config"
+    assert repr(adagrad_phase) == (
+        "AdagradRestartPhase(fixed_iters_e=8, fixed_iters_pi=8, "
+        "neumann_terms=8, lr=1.0, steps=60)"
+    )
+    assert repr(loss_phase) == (
+        "LossStopPhase(loss_change_tol=0.001, loss_patience=2)"
+    )
+
+    adagrad_payload = pickle.dumps(adagrad_phase, protocol=0)
+    loss_payload = pickle.dumps(loss_phase, protocol=0)
+    assert b"gpurec.workflow.config\nAdagradRestartPhase" in adagrad_payload
+    assert b"gpurec.workflow.config\nLossStopPhase" in loss_payload
+    assert pickle.loads(adagrad_payload) == adagrad_phase
+    assert pickle.loads(loss_payload) == loss_phase
 
 
 def test_workflow_metadata_helper_import_does_not_import_heavy_modules():

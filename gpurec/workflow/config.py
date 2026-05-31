@@ -14,6 +14,17 @@ from ._route_defaults import (
     DEFAULT_CLADE_BUDGET,
     SpecieswiseRouteDefaults,
 )
+from ._schedules import (
+    DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS,
+    DEFAULT_NORMALIZED_ADAGRAD_RESTART_SCHEDULE,
+    AdagradRestartPhase as AdagradRestartPhase,
+    LossStopPhase as LossStopPhase,
+    _normalize_adagrad_restart_schedule,
+    _normalize_optional_loss_stop_schedule,
+    adagrad_restart_schedule_specs as adagrad_restart_schedule_specs,
+    adagrad_restart_schedule_total_steps,
+    loss_stop_schedule_specs as loss_stop_schedule_specs,
+)
 from gpurec._validation import (
     bool_value,
     disabled_adaptive_neumann_terms_value,
@@ -38,50 +49,6 @@ def _default_device() -> str:
 
 UINT64_MAX = (1 << 64) - 1
 MODE_DEFAULT_OPTIMIZERS = _route_defaults.MODE_DEFAULT_OPTIMIZERS
-
-
-@dataclass(frozen=True)
-class AdagradRestartPhase:
-    fixed_iters_e: int
-    fixed_iters_pi: int
-    neumann_terms: int
-    lr: float
-    steps: int
-
-    @property
-    def budget(self) -> int:
-        return self.fixed_iters_pi
-
-    @property
-    def is_tied_budget(self) -> bool:
-        return (
-            self.fixed_iters_e == self.fixed_iters_pi
-            and self.neumann_terms == self.fixed_iters_pi
-        )
-
-    def budget_label(self) -> str:
-        if self.is_tied_budget:
-            return f"fixed{self.fixed_iters_pi}"
-        label = f"E{self.fixed_iters_e}_Pi{self.fixed_iters_pi}"
-        if self.neumann_terms != self.fixed_iters_pi:
-            label += f"_N{self.neumann_terms}"
-        return label
-
-    def budget_spec(self) -> str:
-        if self.is_tied_budget:
-            return str(self.fixed_iters_pi)
-        if self.neumann_terms == self.fixed_iters_pi:
-            return f"{self.fixed_iters_e}/{self.fixed_iters_pi}"
-        return f"{self.fixed_iters_e}/{self.fixed_iters_pi}/{self.neumann_terms}"
-
-
-@dataclass(frozen=True)
-class LossStopPhase:
-    loss_change_tol: float
-    loss_patience: int
-
-    def spec(self) -> str:
-        return f"{self.loss_change_tol:.12g}:{self.loss_patience}"
 
 
 def dtype_from_name(name: str) -> torch.dtype:
@@ -236,94 +203,6 @@ def normalize_optimizer_for_mode(mode: str, value: str) -> str:
     return _normalize_optimizer(mode, value)
 
 
-def adagrad_restart_schedule_specs(value: str) -> tuple[AdagradRestartPhase, ...]:
-    if not isinstance(value, str):
-        raise ValueError("adagrad_restart_schedule must be a string")
-    text = value.strip()
-    if not text:
-        raise ValueError("adagrad_restart_schedule must not be empty")
-    phases: list[AdagradRestartPhase] = []
-    for position, raw_entry in enumerate(text.split(","), start=1):
-        entry = raw_entry.strip()
-        if not entry:
-            raise ValueError(
-                "adagrad_restart_schedule entries must be budget:lr:steps "
-                "or E/Pi[/Neumann]:lr:steps"
-            )
-        pieces = [piece.strip() for piece in entry.split(":")]
-        if len(pieces) != 3:
-            raise ValueError(
-                "adagrad_restart_schedule entries must be budget:lr:steps "
-                "or E/Pi[/Neumann]:lr:steps"
-            )
-        budget_pieces = [piece.strip() for piece in pieces[0].split("/")]
-        if len(budget_pieces) == 1:
-            fixed_iters_pi = _normalize_positive_even_int(
-                f"adagrad_restart_schedule entry {position} budget",
-                budget_pieces[0],
-            )
-            fixed_iters_e = fixed_iters_pi
-            neumann_terms = fixed_iters_pi
-        elif len(budget_pieces) in {2, 3}:
-            fixed_iters_e = _normalize_positive_int(
-                f"adagrad_restart_schedule entry {position} E budget",
-                budget_pieces[0],
-            )
-            fixed_iters_pi = _normalize_positive_even_int(
-                f"adagrad_restart_schedule entry {position} Pi budget",
-                budget_pieces[1],
-            )
-            neumann_terms = (
-                fixed_iters_pi
-                if len(budget_pieces) == 2
-                else _normalize_positive_int(
-                    f"adagrad_restart_schedule entry {position} Neumann budget",
-                    budget_pieces[2],
-                )
-            )
-        else:
-            raise ValueError(
-                "adagrad_restart_schedule budget entries must be budget "
-                "or E/Pi[/Neumann]"
-            )
-        lr = _normalize_finite_float(
-            f"adagrad_restart_schedule entry {position} lr",
-            pieces[1],
-        )
-        if lr <= 0.0:
-            raise ValueError("adagrad_restart_schedule learning rates must be positive")
-        steps = _normalize_positive_int(
-            f"adagrad_restart_schedule entry {position} steps",
-            pieces[2],
-        )
-        phases.append(
-            AdagradRestartPhase(
-                fixed_iters_e=fixed_iters_e,
-                fixed_iters_pi=fixed_iters_pi,
-                neumann_terms=neumann_terms,
-                lr=lr,
-                steps=steps,
-            )
-        )
-        if len(phases) > 1:
-            previous = phases[-2]
-            current = phases[-1]
-            if (
-                current.fixed_iters_e < previous.fixed_iters_e
-                or current.fixed_iters_pi < previous.fixed_iters_pi
-                or current.neumann_terms < previous.neumann_terms
-            ):
-                raise ValueError(
-                    "adagrad_restart_schedule phases must not decrease "
-                    "fixed_iters_E, fixed_iters_Pi, or neumann_terms"
-                )
-    return tuple(phases)
-
-
-def adagrad_restart_schedule_total_steps(value: str) -> int:
-    return sum(phase.steps for phase in adagrad_restart_schedule_specs(value))
-
-
 def effective_optimizer_step_cap(config: RunConfig) -> tuple[int, str]:
     if config.optimizer == "adagrad-restarts":
         schedule_steps = adagrad_restart_schedule_total_steps(
@@ -355,68 +234,6 @@ def effective_final_check_iters_e(config: RunConfig) -> int | None:
             return int(check_iters)
         return max(int(config.fixed_iters_e), int(check_iters))
     return None if config.fixed_iters_e is None else int(config.fixed_iters_e)
-
-
-def _normalize_adagrad_restart_schedule(value: str) -> str:
-    return ",".join(
-        f"{phase.budget_spec()}:{phase.lr:.12g}:{phase.steps}"
-        for phase in adagrad_restart_schedule_specs(value)
-    )
-
-
-DEFAULT_NORMALIZED_ADAGRAD_RESTART_SCHEDULE = _normalize_adagrad_restart_schedule(
-    DEFAULT_ADAGRAD_RESTART_SCHEDULE
-)
-DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS = adagrad_restart_schedule_total_steps(
-    DEFAULT_ADAGRAD_RESTART_SCHEDULE
-)
-
-def loss_stop_schedule_specs(value: str) -> tuple[LossStopPhase, ...]:
-    if not isinstance(value, str):
-        raise ValueError("lbfgsb_loss_change_tol_schedule must be a string")
-    text = value.strip()
-    if not text:
-        raise ValueError("lbfgsb_loss_change_tol_schedule must not be empty")
-    phases: list[LossStopPhase] = []
-    for position, raw_entry in enumerate(text.split(","), start=1):
-        entry = raw_entry.strip()
-        if not entry:
-            raise ValueError(
-                "lbfgsb_loss_change_tol_schedule entries must be "
-                "loss_change_tol:loss_patience"
-            )
-        pieces = [piece.strip() for piece in entry.split(":")]
-        if len(pieces) != 2:
-            raise ValueError(
-                "lbfgsb_loss_change_tol_schedule entries must be "
-                "loss_change_tol:loss_patience"
-            )
-        loss_change_tol = _normalize_finite_float(
-            f"lbfgsb_loss_change_tol_schedule entry {position} loss_change_tol",
-            pieces[0],
-        )
-        if loss_change_tol < 0.0:
-            raise ValueError(
-                "lbfgsb_loss_change_tol_schedule loss_change_tol values must "
-                "be non-negative"
-            )
-        loss_patience = _normalize_positive_int(
-            f"lbfgsb_loss_change_tol_schedule entry {position} loss_patience",
-            pieces[1],
-        )
-        phases.append(
-            LossStopPhase(
-                loss_change_tol=loss_change_tol,
-                loss_patience=loss_patience,
-            )
-        )
-    return tuple(phases)
-
-
-def _normalize_optional_loss_stop_schedule(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return ",".join(phase.spec() for phase in loss_stop_schedule_specs(value))
 
 
 def _normalize_workflow_batch_packing(value: str | None) -> str:

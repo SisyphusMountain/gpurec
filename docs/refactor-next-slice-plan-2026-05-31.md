@@ -24,6 +24,11 @@ audit policy into `gpurec/workflow/_route_defaults.py` while keeping
 `gpurec.workflow.config` as the public import and monkeypatch surface. See
 `docs/workflow-route-defaults-refactor-plan-2026-05-31.md`.
 
+Status note: the workflow schedule-parser slice moved Adagrad restart and
+loss-stop schedule parsing into `gpurec/workflow/_schedules.py` while keeping
+the config facade and legacy phase-class pickle paths. See
+`docs/workflow-schedules-refactor-plan-2026-05-31.md`.
+
 The historical split had already reduced the two original largest files
 substantially. The remaining large production groups at the time were:
 
