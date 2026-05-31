@@ -517,8 +517,16 @@ def test_internal_optimization_helper_modules_document_support_boundary():
             encoding="utf-8"
         )
     )
+    batched_history_module = ast.parse(
+        (
+            root / "gpurec" / "optimization" / "_batched_lbfgs_history.py"
+        ).read_text(encoding="utf-8")
+    )
     fallback_doc = " ".join((ast.get_docstring(fallback_module) or "").split())
     subspace_doc = " ".join((ast.get_docstring(subspace_module) or "").split())
+    batched_history_doc = " ".join(
+        (ast.get_docstring(batched_history_module) or "").split()
+    )
     fallback_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
         for node in fallback_module.body
@@ -527,6 +535,11 @@ def test_internal_optimization_helper_modules_document_support_boundary():
     subspace_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
         for node in subspace_module.body
+        if isinstance(node, ast.ClassDef)
+    }
+    batched_history_docstrings = {
+        node.name: " ".join((ast.get_docstring(node) or "").split())
+        for node in batched_history_module.body
         if isinstance(node, ast.ClassDef)
     }
 
@@ -552,6 +565,17 @@ def test_internal_optimization_helper_modules_document_support_boundary():
         in subspace_docstrings["LBFGSBSubspaceMixin"]
     )
 
+    for token in (
+        "Internal row-wise history helpers",
+        "private optimization support",
+        "not a public import surface",
+    ):
+        assert token in batched_history_doc
+    assert (
+        "Private two-loop direction and curvature-history methods"
+        in batched_history_docstrings["BatchedLBFGSHistoryMixin"]
+    )
+
     subspace_top_level_imports = []
     for node in subspace_module.body:
         if isinstance(node, ast.Import):
@@ -571,7 +595,27 @@ def test_internal_optimization_helper_modules_document_support_boundary():
         ("from", "torch", ("Tensor",)),
     ]
 
-    for module in (fallback_module, subspace_module):
+    batched_history_top_level_imports = []
+    for node in batched_history_module.body:
+        if isinstance(node, ast.Import):
+            batched_history_top_level_imports.extend(
+                ("import", alias.name, None) for alias in node.names
+            )
+        if isinstance(node, ast.ImportFrom) and node.module:
+            batched_history_top_level_imports.append(
+                (
+                    "from",
+                    node.module,
+                    tuple(alias.name for alias in node.names),
+                )
+            )
+    assert batched_history_top_level_imports == [
+        ("from", "typing", ("Any",)),
+        ("import", "torch", None),
+        ("from", "torch", ("Tensor",)),
+    ]
+
+    for module in (fallback_module, subspace_module, batched_history_module):
         for node in ast.walk(module):
             if isinstance(node, ast.ImportFrom) and node.module:
                 assert not node.module.startswith("gpurec.api")
@@ -590,6 +634,8 @@ def test_internal_optimization_helper_modules_document_support_boundary():
         ]
         assert "gpurec.optimization.lbfgsb" not in runtime_imports
         assert "lbfgsb" not in runtime_imports
+        assert "gpurec.optimization.batched_lbfgs" not in runtime_imports
+        assert "batched_lbfgs" not in runtime_imports
 
 
 def test_workflow_numeric_validation_uses_shared_helpers():

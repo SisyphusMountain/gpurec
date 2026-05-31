@@ -8,21 +8,17 @@ batched closure.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import torch
 from torch import Tensor
 from torch.optim import Optimizer
 
+from ._batched_lbfgs_history import BatchedLBFGSHistoryMixin, _row_dot
 from ._bounds import BoxBoundsMixin
 from ._closures import VectorClosureMixin
 
 
 LossClosure = Callable[[], Tensor]
-
-
-def _row_dot(a: Tensor, b: Tensor) -> Tensor:
-    return (a * b).sum(dim=1)
 
 
 def _clamp_tensor(value: Tensor, lower: Tensor, upper: Tensor) -> Tensor:
@@ -70,7 +66,12 @@ def _cubic_interpolate(
     return _clamp_tensor(torch.where(valid, min_pos, midpoint), xmin_bound, xmax_bound)
 
 
-class BatchedLBFGS(BoxBoundsMixin, VectorClosureMixin, Optimizer):
+class BatchedLBFGS(
+    BatchedLBFGSHistoryMixin,
+    BoxBoundsMixin,
+    VectorClosureMixin,
+    Optimizer,
+):
     """Limited-memory BFGS with independent state along dimension 0.
 
     Parameters
@@ -565,68 +566,6 @@ class BatchedLBFGS(BoxBoundsMixin, VectorClosureMixin, Optimizer):
         final_grad = torch.where(accepted[:, None], final_grad, start_grad)
         final_alpha = torch.where(accepted, final_alpha, zeros)
         return final_flat, final_loss, final_grad, final_alpha, accepted, evals
-
-    def _direction(
-        self,
-        flat_grad: Tensor,
-        old_dirs: list[Tensor],
-        old_stps: list[Tensor],
-        ro: list[Tensor],
-        H_diag: Tensor,
-    ) -> Tensor:
-        if not old_dirs:
-            return -flat_grad
-
-        q = flat_grad.clone()
-        alphas: list[Tensor] = []
-        for y_k, s_k, ro_k in zip(reversed(old_dirs), reversed(old_stps), reversed(ro)):
-            alpha = _row_dot(s_k, q) * ro_k
-            q = q - alpha[:, None] * y_k
-            alphas.append(alpha)
-
-        r = H_diag[:, None] * q
-        for y_k, s_k, ro_k, alpha in zip(old_dirs, old_stps, ro, reversed(alphas)):
-            beta = _row_dot(y_k, r) * ro_k
-            r = r + (alpha - beta)[:, None] * s_k
-        return -r
-
-    def _append_history(
-        self,
-        state: dict[str, Any],
-        s_k: Tensor,
-        y_k: Tensor,
-        active: Tensor,
-        history_size: int,
-        tolerance_change: float,
-    ) -> None:
-        old_dirs: list[Tensor] = state["old_dirs"]
-        old_stps: list[Tensor] = state["old_stps"]
-        ro: list[Tensor] = state["ro"]
-        H_diag: Tensor = state["H_diag"]
-
-        ys = _row_dot(y_k, s_k)
-        yy = _row_dot(y_k, y_k)
-        step_norm = s_k.abs().amax(dim=1)
-        valid = (
-            active
-            & torch.isfinite(ys)
-            & torch.isfinite(yy)
-            & (ys > 1e-10)
-            & (yy > 1e-30)
-            & (step_norm > tolerance_change)
-        )
-        if not bool(valid.any()):
-            return
-
-        if len(old_dirs) == history_size:
-            old_dirs.pop(0)
-            old_stps.pop(0)
-            ro.pop(0)
-
-        old_dirs.append(torch.where(valid[:, None], y_k, torch.zeros_like(y_k)))
-        old_stps.append(torch.where(valid[:, None], s_k, torch.zeros_like(s_k)))
-        ro.append(torch.where(valid, 1.0 / ys.clamp_min(1e-30), torch.zeros_like(ys)))
-        state["H_diag"] = torch.where(valid, ys / yy.clamp_min(1e-30), H_diag)
 
     @torch.no_grad()
     def step(  # type: ignore[override]

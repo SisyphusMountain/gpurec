@@ -8,6 +8,63 @@ import torch
 from torch.optim.lbfgs import _strong_wolfe as torch_strong_wolfe
 
 from gpurec.optimization import BatchedLBFGS
+from gpurec.optimization._batched_lbfgs_history import BatchedLBFGSHistoryMixin
+
+
+def test_batched_lbfgs_private_history_methods_remain_on_optimizer_instances():
+    theta = torch.nn.Parameter(torch.zeros(2, 2, dtype=torch.float64))
+    optimizer = BatchedLBFGS([theta])
+
+    assert BatchedLBFGSHistoryMixin in BatchedLBFGS.__mro__
+    for name in ("_direction", "_append_history"):
+        assert callable(getattr(optimizer, name, None)), name
+
+    flat_grad = torch.tensor([[1.0, -2.0], [3.0, -4.0]], dtype=torch.float64)
+    direction = optimizer._direction(
+        flat_grad,
+        old_dirs=[],
+        old_stps=[],
+        ro=[],
+        H_diag=torch.ones(2, dtype=torch.float64),
+    )
+    torch.testing.assert_close(direction, -flat_grad)
+
+    state = {
+        "old_dirs": [],
+        "old_stps": [],
+        "ro": [],
+        "H_diag": torch.ones(2, dtype=torch.float64),
+    }
+    s_k = torch.tensor([[1.0, 0.0], [0.0, 0.0]], dtype=torch.float64)
+    y_k = torch.tensor([[2.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+    optimizer._append_history(
+        state,
+        s_k,
+        y_k,
+        active=torch.tensor([True, True]),
+        history_size=2,
+        tolerance_change=1e-12,
+    )
+
+    assert len(state["old_dirs"]) == 1
+    assert len(state["old_stps"]) == 1
+    assert len(state["ro"]) == 1
+    torch.testing.assert_close(
+        state["old_dirs"][0],
+        torch.tensor([[2.0, 0.0], [0.0, 0.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["old_stps"][0],
+        torch.tensor([[1.0, 0.0], [0.0, 0.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["ro"][0],
+        torch.tensor([0.5, 0.0], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["H_diag"],
+        torch.tensor([0.5, 1.0], dtype=torch.float64),
+    )
 
 
 def test_batched_lbfgs_converges_scaled_independent_quadratics():
