@@ -114,6 +114,13 @@ from ._loop_policies import (
     _LoopPolicyState,
     apply_post_step_loop_policies,
 )
+from ._hessian_sgd_policy import (
+    HESSIAN_SGD_LINE_SEARCH_MAX_STEPS as _HESSIAN_SGD_LINE_SEARCH_MAX_STEPS,
+    HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES as _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES,
+    HESSIAN_SGD_NO_LINE_REFRESH_STEPS as _HESSIAN_SGD_NO_LINE_REFRESH_STEPS,
+    hessian_sgd_active_clade_count,
+    hessian_sgd_line_search_decision,
+)
 from ._runtime_helpers import (
     _clear_cached_solver_runtime_state,
     _clear_cuda_allocator_cache_if_needed,
@@ -124,14 +131,6 @@ from ._runtime_helpers import (
 
 _ACTIVE_BATCH_LBFGS_STALL_PATIENCE = 3
 _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
-_HESSIAN_SGD_LINE_SEARCH_MAX_STEPS = 8
-_HESSIAN_SGD_LINE_SEARCH_ACCEPT_FRACTION = 0.6
-_HESSIAN_SGD_LINE_SEARCH_LOW_ACCEPT_PATIENCE = 2
-_HESSIAN_SGD_NO_LINE_REFRESH_STEPS = 64
-_HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES = 400_000
-_HESSIAN_SGD_SKIP_FULL_AFTER_WARMUP_MIN_CLADES = (
-    _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES
-)
 _BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
     {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
 )
@@ -1071,43 +1070,32 @@ class OptimizationRunner:
                     and not run_state.hessian_sgd_line_search_active
                     and not full_stage_plateau
                 ):
-                    accepted_fraction = metrics.get(
-                        "optimizer/fd_newton_accepted_fraction"
+                    line_search_decision = hessian_sgd_line_search_decision(
+                        batchwise_hessian_sgd=batchwise_hessian_sgd,
+                        phase=phase,
+                        active_objective_scope=active_objective_scope,
+                        line_search_active=run_state.hessian_sgd_line_search_active,
+                        full_stage_plateau=full_stage_plateau,
+                        accepted_fraction=metrics.get(
+                            "optimizer/fd_newton_accepted_fraction"
+                        ),
+                        loss_rejected_rows=metrics.get(
+                            "optimizer/fd_newton_loss_rejected_rows",
+                            0.0,
+                        ),
+                        current_low_accept_steps=(
+                            run_state.hessian_sgd_low_accept_steps
+                        ),
+                        solver_stage=batch_state.solver_stage,
+                        stable_loss_steps=objective_state.stable_loss_steps,
+                        active_clade_count=hessian_sgd_active_clade_count(
+                            model.current_batch_metadata
+                        ),
                     )
-                    loss_rejected_rows = metrics.get(
-                        "optimizer/fd_newton_loss_rejected_rows",
-                        0.0,
+                    run_state.hessian_sgd_low_accept_steps = (
+                        line_search_decision.low_accept_steps
                     )
-                    low_acceptance = (
-                        accepted_fraction is not None
-                        and float(accepted_fraction)
-                        < _HESSIAN_SGD_LINE_SEARCH_ACCEPT_FRACTION
-                        and float(loss_rejected_rows) > 0.0
-                    )
-                    if low_acceptance:
-                        run_state.hessian_sgd_low_accept_steps += 1
-                    else:
-                        run_state.hessian_sgd_low_accept_steps = 0
-                    hessian_sgd_activate_line_search = (
-                        run_state.hessian_sgd_low_accept_steps
-                        >= _HESSIAN_SGD_LINE_SEARCH_LOW_ACCEPT_PATIENCE
-                    )
-                    active_clade_count = int(
-                        getattr(
-                            model.current_batch_metadata,
-                            "clade_count",
-                            0,
-                        )
-                        or 0
-                    )
-                    if (
-                        hessian_sgd_activate_line_search
-                        and batch_state.solver_stage == "full"
-                        and objective_state.stable_loss_steps > 0
-                        and active_clade_count
-                        >= _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES
-                    ):
-                        hessian_sgd_activate_line_search = False
+                    hessian_sgd_activate_line_search = line_search_decision.activate
 
                 can_lbfgsb_retry = (
                     phase == "lbfgsb"

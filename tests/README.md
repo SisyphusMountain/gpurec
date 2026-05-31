@@ -45,6 +45,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_extract_parameters.py \
   tests/unit/test_family_layout.py \
   tests/unit/test_gradient_accumulator.py \
+  tests/unit/test_hessian_sgd_policy.py \
   tests/unit/test_hogenom_multifidelity_adagrad.py \
   tests/unit/test_lbfgsb.py \
   tests/unit/test_lbfgsb_schilling_conformance.py \

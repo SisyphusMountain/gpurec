@@ -3230,6 +3230,9 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/_transition_policy.py": (
             "Internal pure workflow transition classification policy"
         ),
+        "gpurec/workflow/_hessian_sgd_policy.py": (
+            "Internal pure Hessian-SGD workflow threshold policy"
+        ),
         "gpurec/workflow/_route_defaults.py": (
             "Internal production route/default policy helper"
         ),
@@ -3298,6 +3301,11 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/_transition_policy.py": (
             "Private workflow transition classification policy",
             "execution side effects stay in",
+            "not a public workflow API surface",
+        ),
+        "gpurec/workflow/_hessian_sgd_policy.py": (
+            "Private Hessian-SGD workflow threshold policy helpers",
+            "pure decisions shared by optimization orchestration helpers",
             "not a public workflow API surface",
         ),
         "gpurec/workflow/_route_defaults.py": (
@@ -3390,10 +3398,31 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
             for alias in node.names:
                 assert alias.name not in forbidden_config_io_modules
 
+    hessian_sgd_policy = ast.parse(
+        (root / "gpurec" / "workflow" / "_hessian_sgd_policy.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    forbidden_hessian_sgd_policy_modules = {
+        "config",
+        "gpurec.workflow.config",
+        "optimize",
+        "gpurec.workflow.optimize",
+        "gpurec.api",
+        "torch",
+    }
+    for node in ast.walk(hessian_sgd_policy):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert node.module not in forbidden_hessian_sgd_policy_modules
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name not in forbidden_hessian_sgd_policy_modules
+
     import gpurec.workflow as workflow_package
 
     assert "_transition_types" not in workflow_package.__all__
     assert "_transition_policy" not in workflow_package.__all__
+    assert "_hessian_sgd_policy" not in workflow_package.__all__
     assert "_route_defaults" not in workflow_package.__all__
     assert "_schedules" not in workflow_package.__all__
     assert "_config_io" not in workflow_package.__all__

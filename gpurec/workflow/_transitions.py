@@ -11,6 +11,11 @@ from gpurec.api.model import GeneReconModel
 from ._adaptive_rebatch import _AdaptiveRebatchState
 from ._batch_final_cache import BatchFinalCache
 from ._fd_newton import _FDNewtonHessianState
+from ._hessian_sgd_policy import (
+    hessian_sgd_active_clade_count,
+    hessian_sgd_should_carry_warmup_hessian,
+    hessian_sgd_should_skip_full_after_warmup,
+)
 from ._runtime_helpers import _is_finite_tensor
 from ._solver_stage import SolverStageController
 from ._step_plan import _StepPlanningState
@@ -24,11 +29,6 @@ from ._transition_types import (
     IterationTransitionOps,
 )
 from .config import RunConfig
-
-_HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES = 400_000
-_HESSIAN_SGD_SKIP_FULL_AFTER_WARMUP_MIN_CLADES = (
-    _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES
-)
 
 
 def build_batch_transition_checkpoint_status(
@@ -657,20 +657,13 @@ def execute_iteration_post_step_transition(
         and solver_stage_scope
         and batch_state.solver_stage == "warmup"
     ):
-        active_clade_count = int(
-            getattr(
-                model.current_batch_metadata,
-                "clade_count",
-                0,
-            )
-            or 0
-        )
-        skip_full_after_warmup = (
-            batchwise_hessian_sgd
-            and phase == "hessian-sgd"
-            and not hessian_sgd_line_search_active
-            and active_clade_count
-            >= _HESSIAN_SGD_SKIP_FULL_AFTER_WARMUP_MIN_CLADES
+        skip_full_after_warmup = hessian_sgd_should_skip_full_after_warmup(
+            batchwise_hessian_sgd=batchwise_hessian_sgd,
+            phase=phase,
+            line_search_active=hessian_sgd_line_search_active,
+            active_clade_count=hessian_sgd_active_clade_count(
+                model.current_batch_metadata
+            ),
         )
         if skip_full_after_warmup:
             cache_skipped_full = solver.active_batch_result_is_canonical_full_solver(
@@ -726,21 +719,14 @@ def execute_iteration_post_step_transition(
             warmup_switch = True
             step_status = None
     if warmup_switch:
-        active_clade_count = int(
-            getattr(
-                model.current_batch_metadata,
-                "clade_count",
-                0,
-            )
-            or 0
-        )
-        carry_warmup_hessian = (
-            batchwise_hessian_sgd
-            and phase == "hessian-sgd"
-            and not hessian_sgd_line_search_active
-            and active_clade_count
-            >= _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES
-            and fd_newton_hessian_state is not None
+        carry_warmup_hessian = hessian_sgd_should_carry_warmup_hessian(
+            batchwise_hessian_sgd=batchwise_hessian_sgd,
+            phase=phase,
+            line_search_active=hessian_sgd_line_search_active,
+            active_clade_count=hessian_sgd_active_clade_count(
+                model.current_batch_metadata
+            ),
+            has_hessian_state=fd_newton_hessian_state is not None,
         )
         warmup_hessian_state = fd_newton_hessian_state
         batch_state.reset_for_batch(warmup=False)
