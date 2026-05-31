@@ -52,22 +52,23 @@ from ._runtime_state import (
     _resume_state_from_payload,
 )
 from ._run_state import (
-    BatchRunState,
-    LBFGSBRunState,
-    ObjectiveState,
-    RestartRunState,
-    _OptimizationRunState,
+    BatchRunState,  # noqa: F401
+    LBFGSBRunState,  # noqa: F401
+    ObjectiveState,  # noqa: F401
+    RestartRunState,  # noqa: F401
+    _OptimizationRunState,  # noqa: F401
 )
-from ._run_contexts import _build_workflow_run_contexts
-from ._run_setup import _derive_workflow_run_setup
+from ._run_contexts import _build_workflow_run_contexts  # noqa: F401
+from ._run_setup import _derive_workflow_run_setup  # noqa: F401
+from ._runner_bootstrap import build_workflow_runner_bootstrap
 from ._optimizer_factory import (
     _make_optimizer,
     _refresh_optimizer_runtime_options,
 )
 from ._step_plan import (
     _StepPlanningContext,  # noqa: F401
-    _StepPlanningState,
-    prepare_initial_optimization_plan,
+    _StepPlanningState,  # noqa: F401
+    prepare_initial_optimization_plan,  # noqa: F401
     select_step_optimization_plan,
 )
 from ._solver_stage import SolverStageController
@@ -80,7 +81,7 @@ from ._transitions import (
 )
 from ._transition_types import (
     IterationTransitionInputs,
-    IterationTransitionOps,
+    IterationTransitionOps,  # noqa: F401
 )
 from .config import (
     RunConfig,
@@ -102,11 +103,11 @@ from ._fd_newton import (
     _FDNewtonHessianState,  # noqa: F401
     active_fd_newton_step_for_runner as _run_active_fd_newton_step,
 )
-from ._adaptive_rebatch import _AdaptiveRebatchState
+from ._adaptive_rebatch import _AdaptiveRebatchState  # noqa: F401
 from ._loop_policies import (
     _LoopPolicyContext,  # noqa: F401
     _LoopPolicyInputs,
-    _LoopPolicyState,
+    _LoopPolicyState,  # noqa: F401
     apply_post_step_loop_policies,
 )
 from ._hessian_sgd_policy import (
@@ -410,194 +411,59 @@ class OptimizationRunner:
 
         runtime_seed_context = _runtime_seed_context_from_environment()
         model = self.build_model()
-        run_setup = _derive_workflow_run_setup(
-            config,
-            batchwise_active_optimizer_phases=_BATCHWISE_ACTIVE_OPTIMIZERS,
-        )
-        adagrad_restart_step_limit = run_setup.adagrad_restart_step_limit
-        lbfgsb_loss_schedule = run_setup.lbfgsb_loss_schedule
-        adagrad_restart_dynamic_enabled = run_setup.adagrad_restart_dynamic_enabled
-        batchwise_active_optimizer = run_setup.batchwise_active_optimizer
-        batchwise_hessian_sgd = run_setup.batchwise_hessian_sgd
         started = time.perf_counter()
-        run_contexts = _build_workflow_run_contexts(
-            config=config,
-            run_setup=run_setup,
-            solver=self.solver_stage,
-            evaluation=self.evaluation,
-            batchwise_active_optimizer_phases=_BATCHWISE_ACTIVE_OPTIMIZERS,
-            make_optimizer=self._make_optimizer,
-            active_fd_newton_step=self._active_fd_newton_step,
-        )
-        planning_context = run_contexts.planning_context
-        step_execution_context = run_contexts.step_execution_context
-        solver_warmup_enabled = run_contexts.solver_warmup_enabled
-        global_solver_warmup = run_contexts.global_solver_warmup
-        iteration_artifacts_context = run_contexts.iteration_artifacts_context
-        loop_policy_context = run_contexts.loop_policy_context
-        adaptive_rebatch_enabled = bool(
-            config.adaptive_rebatch
-            and batchwise_active_optimizer
-        )
-        batch_state = BatchRunState(
-            solver_stage=("warmup" if solver_warmup_enabled else "full"),
-        )
-        objective_state = ObjectiveState()
-        lbfgsb_state = LBFGSBRunState()
-        restart_state = RestartRunState(
-            dynamic_enabled=adagrad_restart_dynamic_enabled,
-            phase_index=0,
-            phase_start_step=0,
-            active_phase_index=None,
-        )
-        planning_state = _StepPlanningState(
-            restart_dynamic_phase_index=restart_state.phase_index,
-            restart_dynamic_phase_start_step=restart_state.phase_start_step,
-            current_phase="",
-            active_batch_index=batch_state.active_index,
-            active_optimizer_batch_index=batch_state.optimizer_batch_index,
-            active_adagrad_restart_phase_index=restart_state.active_phase_index,
-            previous_objective=objective_state.previous_objective,
-            stable_loss_steps=objective_state.stable_loss_steps,
-            lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
-            optimizer=None,
-        )
-        run_state = _OptimizationRunState(
-            objective_state=objective_state,
-            batch_state=batch_state,
-            restart_state=restart_state,
-            lbfgsb_state=lbfgsb_state,
-            planning_state=planning_state,
-            current_phase="",
-            batch_final_cache=None,
-        )
-        adaptive_state = _AdaptiveRebatchState.create(
-            enabled=adaptive_rebatch_enabled,
-            model=model,
-            min_active_families=_ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES,
-        )
-        best_checkpoint = config.out_dir / "checkpoints" / "best.pt"
-        latest_checkpoint = config.out_dir / "checkpoints" / "latest.pt"
-        loop_policy_state = _LoopPolicyState(
-            objective_state=objective_state,
-            batch_state=batch_state,
-            lbfgsb_state=lbfgsb_state,
-        )
-
-        def _print_progress_row(
-            *,
-            step: int,
-            phase: str,
-            row: dict[str, Any],
-            objective: float,
-            delta: float | None,
-            row_best_nll: float | None,
-        ) -> None:
-            print(
-                f"step={step} phase={phase} "
-                f"solver={row.get('optimizer/solver_stage', 'full')} "
-                f"nll_bits={objective:.6f} "
-                f"grad_inf={row.get('grad/inf', float('nan')):.6g} "
-                f"delta={float('nan') if delta is None else delta:.6g} "
-                f"best={float('nan') if row_best_nll is None else row_best_nll:.6f} "
-                f"step_s={row['step_s']:.3f}",
-                flush=True,
-            )
-
         try:
-            if config.resume_from is not None:
-                resume_application = _apply_resume_checkpoint_state(
-                    config=config,
-                    model=model,
-                    run_state=run_state,
-                    planning_context=planning_context,
-                    lbfgsb_loss_schedule=lbfgsb_loss_schedule,
-                    solver_warmup_enabled=solver_warmup_enabled,
-                    batchwise_active_optimizer=batchwise_active_optimizer,
-                    adagrad_restart_dynamic_enabled=adagrad_restart_dynamic_enabled,
-                    adaptive_rebatch_enabled=adaptive_rebatch_enabled,
-                    adaptive_state=adaptive_state,
-                    load_checkpoint=(
-                        lambda path: load_checkpoint(path, map_location="cpu")
-                    ),
-                    validate_checkpoint_model_compatibility=(
-                        validate_checkpoint_model_compatibility
-                    ),
-                    restore_model_theta=restore_model_theta,
-                )
-                planning_context = resume_application.planning_context
-                planning_state = resume_application.planning_state
-
-            if batchwise_active_optimizer:
-                if batch_state.active_index >= len(model.batch_metadata):
-                    raise RuntimeError(
-                        f"checkpoint active batch {batch_state.active_index} exceeds "
-                        f"{len(model.batch_metadata)} model batches"
-                    )
-                run_state.batch_final_cache = BatchFinalCache.create(model)
-                if model.current_batch_index != batch_state.active_index:
-                    _clear_cached_solver_runtime_state(model)
-                model.select_batch(batch_state.active_index)
-                self.solver_stage.configure_active_stage(
-                    model,
-                    batch_state.solver_stage,
-                )
-            elif global_solver_warmup:
-                self.solver_stage.configure_active_stage(model, batch_state.solver_stage)
-            solver_stage_scope = batchwise_active_optimizer or global_solver_warmup
-
-            optimization_stop_step = run_setup.optimization_stop_step(config)
-
-            initial_plan = prepare_initial_optimization_plan(
-                planning_context,
-                planning_state,
-                model,
-                start_step=run_state.start_step,
-                optimization_stop_step=optimization_stop_step,
-                resume_payload=run_state.resume_payload,
+            bootstrap = build_workflow_runner_bootstrap(
+                config,
+                model=model,
+                solver=self.solver_stage,
+                evaluation=self.evaluation,
+                batchwise_active_optimizer_phases=_BATCHWISE_ACTIVE_OPTIMIZERS,
+                adaptive_rebatch_min_active_families=(
+                    _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES
+                ),
+                make_optimizer=self._make_optimizer,
+                active_fd_newton_step=self._active_fd_newton_step,
                 restore_optimizer_state=self._restore_optimizer_state,
-            )
-            run_state.apply_initial_plan(initial_plan)
-            current_phase = run_state.current_phase
-            planning_state = run_state.planning_state
-            transition_ops = IterationTransitionOps(
-                active_batch_indices=self.evaluation._active_batch_indices,
-                clear_cached_static_states_if_needed=_drop_cached_static_states_if_needed,
-                clear_cached_solver_runtime_state=_clear_cached_solver_runtime_state,
+                save_status=self._save_status,
                 load_checkpoint=lambda path: load_checkpoint(path, map_location="cpu"),
                 validate_checkpoint_model_compatibility=(
                     validate_checkpoint_model_compatibility
                 ),
                 restore_model_theta=restore_model_theta,
-                make_optimizer=lambda config, model_arg, phase: self._make_optimizer(
-                    model_arg,
-                    phase,
-                ),
-                restore_optimizer_state=self._restore_optimizer_state,
+                apply_resume_checkpoint_state=_apply_resume_checkpoint_state,
                 resume_state_from_payload=_resume_state_from_payload,
-                save_status=self._save_status,
-                adaptive_checkpoint_status=adaptive_state.checkpoint_status,
-                print_progress_row=_print_progress_row,
-                fd_adam_warmup_steps=config.fd_adam_warmup_steps,
+                create_batch_final_cache=BatchFinalCache.create,
+                clear_cached_static_states_if_needed=(
+                    _drop_cached_static_states_if_needed
+                ),
+                clear_cached_solver_runtime_state=_clear_cached_solver_runtime_state,
             )
-            transition_context = run_state.make_transition_context(
-                config=config,
-                model=model,
-                evaluation=self.evaluation,
-                solver=self.solver_stage,
-                adaptive_state=adaptive_state,
-                solver_stage_scope=solver_stage_scope,
-                batchwise_hessian_sgd=batchwise_hessian_sgd,
-                global_solver_warmup=global_solver_warmup,
-                lbfgsb_loss_schedule=lbfgsb_loss_schedule,
-                planning_state=planning_state,
-                best_checkpoint=best_checkpoint,
-                latest_checkpoint=latest_checkpoint,
-                checkpoint_every=config.checkpoint_every,
-                log_every=config.log_every,
-                ops=transition_ops,
-                current_phase=current_phase,
-            )
+            run_setup = bootstrap.run_setup
+            adagrad_restart_step_limit = run_setup.adagrad_restart_step_limit
+            lbfgsb_loss_schedule = run_setup.lbfgsb_loss_schedule
+            batchwise_active_optimizer = bootstrap.batchwise_active_optimizer
+            batchwise_hessian_sgd = bootstrap.batchwise_hessian_sgd
+            adaptive_rebatch_enabled = bootstrap.adaptive_rebatch_enabled
+            planning_context = bootstrap.planning_context
+            step_execution_context = bootstrap.step_execution_context
+            iteration_artifacts_context = bootstrap.iteration_artifacts_context
+            loop_policy_context = bootstrap.loop_policy_context
+            loop_policy_state = bootstrap.loop_policy_state
+            run_state = bootstrap.run_state
+            objective_state = run_state.objective_state
+            batch_state = run_state.batch_state
+            restart_state = run_state.restart_state
+            lbfgsb_state = run_state.lbfgsb_state
+            adaptive_state = bootstrap.adaptive_state
+            best_checkpoint = bootstrap.best_checkpoint
+            latest_checkpoint = bootstrap.latest_checkpoint
+            optimization_stop_step = bootstrap.optimization_stop_step
+            transition_context = bootstrap.transition_context
+            current_phase = bootstrap.current_phase
+            solver_stage_scope = bootstrap.solver_stage_scope
+            planning_state = run_state.planning_state
+            print_progress_row = bootstrap.print_progress_row
 
             for step in range(run_state.start_step, optimization_stop_step):
                 step_plan = select_step_optimization_plan(
@@ -958,7 +824,7 @@ class OptimizationRunner:
                     )
 
                 if step % config.log_every == 0:
-                    _print_progress_row(
+                    print_progress_row(
                         step=step,
                         phase=phase,
                         row=row,
