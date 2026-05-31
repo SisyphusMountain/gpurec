@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import csv
 import importlib
 import json
@@ -106,6 +107,12 @@ from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_c
 
 optimize_workflow = importlib.import_module("gpurec.workflow.optimize")
 SUBPROCESS_TIMEOUT = 30
+FD_NEWTON_HESSIAN_REEXPORTS = (
+    "_FDNewtonHessianState",
+    "_fd_newton_state_matches",
+    "_bfgs_update_fd_newton_hessian",
+    "_refresh_fd_newton_hessian_state",
+)
 
 
 def _genewise_production_route_dict(**overrides: object) -> dict[str, object]:
@@ -10899,6 +10906,91 @@ def test_adam_fd_newton_active_batch_step_uses_finite_difference_hessian(
     assert loss_vec[0] < 1.000001
     torch.testing.assert_close(model.theta.detach()[0], torch.zeros(3), atol=1e-3, rtol=0)
     torch.testing.assert_close(model.theta.detach()[1], before[1])
+
+
+def test_fd_newton_hessian_helpers_are_identity_reexports():
+    fd_newton = importlib.import_module("gpurec.workflow._fd_newton")
+    fd_newton_hessian = importlib.import_module("gpurec.workflow._fd_newton_hessian")
+
+    for name in FD_NEWTON_HESSIAN_REEXPORTS:
+        assert getattr(fd_newton, name) is getattr(fd_newton_hessian, name)
+
+
+def test_fd_newton_hessian_module_does_not_back_import_fd_newton():
+    fd_newton_hessian = importlib.import_module("gpurec.workflow._fd_newton_hessian")
+    source_path = Path(fd_newton_hessian.__file__)
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    forbidden_imports: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            forbidden_imports.extend(
+                alias.name
+                for alias in node.names
+                if alias.name == "gpurec.workflow._fd_newton"
+            )
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "gpurec.workflow._fd_newton":
+                forbidden_imports.append(module)
+            elif node.level > 0 and module == "_fd_newton":
+                forbidden_imports.append("._fd_newton")
+            elif node.level > 0 and module == "":
+                forbidden_imports.extend(
+                    alias.name for alias in node.names if alias.name == "_fd_newton"
+                )
+
+    assert forbidden_imports == []
+
+
+def test_bfgs_fd_newton_hessian_update_keeps_skipped_rows_unchanged():
+    fd_newton_hessian = importlib.import_module("gpurec.workflow._fd_newton_hessian")
+    old_hessian = torch.stack(
+        (
+            torch.eye(2, dtype=torch.float64),
+            torch.eye(2, dtype=torch.float64) * 3.0,
+        )
+    )
+    state = fd_newton_hessian._FDNewtonHessianState(
+        batch_index=0,
+        solver_stage="full",
+        family_indices=(3, 7),
+        hessian=old_hessian,
+        active_theta=torch.tensor(
+            [[0.0, 0.0], [1.0, 1.0]],
+            dtype=torch.float64,
+        ),
+        active_grad=torch.tensor(
+            [[0.0, 0.0], [2.0, 2.0]],
+            dtype=torch.float64,
+        ),
+        active_loss=torch.tensor([1.0, 2.0], dtype=torch.float64),
+        updates_since_refresh=4,
+    )
+
+    new_state, updated = fd_newton_hessian._bfgs_update_fd_newton_hessian(
+        state=state,
+        active_theta=torch.tensor(
+            [[1.0, 0.0], [2.0, 1.0]],
+            dtype=torch.float64,
+        ),
+        active_grad=torch.tensor(
+            [[2.0, 0.0], [3.0, 2.0]],
+            dtype=torch.float64,
+        ),
+        active_loss=torch.tensor([0.5, 1.5], dtype=torch.float64),
+        accepted=torch.tensor([True, False]),
+        free_before=torch.tensor([[True, True], [True, True]]),
+        free_after=torch.tensor([[True, True], [True, True]]),
+    )
+
+    assert updated.tolist() == [True, False]
+    torch.testing.assert_close(
+        new_state.hessian[0],
+        torch.tensor([[2.0, 0.0], [0.0, 1.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(new_state.hessian[1], old_hessian[1])
+    assert new_state.updates_since_refresh == 5
 
 
 def test_active_fd_newton_step_commits_staged_pi_adjoint_cache(tmp_path: Path):
