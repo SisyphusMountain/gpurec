@@ -7833,6 +7833,36 @@ def test_optimization_runner_adagrad_mode_records_public_phase(tmp_path: Path):
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_progress_print_observes_recorded_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        steps=1,
+        log_every=1,
+    )
+    runner = _WorkflowOptimizerModeRunner(config)
+    printed_history_lengths: list[int] = []
+
+    def fake_print(*args, **_kwargs):
+        if args and str(args[0]).startswith("step=0 phase=adam"):
+            printed_history_lengths.append(len(runner.history))
+
+    monkeypatch.setattr("builtins.print", fake_print)
+
+    result = runner.run()
+
+    assert printed_history_lengths == [1]
+    assert [row["optimizer/phase"] for row in runner.history] == [
+        "adam",
+        "final_eval",
+    ]
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_result_preserves_empty_clade_budget_for_sequential_packing(
     tmp_path: Path,
 ):
