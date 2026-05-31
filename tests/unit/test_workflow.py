@@ -20,11 +20,13 @@ import gpurec.backtracking as backtracking
 import gpurec.core.preprocess_rust as preprocess_rust
 import gpurec.entropy as entropy
 import gpurec.api._model_builders as api_model_builders
+import gpurec.api._model_resident_batches as api_model_resident_batches
 import gpurec.api._resident_runtime as api_resident_runtime
 import gpurec.api.model as api_model
 import gpurec.api.uniform_chunked as uniform_chunked_api
 import gpurec.workflow as workflow
 import gpurec.workflow.sampling as sampling_workflow
+from gpurec.api._model_resident_batches import _GeneReconModelResidentBatchMixin
 from gpurec.backtracking import (
     EVENT_KEYS,
     _activate_family_batch,
@@ -872,6 +874,262 @@ def test_close_tolerates_partially_initialized_model():
 
     assert model._prefetch_closed is True
     assert model._prefetch_executor is None
+
+
+def test_gene_recon_resident_batch_members_remain_inherited():
+    method_names = (
+        "_build_batch_static",
+        "_shutdown_prefetch_executor_for_replan",
+        "replan_resident_batches",
+        "_ensure_batch_static",
+        "_submit_prefetch",
+        "_schedule_prefetch",
+        "_legacy_prefetch_guard",
+        "_submit_legacy_prefetch",
+        "_schedule_legacy_prefetch",
+        "_active_static",
+        "_theta_for_batch_index",
+        "_active_theta",
+        "_stream_full_batches",
+        "drop_cached_static_states",
+        "materialize_batches",
+        "active_theta",
+        "select_batch",
+        "activate_family",
+        "next",
+        "clear",
+        "close",
+        "_close_legacy_prefetch_executor",
+        "__del__",
+    )
+    property_names = (
+        "current_batch_metadata",
+        "current_batch_index",
+        "cached_static_states",
+    )
+
+    assert _GeneReconModelResidentBatchMixin in GeneReconModel.__mro__
+    for name in method_names:
+        assert name not in GeneReconModel.__dict__
+        assert getattr(GeneReconModel, name) is getattr(
+            _GeneReconModelResidentBatchMixin,
+            name,
+        )
+    for name in property_names:
+        assert name not in GeneReconModel.__dict__
+        descriptor = _GeneReconModelResidentBatchMixin.__dict__[name]
+        assert isinstance(descriptor, property)
+        assert getattr(GeneReconModel, name) is descriptor
+
+
+def test_gene_recon_current_batch_accessors_remain_inherited():
+    model = GeneReconModel.__new__(GeneReconModel)
+    metadata = SimpleNamespace(batch_index=0)
+    model.batch_metadata = [metadata]
+    model._current_batch_index = 0
+
+    assert model.current_batch_index == 0
+    assert model.current_batch_metadata is metadata
+
+
+@pytest.mark.parametrize(
+    (
+        "method_name",
+        "runtime_name",
+        "call_args",
+        "call_kwargs",
+        "expected_runtime_args",
+        "expected_runtime_kwargs",
+    ),
+    [
+        ("_build_batch_static", "_build_batch_static", (3,), {}, (3,), {}),
+        (
+            "_shutdown_prefetch_executor_for_replan",
+            "_shutdown_prefetch_executor_for_replan",
+            (),
+            {},
+            (),
+            {},
+        ),
+        (
+            "replan_resident_batches",
+            "replan_resident_batches",
+            ([1, 2],),
+            {},
+            ([1, 2],),
+            {},
+        ),
+        ("_ensure_batch_static", "_ensure_batch_static", (4,), {}, (4,), {}),
+        ("_submit_prefetch", "_submit_prefetch", (5,), {}, (5,), {}),
+        ("_schedule_prefetch", "_schedule_prefetch", (), {}, (), {}),
+        ("_legacy_prefetch_guard", "_legacy_prefetch_guard", (), {}, (), {}),
+        (
+            "_submit_legacy_prefetch",
+            "_submit_legacy_prefetch",
+            (6,),
+            {},
+            (6,),
+            {},
+        ),
+        (
+            "_schedule_legacy_prefetch",
+            "_schedule_legacy_prefetch",
+            (),
+            {},
+            (),
+            {},
+        ),
+        ("_active_static", "_active_static", (), {}, (), {}),
+        (
+            "_theta_for_batch_index",
+            "_theta_for_batch_index",
+            (7, "theta"),
+            {},
+            (7, "theta"),
+            {},
+        ),
+        ("_active_theta", "_active_theta", (), {}, (None,), {}),
+        (
+            "_active_theta",
+            "_active_theta",
+            ("theta",),
+            {},
+            ("theta",),
+            {},
+        ),
+        (
+            "drop_cached_static_states",
+            "drop_cached_static_states",
+            (),
+            {},
+            (),
+            {},
+        ),
+        ("materialize_batches", "materialize_batches", (), {}, (), {}),
+        ("select_batch", "select_batch", (8,), {}, (8,), {}),
+        ("activate_family", "activate_family", (9,), {}, (9,), {}),
+        ("next", "next_batch", (), {}, (), {}),
+        ("clear", "clear", (), {}, (), {}),
+        ("close", "close", (), {}, (), {}),
+        (
+            "_close_legacy_prefetch_executor",
+            "_close_legacy_prefetch_executor",
+            (),
+            {},
+            (),
+            {},
+        ),
+    ],
+)
+def test_gene_recon_resident_batch_runtime_wrappers_delegate(
+    monkeypatch,
+    method_name,
+    runtime_name,
+    call_args,
+    call_kwargs,
+    expected_runtime_args,
+    expected_runtime_kwargs,
+):
+    model = GeneReconModel.__new__(GeneReconModel)
+    sentinel = object()
+    calls = []
+
+    def fake_runtime(*args, **kwargs):
+        calls.append((args, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(
+        api_model_resident_batches._resident_runtime,
+        runtime_name,
+        fake_runtime,
+    )
+
+    result = getattr(model, method_name)(*call_args, **call_kwargs)
+    if method_name in {
+        "_shutdown_prefetch_executor_for_replan",
+        "_submit_prefetch",
+        "_schedule_prefetch",
+        "_submit_legacy_prefetch",
+        "_schedule_legacy_prefetch",
+        "drop_cached_static_states",
+        "clear",
+        "close",
+        "_close_legacy_prefetch_executor",
+    }:
+        assert result is None
+    else:
+        assert result is sentinel
+    assert calls == [((model, *expected_runtime_args), expected_runtime_kwargs)]
+
+
+def test_gene_recon_cached_static_states_property_delegates(monkeypatch):
+    model = GeneReconModel.__new__(GeneReconModel)
+    sentinel = object()
+    calls = []
+
+    def fake_cached_static_states(*args, **kwargs):
+        calls.append((args, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(
+        api_model_resident_batches._resident_runtime,
+        "cached_static_states",
+        fake_cached_static_states,
+    )
+
+    assert model.cached_static_states is sentinel
+    assert calls == [((model,), {})]
+
+
+def test_gene_recon_stream_full_batches_wrapper_delegates(monkeypatch):
+    model = GeneReconModel.__new__(GeneReconModel)
+    sentinel = object()
+    calls = []
+
+    def fake_stream_full_batches(*args, **kwargs):
+        calls.append((args, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(
+        api_model_resident_batches,
+        "_stream_full_batches_impl",
+        fake_stream_full_batches,
+    )
+
+    assert model._stream_full_batches("theta", need_grad=True) is sentinel
+    assert calls == [((model, "theta"), {"need_grad": True})]
+
+
+def test_gene_recon_active_theta_public_wrapper_uses_private_selector():
+    model = GeneReconModel.__new__(GeneReconModel)
+    sentinel = object()
+    calls = []
+
+    def fake_active_theta(theta=None):
+        calls.append(theta)
+        return sentinel
+
+    model._active_theta = fake_active_theta
+
+    assert model.active_theta() is sentinel
+    assert model.active_theta("theta") is sentinel
+    assert calls == [None, "theta"]
+
+
+def test_gene_recon_destructor_closes_and_suppresses_errors():
+    model = GeneReconModel.__new__(GeneReconModel)
+    calls = []
+
+    model.close = lambda: calls.append("close")
+    GeneReconModel.__del__(model)
+
+    def raise_on_close():
+        raise RuntimeError("close failed")
+
+    model.close = raise_on_close
+    GeneReconModel.__del__(model)
+
+    assert calls == ["close"]
 
 
 def test_clear_batched_resident_does_not_materialize_missing_active_batch():

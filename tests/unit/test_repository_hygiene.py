@@ -383,6 +383,11 @@ def test_internal_api_helper_modules_document_support_boundary():
             encoding="utf-8"
         )
     )
+    resident_batch_module = ast.parse(
+        (
+            root / "gpurec" / "api" / "_model_resident_batches.py"
+        ).read_text(encoding="utf-8")
+    )
     model_module = ast.parse(
         (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
     )
@@ -400,6 +405,9 @@ def test_internal_api_helper_modules_document_support_boundary():
     )
     model_controls_doc = " ".join(
         (ast.get_docstring(model_controls_module) or "").split()
+    )
+    resident_batch_doc = " ".join(
+        (ast.get_docstring(resident_batch_module) or "").split()
     )
     family_layout_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
@@ -421,6 +429,12 @@ def test_internal_api_helper_modules_document_support_boundary():
         for node in model_controls_module.body
         if isinstance(node, ast.ClassDef)
         and node.name == "_GeneReconModelControlsMixin"
+    )
+    resident_batch_mixin = next(
+        node
+        for node in resident_batch_module.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "_GeneReconModelResidentBatchMixin"
     )
 
     for token in (
@@ -467,6 +481,13 @@ def test_internal_api_helper_modules_document_support_boundary():
         "does not own construction, resident batch lifecycle, likelihood, or autograd",
     ):
         assert token in model_controls_doc
+    for token in (
+        "Resident batch lifecycle wrappers",
+        "internal support for ``gpurec.api`` model methods",
+        "not a public import surface",
+        "construction, likelihood, and autograd stay in ``model``",
+    ):
+        assert token in resident_batch_doc
 
     extracted_methods = {
         "_apply_pi_adjoint_warmstart_config",
@@ -475,14 +496,60 @@ def test_internal_api_helper_modules_document_support_boundary():
         "solver_stat_records",
         "family_input",
     }
-    assert "_GeneReconModelControlsMixin" in {
+    resident_methods = {
+        "_build_batch_static",
+        "_shutdown_prefetch_executor_for_replan",
+        "replan_resident_batches",
+        "_ensure_batch_static",
+        "_submit_prefetch",
+        "_schedule_prefetch",
+        "_legacy_prefetch_guard",
+        "_submit_legacy_prefetch",
+        "_schedule_legacy_prefetch",
+        "_active_static",
+        "_theta_for_batch_index",
+        "_active_theta",
+        "_stream_full_batches",
+        "current_batch_metadata",
+        "current_batch_index",
+        "cached_static_states",
+        "drop_cached_static_states",
+        "materialize_batches",
+        "active_theta",
+        "select_batch",
+        "activate_family",
+        "next",
+        "clear",
+        "close",
+        "_close_legacy_prefetch_executor",
+        "__del__",
+    }
+    resident_properties = {
+        "current_batch_metadata",
+        "current_batch_index",
+        "cached_static_states",
+    }
+    resident_method_nodes = {
+        node.name: node
+        for node in resident_batch_mixin.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    model_base_names = {
         base.id for base in model_class.bases if isinstance(base, ast.Name)
     }
+    assert "_GeneReconModelControlsMixin" in model_base_names
+    assert "_GeneReconModelResidentBatchMixin" in model_base_names
     assert extracted_methods <= {
         node.name
         for node in model_control_mixin.body
         if isinstance(node, ast.FunctionDef)
     }
+    assert resident_methods <= set(resident_method_nodes)
+    for name in resident_properties:
+        assert any(
+            isinstance(decorator, ast.Name) and decorator.id == "property"
+            for decorator in resident_method_nodes[name].decorator_list
+        )
     assert extracted_methods.isdisjoint(
         {
             node.name
@@ -490,8 +557,15 @@ def test_internal_api_helper_modules_document_support_boundary():
             if isinstance(node, ast.FunctionDef)
         }
     )
+    assert resident_methods.isdisjoint(
+        {
+            node.name
+            for node in model_class.body
+            if isinstance(node, ast.FunctionDef)
+        }
+    )
 
-    for module in (resident_runtime_module, model_controls_module):
+    for module in (resident_runtime_module, model_controls_module, resident_batch_module):
         for node in module.body:
             if isinstance(node, ast.ImportFrom) and node.module:
                 assert not node.module.startswith("gpurec.workflow")
@@ -2942,14 +3016,25 @@ def test_project_readme_and_model_docstrings_document_full_batch_helpers():
     model_module = ast.parse(
         (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
     )
+    resident_batch_module = ast.parse(
+        (
+            root / "gpurec" / "api" / "_model_resident_batches.py"
+        ).read_text(encoding="utf-8")
+    )
     model_class = next(
         node
         for node in model_module.body
         if isinstance(node, ast.ClassDef) and node.name == "GeneReconModel"
     )
+    resident_batch_mixin = next(
+        node
+        for node in resident_batch_module.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "_GeneReconModelResidentBatchMixin"
+    )
     docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
-        for node in model_class.body
+        for node in (*model_class.body, *resident_batch_mixin.body)
         if isinstance(node, ast.FunctionDef)
         and node.name in {"materialize_batches", "full_loss_for_theta"}
     }
@@ -2984,6 +3069,11 @@ def test_public_properties_and_batched_lbfgs_knobs_are_documented():
     model_module = ast.parse(
         (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
     )
+    resident_batch_module = ast.parse(
+        (
+            root / "gpurec" / "api" / "_model_resident_batches.py"
+        ).read_text(encoding="utf-8")
+    )
     uniform_module = ast.parse(
         (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
             encoding="utf-8"
@@ -3008,6 +3098,9 @@ def test_public_properties_and_batched_lbfgs_knobs_are_documented():
         }
 
     model_docs = class_docstrings(model_module, "GeneReconModel")
+    model_docs.update(
+        class_docstrings(resident_batch_module, "_GeneReconModelResidentBatchMixin")
+    )
     uniform_docs = class_docstrings(uniform_module, "UniformChunkedReconModel")
     lbfgs_class = next(
         node

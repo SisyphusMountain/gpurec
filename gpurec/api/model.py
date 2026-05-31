@@ -50,14 +50,14 @@ from ._batch_specs import (
 )
 from ._model_config import SolverSettings
 from ._model_controls import _GeneReconModelControlsMixin
+from ._model_resident_batches import _GeneReconModelResidentBatchMixin
 from ._model_builders import (
     build_from_alerax_families_inputs,
     build_from_trees_inputs,
 )
-from . import _resident_runtime
 from ._model_types import (
-    ActiveFamilyBatch,
-    BatchMetadata,
+    ActiveFamilyBatch as ActiveFamilyBatch,
+    BatchMetadata as BatchMetadata,
     FamilyInput as FamilyInput,
     ReconciliationState,
     _FamilyScheduleStats,
@@ -69,7 +69,6 @@ from ._static_builder import (
     _build_static_state as _build_static_state_impl,
     _metadata_for_full_static as _metadata_for_full_static_impl,
 )
-from ._streaming import stream_full_batches as _stream_full_batches_impl
 from ._theta_init import (
     _default_theta_init as _default_theta_init_impl,
     _mode_to_flags as _mode_to_flags_impl,
@@ -145,7 +144,11 @@ class _GeneReconFullLossFunction(torch.autograd.Function):
         return grad_theta * grad_output.to(device=grad_theta.device, dtype=grad_theta.dtype), None
 
 
-class GeneReconModel(_GeneReconModelControlsMixin, torch.nn.Module):
+class GeneReconModel(
+    _GeneReconModelControlsMixin,
+    _GeneReconModelResidentBatchMixin,
+    torch.nn.Module,
+):
     """A ``nn.Module`` view over a :class:`GeneDataset`.
 
     ``forward()`` returns the negative log-likelihood as a differentiable
@@ -573,77 +576,6 @@ class GeneReconModel(_GeneReconModelControlsMixin, torch.nn.Module):
             **inputs.solver_kwargs,
         )
 
-    # ──────────────────────────────────────────────────────────────────
-    # Resident batch management
-    # ──────────────────────────────────────────────────────────────────
-    def _build_batch_static(self, batch_idx: int) -> ReconStaticState:
-        return _resident_runtime._build_batch_static(self, batch_idx)
-
-    def _shutdown_prefetch_executor_for_replan(self) -> None:
-        _resident_runtime._shutdown_prefetch_executor_for_replan(self)
-
-    def replan_resident_batches(
-        self,
-        family_indices: Sequence[int],
-    ) -> list[BatchMetadata]:
-        """Rebuild resident batch specs for selected genewise family rows.
-
-        This is an internal workflow hook for adaptive genewise optimization.
-        It reuses preprocessed family payloads and cached per-family scheduler
-        stats, then asks the Rust planner/scheduler to regroup and regenerate
-        waves for the selected original family indices.
-        """
-        return _resident_runtime.replan_resident_batches(self, family_indices)
-
-    def _ensure_batch_static(self, batch_idx: int) -> ReconStaticState:
-        return _resident_runtime._ensure_batch_static(self, batch_idx)
-
-    def _submit_prefetch(self, batch_idx: int) -> None:
-        _resident_runtime._submit_prefetch(self, batch_idx)
-
-    def _schedule_prefetch(self) -> None:
-        _resident_runtime._schedule_prefetch(self)
-
-    def _legacy_prefetch_guard(self):
-        return _resident_runtime._legacy_prefetch_guard(self)
-
-    def _submit_legacy_prefetch(self, batch_idx: int) -> None:
-        _resident_runtime._submit_legacy_prefetch(self, batch_idx)
-
-    def _schedule_legacy_prefetch(self) -> None:
-        _resident_runtime._schedule_legacy_prefetch(self)
-
-    def _active_static(self) -> ReconStaticState:
-        return _resident_runtime._active_static(self)
-
-    def _theta_for_batch_index(
-        self,
-        batch_idx: int,
-        theta: torch.Tensor,
-    ) -> torch.Tensor:
-        return _resident_runtime._theta_for_batch_index(self, batch_idx, theta)
-
-    def _active_theta(self, theta: torch.Tensor | None = None) -> torch.Tensor:
-        return _resident_runtime._active_theta(self, theta)
-
-    def _stream_full_batches(
-        self,
-        theta: torch.Tensor,
-        *,
-        need_grad: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        return _stream_full_batches_impl(self, theta, need_grad=need_grad)
-
-    @property
-    def current_batch_metadata(self) -> BatchMetadata:
-        """Metadata for the resident batch currently selected by the model."""
-        return self.batch_metadata[self._current_batch_index]
-
-    @property
-    def current_batch_index(self) -> int:
-        """Index of the resident batch currently selected for evaluation."""
-        return self._current_batch_index
-
     @property
     def mode(self) -> str:
         """Parameter-sharing mode: ``global``, ``specieswise``, or ``genewise``."""
@@ -668,65 +600,6 @@ class GeneReconModel(_GeneReconModelControlsMixin, torch.nn.Module):
     def species_names(self) -> list[str]:
         """Species names in the internal species-index order."""
         return [str(name) for name in self._dataset.species_helpers["names"]]
-
-    @property
-    def cached_static_states(self) -> list[ReconStaticState]:
-        """Static states that are currently built and available for diagnostics."""
-        return _resident_runtime.cached_static_states(self)
-
-    def drop_cached_static_states(self) -> None:
-        """Release built resident batch static states while keeping batch metadata."""
-        _resident_runtime.drop_cached_static_states(self)
-
-    def materialize_batches(self) -> list[BatchMetadata]:
-        """Build all resident batch static states and return metadata copies.
-
-        In resident-batch mode this forces every batch static state to be built
-        before returning.  The returned list is a copy of ``batch_metadata``, so
-        callers can inspect batch ownership without mutating model bookkeeping.
-        """
-        return _resident_runtime.materialize_batches(self)
-
-    def active_theta(self, theta: torch.Tensor | None = None) -> torch.Tensor:
-        """Return theta as addressed by the currently selected resident batch."""
-        return self._active_theta(theta)
-
-    def select_batch(self, batch_index: int) -> BatchMetadata:
-        """Select a resident batch and return its metadata.
-
-        In non-batched mode only batch ``0`` exists.  Selecting a new batch
-        clears warm runtime state from the previous active batch.
-        """
-        return _resident_runtime.select_batch(self, batch_index)
-
-    def activate_family(self, family_index: int) -> ActiveFamilyBatch:
-        """Select the resident batch containing ``family_index``.
-
-        Returns the family offset inside the active Pi matrix plus the local
-        family index used by batch-local parameter tensors.
-        """
-        return _resident_runtime.activate_family(self, family_index)
-
-    def next(self) -> BatchMetadata:
-        """Advance to the next resident batch and return its metadata."""
-        return _resident_runtime.next_batch(self)
-
-    def clear(self) -> None:
-        """Release active runtime caches held by the model."""
-        _resident_runtime.clear(self)
-
-    def close(self) -> None:
-        """Stop background batch preprocessing and drop pending futures."""
-        _resident_runtime.close(self)
-
-    def _close_legacy_prefetch_executor(self) -> None:
-        _resident_runtime._close_legacy_prefetch_executor(self)
-
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
 
     # ──────────────────────────────────────────────────────────────────
     # Likelihood / loss
