@@ -5,10 +5,7 @@ from typing import Any, Callable
 
 import torch
 
-from gpurec.api._theta_constraints import (
-    finite_theta_rate_bounds_log2,
-    tensor_inf_norm,
-)
+from gpurec.api._theta_constraints import finite_theta_rate_bounds_log2
 from gpurec.api.model import GeneReconModel
 from gpurec.api.autograd import _clear_pi_adjoint_runtime_cache
 
@@ -20,8 +17,16 @@ from ._runtime_helpers import (
 )
 from ._phase import _ActiveAdagradRestartPhase
 from ._evaluation import EvaluationOps
+from ._step_metrics import (
+    _adagrad_restart_step_metrics,
+    _batched_lbfgs_step_metrics,
+    _cached_genewise_loss_metrics,
+    _cached_scalar_loss_metrics,
+    _hessian_sgd_budget_metrics,
+    _projected_grad_inf_from_optimizer_state,
+    _projected_optimizer_step_metrics,
+)
 from ._solver_stage import SolverStageController
-from .diagnostics import parameter_stats, solver_stats, tensor_stats
 from .config import RunConfig
 
 
@@ -319,7 +324,6 @@ def execute_optimization_step(
                 theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
                 grad_current = opt_state.get("last_grad")
                 loss_current = opt_state.get("last_loss")
-                projected_grad = opt_state.get("last_projected_grad")
                 if torch.is_tensor(grad_current):
                     model.theta.grad = grad_current.detach().reshape_as(model.theta).to(
                         device=model.theta.device,
@@ -330,86 +334,32 @@ def execute_optimization_step(
                         device=model.theta.device,
                         dtype=model.theta.dtype,
                     ).reshape(())
-                    metrics = dict(metrics)
-                    metrics["likelihood/data_nll_bits"] = float(
-                        loss_current.detach().cpu()
+                    metrics = _cached_scalar_loss_metrics(
+                        metrics,
+                        model,
+                        loss_current,
                     )
-                    metrics["likelihood/log_likelihood_bits"] = float(
-                        -loss_current.detach().cpu()
-                    )
-                    if model.theta.grad is not None:
-                        metrics.update(tensor_stats("grad", model.theta.grad))
-                        metrics.update(parameter_stats(model.theta))
-                        metrics.update(solver_stats(model))
                 else:
                     model.theta.grad = None
                     loss_current, metrics = evaluation.evaluate_and_backward(model)
                     closure_evals += 1
 
-                if torch.is_tensor(projected_grad):
-                    projected_inf = tensor_inf_norm(projected_grad)
-                else:
-                    _, projected_inf = evaluation.projected_grad_inf(
-                        model,
-                        lower_bound=lower_bound,
-                        upper_bound=upper_bound,
+                projected_inf = _projected_grad_inf_from_optimizer_state(
+                    opt_state=opt_state,
+                    evaluation=evaluation,
+                    model=model,
+                    lower_bound=lower_bound,
+                    upper_bound=upper_bound,
+                )
+                metrics.update(
+                    _projected_optimizer_step_metrics(
+                        metric_prefix=metric_prefix,
+                        opt_state=opt_state,
+                        projected_loss_evals=projected_loss_evals,
+                        theta_step=theta_step,
+                        projected_grad_inf=projected_inf,
                     )
-                metrics["grad/projected_inf"] = projected_inf
-                metrics[f"optimizer/{metric_prefix}_grad_evals"] = float(
-                    int(opt_state.get("last_grad_evals", 0))
                 )
-                metrics[f"optimizer/{metric_prefix}_loss_evals"] = float(
-                    int(opt_state.get("last_loss_evals", projected_loss_evals))
-                )
-                metrics[f"optimizer/{metric_prefix}_accepted"] = bool(
-                    opt_state.get("last_accepted", False)
-                )
-                metrics[f"optimizer/{metric_prefix}_alpha"] = float(
-                    opt_state.get("last_alpha", 0.0)
-                )
-                metrics[f"optimizer/{metric_prefix}_step_inf"] = float(
-                    opt_state.get("last_step_inf", theta_step)
-                )
-                direction_kind = opt_state.get("last_direction_kind")
-                if direction_kind is not None:
-                    metrics[f"optimizer/{metric_prefix}_direction_kind"] = str(
-                        direction_kind
-                    )
-                metrics[f"optimizer/{metric_prefix}_line_search_decrease"] = float(
-                    opt_state.get("last_line_search_decrease", 0.0)
-                )
-                metrics[f"optimizer/{metric_prefix}_armijo_required_decrease"] = float(
-                    opt_state.get("last_armijo_required_decrease", 0.0)
-                )
-                metrics[f"optimizer/{metric_prefix}_fallback_attempted"] = bool(
-                    opt_state.get("last_fallback_attempted", False)
-                )
-                metrics[f"optimizer/{metric_prefix}_fallback_used"] = bool(
-                    opt_state.get("last_fallback_used", False)
-                )
-                metrics[f"optimizer/{metric_prefix}_fallback_alpha"] = float(
-                    opt_state.get("last_fallback_alpha", 0.0)
-                )
-                metrics[f"optimizer/{metric_prefix}_fallback_loss_evals"] = float(
-                    int(opt_state.get("last_fallback_loss_evals", 0))
-                )
-                fallback_max_loss_evals = opt_state.get("last_fallback_max_loss_evals")
-                if fallback_max_loss_evals is not None:
-                    metrics[f"optimizer/{metric_prefix}_fallback_max_loss_evals"] = float(
-                        int(fallback_max_loss_evals)
-                    )
-                metrics[f"optimizer/{metric_prefix}_fallback_budget_exhausted"] = bool(
-                    opt_state.get("last_fallback_budget_exhausted", False)
-                )
-                metrics[f"optimizer/{metric_prefix}_fallback_reason"] = str(
-                    opt_state.get("last_fallback_reason", "none")
-                )
-                metrics[f"optimizer/{metric_prefix}_high_kkt_stall_count"] = float(
-                    int(opt_state.get("last_high_kkt_stall_count", 0))
-                )
-                metrics[
-                    f"optimizer/{metric_prefix}_history_cleared_for_fallback"
-                ] = bool(opt_state.get("last_history_cleared_for_fallback", False))
                 if (
                     (torch.is_tensor(loss_current) and not torch.isfinite(loss_current).item())
                     or not _is_finite_tensor(model.theta.grad)
@@ -465,16 +415,11 @@ def execute_optimization_step(
                         device=model.theta.device,
                         dtype=model.theta.dtype,
                     ).reshape(int(model.n_families))
-                    metrics = dict(metrics)
-                    metrics["likelihood/data_nll_bits"] = float(
-                        loss_vec_current.sum().detach().cpu()
+                    metrics = _cached_genewise_loss_metrics(
+                        metrics,
+                        model,
+                        loss_vec_current,
                     )
-                    metrics["likelihood/log_likelihood_bits"] = float(
-                        -loss_vec_current.sum().detach().cpu()
-                    )
-                    metrics.update(tensor_stats("grad", model.theta.grad))
-                    metrics.update(parameter_stats(model.theta))
-                    metrics.update(solver_stats(model))
                     reused_optimizer_gradient = True
                 else:
                     model.theta.grad = None
@@ -490,36 +435,14 @@ def execute_optimization_step(
                             evaluation.evaluate_genewise_vector_and_grad(model)
                         )
                     closure_evals += 1
-                metrics["optimizer/batched_lbfgs_grad_evals"] = float(
-                    batched_grad_evals
-                )
-                metrics["optimizer/batched_lbfgs_loss_evals"] = float(
-                    batched_loss_evals
-                )
-                metrics["optimizer/batched_lbfgs_reused_gradient"] = (
-                    reused_optimizer_gradient
-                )
-                metrics["optimizer/batched_lbfgs_inner_iters"] = float(
-                    int(opt_state.get("last_n_iter", 0))
-                )
-                accepted = opt_state.get("last_accepted")
-                if torch.is_tensor(accepted):
-                    accepted_f = accepted.detach().to(dtype=torch.float32)
-                    metrics["optimizer/batched_lbfgs_accepted_rows"] = float(
-                        accepted_f.sum().cpu()
+                metrics.update(
+                    _batched_lbfgs_step_metrics(
+                        opt_state=opt_state,
+                        batched_grad_evals=batched_grad_evals,
+                        batched_loss_evals=batched_loss_evals,
+                        reused_optimizer_gradient=reused_optimizer_gradient,
                     )
-                    metrics["optimizer/batched_lbfgs_accepted_fraction"] = float(
-                        accepted_f.mean().cpu()
-                    )
-                alpha = opt_state.get("last_alpha")
-                if torch.is_tensor(alpha):
-                    alpha_cpu = alpha.detach().cpu()
-                    metrics["optimizer/batched_lbfgs_alpha_mean"] = float(
-                        alpha_cpu.mean()
-                    )
-                    metrics["optimizer/batched_lbfgs_alpha_max"] = float(
-                        alpha_cpu.max()
-                    )
+                )
                 if (
                     not bool(torch.isfinite(loss_vec_current).all().item())
                     or not _is_finite_tensor(model.theta.grad)
@@ -623,38 +546,15 @@ def execute_optimization_step(
                     "fd_newton" if phase == "adam-fd-newton" else "hessian_sgd"
                 )
             if phase == "hessian-sgd" and config.hessian_sgd_validation_interval > 0:
-                metrics["optimizer/hessian_sgd_validation_step"] = (
-                    hessian_sgd_validation_step
+                metrics.update(
+                    _hessian_sgd_budget_metrics(
+                        config=config,
+                        solver=solver,
+                        model=model,
+                        active_solver_stage=active_solver_stage,
+                        hessian_sgd_validation_step=hessian_sgd_validation_step,
+                    )
                 )
-                if hessian_sgd_validation_step:
-                    metrics["optimizer/hessian_sgd_solver_budget"] = "validation"
-                    metrics["optimizer/hessian_sgd_active_fixed_iters_pi"] = float(
-                        config.hessian_sgd_validation_fixed_iters_pi
-                    )
-                    metrics["optimizer/hessian_sgd_active_neumann_terms"] = float(
-                        config.hessian_sgd_validation_neumann_terms
-                    )
-                elif active_solver_stage == "warmup":
-                    metrics["optimizer/hessian_sgd_solver_budget"] = "warmup"
-                    active_fixed_iters_pi = solver.hessian_sgd_warmup_iters(model)
-                    metrics["optimizer/hessian_sgd_active_fixed_iters_pi"] = float(
-                        active_fixed_iters_pi
-                    )
-                    metrics["optimizer/hessian_sgd_active_neumann_terms"] = float(
-                        active_fixed_iters_pi
-                    )
-                else:
-                    metrics["optimizer/hessian_sgd_solver_budget"] = "normal"
-                    metrics["optimizer/hessian_sgd_active_fixed_iters_pi"] = float(
-                        config.hessian_sgd_normal_fixed_iters_pi
-                        if config.hessian_sgd_normal_fixed_iters_pi is not None
-                        else config.fixed_iters_pi
-                    )
-                    metrics["optimizer/hessian_sgd_active_neumann_terms"] = float(
-                        config.hessian_sgd_normal_neumann_terms
-                        if config.hessian_sgd_normal_neumann_terms is not None
-                        else config.neumann_terms
-                    )
 
             if _restore_theta_if_nonfinite_update(model, theta_before):
                 status = {
@@ -706,33 +606,12 @@ def execute_optimization_step(
             if phase.startswith("adagrad-restarts:"):
                 if adagrad_restart_active_phase is None:
                     raise RuntimeError("missing adagrad-restarts active phase")
-                phase_step = step - adagrad_restart_active_phase.start_step
-                metrics["optimizer/adagrad_restart_phase"] = (
-                    adagrad_restart_active_phase.name
+                metrics.update(
+                    _adagrad_restart_step_metrics(
+                        active_phase=adagrad_restart_active_phase,
+                        step=step,
+                    )
                 )
-                metrics["optimizer/adagrad_restart_phase_index"] = int(
-                    adagrad_restart_active_phase.index
-                )
-                metrics["optimizer/adagrad_restart_phase_step"] = int(phase_step)
-                metrics["optimizer/adagrad_restart_phase_steps"] = int(
-                    adagrad_restart_active_phase.phase.steps
-                )
-                metrics["optimizer/adagrad_restart_budget"] = int(
-                    adagrad_restart_active_phase.phase.budget
-                )
-                metrics["optimizer/adagrad_restart_fixed_iters_E"] = int(
-                    adagrad_restart_active_phase.phase.fixed_iters_e
-                )
-                metrics["optimizer/adagrad_restart_fixed_iters_Pi"] = int(
-                    adagrad_restart_active_phase.phase.fixed_iters_pi
-                )
-                metrics["optimizer/adagrad_restart_neumann_terms"] = int(
-                    adagrad_restart_active_phase.phase.neumann_terms
-                )
-                metrics["optimizer/adagrad_restart_lr"] = float(
-                    adagrad_restart_active_phase.phase.lr
-                )
-                metrics["optimizer/adagrad_restart_restarted"] = phase_step == 0
             theta_step = 0.0
             first_order_pending_step = True
 

@@ -3386,6 +3386,9 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/_stopping_policy.py": (
             "Internal pure optimizer stopping and active-batch patience policy"
         ),
+        "gpurec/workflow/_step_metrics.py": (
+            "Internal optimizer-step metric schema helper"
+        ),
         "gpurec/workflow/_route_defaults.py": (
             "Internal production route/default policy helper"
         ),
@@ -3459,6 +3462,11 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/_hessian_sgd_policy.py": (
             "Private Hessian-SGD workflow threshold policy helpers",
             "pure decisions shared by optimization orchestration helpers",
+            "not a public workflow API surface",
+        ),
+        "gpurec/workflow/_step_metrics.py": (
+            "Private optimizer-step metric helpers",
+            "row-level optimizer telemetry",
             "not a public workflow API surface",
         ),
         "gpurec/workflow/_route_defaults.py": (
