@@ -378,6 +378,14 @@ def test_internal_api_helper_modules_document_support_boundary():
             encoding="utf-8"
         )
     )
+    model_controls_module = ast.parse(
+        (root / "gpurec" / "api" / "_model_controls.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    model_module = ast.parse(
+        (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
+    )
     docs_readme = " ".join(
         (root / "docs" / "README.md").read_text(encoding="utf-8").split()
     )
@@ -390,6 +398,9 @@ def test_internal_api_helper_modules_document_support_boundary():
     resident_runtime_doc = " ".join(
         (ast.get_docstring(resident_runtime_module) or "").split()
     )
+    model_controls_doc = " ".join(
+        (ast.get_docstring(model_controls_module) or "").split()
+    )
     family_layout_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
         for node in family_layout_module.body
@@ -400,6 +411,17 @@ def test_internal_api_helper_modules_document_support_boundary():
         for node in validation_module.body
         if isinstance(node, ast.FunctionDef)
     }
+    model_class = next(
+        node
+        for node in model_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "GeneReconModel"
+    )
+    model_control_mixin = next(
+        node
+        for node in model_controls_module.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "_GeneReconModelControlsMixin"
+    )
 
     for token in (
         "Internal family-layout support",
@@ -438,16 +460,48 @@ def test_internal_api_helper_modules_document_support_boundary():
         "not a public import surface",
     ):
         assert token in resident_runtime_doc
-    for node in resident_runtime_module.body:
-        if isinstance(node, ast.ImportFrom) and node.module:
-            assert not node.module.startswith("gpurec.workflow")
-            assert not node.module.startswith("gpurec.optimization")
-            assert node.module != "model"
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                assert not alias.name.startswith("gpurec.workflow")
-                assert not alias.name.startswith("gpurec.optimization")
-                assert alias.name != "gpurec.api.model"
+    for token in (
+        "API model control and inspection helpers",
+        "internal support for ``gpurec.api`` model methods",
+        "not a public import surface",
+        "does not own construction, resident batch lifecycle, likelihood, or autograd",
+    ):
+        assert token in model_controls_doc
+
+    extracted_methods = {
+        "_apply_pi_adjoint_warmstart_config",
+        "configure_pi_adjoint_warmstart",
+        "configure_solver_iterations",
+        "solver_stat_records",
+        "family_input",
+    }
+    assert "_GeneReconModelControlsMixin" in {
+        base.id for base in model_class.bases if isinstance(base, ast.Name)
+    }
+    assert extracted_methods <= {
+        node.name
+        for node in model_control_mixin.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert extracted_methods.isdisjoint(
+        {
+            node.name
+            for node in model_class.body
+            if isinstance(node, ast.FunctionDef)
+        }
+    )
+
+    for module in (resident_runtime_module, model_controls_module):
+        for node in module.body:
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert not node.module.startswith("gpurec.workflow")
+                assert not node.module.startswith("gpurec.optimization")
+                assert node.module != "model"
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith("gpurec.workflow")
+                    assert not alias.name.startswith("gpurec.optimization")
+                    assert alias.name != "gpurec.api.model"
     assert "Direct imports from `gpurec.core` are unstable" in docs_readme
 
 
@@ -3393,17 +3447,20 @@ def test_solver_reconfiguration_docs_cover_lazy_prefetch_contract():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
     normalized_readme = " ".join(project_readme.split())
-    model_module = ast.parse(
-        (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
+    model_controls_module = ast.parse(
+        (root / "gpurec" / "api" / "_model_controls.py").read_text(
+            encoding="utf-8"
+        )
     )
-    model_class = next(
+    model_control_mixin = next(
         node
-        for node in model_module.body
-        if isinstance(node, ast.ClassDef) and node.name == "GeneReconModel"
+        for node in model_controls_module.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "_GeneReconModelControlsMixin"
     )
     method = next(
         node
-        for node in model_class.body
+        for node in model_control_mixin.body
         if isinstance(node, ast.FunctionDef)
         and node.name == "configure_solver_iterations"
     )
