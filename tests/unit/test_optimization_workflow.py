@@ -10,6 +10,9 @@ import torch
 import gpurec.api._uniform_chunked_eval as uniform_chunked_eval_module
 import gpurec.api.uniform_chunked as uniform_chunked_module
 import gpurec.workflow._adaptive_rebatch as adaptive_rebatch_module
+import gpurec.workflow._evaluation as evaluation_module
+import gpurec.workflow._step_execution as step_execution_module
+import gpurec.workflow._step_runtime as step_runtime_module
 import gpurec.workflow._stopping_policy as stopping_policy_module
 from gpurec import UniformChunkedReconModel
 from gpurec.workflow._batch_final_cache import BatchFinalCache
@@ -670,6 +673,198 @@ def test_optimize_reexports_stopping_policy_helpers():
     assert optimize_module._active_batch_patience is (
         stopping_policy_module._active_batch_patience
     )
+
+
+def test_step_execution_reexports_step_runtime_helpers():
+    for name in (
+        "_NonfiniteParameterUpdate",
+        "_set_model_theta",
+        "_restore_theta_if_nonfinite_update",
+        "_active_adam_step",
+        "_clear_solver_runtime_state_preserving_pi_cache",
+    ):
+        assert getattr(step_execution_module, name) is getattr(
+            step_runtime_module,
+            name,
+        )
+
+
+def test_optimize_reexports_runtime_restore_and_evaluation_clear_helpers():
+    import importlib
+
+    optimize_module = importlib.import_module("gpurec.workflow.optimize")
+
+    assert optimize_module._restore_theta_if_nonfinite_update is (
+        step_execution_module._restore_theta_if_nonfinite_update
+    )
+    assert optimize_module._clear_solver_runtime_state_preserving_pi_cache is (
+        evaluation_module._clear_solver_runtime_state_preserving_pi_cache
+    )
+    assert optimize_module._clear_solver_runtime_state_preserving_pi_cache is not (
+        step_execution_module._clear_solver_runtime_state_preserving_pi_cache
+    )
+
+
+def test_restore_theta_if_nonfinite_update_restores_theta_and_clears_grad():
+    theta_before = torch.tensor([0.25, -0.5], dtype=torch.float32)
+    model = SimpleNamespace(
+        theta=torch.nn.Parameter(
+            torch.tensor([float("nan"), 1.0], dtype=torch.float32),
+        )
+    )
+    model.theta.grad = torch.ones_like(model.theta)
+
+    restored = step_execution_module._restore_theta_if_nonfinite_update(
+        model,
+        theta_before,
+    )
+
+    assert restored is True
+    torch.testing.assert_close(model.theta.detach(), theta_before)
+    assert model.theta.grad is None
+
+
+def test_active_adam_step_commits_and_counts_staged_pi_adjoint_cache():
+    pending_values: list[torch.Tensor] = []
+    static = SimpleNamespace(
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache_update_mode="stage",
+        pi_adjoint_cache=torch.tensor([-1.0], dtype=torch.float32),
+        pi_adjoint_pending_cache=torch.tensor([-2.0], dtype=torch.float32),
+    )
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.theta = torch.nn.Parameter(
+                torch.tensor(
+                    [
+                        [0.50, -0.25, 0.125],
+                        [0.10, 0.20, -0.05],
+                    ],
+                    dtype=torch.float32,
+                )
+            )
+            self.cached_static_states = [static]
+
+        def clamp_theta_(self, min_rate: float, max_rate: float) -> None:
+            with torch.no_grad():
+                self.theta.clamp_(min=math.log2(min_rate), max=math.log2(max_rate))
+
+    class FakeEvaluation:
+        def evaluate_active_genewise_vector_grad_at_current_theta(
+            self,
+            model: FakeModel,
+            *,
+            solver_stage: str,
+        ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float | str]]:
+            grad = 2.0 * model.theta.detach()
+            model.theta.grad = grad.clone()
+            loss_vec = model.theta.detach().square().sum(dim=1)
+            pending = torch.tensor(
+                [float(len(pending_values) + 1)],
+                dtype=model.theta.dtype,
+            )
+            pending_values.append(pending.detach().cpu())
+            static.pi_adjoint_pending_cache = pending
+            return loss_vec, grad, {"optimizer/solver_stage": solver_stage}
+
+        def projected_grad_inf(
+            self,
+            model: FakeModel,
+            *,
+            lower_bound: float,
+            upper_bound: float,
+        ) -> tuple[torch.Tensor, float]:
+            assert model.theta.grad is not None
+            return model.theta.grad, float(model.theta.grad.abs().amax().cpu())
+
+    model = FakeModel()
+    optimizer = torch.optim.Adam([model.theta], lr=0.1)
+
+    loss_vec, metrics, evals = step_execution_module._active_adam_step(
+        model,
+        optimizer,
+        evaluation=FakeEvaluation(),
+        config=SimpleNamespace(min_rate=0.01, max_rate=100.0),
+        solver_stage="warmup",
+        theta_before=model.theta.detach().clone(),
+    )
+
+    assert evals == 2
+    assert loss_vec.shape == (2,)
+    assert metrics["optimizer/solver_stage"] == "warmup"
+    assert metrics["solver/pi_adjoint_pending_cache_discards"] == 1.0
+    assert metrics["solver/pi_adjoint_pending_cache_commits"] == 1.0
+    torch.testing.assert_close(static.pi_adjoint_cache.cpu(), pending_values[-1])
+    assert static.pi_adjoint_pending_cache is None
+
+
+def test_execute_optimization_step_uses_step_runtime_clear_behavior():
+    static = SimpleNamespace(
+        warm_E=object(),
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache_update_mode="stage",
+        pi_adjoint_cache=torch.tensor([1.0], dtype=torch.float32),
+        pi_adjoint_pending_cache=torch.tensor([2.0], dtype=torch.float32),
+        last_solver_stats={"Pi_wave_iterations": [3]},
+    )
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.theta = torch.nn.Parameter(
+                torch.tensor([[0.5, -0.25]], dtype=torch.float32),
+            )
+            self.cached_static_states = [static]
+            self.current_batch_metadata = SimpleNamespace(clade_count=0)
+            self.clears = 0
+
+        def clear(self) -> None:
+            self.clears += 1
+
+    class FakeSolver:
+        def is_hessian_sgd_validation_step(self, **kwargs) -> bool:
+            return False
+
+    model = FakeModel()
+
+    def active_fd_newton_step(model_arg: FakeModel, **kwargs):
+        model_arg.theta.grad = torch.ones_like(model_arg.theta)
+        return torch.ones(1), {}, 1, None
+
+    context = step_execution_module._StepExecutionContext(
+        config=SimpleNamespace(
+            fd_hessian_refresh_steps=1,
+            hessian_sgd_validation_interval=0,
+            lr=0.1,
+            max_rate=100.0,
+            min_rate=0.01,
+        ),
+        evaluation=SimpleNamespace(),
+        solver=FakeSolver(),
+        batchwise_active_optimizer=False,
+        fd_adam_warmup_steps=0,
+        hessian_sgd_no_line_refresh_min_clades=10,
+        hessian_sgd_no_line_refresh_steps=5,
+        hessian_sgd_line_search_max_steps=2,
+        active_fd_newton_step=active_fd_newton_step,
+    )
+
+    result = step_execution_module.execute_optimization_step(
+        context,
+        step_execution_module._StepExecutionState(active_solver_stage="full"),
+        model,
+        torch.optim.SGD([model.theta], lr=0.1),
+        phase="hessian-sgd",
+        step=0,
+        adagrad_restart_active_phase=None,
+    )
+
+    assert result.status is None
+    assert static.warm_E is None
+    assert static.pi_adjoint_cache is None
+    assert static.pi_adjoint_pending_cache is None
+    assert static.last_solver_stats is None
+    assert model.clears == 0
 
 
 def test_adaptive_rebatch_uses_shared_active_batch_patience():
