@@ -993,6 +993,88 @@ def test_step_stopping_transition_saves_active_checkpoint_fields(tmp_path: Path)
     }
 
 
+def test_hessian_sgd_line_search_transition_resets_active_state(tmp_path: Path):
+    save_calls: list[dict[str, object]] = []
+    objective_state = ObjectiveState(previous_objective=12.5, stable_loss_steps=2)
+    batch_state = BatchRunState(
+        active_index=0,
+        local_step=3,
+        solver_stage="warmup",
+        best_nll=1.5,
+        best_step=4,
+        optimizer_batch_index=0,
+    )
+    lbfgsb_state = LBFGSBRunState(fallback_used_count=5)
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        device="cpu",
+    )
+    inputs = _transition_test_inputs(
+        step=13,
+        phase="hessian-sgd",
+        step_status={"status": "converged", "reason": "loss_patience"},
+        active_batch_count=1,
+    )
+    inputs.hessian_sgd_activate_line_search = True
+
+    result = apply_iteration_transition(
+        context=IterationTransitionContext(
+            config=config,
+            model=SimpleNamespace(),
+            evaluation=SimpleNamespace(),
+            solver=SimpleNamespace(uses_warmup=lambda: False),
+            objective_state=objective_state,
+            batch_state=batch_state,
+            restart_state=RestartRunState(active_phase_index=2),
+            lbfgsb_state=lbfgsb_state,
+            adaptive_state=SimpleNamespace(last_checked_converged_count=0),
+            planning_state=_transition_test_planning_state(),
+            optimizer=object(),
+            fd_newton_hessian_state=object(),
+            hessian_sgd_line_search_active=False,
+            hessian_sgd_low_accept_steps=2,
+            resume_info={"resume": "discard"},
+            batch_final_cache=None,
+            solver_stage_scope=True,
+            batchwise_hessian_sgd=True,
+            global_solver_warmup=False,
+            lbfgsb_loss_schedule=(),
+            current_phase="hessian-sgd",
+            best_checkpoint=tmp_path / "best.pt",
+            latest_checkpoint=tmp_path / "latest.pt",
+            checkpoint_every=1,
+            log_every=10,
+            ops=_transition_test_ops(save_calls),
+        ),
+        inputs=inputs,
+    )
+
+    assert result.status == {"status": "running", "reason": "running"}
+    assert result.continue_loop is True
+    assert result.break_loop is False
+    assert result.optimizer is None
+    assert result.fd_newton_hessian_state is None
+    assert result.hessian_sgd_line_search_active is True
+    assert result.hessian_sgd_low_accept_steps == 0
+    assert result.resume_info == {}
+    assert objective_state.previous_objective is None
+    assert objective_state.stable_loss_steps == 0
+    assert batch_state.local_step == 0
+    assert batch_state.solver_stage == "full"
+    assert batch_state.best_nll is None
+    assert batch_state.best_step is None
+    assert batch_state.optimizer_batch_index is None
+    assert result.planning_state.current_phase == "hessian-sgd"
+    assert result.planning_state.active_optimizer_batch_index is None
+    assert result.planning_state.active_adagrad_restart_phase_index == 2
+    assert result.planning_state.previous_objective is None
+    assert result.planning_state.stable_loss_steps == 0
+    assert result.planning_state.lbfgsb_fallback_used_count == 5
+    assert save_calls == []
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

@@ -851,40 +851,30 @@ class OptimizationRunner:
                     and active_objective_scope
                     and batch_state.solver_stage == "full"
                 )
-                hessian_sgd_activate_line_search = False
-                if (
-                    batchwise_hessian_sgd
-                    and phase == "hessian-sgd"
-                    and active_objective_scope
-                    and not run_state.hessian_sgd_line_search_active
-                    and not full_stage_plateau
-                ):
-                    line_search_decision = hessian_sgd_line_search_decision(
-                        batchwise_hessian_sgd=batchwise_hessian_sgd,
-                        phase=phase,
-                        active_objective_scope=active_objective_scope,
-                        line_search_active=run_state.hessian_sgd_line_search_active,
-                        full_stage_plateau=full_stage_plateau,
-                        accepted_fraction=metrics.get(
-                            "optimizer/fd_newton_accepted_fraction"
-                        ),
-                        loss_rejected_rows=metrics.get(
-                            "optimizer/fd_newton_loss_rejected_rows",
-                            0.0,
-                        ),
-                        current_low_accept_steps=(
-                            run_state.hessian_sgd_low_accept_steps
-                        ),
-                        solver_stage=batch_state.solver_stage,
-                        stable_loss_steps=objective_state.stable_loss_steps,
-                        active_clade_count=hessian_sgd_active_clade_count(
-                            model.current_batch_metadata
-                        ),
-                    )
-                    run_state.hessian_sgd_low_accept_steps = (
-                        line_search_decision.low_accept_steps
-                    )
-                    hessian_sgd_activate_line_search = line_search_decision.activate
+                line_search_decision = hessian_sgd_line_search_decision(
+                    batchwise_hessian_sgd=batchwise_hessian_sgd,
+                    phase=phase,
+                    active_objective_scope=active_objective_scope,
+                    line_search_active=run_state.hessian_sgd_line_search_active,
+                    full_stage_plateau=full_stage_plateau,
+                    accepted_fraction=metrics.get(
+                        "optimizer/fd_newton_accepted_fraction"
+                    ),
+                    loss_rejected_rows=metrics.get(
+                        "optimizer/fd_newton_loss_rejected_rows",
+                        0.0,
+                    ),
+                    current_low_accept_steps=run_state.hessian_sgd_low_accept_steps,
+                    solver_stage=batch_state.solver_stage,
+                    stable_loss_steps=objective_state.stable_loss_steps,
+                    active_clade_count=hessian_sgd_active_clade_count(
+                        getattr(model, "current_batch_metadata", None)
+                    ),
+                )
+                run_state.hessian_sgd_low_accept_steps = (
+                    line_search_decision.low_accept_steps
+                )
+                hessian_sgd_activate_line_search = line_search_decision.activate
 
                 can_lbfgsb_retry = (
                     phase == "lbfgsb"

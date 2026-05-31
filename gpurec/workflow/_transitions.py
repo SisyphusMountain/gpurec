@@ -408,14 +408,15 @@ def execute_step_status_transition(
 ) -> IterationStatusTransitionExecution:
     status_out = dict(status) if status is not None else None
 
-    if transition.status is not None:
-        status_out = transition.status
-
-    if transition.action is None:
+    def execution(
+        *,
+        continue_loop: bool,
+        break_loop: bool,
+    ) -> IterationStatusTransitionExecution:
         return IterationStatusTransitionExecution(
             status=status_out,
-            continue_loop=False,
-            break_loop=False,
+            continue_loop=continue_loop,
+            break_loop=break_loop,
             optimizer=optimizer,
             fd_newton_hessian_state=fd_newton_hessian_state,
             hessian_sgd_line_search_active=hessian_sgd_line_search_active,
@@ -424,6 +425,12 @@ def execute_step_status_transition(
             planning_state=planning_state,
             current_phase=current_phase,
         )
+
+    if transition.status is not None:
+        status_out = transition.status
+
+    if transition.action is None:
+        return execution(continue_loop=False, break_loop=False)
 
     if transition.action == "next_batch":
         batch_state.active_index = min(
@@ -470,25 +477,16 @@ def execute_step_status_transition(
             continue_loop = True
             break_loop = False
 
-        return IterationStatusTransitionExecution(
-            status=status_out,
-            continue_loop=continue_loop,
-            break_loop=break_loop,
-            optimizer=optimizer,
-            fd_newton_hessian_state=fd_newton_hessian_state,
-            hessian_sgd_line_search_active=hessian_sgd_line_search_active,
-            hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
-            resume_info={},
-            planning_state=replace(
-                planning_state,
-                active_batch_index=batch_state.active_index,
-                active_optimizer_batch_index=None,
-                current_phase="lbfgsb" if phase == "lbfgsb" else current_phase,
-                previous_objective=objective_state.previous_objective,
-                stable_loss_steps=0,
-            ),
-            current_phase=current_phase,
+        resume_info = {}
+        planning_state = replace(
+            planning_state,
+            active_batch_index=batch_state.active_index,
+            active_optimizer_batch_index=None,
+            current_phase="lbfgsb" if phase == "lbfgsb" else current_phase,
+            previous_objective=objective_state.previous_objective,
+            stable_loss_steps=0,
         )
+        return execution(continue_loop=continue_loop, break_loop=break_loop)
 
     if transition.action == "lbfgsb_retry":
         retry_payload = ops.load_checkpoint(best_checkpoint)
@@ -529,45 +527,28 @@ def execute_step_status_transition(
             )
             lbfgsb_state.best_retry_count += 1
             model.clear()
-            return IterationStatusTransitionExecution(
-                status=status_out,
-                continue_loop=True,
-                break_loop=False,
-                optimizer=optimizer,
-                fd_newton_hessian_state=None,
-                hessian_sgd_line_search_active=False,
-                hessian_sgd_low_accept_steps=0,
-                resume_info={
-                    **restore_info,
-                    "optimizer/lbfgsb_best_retry_count": float(
-                        lbfgsb_state.best_retry_count
-                    ),
-                    "optimizer/lbfgsb_best_retry_source_step": float(
-                        -1 if retry_state.best_step is None else retry_state.best_step
-                    ),
-                },
-                planning_state=replace(
-                    planning_state,
-                    current_phase=current_phase,
-                    active_optimizer_batch_index=batch_state.optimizer_batch_index,
-                    previous_objective=objective_state.previous_objective,
-                    stable_loss_steps=objective_state.stable_loss_steps,
-                    lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
+            fd_newton_hessian_state = None
+            hessian_sgd_line_search_active = False
+            hessian_sgd_low_accept_steps = 0
+            resume_info = {
+                **restore_info,
+                "optimizer/lbfgsb_best_retry_count": float(
+                    lbfgsb_state.best_retry_count
                 ),
+                "optimizer/lbfgsb_best_retry_source_step": float(
+                    -1 if retry_state.best_step is None else retry_state.best_step
+                ),
+            }
+            planning_state = replace(
+                planning_state,
                 current_phase=current_phase,
+                active_optimizer_batch_index=batch_state.optimizer_batch_index,
+                previous_objective=objective_state.previous_objective,
+                stable_loss_steps=objective_state.stable_loss_steps,
+                lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
             )
-        return IterationStatusTransitionExecution(
-            status=status_out,
-            continue_loop=False,
-            break_loop=True,
-            optimizer=optimizer,
-            fd_newton_hessian_state=fd_newton_hessian_state,
-            hessian_sgd_line_search_active=hessian_sgd_line_search_active,
-            hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
-            resume_info=resume_info,
-            planning_state=planning_state,
-            current_phase=current_phase,
-        )
+            return execution(continue_loop=True, break_loop=False)
+        return execution(continue_loop=False, break_loop=True)
 
     if transition.action == "step_stopping":
         if checkpoint_every:
@@ -587,23 +568,13 @@ def execute_step_status_transition(
                 row=row,
                 optimizer_phase=phase,
             )
-        return IterationStatusTransitionExecution(
-            status=status_out,
-            continue_loop=False,
-            break_loop=True,
-            optimizer=optimizer,
-            fd_newton_hessian_state=fd_newton_hessian_state,
-            hessian_sgd_line_search_active=hessian_sgd_line_search_active,
-            hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
-            resume_info=resume_info,
-            planning_state=replace(
-                planning_state,
-                previous_objective=objective_state.previous_objective,
-                stable_loss_steps=objective_state.stable_loss_steps,
-                lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
-            ),
-            current_phase=current_phase,
+        planning_state = replace(
+            planning_state,
+            previous_objective=objective_state.previous_objective,
+            stable_loss_steps=objective_state.stable_loss_steps,
+            lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
         )
+        return execution(continue_loop=False, break_loop=True)
 
     raise RuntimeError(
         f"Unexpected step-status transition action {transition.action}"
@@ -651,6 +622,24 @@ def execute_iteration_post_step_transition(
 ) -> IterationStatusTransitionExecution:
     status_out = dict(status) if status is not None else None
 
+    def execution(
+        *,
+        continue_loop: bool,
+        break_loop: bool,
+    ) -> IterationStatusTransitionExecution:
+        return IterationStatusTransitionExecution(
+            status=status_out,
+            continue_loop=continue_loop,
+            break_loop=break_loop,
+            optimizer=optimizer,
+            fd_newton_hessian_state=fd_newton_hessian_state,
+            hessian_sgd_line_search_active=hessian_sgd_line_search_active,
+            hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
+            resume_info=resume_info,
+            planning_state=planning_state,
+            current_phase=current_phase,
+        )
+
     if hessian_sgd_activate_line_search:
         objective_state.reset_tracking()
         batch_state.reset_for_batch(warmup=False)
@@ -669,18 +658,7 @@ def execute_iteration_post_step_transition(
             stable_loss_steps=objective_state.stable_loss_steps,
             lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
         )
-        return IterationStatusTransitionExecution(
-            status=status_out,
-            continue_loop=True,
-            break_loop=False,
-            optimizer=optimizer,
-            fd_newton_hessian_state=fd_newton_hessian_state,
-            hessian_sgd_line_search_active=hessian_sgd_line_search_active,
-            hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
-            resume_info=resume_info,
-            planning_state=planning_state,
-            current_phase=current_phase,
-        )
+        return execution(continue_loop=True, break_loop=False)
 
     warmup_switch = (
         solver_stage_scope
@@ -727,23 +705,13 @@ def execute_iteration_post_step_transition(
                         "reason": "nonfinite_objective_or_gradient",
                     }
                     model.clear()
-                    return IterationStatusTransitionExecution(
-                        status=status_out,
-                        continue_loop=False,
-                        break_loop=True,
-                        optimizer=optimizer,
-                        fd_newton_hessian_state=fd_newton_hessian_state,
-                        hessian_sgd_line_search_active=hessian_sgd_line_search_active,
-                        hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
-                        resume_info=resume_info,
-                        planning_state=replace(
-                            planning_state,
-                            previous_objective=objective_state.previous_objective,
-                            stable_loss_steps=objective_state.stable_loss_steps,
-                            lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
-                        ),
-                        current_phase=current_phase,
+                    planning_state = replace(
+                        planning_state,
+                        previous_objective=objective_state.previous_objective,
+                        stable_loss_steps=objective_state.stable_loss_steps,
+                        lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
                     )
+                    return execution(continue_loop=False, break_loop=True)
                 if batch_final_cache is not None:
                     batch_final_cache.cache(
                         model=model,
@@ -827,32 +795,10 @@ def execute_iteration_post_step_transition(
             stable_loss_steps=objective_state.stable_loss_steps,
             lbfgsb_fallback_used_count=lbfgsb_state.fallback_used_count,
         )
-        return IterationStatusTransitionExecution(
-            status=status_out,
-            continue_loop=True,
-            break_loop=False,
-            optimizer=optimizer,
-            fd_newton_hessian_state=fd_newton_hessian_state,
-            hessian_sgd_line_search_active=hessian_sgd_line_search_active,
-            hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
-            resume_info=resume_info,
-            planning_state=planning_state,
-            current_phase=current_phase,
-        )
+        return execution(continue_loop=True, break_loop=False)
 
     if step_status is None:
-        return IterationStatusTransitionExecution(
-            status=status_out,
-            continue_loop=False,
-            break_loop=False,
-            optimizer=optimizer,
-            fd_newton_hessian_state=fd_newton_hessian_state,
-            hessian_sgd_line_search_active=hessian_sgd_line_search_active,
-            hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
-            resume_info=resume_info,
-            planning_state=planning_state,
-            current_phase=current_phase,
-        )
+        return execution(continue_loop=False, break_loop=False)
 
     pre_transition = _classify_iteration_transition(
         adaptive_rebatch_stop=False,
