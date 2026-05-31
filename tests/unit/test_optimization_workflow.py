@@ -578,6 +578,18 @@ def test_transitions_reexports_workflow_transition_type_classes():
     assert transition_types.IterationTransitionOps.__dataclass_params__.frozen
 
 
+def test_transitions_reexports_workflow_transition_classifier():
+    import importlib
+
+    transition_policy = importlib.import_module("gpurec.workflow._transition_policy")
+    transitions = importlib.import_module("gpurec.workflow._transitions")
+
+    assert (
+        transitions._classify_iteration_transition
+        is transition_policy._classify_iteration_transition
+    )
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

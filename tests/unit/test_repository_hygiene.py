@@ -3085,6 +3085,9 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/optimize.py": "Public runner implementation",
         "gpurec/workflow/_run_state.py": "Internal optimizer run-state plumbing",
         "gpurec/workflow/_transition_types.py": "Internal workflow transition DTOs",
+        "gpurec/workflow/_transition_policy.py": (
+            "Internal pure workflow transition classification policy"
+        ),
         "gpurec/workflow/_route_defaults.py": (
             "Internal production route/default policy helper"
         ),
@@ -3148,6 +3151,11 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/_transition_types.py": (
             "Internal workflow transition DTOs",
             "private transition data containers",
+            "not a public workflow API surface",
+        ),
+        "gpurec/workflow/_transition_policy.py": (
+            "Private workflow transition classification policy",
+            "execution side effects stay in",
             "not a public workflow API surface",
         ),
         "gpurec/workflow/_route_defaults.py": (
@@ -3243,6 +3251,7 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
     import gpurec.workflow as workflow_package
 
     assert "_transition_types" not in workflow_package.__all__
+    assert "_transition_policy" not in workflow_package.__all__
     assert "_route_defaults" not in workflow_package.__all__
     assert "_schedules" not in workflow_package.__all__
     assert "_config_io" not in workflow_package.__all__
