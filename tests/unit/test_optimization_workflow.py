@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import importlib
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +16,7 @@ import gpurec.workflow._evaluation as evaluation_module
 import gpurec.workflow._step_execution as step_execution_module
 import gpurec.workflow._step_runtime as step_runtime_module
 import gpurec.workflow._stopping_policy as stopping_policy_module
+import gpurec.workflow._transitions as transitions_module
 from gpurec import UniformChunkedReconModel
 from gpurec.workflow._batch_final_cache import BatchFinalCache
 from gpurec.workflow.config import RunConfig
@@ -1043,6 +1046,57 @@ def _transition_test_inputs(
     )
 
 
+def _import_transition_post_step_module():
+    module_name = "gpurec.workflow._transition_post_step"
+    if importlib.util.find_spec(module_name) is None:
+        pytest.skip(f"{module_name} has not been extracted yet")
+    return importlib.import_module(module_name)
+
+
+def test_post_step_transition_exports_are_identity_reexports():
+    post_step_module = _import_transition_post_step_module()
+
+    assert transitions_module.execute_step_status_transition is (
+        post_step_module.execute_step_status_transition
+    )
+    assert transitions_module.execute_iteration_post_step_transition is (
+        post_step_module.execute_iteration_post_step_transition
+    )
+
+
+def test_transition_post_step_does_not_import_transitions_module():
+    post_step_module = _import_transition_post_step_module()
+    module_file = getattr(post_step_module, "__file__", None)
+    assert module_file is not None
+    tree = ast.parse(Path(module_file).read_text())
+
+    forbidden_imports: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            forbidden_imports.extend(
+                (node.lineno, alias.name)
+                for alias in node.names
+                if alias.name == "gpurec.workflow._transitions"
+            )
+        if isinstance(node, ast.ImportFrom):
+            imports_transitions_submodule = (
+                node.module == "gpurec.workflow._transitions"
+                or (node.module == "gpurec.workflow")
+                and any(alias.name == "_transitions" for alias in node.names)
+                or node.level > 0
+                and (
+                    node.module == "_transitions"
+                    or node.module is None
+                    and any(alias.name == "_transitions" for alias in node.names)
+                )
+            )
+            if imports_transitions_submodule:
+                module = "." * node.level + (node.module or "")
+                forbidden_imports.append((node.lineno, module))
+
+    assert forbidden_imports == []
+
+
 def _execute_transition_for_test(
     tmp_path: Path,
     *,
@@ -1557,7 +1611,7 @@ def test_step_stopping_transition_saves_active_checkpoint_fields(tmp_path: Path)
     }
 
 
-def test_hessian_sgd_line_search_transition_resets_active_state(tmp_path: Path):
+def _hessian_sgd_line_search_case(tmp_path: Path, *, direct_post_step: bool):
     save_calls: list[dict[str, object]] = []
     objective_state = ObjectiveState(previous_objective=12.5, stable_loss_steps=2)
     batch_state = BatchRunState(
@@ -1582,38 +1636,80 @@ def test_hessian_sgd_line_search_transition_resets_active_state(tmp_path: Path):
         active_batch_count=1,
     )
     inputs.hessian_sgd_activate_line_search = True
+    model = SimpleNamespace()
+    evaluation = SimpleNamespace()
+    solver = SimpleNamespace(uses_warmup=lambda: False)
+    restart_state = RestartRunState(active_phase_index=2)
+    adaptive_state = SimpleNamespace(last_checked_converged_count=0)
+    planning_state = _transition_test_planning_state()
+    optimizer = object()
+    fd_newton_hessian_state = object()
+    ops = _transition_test_ops(save_calls)
 
-    result = apply_iteration_transition(
-        context=IterationTransitionContext(
-            config=config,
-            model=SimpleNamespace(),
-            evaluation=SimpleNamespace(),
-            solver=SimpleNamespace(uses_warmup=lambda: False),
-            objective_state=objective_state,
-            batch_state=batch_state,
-            restart_state=RestartRunState(active_phase_index=2),
-            lbfgsb_state=lbfgsb_state,
-            adaptive_state=SimpleNamespace(last_checked_converged_count=0),
-            planning_state=_transition_test_planning_state(),
-            optimizer=object(),
-            fd_newton_hessian_state=object(),
-            hessian_sgd_line_search_active=False,
-            hessian_sgd_low_accept_steps=2,
-            resume_info={"resume": "discard"},
-            batch_final_cache=None,
-            solver_stage_scope=True,
-            batchwise_hessian_sgd=True,
-            global_solver_warmup=False,
-            lbfgsb_loss_schedule=(),
-            current_phase="hessian-sgd",
-            best_checkpoint=tmp_path / "best.pt",
-            latest_checkpoint=tmp_path / "latest.pt",
-            checkpoint_every=1,
-            log_every=10,
-            ops=_transition_test_ops(save_calls),
-        ),
-        inputs=inputs,
+    transition_kwargs = dict(
+        config=config,
+        model=model,
+        evaluation=evaluation,
+        solver=solver,
+        objective_state=objective_state,
+        batch_state=batch_state,
+        restart_state=restart_state,
+        lbfgsb_state=lbfgsb_state,
+        adaptive_state=adaptive_state,
+        planning_state=planning_state,
+        optimizer=optimizer,
+        fd_newton_hessian_state=fd_newton_hessian_state,
+        hessian_sgd_line_search_active=False,
+        hessian_sgd_low_accept_steps=2,
+        resume_info={"resume": "discard"},
+        batch_final_cache=None,
+        solver_stage_scope=True,
+        batchwise_hessian_sgd=True,
+        global_solver_warmup=False,
+        lbfgsb_loss_schedule=(),
+        current_phase="hessian-sgd",
+        best_checkpoint=tmp_path / "best.pt",
+        latest_checkpoint=tmp_path / "latest.pt",
+        checkpoint_every=1,
+        ops=ops,
     )
+    if direct_post_step:
+        post_step_module = _import_transition_post_step_module()
+        result = post_step_module.execute_iteration_post_step_transition(
+            **transition_kwargs,
+            status=inputs.status,
+            step=inputs.step,
+            phase=inputs.phase,
+            row=inputs.row,
+            checkpoint_status=inputs.checkpoint_status,
+            hessian_sgd_activate_line_search=(
+                inputs.hessian_sgd_activate_line_search
+            ),
+            step_status=inputs.step_status,
+            can_lbfgsb_retry=inputs.can_lbfgsb_retry,
+            active_objective_scope=inputs.active_objective_scope,
+            active_batch_count=inputs.active_batch_count,
+            lbfgsb_high_kkt_status=inputs.lbfgsb_high_kkt_status,
+        )
+    else:
+        result = apply_iteration_transition(
+            context=IterationTransitionContext(
+                **transition_kwargs,
+                log_every=10,
+            ),
+            inputs=inputs,
+        )
+
+    return SimpleNamespace(
+        result=result,
+        save_calls=save_calls,
+        objective_state=objective_state,
+        batch_state=batch_state,
+    )
+
+
+def _assert_hessian_sgd_line_search_transition_result(case):
+    result = case.result
 
     assert result.status == {"status": "running", "reason": "running"}
     assert result.continue_loop is True
@@ -1623,20 +1719,34 @@ def test_hessian_sgd_line_search_transition_resets_active_state(tmp_path: Path):
     assert result.hessian_sgd_line_search_active is True
     assert result.hessian_sgd_low_accept_steps == 0
     assert result.resume_info == {}
-    assert objective_state.previous_objective is None
-    assert objective_state.stable_loss_steps == 0
-    assert batch_state.local_step == 0
-    assert batch_state.solver_stage == "full"
-    assert batch_state.best_nll is None
-    assert batch_state.best_step is None
-    assert batch_state.optimizer_batch_index is None
+    assert case.objective_state.previous_objective is None
+    assert case.objective_state.stable_loss_steps == 0
+    assert case.batch_state.local_step == 0
+    assert case.batch_state.solver_stage == "full"
+    assert case.batch_state.best_nll is None
+    assert case.batch_state.best_step is None
+    assert case.batch_state.optimizer_batch_index is None
     assert result.planning_state.current_phase == "hessian-sgd"
     assert result.planning_state.active_optimizer_batch_index is None
     assert result.planning_state.active_adagrad_restart_phase_index == 2
     assert result.planning_state.previous_objective is None
     assert result.planning_state.stable_loss_steps == 0
     assert result.planning_state.lbfgsb_fallback_used_count == 5
-    assert save_calls == []
+    assert case.save_calls == []
+
+
+def test_hessian_sgd_line_search_transition_resets_active_state(tmp_path: Path):
+    case = _hessian_sgd_line_search_case(tmp_path, direct_post_step=False)
+
+    _assert_hessian_sgd_line_search_transition_result(case)
+
+
+def test_direct_post_step_hessian_sgd_line_search_matches_wrapper_shape(
+    tmp_path: Path,
+):
+    case = _hessian_sgd_line_search_case(tmp_path, direct_post_step=True)
+
+    _assert_hessian_sgd_line_search_transition_result(case)
 
 
 @pytest.mark.parametrize(
