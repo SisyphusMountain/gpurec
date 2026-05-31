@@ -48,6 +48,7 @@ class SolverSettings:
 @dataclass(frozen=True)
 class ModelBatchSettings:
     family_chunk_size: int
+    family_chunk_requested: bool
     clade_budget: int | None
     batch_packing: str
     small_family_max_leaves: int

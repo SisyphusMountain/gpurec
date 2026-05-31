@@ -383,6 +383,11 @@ def test_internal_api_helper_modules_document_support_boundary():
             encoding="utf-8"
         )
     )
+    model_init_module = ast.parse(
+        (root / "gpurec" / "api" / "_model_init.py").read_text(
+            encoding="utf-8"
+        )
+    )
     resident_batch_module = ast.parse(
         (
             root / "gpurec" / "api" / "_model_resident_batches.py"
@@ -411,6 +416,7 @@ def test_internal_api_helper_modules_document_support_boundary():
     model_controls_doc = " ".join(
         (ast.get_docstring(model_controls_module) or "").split()
     )
+    model_init_doc = " ".join((ast.get_docstring(model_init_module) or "").split())
     resident_batch_doc = " ".join(
         (ast.get_docstring(resident_batch_module) or "").split()
     )
@@ -490,10 +496,18 @@ def test_internal_api_helper_modules_document_support_boundary():
     ):
         assert token in model_controls_doc
     for token in (
+        "Constructor setup helpers",
+        "internal support for ``gpurec.api`` model construction",
+        "not a public import surface",
+        "resident cache lifecycle stays in ``_resident_runtime``",
+    ):
+        assert token in model_init_doc
+    for token in (
         "Resident batch lifecycle wrappers",
         "internal support for ``gpurec.api`` model methods",
         "not a public import surface",
-        "construction, likelihood, and autograd stay in ``model``",
+        "likelihood and autograd stay in ``model``",
+        "constructor setup stays in private init/runtime helpers",
     ):
         assert token in resident_batch_doc
     for token in (
@@ -582,6 +596,7 @@ def test_internal_api_helper_modules_document_support_boundary():
     for module in (
         resident_runtime_module,
         model_controls_module,
+        model_init_module,
         resident_batch_module,
         theta_constraints_module,
     ):

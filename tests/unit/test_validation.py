@@ -99,6 +99,32 @@ def test_gene_recon_model_rejects_bool_float_controls_before_device_check(
         GeneReconModel(dataset=dataset, mode="global", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("dataset_mode", "requested_mode"),
+    [
+        ("global", "specieswise"),
+        ("specieswise", "genewise"),
+        ("genewise", "global"),
+    ],
+)
+def test_gene_recon_model_rejects_dataset_mode_flag_mismatch_before_device_check(
+    dataset_mode: str,
+    requested_mode: str,
+) -> None:
+    dataset = _fake_dataset_for_mode(dataset_mode)
+
+    with pytest.raises(
+        ValueError,
+        match="Dataset flags.*do not match requested mode",
+    ) as exc_info:
+        GeneReconModel(
+            dataset=dataset,  # type: ignore[arg-type]
+            mode=requested_mode,
+        )
+
+    assert "CUDA" not in str(exc_info.value)
+
+
 def test_gene_recon_model_clamp_rejects_bool_min_rate_before_mutation() -> None:
     model = SimpleNamespace(theta=torch.nn.Parameter(torch.tensor([0.0])))
 

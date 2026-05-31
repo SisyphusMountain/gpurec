@@ -11,11 +11,25 @@ from typing import Any, Sequence
 
 import torch
 
-from ._batch_specs import _build_batch_specs as _build_batch_specs_impl
+from ._batch_specs import (
+    _build_batch_specs as _build_batch_specs_impl,
+    _build_family_schedule_stats as _build_family_schedule_stats_impl,
+    _cancel_batch_specs_from_retained_rust as _cancel_batch_specs_from_retained_rust_impl,
+    _finish_batch_specs_from_retained_rust as _finish_batch_specs_from_retained_rust_impl,
+    _start_batch_specs_from_retained_rust as _start_batch_specs_from_retained_rust_impl,
+)
 from ._model_types import ActiveFamilyBatch, BatchMetadata
 from ._resident_cache import ResidentBatchCache, _RESIDENT_PREFETCH_WORKERS
-from ._static_builder import _build_batch_static_state as _build_batch_static_state_impl
+from ._static_builder import (
+    _build_batch_static_state as _build_batch_static_state_impl,
+    _build_static_state as _build_static_state_impl,
+    _metadata_for_full_static as _metadata_for_full_static_impl,
+)
 from ._validation import integer_value
+from ._warmup import (
+    _finish_cuda_context_warmup as _finish_cuda_context_warmup_impl,
+    _start_resident_uniform_kernel_warmup as _start_resident_uniform_kernel_warmup_impl,
+)
 from .autograd import ReconStaticState, _clear_pi_adjoint_runtime_cache
 
 
@@ -31,6 +45,100 @@ def _build_batch_static(model: Any, batch_idx: int) -> ReconStaticState:
     )
     model._apply_pi_adjoint_warmstart_config(static, clear_cache=False)
     return static
+
+
+def initialize_resident_state(model: Any) -> None:
+    dataset = model._dataset
+    mode = model._mode
+    model._static: ReconStaticState | None = None
+    model._batch_specs = []
+    model._current_batch_index = 0
+    model._family_schedule_stats = None
+
+    if model._batched_resident:
+        rust_specs_kwargs = dict(
+            mode=mode,
+            family_chunk_size=model.family_chunk_size,
+            clade_budget=model.clade_budget,
+            batch_packing=model.batch_packing,
+            max_wave_size=model.max_wave_size,
+            max_root_wave_size=model.max_root_wave_size,
+            max_dts_partial_rows=model.max_dts_partial_rows,
+            small_family_max_leaves=model.small_family_max_leaves,
+        )
+        rust_specs_handle = _start_batch_specs_from_retained_rust_impl(
+            dataset,
+            **rust_specs_kwargs,
+        )
+        resident_warmup = None
+        try:
+            if (
+                model.lazy_preprocess
+                and model.prefetch_batches != 0
+                and rust_specs_handle is not None
+            ):
+                resident_warmup = _start_resident_uniform_kernel_warmup_impl(
+                    model._resident_common_state.species_helpers,
+                    model._resident_common_state.ancestors_T,
+                    dtype=dataset.dtype,
+                    device=dataset.device,
+                )
+            rust_specs = _finish_batch_specs_from_retained_rust_impl(
+                rust_specs_handle,
+            )
+            rust_specs_handle = None
+        finally:
+            _finish_cuda_context_warmup_impl(resident_warmup)
+            _cancel_batch_specs_from_retained_rust_impl(rust_specs_handle)
+        if rust_specs is None:
+            model._family_schedule_stats = _build_family_schedule_stats_impl(
+                dataset,
+                batch_packing=model.batch_packing,
+                small_family_max_leaves=model.small_family_max_leaves,
+            )
+            model._batch_specs = _build_batch_specs_impl(
+                dataset,
+                mode=mode,
+                family_chunk_size=model.family_chunk_size,
+                clade_budget=model.clade_budget,
+                batch_packing=model.batch_packing,
+                max_wave_size=model.max_wave_size,
+                max_root_wave_size=model.max_root_wave_size,
+                max_dts_partial_rows=model.max_dts_partial_rows,
+                small_family_max_leaves=model.small_family_max_leaves,
+                schedule_stats=model._family_schedule_stats,
+            )
+        else:
+            model._batch_specs = rust_specs
+        model.batch_metadata = [spec.metadata for spec in model._batch_specs]
+        if not model._batch_specs:
+            raise ValueError("GeneReconModel requires at least one family")
+        model._resident_cache = ResidentBatchCache(
+            specs=model._batch_specs,
+            build_static=model._build_batch_static,
+            prefetch_batches=model.prefetch_batches,
+        )
+        model._resident_cache.ensure(0)
+        if model.lazy_preprocess:
+            model._resident_cache.schedule_prefetch()
+        else:
+            for batch_idx in range(1, len(model._batch_specs)):
+                model._resident_cache.ensure(batch_idx)
+    else:
+        model._resident_cache = None
+        model._static = _build_static_state_impl(
+            dataset,
+            origination_prior=model._origination_prior,
+            common_state=model._resident_common_state,
+            settings=model._settings,
+            max_wave_size=model.max_wave_size,
+            max_root_wave_size=model.max_root_wave_size,
+            max_dts_partial_rows=model.max_dts_partial_rows,
+        )
+        model.batch_metadata = [
+            _metadata_for_full_static_impl(dataset, mode=mode, static=model._static)
+        ]
+        model._apply_pi_adjoint_warmstart_config(model._static, clear_cache=False)
 
 
 def _shutdown_prefetch_executor_for_replan(model: Any) -> None:

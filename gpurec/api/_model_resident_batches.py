@@ -2,7 +2,8 @@
 
 This module is internal support for ``gpurec.api`` model methods, not a public
 import surface. It owns resident-batch selection, cache, prefetch, and streaming
-wrappers only; construction, likelihood, and autograd stay in ``model``.
+wrappers only; likelihood and autograd stay in ``model`` while constructor setup
+stays in private init/runtime helpers.
 """
 from __future__ import annotations
 

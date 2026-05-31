@@ -20,6 +20,7 @@ import gpurec.backtracking as backtracking
 import gpurec.core.preprocess_rust as preprocess_rust
 import gpurec.entropy as entropy
 import gpurec.api._model_builders as api_model_builders
+import gpurec.api._model_init as api_model_init
 import gpurec.api._model_resident_batches as api_model_resident_batches
 import gpurec.api._resident_runtime as api_resident_runtime
 import gpurec.api.model as api_model
@@ -4026,6 +4027,111 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
 
     with pytest.raises(ValueError, match=field):
         GeneReconModel(dataset=dataset, mode="global", **{field: value})
+
+
+def test_gene_recon_init_preserves_defaults_and_private_solver_attrs(monkeypatch):
+    dataset = SimpleNamespace(
+        genewise=False,
+        specieswise=False,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        S=2,
+        families=[object(), object()],
+        unnorm_row_max=torch.zeros(2, dtype=torch.float64),
+    )
+    dataset._species_helpers_for_mode = lambda *, device, dtype: (
+        {"names": ["s0", "s1"]},
+        torch.eye(2, dtype=dtype, device=device),
+    )
+    static = SimpleNamespace()
+    build_kwargs: dict[str, object] = {}
+
+    def fake_build_static_state(_dataset, **kwargs):
+        build_kwargs.update(kwargs)
+        return static
+
+    monkeypatch.setattr(
+        api_model_init,
+        "require_cuda_device",
+        lambda device, *, owner: torch.device(device),
+    )
+    monkeypatch.setattr(
+        api_resident_runtime,
+        "_build_static_state_impl",
+        fake_build_static_state,
+    )
+    monkeypatch.setattr(
+        api_resident_runtime,
+        "_metadata_for_full_static_impl",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    theta_init = torch.full((3,), -5.0, dtype=torch.float64)
+
+    model = GeneReconModel(
+        dataset=dataset,
+        mode=" Global ",
+        fixed_iters_E=4,
+        max_iters_E=8,
+        tol_E=1e-7,
+        fixed_iters_Pi=8,
+        neumann_terms=5,
+        adaptive_iters=True,
+        convergence_check_interval=6,
+        e_logsumexp_tol=2e-5,
+        pi_max_diff_tol=3e-5,
+        gradient_change_tol=4e-4,
+        gradient_change_rtol=5e-4,
+        use_pruning=False,
+        pruning_threshold=2e-6,
+        theta_init=theta_init,
+        max_wave_size=None,
+        max_root_wave_size=7,
+        max_dts_partial_rows=11,
+        shared_loss_batch_streams=2,
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache_update_mode="stage",
+        pi_fixed_point_relaxation=0.75,
+    )
+
+    assert model.mode == "global"
+    assert model._batched_resident is False
+    assert model.family_chunk_size == 0
+    assert model.clade_budget is None
+    assert model.batch_packing == "sequential"
+    assert model.small_family_max_leaves == 0
+    assert model.lazy_preprocess is False
+    assert model.prefetch_batches == 0
+    assert model.shared_loss_batch_streams == 2
+    assert model.max_wave_size is None
+    assert model.max_root_wave_size == 7
+    assert model.max_dts_partial_rows == 11
+    torch.testing.assert_close(model.theta.detach(), theta_init)
+    assert model.theta.detach().data_ptr() != theta_init.data_ptr()
+
+    assert model._settings.fixed_iters_E == 4
+    assert model._fixed_iters_E == 4
+    assert model._max_iters_E == 8
+    assert model._tol_E == pytest.approx(1e-7)
+    assert model._fixed_iters_Pi == 8
+    assert model._neumann_terms == 5
+    assert model._adaptive_iters is True
+    assert model._adaptive_neumann_terms is False
+    assert model._convergence_check_interval == 6
+    assert model._e_logsumexp_tol == pytest.approx(2e-5)
+    assert model._pi_max_diff_tol == pytest.approx(3e-5)
+    assert model._gradient_change_tol == pytest.approx(4e-4)
+    assert model._gradient_change_rtol == pytest.approx(5e-4)
+    assert model._use_pruning is False
+    assert model._pruning_threshold == pytest.approx(2e-6)
+    assert model._pi_adjoint_warmstart is True
+    assert model._pi_adjoint_cache_update_mode == "stage"
+    assert model._pi_fixed_point_relaxation == pytest.approx(0.75)
+
+    assert build_kwargs["settings"] is model._settings
+    assert build_kwargs["common_state"] is model._resident_common_state
+    assert static.pi_adjoint_warmstart is True
+    assert static.pi_adjoint_cache_update_mode == "stage"
+    assert static.pi_fixed_point_relaxation == pytest.approx(0.75)
 
 
 def test_gene_recon_prefetch_batches_normalization_preserves_aliases():

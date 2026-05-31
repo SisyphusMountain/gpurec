@@ -3,6 +3,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import gpurec.api._model_init as api_model_init
+import gpurec.api._resident_runtime as api_resident_runtime
 import gpurec.api.model as api_model
 import gpurec.api.uniform_chunked as uniform_chunked_api
 from gpurec.core.origination import (
@@ -178,18 +180,18 @@ def test_gene_recon_model_threads_prepared_origination_prior(monkeypatch):
         return static
 
     monkeypatch.setattr(
-        api_model,
+        api_model_init,
         "require_cuda_device",
         lambda device, *, owner: torch.device(device),
     )
     monkeypatch.setattr(
-        api_model,
+        api_resident_runtime,
         "_build_static_state_impl",
         fake_build_static_state,
     )
     monkeypatch.setattr(
-        api_model,
-        "_metadata_for_full_static",
+        api_resident_runtime,
+        "_metadata_for_full_static_impl",
         lambda *_args, **_kwargs: SimpleNamespace(),
     )
 
