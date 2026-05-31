@@ -176,6 +176,14 @@ def _classify_iteration_transition(
         )
 
     if lbfgsb_high_kkt_status is not None:
+        if can_lbfgsb_retry:
+            return IterationTransition(
+                continue_loop=True,
+                reset_optimizer=False,
+                save_latest=False,
+                save_best=False,
+                action="lbfgsb_retry",
+            )
         return IterationTransition(
             status=lbfgsb_high_kkt_status,
             break_loop=True,
@@ -1185,7 +1193,10 @@ def execute_iteration_post_step_transition(
         checkpoint_status=checkpoint_status,
         solver=solver,
         active_batch_count=active_batch_count,
-        solver_warmup_enabled=global_solver_warmup,
+        solver_warmup_enabled=(
+            global_solver_warmup
+            or (active_objective_scope and solver.uses_warmup())
+        ),
         lbfgsb_loss_schedule=lbfgsb_loss_schedule,
         best_checkpoint=best_checkpoint,
         latest_checkpoint=latest_checkpoint,
@@ -1297,7 +1308,7 @@ def _execute_iteration_full_transition(
         adagrad_restart_phase_next_index=adagrad_restart_phase_next_index,
         adagrad_restart_phase_next_start_step=adagrad_restart_phase_next_start_step,
         lbfgsb_loss_schedule_next_index=lbfgsb_loss_schedule_next_index,
-        lbfgsb_high_kkt_status=lbfgsb_high_kkt_status,
+        lbfgsb_high_kkt_status=None,
         projected_lbfgs_min_lr_reached=projected_lbfgs_min_lr_reached,
         hessian_sgd_activate_line_search=hessian_sgd_activate_line_search,
         step_status=None,

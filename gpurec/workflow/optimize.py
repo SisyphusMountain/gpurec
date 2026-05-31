@@ -94,7 +94,11 @@ from ._rows import (
     _IterationArtifactsInputs,
     _IterationArtifactsState,
 )
-from ._fd_newton import _FDNewtonHessianState
+from ._fd_newton import (
+    _FDNewtonHessianState,
+    _FDNewtonRuntime,
+    active_fd_newton_step as _active_fd_newton_step_impl,
+)
 from ._adaptive_rebatch import _AdaptiveRebatchState
 from ._runtime_helpers import (
     _clear_cached_solver_runtime_state,
@@ -562,6 +566,94 @@ class OptimizationRunner:
     ) -> None:
         self.solver_stage.configure_active_stage(model, stage)
 
+    def _make_optimizer(
+        self,
+        model: GeneReconModel,
+        phase: str,
+    ) -> torch.optim.Optimizer:
+        return _make_optimizer(self.config, model, phase)
+
+    def _evaluate_loss_only_probe(self, model: GeneReconModel) -> torch.Tensor:
+        return self.evaluation.evaluate_loss_only_probe(model)
+
+    def _evaluate_genewise_loss_vector_probe(
+        self,
+        model: GeneReconModel,
+        *,
+        active_batch: bool,
+    ) -> torch.Tensor:
+        return self.evaluation.evaluate_genewise_loss_vector_probe(
+            model,
+            active_batch=active_batch,
+        )
+
+    def _evaluate_active_genewise_vector_and_grad(
+        self,
+        model: GeneReconModel,
+        *,
+        solver_stage: str,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        return self.evaluation.evaluate_active_genewise_vector_and_grad(
+            model,
+            solver_stage=solver_stage,
+        )
+
+    def _evaluate_active_genewise_vector_grad_at_current_theta(
+        self,
+        model: GeneReconModel,
+        *,
+        solver_stage: str,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+        return self.evaluation.evaluate_active_genewise_vector_grad_at_current_theta(
+            model,
+            solver_stage=solver_stage,
+        )
+
+    def _active_fd_newton_step(
+        self,
+        model: GeneReconModel,
+        *,
+        solver_stage: str,
+        hessian_state: _FDNewtonHessianState | None = None,
+        update_hessian_with_bfgs: bool = True,
+        step_scale: float = 1.0,
+        use_line_search: bool = True,
+        reject_loss_increases_after_step: bool = False,
+        hessian_refresh_steps: int | None = None,
+        line_search_max_steps: int | None = None,
+    ) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
+        def set_model_theta(
+            model_arg: GeneReconModel,
+            theta: torch.Tensor,
+        ) -> None:
+            with torch.no_grad():
+                model_arg.theta.copy_(theta)
+
+        runtime = _FDNewtonRuntime(
+            config=self.config,
+            active_batch_indices=self.evaluation._active_batch_indices,
+            set_model_theta=set_model_theta,
+            evaluate_active_genewise_vector_grad_at_current_theta=(
+                self._evaluate_active_genewise_vector_grad_at_current_theta
+            ),
+            evaluate_genewise_loss_vector_probe=(
+                self._evaluate_genewise_loss_vector_probe
+            ),
+            projected_grad_inf=self.evaluation.projected_grad_inf,
+        )
+        return _active_fd_newton_step_impl(
+            runtime,
+            model,
+            solver_stage=solver_stage,
+            hessian_state=hessian_state,
+            update_hessian_with_bfgs=update_hessian_with_bfgs,
+            step_scale=step_scale,
+            use_line_search=use_line_search,
+            reject_loss_increases_after_step=reject_loss_increases_after_step,
+            hessian_refresh_steps=hessian_refresh_steps,
+            line_search_max_steps=line_search_max_steps,
+        )
+
     def _cache_active_batch_final_result(
         self,
         model: GeneReconModel,
@@ -708,6 +800,7 @@ class OptimizationRunner:
             batchwise_fd_newton=batchwise_fd_newton,
             batchwise_hessian_sgd=batchwise_hessian_sgd,
             clear_cached_solver_runtime_state=_clear_cached_solver_runtime_state,
+            make_optimizer=self._make_optimizer,
         )
         step_execution_context = _StepExecutionContext(
             config=config,
@@ -966,7 +1059,10 @@ class OptimizationRunner:
                 ),
                 validate_checkpoint_model_compatibility=validate_checkpoint_model_compatibility,
                 restore_model_theta_fn=restore_model_theta,
-                make_optimizer_fn=_make_optimizer,
+                make_optimizer_fn=lambda config, model_arg, phase: self._make_optimizer(
+                    model_arg,
+                    phase,
+                ),
                 restore_optimizer_state_fn=self._restore_optimizer_state,
                 resume_state_from_payload_fn=_resume_state_from_payload,
                 save_status=self._save_status,
@@ -1587,6 +1683,14 @@ class OptimizationRunner:
                     < int(config.lbfgsb_best_retry_attempts)
                     and row_best_step is not None
                     and best_checkpoint.exists()
+                )
+                planning_state = run_state.update_planning_state(
+                    current_phase=current_phase,
+                    optimizer=run_state.optimizer,
+                    active_optimizer_batch_index=batch_state.optimizer_batch_index,
+                    active_adagrad_restart_phase_index=(
+                        restart_state.active_phase_index
+                    ),
                 )
                 transition_context = run_state.sync_transition_context(
                     transition_context,

@@ -16,7 +16,6 @@ from ._phase import (
     _uses_adagrad_restart_prefix,
 )
 from ._phase_controller import _build_phase_for_step
-from ._optimizer_factory import _make_optimizer
 from ._solver_stage import SolverStageController
 from .config import AdagradRestartPhase, RunConfig
 
@@ -38,6 +37,7 @@ class _StepPlanningContext:
     batchwise_fd_newton: bool
     batchwise_hessian_sgd: bool
     clear_cached_solver_runtime_state: Callable[[GeneReconModel], None]
+    make_optimizer: Callable[[GeneReconModel, str], torch.optim.Optimizer]
 
 
 @dataclass
@@ -88,9 +88,7 @@ def prepare_initial_optimization_plan(
     start_step: int,
     optimization_stop_step: int,
     resume_payload: dict[str, Any] | None,
-    restore_optimizer_state: Callable[
-        [torch.optim.Optimizer, Any, str, Any | None], dict[str, Any]
-    ],
+    restore_optimizer_state: Callable[..., dict[str, Any]],
 ) -> _InitialOptimizationPlan:
     solver = context.solver
     config = context.config
@@ -186,7 +184,7 @@ def prepare_initial_optimization_plan(
         current_phase = _build_phase_for_step(config, start_step)
         active_adagrad_restart_phase_index = None
 
-    optimizer = _make_optimizer(config, model, current_phase)
+    optimizer = context.make_optimizer(model, current_phase)
     if initial_adagrad_restart_phase is not None:
         optimizer.param_groups[0]["lr"] = float(
             initial_adagrad_restart_phase.phase.lr,
@@ -200,8 +198,8 @@ def prepare_initial_optimization_plan(
         resume_info = restore_optimizer_state(
             optimizer,
             resume_payload.get("optimizer_state"),
-            current_phase,
-            resume_payload.get("optimizer_phase"),
+            current_phase=current_phase,
+            checkpoint_phase=resume_payload.get("optimizer_phase"),
         )
     else:
         resume_info = {"resume_optimizer_state": "missing"}
@@ -303,7 +301,7 @@ def select_step_optimization_plan(
             or active_optimizer_batch_index != active_batch_index
         ):
             current_phase = phase
-            optimizer = _make_optimizer(config, model, phase)
+            optimizer = context.make_optimizer(model, phase)
             active_optimizer_batch_index = active_batch_index
     elif _is_adagrad_restart_phase(phase):
         if adagrad_restart_active_phase is None:
@@ -319,7 +317,7 @@ def select_step_optimization_plan(
                 adagrad_restart_active_phase,
             )
             current_phase = phase
-            optimizer = _make_optimizer(config, model, phase)
+            optimizer = context.make_optimizer(model, phase)
             optimizer.param_groups[0]["lr"] = float(
                 adagrad_restart_active_phase.phase.lr,
             )
@@ -340,7 +338,7 @@ def select_step_optimization_plan(
             or active_optimizer_batch_index != active_batch_index
         ):
             current_phase = phase
-            optimizer = _make_optimizer(config, model, phase)
+            optimizer = context.make_optimizer(model, phase)
             active_optimizer_batch_index = active_batch_index
     elif optimizer is None or phase != current_phase:
         if (
@@ -353,7 +351,7 @@ def select_step_optimization_plan(
             stable_loss_steps = 0
             lbfgsb_fallback_used_count = 0
         current_phase = phase
-        optimizer = _make_optimizer(config, model, phase)
+        optimizer = context.make_optimizer(model, phase)
         active_optimizer_batch_index = None
 
     return _StepIterationPlan(
