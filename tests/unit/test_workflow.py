@@ -99,6 +99,7 @@ from gpurec.workflow.diagnostics import (
     write_csv,
     write_json_strict,
 )
+from gpurec.workflow._optimizer_factory import _make_optimizer
 from gpurec.workflow.optimize import OptimizationRunner, _write_rate_table
 from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
 
@@ -4440,6 +4441,34 @@ def test_recon_model_clamp_theta_rejects_invalid_rates(
         model_type.clamp_theta_(model, **kwargs)
 
 
+@pytest.mark.parametrize("model_type", [GeneReconModel, UniformChunkedReconModel])
+def test_recon_model_clamp_theta_clamps_in_place_to_log2_rate_bounds(
+    model_type: type[GeneReconModel] | type[UniformChunkedReconModel],
+):
+    model = SimpleNamespace(
+        theta=torch.nn.Parameter(
+            torch.tensor(
+                [
+                    math.log2(0.125),
+                    math.log2(0.5),
+                    math.log2(8.0),
+                ]
+            )
+        )
+    )
+    original_theta = model.theta
+    original_data_ptr = model.theta.data_ptr()
+
+    model_type.clamp_theta_(model, min_rate=0.25, max_rate=4.0)
+
+    assert model.theta is original_theta
+    assert model.theta.data_ptr() == original_data_ptr
+    torch.testing.assert_close(
+        model.theta.detach(),
+        torch.tensor([math.log2(0.25), math.log2(0.5), math.log2(4.0)]),
+    )
+
+
 def test_gene_recon_constructors_reject_cpu_device_before_io(tmp_path: Path):
     with pytest.raises(ValueError, match="requires a CUDA device"):
         GeneReconModel.from_trees(
@@ -7648,6 +7677,29 @@ def _optimizer_mode_history_rows(out_dir: Path):
         json.loads(line)
         for line in lines
     ]
+
+
+@pytest.mark.parametrize("phase", ["projected-lbfgs", "lbfgsb", "batched-lbfgs"])
+def test_optimizer_factory_uses_log2_rate_bounds_for_bounded_optimizers(
+    tmp_path: Path,
+    phase: str,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer=phase,
+        mode="genewise" if phase == "batched-lbfgs" else "global",
+        min_rate=0.25,
+        max_rate=4.0,
+    )
+    model = SimpleNamespace(
+        theta=torch.nn.Parameter(torch.zeros((2, 3), dtype=torch.float64))
+    )
+
+    optimizer = _make_optimizer(config, model, phase)
+
+    group = optimizer.param_groups[0]
+    assert group["lower_bound"] == pytest.approx(math.log2(config.min_rate))
+    assert group["upper_bound"] == pytest.approx(math.log2(config.max_rate))
 
 
 def test_optimization_runner_adagrad_mode_records_public_phase(tmp_path: Path):

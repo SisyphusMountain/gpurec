@@ -9,6 +9,13 @@ import torch
 
 import gpurec.workflow.model_factory as workflow_model_factory
 from gpurec.api import GeneReconModel
+from gpurec.api._theta_constraints import (
+    clamp_theta_rates_,
+    finite_theta_rate_bounds_log2,
+    projected_theta_gradient_and_free,
+    projected_theta_gradient_inf,
+    theta_rate_bounds_log2,
+)
 from gpurec.api._validation import (
     auto_int,
     auto_nonnegative_int,
@@ -99,6 +106,59 @@ def test_gene_recon_model_clamp_rejects_bool_min_rate_before_mutation() -> None:
         GeneReconModel.clamp_theta_(model, min_rate=True)  # type: ignore[arg-type]
 
     torch.testing.assert_close(model.theta.detach(), torch.tensor([0.0]))
+
+
+def test_theta_rate_bounds_log2_validates_and_converts_rates() -> None:
+    lower_bound, upper_bound = theta_rate_bounds_log2(0.25, 4.0)
+    unbounded_lower, unbounded_upper = theta_rate_bounds_log2(0.5, None)
+    finite_lower, finite_upper = finite_theta_rate_bounds_log2(0.25, 4.0)
+
+    assert lower_bound == pytest.approx(-2.0)
+    assert upper_bound == pytest.approx(2.0)
+    assert unbounded_lower == pytest.approx(-1.0)
+    assert unbounded_upper is None
+    assert finite_lower == pytest.approx(-2.0)
+    assert finite_upper == pytest.approx(2.0)
+
+
+def test_clamp_theta_rates_clamps_in_place_to_log2_bounds() -> None:
+    theta = torch.nn.Parameter(torch.tensor([-4.0, -1.0, 3.0]))
+    original = theta
+    original_data_ptr = theta.data_ptr()
+
+    clamp_theta_rates_(theta, min_rate=0.25, max_rate=4.0)
+
+    assert theta is original
+    assert theta.data_ptr() == original_data_ptr
+    torch.testing.assert_close(theta.detach(), torch.tensor([-2.0, -1.0, 2.0]))
+
+
+def test_projected_theta_gradient_matches_box_projection_map_at_rate_bounds() -> None:
+    lower_bound, upper_bound = -2.0, 2.0
+    theta = torch.tensor(
+        [lower_bound, lower_bound, 0.0, upper_bound, upper_bound],
+        dtype=torch.float64,
+    )
+    grad = torch.tensor([0.5, -0.5, 0.25, -0.5, 0.5], dtype=torch.float64)
+
+    projected, projected_inf = projected_theta_gradient_inf(
+        theta,
+        grad,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+    )
+    projected_with_free, free = projected_theta_gradient_and_free(
+        theta,
+        grad,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+    )
+
+    expected = theta - torch.clamp(theta - grad, min=lower_bound, max=upper_bound)
+    torch.testing.assert_close(projected, expected)
+    torch.testing.assert_close(projected_with_free, expected)
+    torch.testing.assert_close(free, expected.abs() > 0)
+    assert projected_inf == pytest.approx(float(expected.abs().amax().cpu()))
 
 
 def _fake_dataset_for_mode(

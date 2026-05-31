@@ -17,7 +17,6 @@ and exposes ``theta`` as an ``nn.Parameter`` so notebook users can use any
 """
 from __future__ import annotations
 
-import math
 import os
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -75,6 +74,7 @@ from ._theta_init import (
     _normalize_mode as _normalize_mode_impl,
     _validate_gene_dtype,
 )
+from ._theta_constraints import clamp_theta_rates_
 from ._uniform_evaluator import (
     evaluate_resident_export_state,
     evaluate_resident_no_grad,
@@ -755,16 +755,7 @@ class GeneReconModel(
         Useful after ordinary PyTorch optimizer steps to keep rates in a
         numerically valid range.
         """
-        min_rate = positive_float("min_rate", min_rate)
-        if max_rate is not None:
-            max_rate = positive_float("max_rate", max_rate)
-        if max_rate is not None and max_rate < min_rate:
-            raise ValueError("max_rate must be greater than or equal to min_rate")
-        with torch.no_grad():
-            self.theta.clamp_(
-                min=math.log2(min_rate),
-                max=None if max_rate is None else math.log2(max_rate),
-            )
+        clamp_theta_rates_(self.theta, min_rate=min_rate, max_rate=max_rate)
 
     @property
     def n_species(self) -> int:

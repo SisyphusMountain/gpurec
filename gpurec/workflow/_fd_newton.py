@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
 
+from gpurec.api._theta_constraints import (
+    finite_theta_rate_bounds_log2,
+    projected_theta_gradient_and_free,
+    tensor_inf_norm,
+)
 from gpurec.api.model import GeneReconModel
 
 from .diagnostics import parameter_stats, tensor_stats
@@ -44,22 +48,6 @@ class _FDNewtonHessianState:
     active_grad: torch.Tensor
     active_loss: torch.Tensor
     updates_since_refresh: int = 0
-
-
-def _active_projected_grad_and_free(
-    active_theta: torch.Tensor,
-    active_grad: torch.Tensor,
-    *,
-    lower_bound: float,
-    upper_bound: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    projected = active_theta - torch.clamp(
-        active_theta - active_grad,
-        min=lower_bound,
-        max=upper_bound,
-    )
-    free = projected.abs() > 0
-    return projected, free
 
 
 def _fd_newton_state_matches(
@@ -152,8 +140,10 @@ def _refresh_fd_newton_hessian_state(
     config = runtime.config
     idx = runtime.active_batch_indices(model)  # noqa: SLF001
     theta0 = model.theta.detach().clone()
-    lower_bound = math.log2(config.min_rate)
-    upper_bound = math.log2(config.max_rate)
+    lower_bound, upper_bound = finite_theta_rate_bounds_log2(
+        config.min_rate,
+        config.max_rate,
+    )
     eps = float(config.fd_hessian_epsilon)
 
     if baseline_state is None:
@@ -187,7 +177,7 @@ def _refresh_fd_newton_hessian_state(
             f"got {cols}"
         )
 
-    projected_grad, free = _active_projected_grad_and_free(
+    projected_grad, free = projected_theta_gradient_and_free(
         active_theta0,
         active_grad0,
         lower_bound=lower_bound,
@@ -253,11 +243,7 @@ def _refresh_fd_newton_hessian_state(
         updates_since_refresh=0,
     )
     metrics0 = dict(metrics0)
-    metrics0["grad/projected_inf"] = (
-        float(projected_grad.detach().abs().amax().cpu())
-        if projected_grad.numel()
-        else 0.0
-    )
+    metrics0["grad/projected_inf"] = tensor_inf_norm(projected_grad)
     return state, metrics0, grad_evals
 
 
@@ -284,8 +270,10 @@ def active_fd_newton_step(
         raise ValueError("hessian_refresh_steps must be positive")
     idx = runtime.active_batch_indices(model)  # noqa: SLF001
     pi_adjoint_pending_discards = _discard_pi_adjoint_pending_caches(model)
-    lower_bound = math.log2(config.min_rate)
-    upper_bound = math.log2(config.max_rate)
+    lower_bound, upper_bound = finite_theta_rate_bounds_log2(
+        config.min_rate,
+        config.max_rate,
+    )
     damping = float(config.fd_newton_damping)
     grad_evals = 0
     loss_evals = 0
@@ -324,17 +312,13 @@ def active_fd_newton_step(
             f"got {cols}"
         )
 
-    projected_grad, free = _active_projected_grad_and_free(
+    projected_grad, free = projected_theta_gradient_and_free(
         active_theta0,
         active_grad0,
         lower_bound=lower_bound,
         upper_bound=upper_bound,
     )
-    projected_grad_inf = (
-        float(projected_grad.detach().abs().amax().cpu())
-        if projected_grad.numel()
-        else 0.0
-    )
+    projected_grad_inf = tensor_inf_norm(projected_grad)
     row_active = free.any(dim=1)
     eye = torch.eye(cols, device=hessian.device, dtype=hessian.dtype).expand(rows, cols, cols)
     free_matrix = free[:, :, None] & free[:, None, :]
@@ -550,7 +534,15 @@ def active_fd_newton_step(
             metrics.update(tensor_stats("grad", model.theta.grad))
             metrics.update(parameter_stats(model.theta))
 
-    final_projected_grad, final_projected_grad_inf = runtime.projected_grad_inf(model, lower_bound=math.log2(config.min_rate), upper_bound=math.log2(config.max_rate))
+    lower_bound, upper_bound = finite_theta_rate_bounds_log2(
+        config.min_rate,
+        config.max_rate,
+    )
+    final_projected_grad, final_projected_grad_inf = runtime.projected_grad_inf(
+        model,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+    )
     active_projected_grad1 = final_projected_grad.index_select(0, idx)
     free_after = active_projected_grad1.abs() > 0
     if update_hessian_with_bfgs:

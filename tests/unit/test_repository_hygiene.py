@@ -388,6 +388,11 @@ def test_internal_api_helper_modules_document_support_boundary():
             root / "gpurec" / "api" / "_model_resident_batches.py"
         ).read_text(encoding="utf-8")
     )
+    theta_constraints_module = ast.parse(
+        (root / "gpurec" / "api" / "_theta_constraints.py").read_text(
+            encoding="utf-8"
+        )
+    )
     model_module = ast.parse(
         (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
     )
@@ -408,6 +413,9 @@ def test_internal_api_helper_modules_document_support_boundary():
     )
     resident_batch_doc = " ".join(
         (ast.get_docstring(resident_batch_module) or "").split()
+    )
+    theta_constraints_doc = " ".join(
+        (ast.get_docstring(theta_constraints_module) or "").split()
     )
     family_layout_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
@@ -488,6 +496,12 @@ def test_internal_api_helper_modules_document_support_boundary():
         "construction, likelihood, and autograd stay in ``model``",
     ):
         assert token in resident_batch_doc
+    for token in (
+        "Internal theta bound helpers",
+        "support code for ``gpurec.api`` and ``gpurec.workflow``",
+        "not a standalone public import surface",
+    ):
+        assert token in theta_constraints_doc
 
     extracted_methods = {
         "_apply_pi_adjoint_warmstart_config",
@@ -565,7 +579,12 @@ def test_internal_api_helper_modules_document_support_boundary():
         }
     )
 
-    for module in (resident_runtime_module, model_controls_module, resident_batch_module):
+    for module in (
+        resident_runtime_module,
+        model_controls_module,
+        resident_batch_module,
+        theta_constraints_module,
+    ):
         for node in module.body:
             if isinstance(node, ast.ImportFrom) and node.module:
                 assert not node.module.startswith("gpurec.workflow")

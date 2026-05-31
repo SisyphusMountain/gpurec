@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 
+from gpurec.api._theta_constraints import projected_theta_gradient_inf
 from gpurec.api.autograd import _discard_pi_adjoint_pending_cache
 from gpurec.api.model import GeneReconModel
 
@@ -13,9 +14,7 @@ from .diagnostics import parameter_stats, solver_stats, tensor_stats
 from .model_factory import build_alerax_workflow_model
 from ._runtime_helpers import (
     _cached_static_states,
-    _clear_cached_solver_runtime_state,
     _clear_cuda_allocator_cache_if_needed,
-    _discard_pi_adjoint_pending_caches,
     _drop_cached_static_states_if_needed,
     _is_single_value_tensor,
     _tensor_shape,
@@ -337,11 +336,12 @@ class EvaluationOps:
         grad = model.theta.grad
         if grad is None:
             raise RuntimeError("projected gradient requested before gradient evaluation")
-        theta = model.theta.detach()
-        grad = grad.detach()
-        projected = theta - torch.clamp(theta - grad, min=lower_bound, max=upper_bound)
-        projected_inf = float(projected.detach().abs().amax().cpu()) if projected.numel() else 0.0
-        return projected, projected_inf
+        return projected_theta_gradient_inf(
+            model.theta,
+            grad,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+        )
 
     def evaluate_active_genewise_vector_grad_at_current_theta(
         self,

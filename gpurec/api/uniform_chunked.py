@@ -9,7 +9,6 @@ the precomputed gradient with respect to the three global DTL rates.
 """
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,13 +59,13 @@ from ._validation import (
     nonnegative_int_sequence as _normalize_nonnegative_int_sequence,
     optional_positive_int,
     positive_even_int,
-    positive_float,
     positive_int,
     positive_int_sequence as _normalize_positive_int_sequence,
     require_cuda_device,
     require_default_objective,
     theta_init_base_from_rates,
 )
+from ._theta_constraints import clamp_theta_rates_
 
 _as_auto_int = _auto_int
 
@@ -842,16 +841,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         min_rate: float = 1e-10,
         max_rate: float | None = None,
     ) -> None:
-        min_rate = positive_float("min_rate", min_rate)
-        if max_rate is not None:
-            max_rate = positive_float("max_rate", max_rate)
-        if max_rate is not None and max_rate < min_rate:
-            raise ValueError("max_rate must be greater than or equal to min_rate")
-        with torch.no_grad():
-            self.theta.clamp_(
-                min=math.log2(min_rate),
-                max=None if max_rate is None else math.log2(max_rate),
-            )
+        clamp_theta_rates_(self.theta, min_rate=min_rate, max_rate=max_rate)
 
 
 __all__ = [

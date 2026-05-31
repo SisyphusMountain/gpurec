@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
 
+from gpurec.api._theta_constraints import (
+    finite_theta_rate_bounds_log2,
+    tensor_inf_norm,
+)
 from gpurec.api.model import GeneReconModel
 from gpurec.api.autograd import _clear_pi_adjoint_runtime_cache
 
@@ -69,10 +72,14 @@ def _active_adam_step(
             solver_stage=solver_stage,
         )
     )
+    lower_bound, upper_bound = finite_theta_rate_bounds_log2(
+        config.min_rate,
+        config.max_rate,
+    )
     _, projected_grad_inf = evaluation.projected_grad_inf(
         model,
-        lower_bound=math.log2(config.min_rate),
-        upper_bound=math.log2(config.max_rate),
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
     )
     metrics["grad/projected_inf"] = projected_grad_inf
     metrics["solver/pi_adjoint_pending_cache_commits"] = float(
@@ -178,6 +185,10 @@ def execute_optimization_step(
     theta_step = 0.0
     cacheable_active_batch_final_result = False
     theta_before = model.theta.detach().clone()
+    lower_bound, upper_bound = finite_theta_rate_bounds_log2(
+        config.min_rate,
+        config.max_rate,
+    )
 
     def closure() -> torch.Tensor:
         nonlocal closure_evals, metrics
@@ -336,16 +347,12 @@ def execute_optimization_step(
                     closure_evals += 1
 
                 if torch.is_tensor(projected_grad):
-                    projected_inf = (
-                        float(projected_grad.detach().abs().amax().cpu())
-                        if projected_grad.numel()
-                        else 0.0
-                    )
+                    projected_inf = tensor_inf_norm(projected_grad)
                 else:
                     _, projected_inf = evaluation.projected_grad_inf(
                         model,
-                        lower_bound=math.log2(config.min_rate),
-                        upper_bound=math.log2(config.max_rate),
+                        lower_bound=lower_bound,
+                        upper_bound=upper_bound,
                     )
                 metrics["grad/projected_inf"] = projected_inf
                 metrics[f"optimizer/{metric_prefix}_grad_evals"] = float(
@@ -692,8 +699,8 @@ def execute_optimization_step(
             ):
                 _, projected_grad_inf = evaluation.projected_grad_inf(
                     model,
-                    lower_bound=math.log2(config.min_rate),
-                    upper_bound=math.log2(config.max_rate),
+                    lower_bound=lower_bound,
+                    upper_bound=upper_bound,
                 )
                 metrics["grad/projected_inf"] = projected_grad_inf
             if phase.startswith("adagrad-restarts:"):

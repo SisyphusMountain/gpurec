@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 import torch
 
+from gpurec.api._theta_constraints import finite_theta_rate_bounds_log2
 from gpurec.api.model import GeneReconModel
 
 from ._artifacts import (
@@ -175,10 +176,14 @@ def finalize_optimization(
                 baseline_at_check_iters=final_eval_at_check_iters,
             )
         )
+        lower_bound, upper_bound = finite_theta_rate_bounds_log2(
+            config.min_rate,
+            config.max_rate,
+        )
         _, final_projected_grad_inf = evaluation.projected_grad_inf(
             model,
-            lower_bound=math.log2(config.min_rate),
-            upper_bound=math.log2(config.max_rate),
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
         )
         final_metrics["grad/projected_inf"] = final_projected_grad_inf
         final_eval_s = time.perf_counter() - final_eval_started

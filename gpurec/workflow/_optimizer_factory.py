@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import math
-
 import torch
 
+from gpurec.api._theta_constraints import finite_theta_rate_bounds_log2
 from gpurec.api.model import GeneReconModel
 
 from ._phase import _is_adagrad_restart_phase
@@ -11,10 +10,7 @@ from .config import RunConfig
 
 
 def _bounded_optimizer_bounds(config: RunConfig) -> tuple[float, float]:
-    return (
-        math.log2(config.min_rate),
-        math.log2(config.max_rate),
-    )
+    return finite_theta_rate_bounds_log2(config.min_rate, config.max_rate)
 
 
 def _lbfgs_common_kwargs(config: RunConfig) -> dict[str, object]:
