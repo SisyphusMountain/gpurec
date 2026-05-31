@@ -4089,6 +4089,25 @@ def test_uniform_chunked_keeps_private_layout_aliases_unexported():
         assert name not in uniform_chunked.__all__
 
 
+def test_uniform_chunked_keeps_private_input_aliases_unexported():
+    import gpurec.api._uniform_chunked_inputs as inputs
+    import gpurec.api.uniform_chunked as uniform_chunked
+
+    moved_private_names = (
+        "_normalize_uniform_solver_kwargs",
+        "_selected_gene_paths",
+        "_validate_uniform_dtype",
+    )
+
+    assert uniform_chunked.__all__ == [
+        "UniformChunkMetadata",
+        "UniformChunkedReconModel",
+    ]
+    for name in moved_private_names:
+        assert getattr(uniform_chunked, name) is getattr(inputs, name)
+        assert name not in uniform_chunked.__all__
+
+
 def test_uniform_chunked_keeps_private_evaluator_aliases_unexported():
     import gpurec.api._uniform_chunked_eval as evaluator
     import gpurec.api.uniform_chunked as uniform_chunked
