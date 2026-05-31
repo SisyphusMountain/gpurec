@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import torch
 
@@ -74,6 +74,7 @@ from ._solver_stage import SolverStageController
 from ._transitions import (
     IterationTransitionContext,
     IterationTransitionInputs,
+    IterationTransitionOps,
     apply_iteration_transition,
 )
 from .config import (
@@ -373,25 +374,7 @@ class _OptimizationRunState:
         latest_checkpoint: Path,
         checkpoint_every: int | None,
         log_every: int,
-        active_batch_indices: Callable[[GeneReconModel], torch.Tensor],
-        clear_cached_static_states_if_needed: Callable[[GeneReconModel], None],
-        clear_cached_solver_runtime_state: Callable[[GeneReconModel], None],
-        load_checkpoint_fn: Callable[[Path], dict[str, Any]],
-        validate_checkpoint_model_compatibility: Callable[..., None],
-        restore_model_theta_fn: Callable[[GeneReconModel, dict[str, Any]], None],
-        make_optimizer_fn: Callable[
-            [RunConfig, GeneReconModel, str],
-            torch.optim.Optimizer,
-        ],
-        restore_optimizer_state_fn: Callable[
-            [torch.optim.Optimizer, Any, str | None, Any | None],
-            dict[str, Any],
-        ],
-        resume_state_from_payload_fn: Callable[[Path, dict[str, Any]], Any],
-        save_status: Callable[[Path, Any], None],
-        adaptive_checkpoint_status: Callable[[dict[str, Any]], dict[str, Any]],
-        print_progress_row: Callable[..., None],
-        fd_adam_warmup_steps: int,
+        ops: IterationTransitionOps,
         current_phase: str,
     ) -> IterationTransitionContext:
         return IterationTransitionContext(
@@ -420,19 +403,7 @@ class _OptimizationRunState:
             latest_checkpoint=latest_checkpoint,
             checkpoint_every=checkpoint_every,
             log_every=log_every,
-            active_batch_indices=active_batch_indices,
-            clear_cached_static_states_if_needed=clear_cached_static_states_if_needed,
-            clear_cached_solver_runtime_state=clear_cached_solver_runtime_state,
-            load_checkpoint_fn=load_checkpoint_fn,
-            validate_checkpoint_model_compatibility=validate_checkpoint_model_compatibility,
-            restore_model_theta_fn=restore_model_theta_fn,
-            make_optimizer_fn=make_optimizer_fn,
-            restore_optimizer_state_fn=restore_optimizer_state_fn,
-            resume_state_from_payload_fn=resume_state_from_payload_fn,
-            save_status=save_status,
-            adaptive_checkpoint_status=adaptive_checkpoint_status,
-            print_progress_row=print_progress_row,
-            fd_adam_warmup_steps=fd_adam_warmup_steps,
+            ops=ops,
         )
 
     def sync_transition_context(
@@ -1078,6 +1049,26 @@ class OptimizationRunner:
             run_state.apply_initial_plan(initial_plan)
             current_phase = run_state.current_phase
             planning_state = run_state.planning_state
+            transition_ops = IterationTransitionOps(
+                active_batch_indices=self.evaluation._active_batch_indices,
+                clear_cached_static_states_if_needed=_drop_cached_static_states_if_needed,
+                clear_cached_solver_runtime_state=_clear_cached_solver_runtime_state,
+                load_checkpoint=lambda path: load_checkpoint(path, map_location="cpu"),
+                validate_checkpoint_model_compatibility=(
+                    validate_checkpoint_model_compatibility
+                ),
+                restore_model_theta=restore_model_theta,
+                make_optimizer=lambda config, model_arg, phase: self._make_optimizer(
+                    model_arg,
+                    phase,
+                ),
+                restore_optimizer_state=self._restore_optimizer_state,
+                resume_state_from_payload=_resume_state_from_payload,
+                save_status=self._save_status,
+                adaptive_checkpoint_status=adaptive_state.checkpoint_status,
+                print_progress_row=_print_progress_row,
+                fd_adam_warmup_steps=config.fd_adam_warmup_steps,
+            )
             transition_context = run_state.make_transition_context(
                 config=config,
                 model=model,
@@ -1093,25 +1084,7 @@ class OptimizationRunner:
                 latest_checkpoint=latest_checkpoint,
                 checkpoint_every=config.checkpoint_every,
                 log_every=config.log_every,
-                active_batch_indices=self.evaluation._active_batch_indices,
-                clear_cached_static_states_if_needed=_drop_cached_static_states_if_needed,
-                clear_cached_solver_runtime_state=_clear_cached_solver_runtime_state,
-                load_checkpoint_fn=lambda path: load_checkpoint(
-                    path,
-                    map_location="cpu",
-                ),
-                validate_checkpoint_model_compatibility=validate_checkpoint_model_compatibility,
-                restore_model_theta_fn=restore_model_theta,
-                make_optimizer_fn=lambda config, model_arg, phase: self._make_optimizer(
-                    model_arg,
-                    phase,
-                ),
-                restore_optimizer_state_fn=self._restore_optimizer_state,
-                resume_state_from_payload_fn=_resume_state_from_payload,
-                save_status=self._save_status,
-                adaptive_checkpoint_status=adaptive_state.checkpoint_status,
-                print_progress_row=_print_progress_row,
-                fd_adam_warmup_steps=config.fd_adam_warmup_steps,
+                ops=transition_ops,
                 current_phase=current_phase,
             )
 

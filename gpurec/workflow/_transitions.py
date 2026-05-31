@@ -51,6 +51,23 @@ class IterationTransitionExecution:
     planning_state: _StepPlanningState
 
 
+@dataclass(frozen=True)
+class IterationTransitionOps:
+    active_batch_indices: Callable[[GeneReconModel], torch.Tensor]
+    clear_cached_static_states_if_needed: Callable[[GeneReconModel], None]
+    clear_cached_solver_runtime_state: Callable[[GeneReconModel], None]
+    load_checkpoint: Callable[[Path], dict[str, Any]]
+    validate_checkpoint_model_compatibility: Callable[..., None]
+    restore_model_theta: Callable[[GeneReconModel, dict[str, Any]], None]
+    make_optimizer: Callable[[RunConfig, GeneReconModel, str], torch.optim.Optimizer]
+    restore_optimizer_state: Callable[..., dict[str, Any]]
+    resume_state_from_payload: Callable[[Path, dict[str, Any]], Any]
+    save_status: Callable[..., None]
+    adaptive_checkpoint_status: Callable[[dict[str, Any]], dict[str, Any]]
+    print_progress_row: Callable[..., None]
+    fd_adam_warmup_steps: int
+
+
 def build_batch_transition_checkpoint_status(
     checkpoint_status: dict[str, Any],
     batch_state: Any,
@@ -272,11 +289,7 @@ def execute_iteration_transition(
     latest_checkpoint: Path,
     log_every: int,
     checkpoint_every: int | None,
-    fd_adam_warmup_steps: int,
-    save_status: Callable[[Path, Any], None],
-    adaptive_checkpoint_status: Callable[[dict[str, Any]], dict[str, Any]],
-    print_progress_row: Callable[..., None],
-    drop_cached_static_states_if_needed: Callable[[GeneReconModel], None],
+    ops: IterationTransitionOps,
 ) -> IterationTransitionExecution:
     status_out = dict(status) if status is not None else None
     resume_info_out = dict(resume_info)
@@ -291,7 +304,7 @@ def execute_iteration_transition(
 
     if transition.action == "adagrad_restart_terminal":
         if step % max(1, log_every) == 0:
-            print_progress_row(
+            ops.print_progress_row(
                 step=step,
                 phase=phase,
                 row=row,
@@ -300,13 +313,13 @@ def execute_iteration_transition(
                 row_best_nll=row_best_nll,
             )
         if checkpoint_every:
-            save_status(
+            ops.save_status(
                 latest_checkpoint,
                 model=model,
                 optimizer=optimizer_out,
                 step=step,
                 next_step=step + 1,
-                status=adaptive_checkpoint_status(
+                status=ops.adaptive_checkpoint_status(
                     {**checkpoint_status, **(status_out or {})}
                 ),
                 row=row,
@@ -315,7 +328,7 @@ def execute_iteration_transition(
 
     elif transition.action == "adagrad_restart_advance":
         if step % max(1, log_every) == 0:
-            print_progress_row(
+            ops.print_progress_row(
                 step=step,
                 phase=phase,
                 row=row,
@@ -324,13 +337,13 @@ def execute_iteration_transition(
                 row_best_nll=row_best_nll,
             )
         if checkpoint_every:
-            save_status(
+            ops.save_status(
                 latest_checkpoint,
                 model=model,
                 optimizer=None,
                 step=step,
                 next_step=step + 1,
-                status=adaptive_checkpoint_status(checkpoint_status),
+                status=ops.adaptive_checkpoint_status(checkpoint_status),
                 row=row,
                 optimizer_phase=phase,
             )
@@ -358,14 +371,14 @@ def execute_iteration_transition(
 
     elif transition.action == "adaptive_rebatch":
         adaptive_state.batch_plan_generation += 1
-        drop_cached_static_states_if_needed(model)
+        ops.clear_cached_static_states_if_needed(model)
         if transition.adaptive_rebatch_indices is not None:
             model.replan_resident_batches(
                 transition.adaptive_rebatch_indices,
             )
         batch_state.active_index = 0
         batch_state.reset_for_batch(warmup=False)
-        batch_state.local_step = fd_adam_warmup_steps
+        batch_state.local_step = ops.fd_adam_warmup_steps
         fd_newton_hessian_state_out = None
         hessian_sgd_line_search_active_out = False
         hessian_sgd_low_accept_steps_out = 0
@@ -389,13 +402,13 @@ def execute_iteration_transition(
                 best_nll_bits=None,
                 best_step=None,
             )
-            save_status(
+            ops.save_status(
                 latest_checkpoint,
                 model=model,
                 optimizer=None,
                 step=step,
                 next_step=step + 1,
-                status=adaptive_checkpoint_status(transition_status),
+                status=ops.adaptive_checkpoint_status(transition_status),
                 row=row,
                 optimizer_phase=phase,
             )
@@ -492,21 +505,7 @@ class IterationTransitionContext:
     latest_checkpoint: Path
     checkpoint_every: int | None
     log_every: int
-    active_batch_indices: Callable[[GeneReconModel], torch.Tensor]
-    clear_cached_static_states_if_needed: Callable[[GeneReconModel], None]
-    clear_cached_solver_runtime_state: Callable[[GeneReconModel], None]
-    load_checkpoint_fn: Callable[[Path], dict[str, Any]]
-    validate_checkpoint_model_compatibility: Callable[..., None]
-    restore_model_theta_fn: Callable[[GeneReconModel, dict[str, Any]], None]
-    make_optimizer_fn: Callable[[RunConfig, GeneReconModel, str], torch.optim.Optimizer]
-    restore_optimizer_state_fn: Callable[
-        [torch.optim.Optimizer, Any, str | None, Any | None], dict[str, Any]
-    ]
-    resume_state_from_payload_fn: Callable[[Path, dict[str, Any]], Any]
-    save_status: Callable[[Path, Any], None]
-    adaptive_checkpoint_status: Callable[[dict[str, Any]], dict[str, Any]]
-    print_progress_row: Callable[..., None]
-    fd_adam_warmup_steps: int
+    ops: IterationTransitionOps
 
 
 @dataclass
@@ -580,20 +579,7 @@ def execute_iteration_full_transition(
         row_best_nll=inputs.row_best_nll,
         row_best_step=inputs.row_best_step,
         lbfgsb_high_kkt_status=inputs.lbfgsb_high_kkt_status,
-        active_batch_indices=context.active_batch_indices,
-        clear_cached_static_states_if_needed=context.clear_cached_static_states_if_needed,
-        clear_cached_solver_runtime_state=context.clear_cached_solver_runtime_state,
-        load_checkpoint_fn=context.load_checkpoint_fn,
-        validate_checkpoint_model_compatibility=context.validate_checkpoint_model_compatibility,
-        restore_model_theta_fn=context.restore_model_theta_fn,
-        make_optimizer_fn=context.make_optimizer_fn,
-        restore_optimizer_state_fn=context.restore_optimizer_state_fn,
-        resume_state_from_payload_fn=context.resume_state_from_payload_fn,
-        save_status=context.save_status,
-        adaptive_checkpoint_status=context.adaptive_checkpoint_status,
-        drop_cached_static_states_if_needed=context.clear_cached_static_states_if_needed,
-        print_progress_row=context.print_progress_row,
-        fd_adam_warmup_steps=context.fd_adam_warmup_steps,
+        ops=context.ops,
         adaptive_rebatch_stop=inputs.adaptive_rebatch_stop,
         rejected_nonfinite_parameter_update=inputs.rejected_nonfinite_parameter_update,
         adaptive_rebatch_pending_indices=inputs.adaptive_rebatch_pending_indices,
@@ -641,17 +627,7 @@ def execute_step_status_transition(
     latest_checkpoint: Path,
     current_phase: str,
     checkpoint_every: int | None,
-    save_status: Callable[[Path, Any], None],
-    adaptive_checkpoint_status: Callable[[dict[str, Any]], dict[str, Any]],
-    load_checkpoint_fn: Callable[[Path], dict[str, Any]],
-    validate_checkpoint_model_compatibility: Callable[..., None],
-    restore_model_theta_fn: Callable[[GeneReconModel, dict[str, Any]], None],
-    make_optimizer_fn: Callable[[RunConfig, GeneReconModel, str], torch.optim.Optimizer],
-    restore_optimizer_state_fn: Callable[
-        [torch.optim.Optimizer, Any, str | None, Any | None], dict[str, Any]
-    ],
-    resume_state_from_payload_fn: Callable[[Path, dict[str, Any]], Any],
-    clear_cached_solver_runtime_state: Callable[[GeneReconModel], None],
+    ops: IterationTransitionOps,
     adaptive_state: _AdaptiveRebatchState,
 ) -> IterationStatusTransitionExecution:
     status_out = dict(status) if status is not None else None
@@ -697,17 +673,17 @@ def execute_step_status_transition(
                 best_nll_bits=None,
                 best_step=None,
             )
-            save_status(
+            ops.save_status(
                 latest_checkpoint,
                 model=model,
                 optimizer=None,
                 step=step,
                 next_step=step + 1,
-                status=adaptive_checkpoint_status(transition_status),
+                status=ops.adaptive_checkpoint_status(transition_status),
                 row=row,
                 optimizer_phase=phase,
             )
-            clear_cached_solver_runtime_state(model)
+            ops.clear_cached_solver_runtime_state(model)
             model.select_batch(batch_state.active_index)
             solver.configure_active_stage(
                 model,
@@ -754,8 +730,8 @@ def execute_step_status_transition(
         )
 
     if transition.action == "lbfgsb_retry":
-        retry_payload = load_checkpoint_fn(best_checkpoint)
-        validate_checkpoint_model_compatibility(
+        retry_payload = ops.load_checkpoint(best_checkpoint)
+        ops.validate_checkpoint_model_compatibility(
             path=best_checkpoint,
             config=config,
             model=model,
@@ -763,19 +739,19 @@ def execute_step_status_transition(
         )
         retry_phase = retry_payload.get("optimizer_phase")
         if retry_phase == "lbfgsb":
-            retry_state = resume_state_from_payload_fn(
+            retry_state = ops.resume_state_from_payload(
                 best_checkpoint,
                 retry_payload,
             )
-            restore_model_theta_fn(model, retry_payload)
+            ops.restore_model_theta(model, retry_payload)
             current_phase = "lbfgsb"
-            optimizer = make_optimizer_fn(
+            optimizer = ops.make_optimizer(
                 config,
                 model,
                 current_phase,
             )
             batch_state.optimizer_batch_index = None
-            restore_info = restore_optimizer_state_fn(
+            restore_info = ops.restore_optimizer_state(
                 optimizer,
                 retry_payload.get("optimizer_state"),
                 current_phase=current_phase,
@@ -840,13 +816,13 @@ def execute_step_status_transition(
                 "active_solver_stage": batch_state.solver_stage,
                 "active_batch_local_step": batch_state.local_step,
             }
-            save_status(
+            ops.save_status(
                 latest_checkpoint,
                 model=model,
                 optimizer=optimizer,
                 step=step,
                 next_step=step + 1,
-                status=adaptive_checkpoint_status(transition_status),
+                status=ops.adaptive_checkpoint_status(transition_status),
                 row=row,
                 optimizer_phase=phase,
             )
@@ -910,18 +886,7 @@ def execute_iteration_post_step_transition(
     active_objective_scope: bool,
     active_batch_count: int,
     lbfgsb_high_kkt_status: dict[str, str] | None,
-    active_batch_indices: Callable[[GeneReconModel], torch.Tensor],
-    clear_cached_solver_runtime_state: Callable[[GeneReconModel], None],
-    load_checkpoint_fn: Callable[[Path], dict[str, Any]],
-    validate_checkpoint_model_compatibility: Callable[..., None],
-    restore_model_theta_fn: Callable[[GeneReconModel, dict[str, Any]], None],
-    make_optimizer_fn: Callable[[RunConfig, GeneReconModel, str], torch.optim.Optimizer],
-    restore_optimizer_state_fn: Callable[
-        [torch.optim.Optimizer, Any, str | None, Any | None], dict[str, Any]
-    ],
-    resume_state_from_payload_fn: Callable[[Path, dict[str, Any]], Any],
-    save_status: Callable[[Path, Any], None],
-    adaptive_checkpoint_status: Callable[[dict[str, Any]], dict[str, Any]],
+    ops: IterationTransitionOps,
 ) -> IterationStatusTransitionExecution:
     status_out = dict(status) if status is not None else None
 
@@ -1029,7 +994,7 @@ def execute_iteration_post_step_transition(
                     batch_final_cache.cache(
                         model=model,
                         loss_vec=loss_vec_current,
-                        active_indices=active_batch_indices(model),
+                        active_indices=ops.active_batch_indices(model),
                     )
                 model.clear()
             warmup_switch = False
@@ -1071,7 +1036,7 @@ def execute_iteration_post_step_transition(
                     solver_stage=batch_state.solver_stage,
                 )
             )
-            idx = active_batch_indices(model)
+            idx = ops.active_batch_indices(model)
             fd_newton_hessian_state = _FDNewtonHessianState(
                 batch_index=int(model.current_batch_index),
                 solver_stage=batch_state.solver_stage,
@@ -1094,13 +1059,13 @@ def execute_iteration_post_step_transition(
                 best_nll_bits=None,
                 best_step=None,
             )
-            save_status(
+            ops.save_status(
                 latest_checkpoint,
                 model=model,
                 optimizer=None,
                 step=step,
                 next_step=step + 1,
-                status=adaptive_checkpoint_status(transition_status),
+                status=ops.adaptive_checkpoint_status(transition_status),
                 row=row,
                 optimizer_phase=phase,
             )
@@ -1188,15 +1153,7 @@ def execute_iteration_post_step_transition(
         latest_checkpoint=latest_checkpoint,
         current_phase=current_phase,
         checkpoint_every=checkpoint_every,
-        save_status=save_status,
-        adaptive_checkpoint_status=adaptive_checkpoint_status,
-        load_checkpoint_fn=load_checkpoint_fn,
-        validate_checkpoint_model_compatibility=validate_checkpoint_model_compatibility,
-        restore_model_theta_fn=restore_model_theta_fn,
-        make_optimizer_fn=make_optimizer_fn,
-        restore_optimizer_state_fn=restore_optimizer_state_fn,
-        resume_state_from_payload_fn=resume_state_from_payload_fn,
-        clear_cached_solver_runtime_state=clear_cached_solver_runtime_state,
+        ops=ops,
         adaptive_state=adaptive_state,
     )
     return IterationStatusTransitionExecution(
@@ -1254,22 +1211,7 @@ def _execute_iteration_full_transition(
     row_best_nll: float | None,
     row_best_step: int | None,
     lbfgsb_high_kkt_status: dict[str, str] | None,
-    active_batch_indices: Callable[[GeneReconModel], torch.Tensor],
-    clear_cached_static_states_if_needed: Callable[[GeneReconModel], None],
-    clear_cached_solver_runtime_state: Callable[[GeneReconModel], None],
-    load_checkpoint_fn: Callable[[Path], dict[str, Any]],
-    validate_checkpoint_model_compatibility: Callable[..., None],
-    restore_model_theta_fn: Callable[[GeneReconModel, dict[str, Any]], None],
-    make_optimizer_fn: Callable[[RunConfig, GeneReconModel, str], torch.optim.Optimizer],
-    restore_optimizer_state_fn: Callable[
-        [torch.optim.Optimizer, Any, str | None, Any | None], dict[str, Any]
-    ],
-    resume_state_from_payload_fn: Callable[[Path, dict[str, Any]], Any],
-    save_status: Callable[[Path, Any], None],
-    adaptive_checkpoint_status: Callable[[dict[str, Any]], dict[str, Any]],
-    drop_cached_static_states_if_needed: Callable[[GeneReconModel], None],
-    print_progress_row: Callable[..., None],
-    fd_adam_warmup_steps: int,
+    ops: IterationTransitionOps,
     # first-step transition inputs
     adaptive_rebatch_stop: bool,
     rejected_nonfinite_parameter_update: bool,
@@ -1279,7 +1221,7 @@ def _execute_iteration_full_transition(
     adagrad_restart_phase_next_start_step: int | None,
     lbfgsb_loss_schedule_next_index: int | None,
     projected_lbfgs_min_lr_reached: bool,
-    ) -> IterationStatusTransitionExecution:
+) -> IterationStatusTransitionExecution:
     pre_transition = _classify_iteration_transition(
         adaptive_rebatch_stop=adaptive_rebatch_stop,
         rejected_nonfinite_parameter_update=rejected_nonfinite_parameter_update,
@@ -1328,11 +1270,7 @@ def _execute_iteration_full_transition(
         latest_checkpoint=latest_checkpoint,
         log_every=log_every,
         checkpoint_every=checkpoint_every,
-        fd_adam_warmup_steps=fd_adam_warmup_steps,
-        save_status=save_status,
-        adaptive_checkpoint_status=adaptive_checkpoint_status,
-        print_progress_row=print_progress_row,
-        drop_cached_static_states_if_needed=drop_cached_static_states_if_needed,
+        ops=ops,
     )
 
     # Run post-step transition logic only when no early decision was reached
@@ -1387,14 +1325,5 @@ def _execute_iteration_full_transition(
         active_objective_scope=active_objective_scope,
         active_batch_count=active_batch_count,
         lbfgsb_high_kkt_status=lbfgsb_high_kkt_status,
-        active_batch_indices=active_batch_indices,
-        clear_cached_solver_runtime_state=clear_cached_solver_runtime_state,
-        load_checkpoint_fn=load_checkpoint_fn,
-        validate_checkpoint_model_compatibility=validate_checkpoint_model_compatibility,
-        restore_model_theta_fn=restore_model_theta_fn,
-        make_optimizer_fn=make_optimizer_fn,
-        restore_optimizer_state_fn=restore_optimizer_state_fn,
-        resume_state_from_payload_fn=resume_state_from_payload_fn,
-        save_status=save_status,
-        adaptive_checkpoint_status=adaptive_checkpoint_status,
+        ops=ops,
     )
