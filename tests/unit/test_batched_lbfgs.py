@@ -9,6 +9,9 @@ from torch.optim.lbfgs import _strong_wolfe as torch_strong_wolfe
 
 from gpurec.optimization import BatchedLBFGS
 from gpurec.optimization._batched_lbfgs_history import BatchedLBFGSHistoryMixin
+from gpurec.optimization._batched_lbfgs_strong_wolfe import (
+    BatchedLBFGSStrongWolfeMixin,
+)
 
 
 def test_batched_lbfgs_private_history_methods_remain_on_optimizer_instances():
@@ -16,7 +19,10 @@ def test_batched_lbfgs_private_history_methods_remain_on_optimizer_instances():
     optimizer = BatchedLBFGS([theta])
 
     assert BatchedLBFGSHistoryMixin in BatchedLBFGS.__mro__
+    assert BatchedLBFGSStrongWolfeMixin in BatchedLBFGS.__mro__
     for name in ("_direction", "_append_history"):
+        assert callable(getattr(optimizer, name, None)), name
+    for name in ("_evaluate_trial_with_grad", "_strong_wolfe"):
         assert callable(getattr(optimizer, name, None)), name
 
     flat_grad = torch.tensor([[1.0, -2.0], [3.0, -4.0]], dtype=torch.float64)

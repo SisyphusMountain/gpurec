@@ -615,6 +615,11 @@ def test_internal_optimization_helper_modules_document_support_boundary():
             root / "gpurec" / "optimization" / "_batched_lbfgs_history.py"
         ).read_text(encoding="utf-8")
     )
+    batched_strong_wolfe_module = ast.parse(
+        (
+            root / "gpurec" / "optimization" / "_batched_lbfgs_strong_wolfe.py"
+        ).read_text(encoding="utf-8")
+    )
     line_search_module = ast.parse(
         (
             root / "gpurec" / "optimization" / "_line_search_interpolation.py"
@@ -624,6 +629,9 @@ def test_internal_optimization_helper_modules_document_support_boundary():
     subspace_doc = " ".join((ast.get_docstring(subspace_module) or "").split())
     batched_history_doc = " ".join(
         (ast.get_docstring(batched_history_module) or "").split()
+    )
+    batched_strong_wolfe_doc = " ".join(
+        (ast.get_docstring(batched_strong_wolfe_module) or "").split()
     )
     line_search_doc = " ".join((ast.get_docstring(line_search_module) or "").split())
     fallback_docstrings = {
@@ -639,6 +647,11 @@ def test_internal_optimization_helper_modules_document_support_boundary():
     batched_history_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
         for node in batched_history_module.body
+        if isinstance(node, ast.ClassDef)
+    }
+    batched_strong_wolfe_docstrings = {
+        node.name: " ".join((ast.get_docstring(node) or "").split())
+        for node in batched_strong_wolfe_module.body
         if isinstance(node, ast.ClassDef)
     }
 
@@ -673,6 +686,18 @@ def test_internal_optimization_helper_modules_document_support_boundary():
     assert (
         "Private two-loop direction and curvature-history methods"
         in batched_history_docstrings["BatchedLBFGSHistoryMixin"]
+    )
+
+    for token in (
+        "Internal vectorized strong-Wolfe helpers",
+        "private optimization support",
+        "not a public import surface",
+        "Optimizer state, Armijo search, closure budgeting, and history updates stay in",
+    ):
+        assert token in batched_strong_wolfe_doc
+    assert (
+        "Private vectorized strong-Wolfe methods"
+        in batched_strong_wolfe_docstrings["BatchedLBFGSStrongWolfeMixin"]
     )
 
     for token in (
@@ -745,6 +770,7 @@ def test_internal_optimization_helper_modules_document_support_boundary():
         fallback_module,
         subspace_module,
         batched_history_module,
+        batched_strong_wolfe_module,
         line_search_module,
     ):
         for node in ast.walk(module):
