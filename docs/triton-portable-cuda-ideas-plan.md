@@ -32,9 +32,9 @@ CUDA improvement:
 
 Triton port idea:
 
-- Replace or supplement the current `sl1_ptr` and `sl2_ptr` scratch layout in `_wave_backward_uniform_2d_precompute_kernel`.
+- Replace or supplement the current `sl1_ptr` and `sl2_ptr` scratch layout in `_self_loop_coefficients_kernel`.
 - Store edge weight by child species index where possible.
-- In `_wave_backward_uniform_2d_jt_kernel`, read the child-indexed weight directly instead of loading the parent and choosing `sl1` versus `sl2`.
+- In `_self_loop_adjoint_update_kernel`, read the child-indexed weight directly instead of loading the parent and choosing `sl1` versus `sl2`.
 
 Expected benefit:
 

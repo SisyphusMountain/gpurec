@@ -439,6 +439,9 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     api_model = (root / "gpurec" / "api" / "model.py").read_text(
         encoding="utf-8"
     )
+    api_batch_specs = (
+        root / "gpurec" / "api" / "_batch_specs.py"
+    ).read_text(encoding="utf-8")
     backtracking_source = (root / "gpurec" / "backtracking.py").read_text(
         encoding="utf-8"
     )
@@ -506,7 +509,7 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     assert 'nonnegative_int("start", start)' in core_model
     assert 'optional_positive_int("max_families", max_families)' in core_model
     assert "math.isfinite(value)" not in api_model
-    assert 'return nonnegative_int("prefetch_batches", value)' in api_model
+    assert 'return nonnegative_int("prefetch_batches", value)' in api_batch_specs
     assert "positive_float(\"fixed_point_relaxation\", value)" in solver_validation
     assert "fixed_point_relaxation_value(fixed_point_relaxation)" in core_backward
     assert "fixed_point_relaxation_value(fixed_point_relaxation)" in wave_backward
@@ -785,6 +788,7 @@ def test_scripts_readme_ownership_matrix_covers_tracked_script_surface():
     }
     allowed_statuses = {
         "Checkout-local AleRax comparison helper.",
+        "Artifact validation utility.",
         "Checkout-local HOGENOM counts-init route benchmark.",
         "Checkout-local HOGENOM landscape visualizer.",
         "Checkout-local HOGENOM optimizer benchmark.",
@@ -801,6 +805,8 @@ def test_scripts_readme_ownership_matrix_covers_tracked_script_surface():
         "One-off branch-scale penalty/KKT analysis.",
         "One-off LaTeX report builder.",
         "Optional plotting helper.",
+        "Release hygiene utility.",
+        "Release-candidate long validation runner.",
         "Release metadata gate.",
         "Shared helper for legacy uniform launchers.",
     }
@@ -1381,7 +1387,7 @@ def test_active_mask_bfloat16_boundary_is_documented_as_private_helper():
         node
         for node in module.body
         if isinstance(node, ast.FunctionDef)
-        and node.name == "active_mask_from_rhs_absmax_fused"
+        and node.name == "compute_active_wave_rows_from_adjoint"
     )
     function_docstring = " ".join((ast.get_docstring(function) or "").split())
 
@@ -1642,7 +1648,7 @@ def test_effective_route_metadata_reuses_production_route_contract_source():
     assert "def production_default_route_contract()" in source
     assert "def production_default_route_contract_fields()" in source
     assert "production_default_route_contract_fields," in (
-        root / "gpurec" / "cli.py"
+        root / "gpurec" / "_cli_helpers.py"
     ).read_text(encoding="utf-8")
     assert "**_PRODUCTION_DEFAULT_ROUTE_CONTRACT" in source
     for token in (
@@ -1656,7 +1662,7 @@ def test_effective_route_metadata_reuses_production_route_contract_source():
 
 def test_config_template_reuses_production_optimizer_profile_source():
     root = Path(__file__).resolve().parents[2]
-    cli_source = (root / "gpurec" / "cli.py").read_text(encoding="utf-8")
+    cli_source = (root / "gpurec" / "_cli_helpers.py").read_text(encoding="utf-8")
     config_source = (root / "gpurec" / "workflow" / "config.py").read_text(
         encoding="utf-8"
     )
@@ -1947,7 +1953,7 @@ def test_operator_docs_distinguish_mode_default_from_production_route():
 
 def test_cli_route_gate_wording_is_centralized():
     root = Path(__file__).resolve().parents[2]
-    source = (root / "gpurec" / "cli.py").read_text(encoding="utf-8")
+    source = (root / "gpurec" / "_cli_helpers.py").read_text(encoding="utf-8")
     module = ast.parse(source)
     expected_constants = {
         "_MODE_DEFAULT_OPTIMIZER_HELP": (
@@ -2441,24 +2447,33 @@ def test_model_static_state_evaluation_is_thin_evaluator_wrapper():
     model_module = ast.parse(
         (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
     )
-    function = next(
+    imports_static_evaluator = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "_uniform_evaluator"
+        and any(
+            alias.name == "evaluate_resident_static_state"
+            and alias.asname == "_evaluate_static_state_impl"
+            for alias in node.names
+        )
+        for node in model_module.body
+    )
+    alias_assignment = next(
         node
         for node in model_module.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_evaluate_static_state"
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_evaluate_static_state"
+            for target in node.targets
+        )
     )
-    called_names = {
-        node.func.id
-        for node in ast.walk(function)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
 
-    assert "evaluate_resident_static_state" in called_names
-    for name in (
-        "evaluate_resident_gradient_forward",
-        "compute_resident_implicit_gradient",
-        "_clear_post_gradient_runtime_cache",
-    ):
-        assert name not in called_names
+    assert imports_static_evaluator
+    assert isinstance(alias_assignment.value, ast.Name)
+    assert alias_assignment.value.id == "_evaluate_static_state_impl"
+    assert all(
+        not (isinstance(node, ast.FunctionDef) and node.name == "_evaluate_static_state")
+        for node in model_module.body
+    )
 
 
 def test_model_reconciliation_state_uses_export_evaluator():
@@ -2676,7 +2691,9 @@ def test_dts_shape_precedence_is_documented_before_runtime_change():
 def test_log_every_docs_distinguish_stdout_from_history():
     root = Path(__file__).resolve().parents[2]
     readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
-    cli_source = (root / "gpurec" / "cli.py").read_text(encoding="utf-8")
+    cli_source = (root / "gpurec" / "_cli_commands.py").read_text(
+        encoding="utf-8"
+    )
     config_source = (
         root / "gpurec" / "workflow" / "config.py"
     ).read_text(encoding="utf-8")
@@ -2818,7 +2835,7 @@ def test_public_properties_and_batched_lbfgs_knobs_are_documented():
         assert token in lbfgs_doc
 
 
-def test_small_species_backward_limitation_is_documented_publicly():
+def test_small_species_backward_status_is_documented_publicly():
     root = Path(__file__).resolve().parents[2]
     readme = (root / "README.md").read_text(encoding="utf-8")
     docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
@@ -2835,12 +2852,12 @@ def test_small_species_backward_limitation_is_documented_publicly():
             assert token in text
 
     for token in (
-        "currently requires ``S > 256`` species",
-        "small-species backward fallback",
-        "requires CUDA, ``float32``/``float64``, and ``S > 256``",
-        'raise RuntimeError("Pi_wave_backward fused path requires S > 256")',
+        "The older small-species ``S > 256`` gate has",
+        "been removed so fused kernels can run end-to-end",
+        "retained fused path requires CUDA and ``float32``/``float64`` inputs",
     ):
         assert token in source
+    assert 'raise RuntimeError("Pi_wave_backward fused path requires S > 256")' not in source
 
 
 def test_project_readme_documents_leaf_species_mapping_contract():

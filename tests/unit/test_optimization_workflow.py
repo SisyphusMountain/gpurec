@@ -10,10 +10,9 @@ import torch
 import gpurec.api.uniform_chunked as uniform_chunked_module
 from gpurec import UniformChunkedReconModel
 from gpurec.workflow.config import RunConfig
+from gpurec.workflow._runtime_state import _ResumeState, _resume_state_from_payload
 from gpurec.workflow.optimize import (
     OptimizationRunner,
-    _ResumeState,
-    _resume_state_from_payload,
     _step_stopping_status,
 )
 

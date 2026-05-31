@@ -65,7 +65,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
 Small CUDA smoke, when GPU memory allows:
 
 ```bash
-pytest -q tests/kernels/test_wave_step_uniform_forward_kernel.py
+pytest -q tests/kernels/test_wave_step_forward_kernel.py
 pytest -q tests/integration/test_gene_recon_model.py::test_gene_recon_model_forward_backward_modes
 ```
 

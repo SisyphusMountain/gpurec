@@ -27,7 +27,7 @@ accumulated_rhs: [C, S]
 
 It is the wave-ordered adjoint of `Pi`.  Backward processes waves from roots
 toward leaves.  Each wave reads its own row block from `accumulated_rhs`, solves
-the self-loop adjoint for that wave, then scatters cross-clade contributions into
+the self-loop adjoint for that wave, then scatters split contributions into
 child rows of `accumulated_rhs` for earlier waves to consume.
 
 ## Where This File Sits
@@ -84,7 +84,7 @@ C      total clades in the current resident batch/chunk
 S      species-tree nodes
 K      number of waves
 W      rows in one wave
-n_ws   number of cross-clade split rows in one wave
+n_ws   number of split split rows in one wave
 G      number of family parameter rows
 ```
 
@@ -116,7 +116,7 @@ reduction, not by child destination for backward scatter.
 Forward uses `gpurec/core/kernels/wave_step.py`.  For each wave, it combines:
 
 1. A same-row self-loop update over species.
-2. Optional cross-clade DTS terms from child clade rows.
+2. Optional split DTS terms from child clade rows.
 3. Optional leaf terms.
 4. Uniform `Pibar` terms based on row sums minus ancestor-subtree sums.
 
@@ -146,16 +146,16 @@ for wave k from K - 1 down to 0:
     rhs_k = accumulated_rhs[ws:we]
     active_mask = absmax(rhs_k) >= pruning_threshold
 
-    if wave has cross-clade splits:
+    if wave has split splits:
         recompute dts_r for the wave
 
-    v_k, self_loop_param_contribs = wave_backward_uniform_fused(...)
+    v_k, self_loop_param_contribs = compute_wave_adjoint(...)
 
     reduce or directly accumulate self-loop parameter gradients
 
-    if wave has cross-clade splits:
-        dts_cross_backward_accum_fused(...)
-        uniform_cross_pibar_vjp_tree_from_ud_fused(...)
+    if wave has split splits:
+        accumulate_split_dts_vjp(...)
+        accumulate_split_pibar_vjp(...)
 ```
 
 After this, child rows in `accumulated_rhs` have received all adjoints from the
@@ -165,7 +165,7 @@ current wave, and the next reverse wave can read them.
 
 ### Active Mask
 
-`active_mask_from_rhs_absmax_fused()` builds a `[W]` boolean mask by reducing
+`compute_active_wave_rows_from_adjoint()` builds a `[W]` boolean mask by reducing
 `abs(rhs_k[w, :])`.  It is used to skip rows whose adjoint is effectively zero.
 
 This helper accepts bf16 for standalone experiments, but the public
@@ -176,15 +176,15 @@ This helper accepts bf16 for standalone experiments, but the public
 Public wrapper:
 
 ```text
-wave_backward_uniform_fused(...)
+compute_wave_adjoint(...)
 ```
 
 Implementation:
 
 ```text
-_wave_backward_uniform_2d_precompute_kernel
-_wave_backward_uniform_2d_jt_kernel
-_wave_backward_uniform_param_store_kernel
+_self_loop_coefficients_kernel
+_self_loop_adjoint_update_kernel
+_self_loop_parameter_gradient_kernel
 ```
 
 The self-loop is an implicit fixed-point recurrence inside one clade row.  The
@@ -208,13 +208,13 @@ global atomics.
 Public wrapper:
 
 ```text
-dts_cross_backward_accum_fused(...)
+accumulate_split_dts_vjp(...)
 ```
 
 Implementation:
 
 ```text
-_dts_cross_backward_accum_kernel
+_split_dts_vjp_kernel
 ```
 
 This runs one Triton program per split row.  It:
@@ -232,13 +232,13 @@ The direct child `Pi` adjoints are the first major atomic site.
 Public wrapper:
 
 ```text
-uniform_cross_pibar_vjp_tree_from_ud_fused(...)
+accumulate_split_pibar_vjp(...)
 ```
 
 Implementation:
 
 ```text
-_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel
+_pibar_vjp_kernel
 ```
 
 This runs one program per split side, so the grid has `2 * n_ws` programs.  Each
@@ -252,7 +252,7 @@ This is the second major `accumulated_rhs` atomic site.
 
 ### 1. Self-Loop Parameter Gradients
 
-In `_wave_backward_uniform_param_store_kernel`, when `ACCUM_GRADS=True`, programs
+In `_self_loop_parameter_gradient_kernel`, when `ACCUM_GRADS=True`, programs
 atomic-add directly into gradient tensors such as:
 
 ```text
@@ -262,7 +262,7 @@ grad_E
 grad_Ebar
 grad_E_s1
 grad_E_s2
-grad_mt
+grad_max_transfer_mat
 ```
 
 Why atomics are needed in this launch geometry:
@@ -280,13 +280,13 @@ traffic and reduction launches.
 
 Potential alternative:
 
-- Stage partial reductions as `[tiles, S]` or `[tiles]`, then run a second
+- Stage tiled reductions as `[tiles, S]` or `[tiles]`, then run a second
   reduction kernel.  This is likely the most plausible non-atomic replacement
   for dense shared gradients.
 
 ### 2. Cross-Clade Direct Child `Pi` Adjoint Accumulation
 
-In `_dts_cross_backward_accum_kernel`, the direct `Pi` adjoints write to:
+In `_split_dts_vjp_kernel`, the direct `Pi` adjoints write to:
 
 ```text
 accumulated_rhs[sl[i], s] += ...
@@ -348,7 +348,7 @@ The DTS kernel also atomically accumulates:
 ```text
 grad_log_pD
 grad_log_pS
-grad_mt
+grad_max_transfer_mat
 ```
 
 Layouts include shared scalar, shared species vector, family scalar, and
@@ -359,12 +359,12 @@ but they still need a reduction strategy.
 There is already one staged-reduction special case:
 
 ```text
-grad_mt_two_stage=True
+stage_max_transfer_gradient_by_tile=True
 ```
 
-For eligible shared `[S]` `grad_mt`, the DTS kernel atomically accumulates into
-`grad_mt_partial[tile, s]`, then `_dts_grad_mt_two_stage_reduce_kernel` reduces
-partials into `grad_mt`.  That pattern is a useful precedent for replacing
+For eligible shared `[S]` `grad_max_transfer_mat`, the DTS kernel atomically accumulates into
+`grad_max_transfer_tiles[tile, s]`, then `_dts_max_transfer_gradient_kernel` reduces
+tiles into `grad_max_transfer_mat`.  That pattern is a useful precedent for replacing
 other high-contention parameter atomics.
 
 Potential alternatives:
@@ -378,7 +378,7 @@ Potential alternatives:
 
 ### 4. Uniform Pibar VJP Final Add
 
-In `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`, each split-side
+In `_pibar_vjp_kernel`, each split-side
 program eventually writes:
 
 ```text
@@ -412,10 +412,10 @@ Any non-atomic rewrite must preserve these ordering constraints:
    have added into it.
 2. Within a wave, self-loop backward reads `rhs_k` as the incoming parent-row
    adjoint and writes parameter gradients plus `v_k`.
-3. Cross-clade DTS and Pibar VJP for the current wave add into child rows, not
+3. Split DTS and Pibar VJP for the current wave add into child rows, not
    into the current `rhs_k` row block for reuse by the same wave.
 4. If pruning is enabled, inactive parent rows must contribute zeros, and
-   staged Pibar side rows may be skipped only when their side-active mask proves
+   staged Pibar side rows may be skipped only when their side-active wave-row proves
    they are zero.
 5. The accumulation order is not numerically deterministic with atomics.  A
    staged reduction may slightly change fp32 results.  Existing tests use fp32
@@ -429,8 +429,8 @@ High-value GPU review questions:
    split metadata include child-destination grouping for a staged reduction?
 2. Is the Pibar VJP better launched per split side, as it is now, or per child
    row with gathered split-side inputs?
-3. Should DTS parameter gradients use the same two-stage partial pattern already
-   used for `grad_mt[S]`?
+3. Should DTS parameter gradients use the same two-stage tiled pattern already
+   used for `grad_max_transfer_mat[S]`?
 4. For self-loop parameter gradients, is direct atomic accumulation actually
    faster than materialized `aw*` plus reductions on the target workloads?
 5. Is there a good CUDA-specific implementation strategy that Triton cannot
@@ -468,7 +468,7 @@ gpurec/core/kernels/wave_step.py
     Forward wave kernels whose saved state is differentiated here.
 
 gpurec/core/kernels/dts_fused.py
-    Forward cross-clade DTS parent-reduced recompute used by backward.
+    Forward split DTS parent-reduced recompute used by backward.
 
 gpurec/core/batching.py
 crates/gpurec-preprocess/src/layout.rs

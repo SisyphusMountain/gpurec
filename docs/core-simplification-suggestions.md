@@ -54,16 +54,16 @@ Suggested cleanup:
 
 ### Always Use Parent-Reduced DTS
 
-`forward.py::_compute_dts_cross` still branches between:
+`forward.py::_compute_split_dts` still branches between:
 
-- `dts_fused_parent_reduced` for waves with ge2 clades.
+- `compute_dts_forward` for waves with ge2 clades.
 - `dts_fused` plus a materialized `[n_splits, S]` temporary for eq1-only waves.
 
 The lean path should prefer the parent-reduced route everywhere if benchmarks confirm no eq1-only regression.
 
 Suggested cleanup:
 
-- Make `_compute_dts_cross` always call `dts_fused_parent_reduced`.
+- Make `_compute_split_dts` always call `compute_dts_forward`.
 - Delete `dts_fused` and `_dts_fused_kernel` from `gpurec/core/kernels/dts_fused.py`.
 - Keep the eq1 direct-write kernel and ge2 two-stage reduced kernels.
 
@@ -93,8 +93,8 @@ This keeps uniform, genewise, and specieswise support without keeping separate l
 Suggested cleanup:
 
 - Require `compact_level_ptr`, `compact_level_parents`, `compact_level_child1`, and `compact_level_child2`.
-- Delete `_uniform_cross_pibar_vjp_tree_from_ud_kernel`.
-- Keep `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`.
+- Delete the legacy non-compact Pibar VJP kernel.
+- Keep `_pibar_vjp_kernel`.
 
 ## Runtime Policy Cleanup
 

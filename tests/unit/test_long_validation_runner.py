@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run_long_validation.py"
+SUBPROCESS_TIMEOUT = 30
 
 
 def _write_fake_gpurec(path: Path) -> None:
@@ -125,6 +126,7 @@ def test_long_validation_runner_writes_report(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(report.read_text(encoding="utf-8"))
@@ -161,6 +163,7 @@ def test_long_validation_runner_enforces_thresholds(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT,
     )
     assert result.returncode != 0
     assert "exceeds threshold" in result.stderr or "exceeds threshold" in result.stdout

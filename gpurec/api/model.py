@@ -17,26 +17,14 @@ and exposes ``theta`` as an ``nn.Parameter`` so notebook users can use any
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
-from threading import Lock
-from types import MappingProxyType
 from typing import Any, Optional, Sequence
 
 import torch
 
 from gpurec._validation import disabled_adaptive_neumann_terms_value
-from gpurec.core.batch_planning import (
-    normalize_batch_packing,
-    normalize_clade_budget,
-    normalize_family_chunk_size,
-    plan_family_batches,
-)
-from gpurec.core.gradient_accumulator import GradientAccumulator
 from gpurec.core.model import (
     GeneDataset,
     normalize_family_selection,
@@ -48,31 +36,63 @@ from gpurec.core.origination import (
     PreparedOriginationPrior,
     prepare_origination_prior,
 )
-from gpurec.core.forward import (
-    prepare_shared_pi_forward_constants,
-)
-from gpurec.core.parameter_layout import ParameterLayout
-from gpurec.core.likelihood import compute_origination_denominator
 
-from .autograd import (
-    solve_resident_e,
-    ReconStaticState,
-    _GeneReconFunction,
-    _clear_pi_adjoint_runtime_cache,
+from ._batch_specs import (
+    _normalize_family_chunk_size as _normalize_family_chunk_size_impl,
+    _normalize_clade_budget as _normalize_clade_budget_impl,
+    _normalize_batch_packing as _normalize_batch_packing_impl,
+    _normalize_prefetch_batches as _normalize_prefetch_batches_impl,
+    _normalize_gene_solver_kwargs as _normalize_gene_solver_kwargs_impl,
+    _normalize_pi_adjoint_cache_update_mode as _normalize_pi_adjoint_cache_update_mode_impl,
+    _build_batch_specs as _build_batch_specs_impl,
+    _build_batch_specs_from_retained_rust as _build_batch_specs_from_retained_rust_impl,
+    _start_batch_specs_from_retained_rust as _start_batch_specs_from_retained_rust_impl,
+    _finish_batch_specs_from_retained_rust as _finish_batch_specs_from_retained_rust_impl,
+    _cancel_batch_specs_from_retained_rust as _cancel_batch_specs_from_retained_rust_impl,
+    _should_use_compact_retained_preprocess as _should_use_compact_retained_preprocess_impl,
+    _build_family_schedule_stats as _build_family_schedule_stats_impl,
 )
-from ._family_layout import (
-    FamilyWaveInputs,
-    build_family_wave_layout,
-    family_schedule_summary,
-    family_wave_inputs,
-    schedule_family_waves,
+from ._model_config import SolverSettings
+from ._model_types import (
+    ActiveFamilyBatch,
+    BatchMetadata,
+    FamilyInput,
+    ReconciliationState,
+    _FamilyScheduleStats,
+    _ResidentBatchSpec,
+    _public_family_value,
+)
+from ._resident_cache import ResidentBatchCache
+from ._static_builder import (
+    ResidentCommonState,
+    _build_batch_static_state as _build_batch_static_state_impl,
+    _build_static_state as _build_static_state_impl,
+    _metadata_for_full_static as _metadata_for_full_static_impl,
+)
+from ._streaming import stream_full_batches as _stream_full_batches_impl
+from ._tensor_validation import (
+    _validate_genewise_loss_vector as _validate_genewise_loss_vector_impl,
+    _validate_genewise_gradient_matrix as _validate_genewise_gradient_matrix_impl,
+)
+from ._theta_init import (
+    _default_theta_init as _default_theta_init_impl,
+    _expand_theta_base,
+    _mode_to_flags as _mode_to_flags_impl,
+    _normalize_mode as _normalize_mode_impl,
+    _validate_gene_dtype,
 )
 from ._uniform_evaluator import (
     evaluate_resident_export_state,
     evaluate_resident_no_grad,
     evaluate_resident_no_grad_with_solved_e,
-    evaluate_resident_static_state,
+    evaluate_resident_static_state as _evaluate_static_state_impl,
 )
+from ._warmup import (
+    _finish_cuda_context_warmup as _finish_cuda_context_warmup_impl,
+    _start_cuda_context_warmup as _start_cuda_context_warmup_impl,
+    _start_resident_uniform_kernel_warmup as _start_resident_uniform_kernel_warmup_impl,
+)
+from .autograd import _GeneReconFunction, ReconStaticState, _clear_pi_adjoint_runtime_cache
 from ._validation import (
     bool_value,
     integer_value,
@@ -90,1169 +110,32 @@ from ._validation import (
 
 _UNSET = object()
 
-_MODE_MAP: dict[str, tuple[bool, bool]] = {
-    "global": (False, False),
-    "specieswise": (False, True),
-    "genewise": (True, False),
-}
-# The generated-tree lazy path streams many resident batches; three workers hide
-# static layout transfers without the contention seen at higher counts.
-_RESIDENT_PREFETCH_WORKERS = 3
 
 
-def _normalize_mode(mode: str) -> str:
-    normalized = str(mode).strip().lower()
-    if normalized not in _MODE_MAP:
-        raise ValueError(f"Unknown mode {mode!r}. Valid: {sorted(_MODE_MAP)}")
-    return normalized
+# Canonical helper implementation aliases from the split modules.
+_normalize_mode = _normalize_mode_impl
+_mode_to_flags = _mode_to_flags_impl
+_normalize_gene_solver_kwargs = _normalize_gene_solver_kwargs_impl
+_normalize_family_chunk_size = _normalize_family_chunk_size_impl
+_normalize_clade_budget = _normalize_clade_budget_impl
+_normalize_batch_packing = _normalize_batch_packing_impl
+_normalize_prefetch_batches = _normalize_prefetch_batches_impl
+_normalize_pi_adjoint_cache_update_mode = _normalize_pi_adjoint_cache_update_mode_impl
+_build_batch_specs = _build_batch_specs_impl
+_build_batch_specs_from_retained_rust = _build_batch_specs_from_retained_rust_impl
+_start_batch_specs_from_retained_rust = _start_batch_specs_from_retained_rust_impl
+_finish_batch_specs_from_retained_rust = _finish_batch_specs_from_retained_rust_impl
+_cancel_batch_specs_from_retained_rust = _cancel_batch_specs_from_retained_rust_impl
+_should_use_compact_retained_preprocess = _should_use_compact_retained_preprocess_impl
+_build_family_schedule_stats = _build_family_schedule_stats_impl
+_validate_genewise_loss_vector = _validate_genewise_loss_vector_impl
+_validate_genewise_gradient_matrix = _validate_genewise_gradient_matrix_impl
+_default_theta_init = _default_theta_init_impl
+
+# Keep canonical tensor validators and static-build helpers authoritative.
+_evaluate_static_state = _evaluate_static_state_impl
+_metadata_for_full_static = _metadata_for_full_static_impl
 
-
-def _mode_to_flags(mode: str) -> tuple[bool, bool]:
-    return _MODE_MAP[_normalize_mode(mode)]
-
-
-def _validate_gene_dtype(dtype: Any) -> torch.dtype:
-    if dtype not in (torch.float32, torch.float64):
-        raise ValueError(
-            f"dtype must be torch.float32 or torch.float64, got {dtype!r}"
-        )
-    return dtype
-
-
-def _default_theta_init(dataset: GeneDataset, mode: str) -> torch.Tensor:
-    base = math.log2(1e-10)
-    genewise, specieswise = _mode_to_flags(mode)
-    if genewise:
-        shape = (len(dataset.families), 3)
-    elif specieswise:
-        shape = (int(dataset.S), 3)
-    else:
-        shape = (3,)
-    return torch.full(shape, base, dtype=dataset.dtype, device=dataset.device)
-
-
-@dataclass(frozen=True)
-class BatchMetadata:
-    """Public metadata for one resident batch."""
-
-    batch_index: int
-    family_indices: tuple[int, ...]
-    family_names: tuple[str, ...]
-    gene_tree_paths: tuple[tuple[str, ...], ...]
-    family_count: int
-    clade_count: int
-    split_count: int
-    wave_count: int
-    max_wave_size: int
-    root_clade_rows: tuple[int, ...]
-    parameter_mapping: Mapping[str, Any]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "family_indices",
-            tuple(int(index) for index in self.family_indices),
-        )
-        object.__setattr__(
-            self,
-            "family_names",
-            tuple(str(name) for name in self.family_names),
-        )
-        object.__setattr__(
-            self,
-            "gene_tree_paths",
-            tuple(
-                tuple(str(path) for path in paths)
-                for paths in self.gene_tree_paths
-            ),
-        )
-        object.__setattr__(
-            self,
-            "root_clade_rows",
-            tuple(int(row) for row in self.root_clade_rows),
-        )
-        object.__setattr__(
-            self,
-            "parameter_mapping",
-            _immutable_public_value(self.parameter_mapping),
-        )
-
-
-@dataclass(frozen=True)
-class ActiveFamilyBatch:
-    """Location of one family in the currently selected resident batch."""
-
-    family_index: int
-    batch_index: int
-    local_family_index: int
-    clade_offset: int
-    metadata: BatchMetadata
-
-
-@dataclass(frozen=True)
-class FamilyInput:
-    """Read-only family metadata needed by workflow/export utilities."""
-
-    index: int
-    name: str
-    gene_tree_paths: tuple[str, ...]
-    leaf_species_map: Mapping[str, str]
-    clade_count: int
-    split_count: int
-    root_clade_id: int
-    ccp_helpers: Mapping[str, Any]
-    leaf_row_index: Any
-    leaf_col_index: Any
-    clade_leaf_labels: tuple[str, ...] = field(default_factory=tuple)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "gene_tree_paths",
-            tuple(str(path) for path in self.gene_tree_paths),
-        )
-        object.__setattr__(
-            self,
-            "leaf_species_map",
-            _immutable_public_value(
-                {
-                    str(gene): str(species)
-                    for gene, species in self.leaf_species_map.items()
-                }
-            ),
-        )
-        object.__setattr__(
-            self,
-            "ccp_helpers",
-            _immutable_public_value(self.ccp_helpers),
-        )
-        object.__setattr__(
-            self,
-            "clade_leaf_labels",
-            tuple(str(label) for label in self.clade_leaf_labels),
-        )
-
-
-@dataclass(frozen=True)
-class ReconciliationState:
-    """Solved reconciliation tensors for the currently selected model batch."""
-
-    e: torch.Tensor
-    pi: torch.Tensor
-    pibar: torch.Tensor | None
-    ebar: torch.Tensor | None
-    log_p_s: torch.Tensor
-    log_p_d: torch.Tensor
-    log_p_l: torch.Tensor
-    max_transfer: torch.Tensor
-    origination_probs: torch.Tensor | None
-    origination_prior: PreparedOriginationPrior | None = None
-
-
-@dataclass(frozen=True)
-class _ResidentBatchSpec:
-    index: int
-    family_indices: list[int]
-    layout_inputs: FamilyWaveInputs | None
-    waves: list[list[int]]
-    phases: list[int]
-    metadata: BatchMetadata
-    wave_layout: Mapping[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class _FamilyScheduleStats:
-    clade_counts: list[int]
-    split_counts: list[int]
-    leaf_counts: list[int] | None = None
-    nonleaf_counts: list[int] | None = None
-    schedule_depths: list[int] | None = None
-
-
-def _normalize_family_chunk_size(value: int | str | None) -> int:
-    return int(normalize_family_chunk_size(value))
-
-
-def _normalize_clade_budget(value: int | None) -> int | None:
-    return normalize_clade_budget(value)
-
-
-def _normalize_pi_adjoint_cache_update_mode(value: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError(
-            "pi_adjoint_cache_update_mode must be 'immediate' or 'stage'"
-        )
-    mode = value.strip().lower().replace("_", "-")
-    if mode not in {"immediate", "stage"}:
-        raise ValueError(
-            "pi_adjoint_cache_update_mode must be 'immediate' or 'stage'"
-        )
-    return mode
-
-
-def _normalize_batch_packing(value: str | None) -> str:
-    return normalize_batch_packing(value)
-
-
-def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int | str:
-    if value is None:
-        return "all" if lazy else 0
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in ("", "all"):
-            return "all"
-        if text in ("0", "none", "null", "false"):
-            return 0
-        try:
-            value = int(text)
-        except ValueError as exc:
-            raise ValueError("prefetch_batches must be non-negative or 'all'") from exc
-    try:
-        return nonnegative_int("prefetch_batches", value)
-    except ValueError as exc:
-        if "non-negative" in str(exc):
-            raise ValueError("prefetch_batches must be non-negative or 'all'") from exc
-        raise ValueError("prefetch_batches must be an integer or 'all'") from exc
-
-
-def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Validate public solver kwargs before CUDA setup or tree parsing."""
-    normalized = dict(kwargs)
-    removed_cache_kwargs = sorted(
-        set(normalized).intersection(
-            {"preprocess_cache_dir", "refresh_preprocess_cache"}
-        )
-    )
-    if removed_cache_kwargs:
-        names = ", ".join(removed_cache_kwargs)
-        raise TypeError(f"preprocess caching has been removed; unsupported: {names}")
-    if normalized.get("fixed_iters_E") is not None:
-        normalized["fixed_iters_E"] = positive_int(
-            "fixed_iters_E",
-            normalized["fixed_iters_E"],
-        )
-    if "fixed_iters_Pi" in normalized:
-        normalized["fixed_iters_Pi"] = positive_even_int(
-            "fixed_iters_Pi",
-            normalized["fixed_iters_Pi"],
-        )
-    if "neumann_terms" in normalized:
-        normalized["neumann_terms"] = positive_int(
-            "neumann_terms",
-            normalized["neumann_terms"],
-        )
-    if "convergence_check_interval" in normalized:
-        convergence_check_interval = positive_int(
-            "convergence_check_interval",
-            normalized["convergence_check_interval"],
-        )
-        normalized["convergence_check_interval"] = convergence_check_interval
-    if "max_iters_E" in normalized:
-        normalized["max_iters_E"] = positive_int(
-            "max_iters_E",
-            normalized["max_iters_E"],
-        )
-    for name in (
-        "tol_E",
-        "e_logsumexp_tol",
-        "pi_max_diff_tol",
-        "gradient_change_tol",
-        "gradient_change_rtol",
-        "pruning_threshold",
-    ):
-        if name in normalized:
-            normalized[name] = nonnegative_float(name, normalized[name])
-    if "adaptive_iters" in normalized:
-        normalized["adaptive_iters"] = bool_value(
-            "adaptive_iters",
-            normalized["adaptive_iters"],
-        )
-    if "adaptive_neumann_terms" in normalized:
-        normalized["adaptive_neumann_terms"] = disabled_adaptive_neumann_terms_value(
-            normalized["adaptive_neumann_terms"]
-        )
-    if "pi_adjoint_warmstart" in normalized:
-        normalized["pi_adjoint_warmstart"] = bool_value(
-            "pi_adjoint_warmstart",
-            normalized["pi_adjoint_warmstart"],
-        )
-    if "pi_adjoint_cache_update_mode" in normalized:
-        normalized["pi_adjoint_cache_update_mode"] = (
-            _normalize_pi_adjoint_cache_update_mode(
-                normalized["pi_adjoint_cache_update_mode"]
-            )
-        )
-    if "pi_fixed_point_relaxation" in normalized:
-        normalized["pi_fixed_point_relaxation"] = positive_float(
-            "pi_fixed_point_relaxation",
-            normalized["pi_fixed_point_relaxation"],
-        )
-    if "use_pruning" in normalized:
-        normalized["use_pruning"] = bool_value(
-            "use_pruning",
-            normalized["use_pruning"],
-        )
-    if "family_chunk_size" in normalized:
-        normalized["family_chunk_size"] = _normalize_family_chunk_size(
-            normalized["family_chunk_size"]
-        )
-    if "small_family_max_leaves" in normalized:
-        normalized["small_family_max_leaves"] = nonnegative_int(
-            "small_family_max_leaves",
-            normalized["small_family_max_leaves"],
-        )
-    if "clade_budget" in normalized:
-        normalized["clade_budget"] = _normalize_clade_budget(
-            normalized["clade_budget"]
-        )
-    for name in ("max_wave_size", "max_root_wave_size", "max_dts_partial_rows"):
-        if name in normalized:
-            normalized[name] = optional_positive_int(name, normalized[name])
-    if "batch_packing" in normalized:
-        normalized["batch_packing"] = _normalize_batch_packing(
-            normalized["batch_packing"]
-        )
-    if "lazy_preprocess" in normalized:
-        normalized["lazy_preprocess"] = bool_value(
-            "lazy_preprocess",
-            normalized["lazy_preprocess"],
-        )
-    lazy_preprocess = normalized.get("lazy_preprocess", False)
-    if "prefetch_batches" in normalized:
-        normalized["prefetch_batches"] = _normalize_prefetch_batches(
-            normalized["prefetch_batches"],
-            lazy=lazy_preprocess,
-        )
-    if "shared_loss_batch_streams" in normalized:
-        normalized["shared_loss_batch_streams"] = positive_int(
-            "shared_loss_batch_streams",
-            normalized["shared_loss_batch_streams"],
-        )
-    adaptive_iters = normalized.get("adaptive_iters", False)
-    convergence_check_interval = int(
-        normalized.get("convergence_check_interval", 4)
-    )
-    if adaptive_iters and convergence_check_interval % 2 != 0:
-        raise ValueError("adaptive_iters requires an even convergence_check_interval")
-    return normalized
-
-
-def _parameter_mapping(
-    *,
-    mode: str,
-    dataset: GeneDataset,
-    family_indices: Sequence[int],
-) -> dict[str, Any]:
-    if mode == "global":
-        return {
-            "mode": "global",
-            "theta_shape": [3],
-            "shared": True,
-            "batch_theta_rows": [],
-        }
-    if mode == "specieswise":
-        return {
-            "mode": "specieswise",
-            "theta_shape": [int(dataset.S), 3],
-            "shared": True,
-            "batch_theta_rows": list(range(int(dataset.S))),
-        }
-    return {
-        "mode": "genewise",
-        "theta_shape": [len(dataset.families), 3],
-        "shared": False,
-        "batch_theta_rows": [int(i) for i in family_indices],
-    }
-
-
-def _family_index_chunks(
-    *,
-    total: int,
-    clade_counts: Sequence[int],
-    family_chunk_size: int,
-    clade_budget: int | None,
-    batch_packing: str = "sequential",
-    indices: Sequence[int] | None = None,
-    split_counts: Sequence[int] | None = None,
-    leaf_counts: Sequence[int] | None = None,
-    small_family_max_leaves: int | None = None,
-    nonleaf_counts: Sequence[int] | None = None,
-    schedule_depths: Sequence[int] | None = None,
-    max_wave_size: int | None = None,
-) -> list[list[int]]:
-    return [
-        plan.indices
-        for plan in plan_family_batches(
-            total=total,
-            clade_counts=clade_counts,
-            family_chunk_size=family_chunk_size,
-            clade_budget=clade_budget,
-            batch_packing=batch_packing,
-            indices=indices,
-            leaf_counts=leaf_counts,
-            small_family_max_leaves=small_family_max_leaves,
-            nonleaf_counts=nonleaf_counts,
-            schedule_depths=schedule_depths,
-            split_counts=split_counts,
-            max_wave_size=max_wave_size,
-        )
-    ]
-
-
-def _public_family_value(value: Any) -> Any:
-    if torch.is_tensor(value):
-        return value.detach().clone()
-    if isinstance(value, dict):
-        return {key: _public_family_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_public_family_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_public_family_value(item) for item in value)
-    return value
-
-
-def _immutable_public_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {
-                key: _immutable_public_value(item)
-                for key, item in value.items()
-            }
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(_immutable_public_value(item) for item in value)
-    return value
-
-
-def _build_family_schedule_stats(
-    dataset: GeneDataset,
-    *,
-    batch_packing: str,
-    small_family_max_leaves: int,
-) -> _FamilyScheduleStats:
-    ensure_full = getattr(dataset, "_ensure_full_families", None)
-    if callable(ensure_full):
-        ensure_full()
-    clade_counts = [int(fam["C"]) for fam in dataset.families]
-    split_counts = [int(fam["N_splits"]) for fam in dataset.families]
-    needs_depth_stats = _normalize_batch_packing(batch_packing) == "depth_first_fit"
-    needs_leaf_stats = needs_depth_stats or small_family_max_leaves > 0
-    if not needs_leaf_stats:
-        return _FamilyScheduleStats(
-            clade_counts=clade_counts,
-            split_counts=split_counts,
-        )
-
-    summaries = [
-        family_schedule_summary(fam["ccp_helpers"])
-        for fam in dataset.families
-    ]
-    return _FamilyScheduleStats(
-        clade_counts=clade_counts,
-        split_counts=split_counts,
-        leaf_counts=[int(summary["leaf_count"]) for summary in summaries],
-        nonleaf_counts=(
-            [int(summary["nonleaf_count"]) for summary in summaries]
-            if needs_depth_stats
-            else None
-        ),
-        schedule_depths=(
-            [int(summary["max_level"]) for summary in summaries]
-            if needs_depth_stats
-            else None
-        ),
-    )
-
-
-def _build_batch_specs(
-    dataset: GeneDataset,
-    *,
-    mode: str,
-    family_chunk_size: int,
-    clade_budget: int | None,
-    batch_packing: str,
-    max_wave_size: int | None,
-    max_root_wave_size: int | None,
-    max_dts_partial_rows: int | None,
-    small_family_max_leaves: int = 0,
-    family_indices: Sequence[int] | None = None,
-    schedule_stats: _FamilyScheduleStats | None = None,
-) -> list[_ResidentBatchSpec]:
-    if schedule_stats is None:
-        schedule_stats = _build_family_schedule_stats(
-            dataset,
-            batch_packing=batch_packing,
-            small_family_max_leaves=small_family_max_leaves,
-        )
-    chunks = _family_index_chunks(
-        total=len(dataset.families),
-        clade_counts=schedule_stats.clade_counts,
-        family_chunk_size=family_chunk_size,
-        clade_budget=clade_budget,
-        batch_packing=batch_packing,
-        indices=family_indices,
-        split_counts=schedule_stats.split_counts,
-        leaf_counts=schedule_stats.leaf_counts,
-        small_family_max_leaves=(
-            small_family_max_leaves if small_family_max_leaves > 0 else None
-        ),
-        nonleaf_counts=schedule_stats.nonleaf_counts,
-        schedule_depths=schedule_stats.schedule_depths,
-        max_wave_size=max_wave_size,
-    )
-    specs: list[_ResidentBatchSpec] = []
-    for batch_index, family_indices in enumerate(chunks):
-        layout_inputs = family_wave_inputs(dataset, family_indices)
-        cross_waves, cross_phases = schedule_family_waves(
-            layout_inputs,
-            max_wave_size=max_wave_size,
-            max_root_wave_size=max_root_wave_size,
-            max_dts_partial_rows=max_dts_partial_rows,
-        )
-
-        metadata = BatchMetadata(
-            batch_index=batch_index,
-            family_indices=[int(i) for i in family_indices],
-            family_names=[dataset.family_names[i] for i in family_indices],
-            gene_tree_paths=[list(dataset.gene_tree_paths[i]) for i in family_indices],
-            family_count=len(family_indices),
-            clade_count=layout_inputs.clade_count,
-            split_count=layout_inputs.split_count,
-            wave_count=len(cross_waves),
-            max_wave_size=max((len(w) for w in cross_waves), default=0),
-            root_clade_rows=layout_inputs.root_clade_rows,
-            parameter_mapping=_parameter_mapping(
-                mode=mode,
-                dataset=dataset,
-                family_indices=family_indices,
-            ),
-        )
-        specs.append(
-            _ResidentBatchSpec(
-                index=batch_index,
-                family_indices=[int(i) for i in family_indices],
-                layout_inputs=layout_inputs,
-                waves=cross_waves,
-                phases=cross_phases,
-                metadata=metadata,
-            )
-        )
-    return specs
-
-
-def _dtype_name_for_rust(dtype: torch.dtype) -> str:
-    if dtype == torch.float32:
-        return "float32"
-    if dtype == torch.float64:
-        return "float64"
-    raise RuntimeError(f"unsupported resident Rust layout dtype {dtype}")
-
-
-def _move_wave_layout_to_device(
-    value: Any,
-    *,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> Any:
-    if torch.is_tensor(value):
-        if value.dtype.is_floating_point:
-            return value.to(device=device, dtype=dtype).contiguous()
-        return value.to(device=device).contiguous()
-    if isinstance(value, list):
-        return [
-            _move_wave_layout_to_device(item, device=device, dtype=dtype)
-            for item in value
-        ]
-    if isinstance(value, Mapping):
-        return {
-            key: _move_wave_layout_to_device(item, device=device, dtype=dtype)
-            for key, item in value.items()
-        }
-    return value
-
-
-def _build_batch_specs_from_retained_rust(
-    dataset: GeneDataset,
-    *,
-    mode: str,
-    family_chunk_size: int,
-    clade_budget: int | None,
-    batch_packing: str,
-    max_wave_size: int | None,
-    max_root_wave_size: int | None,
-    max_dts_partial_rows: int | None,
-    small_family_max_leaves: int,
-) -> list[_ResidentBatchSpec] | None:
-    rust_preprocessed = getattr(dataset, "_rust_preprocessed", None)
-    if rust_preprocessed is None or mode == "genewise" or small_family_max_leaves:
-        return None
-    build_chunked_layouts = getattr(rust_preprocessed, "build_chunked_layouts", None)
-    if not callable(build_chunked_layouts):
-        return None
-
-    preprocess_cpu_cores = getattr(dataset, "_preprocess_cpu_cores", None)
-    payloads = build_chunked_layouts(
-        family_chunk_size=family_chunk_size,
-        clade_budget=clade_budget,
-        batch_packing=batch_packing,
-        max_wave_size=max_wave_size,
-        max_root_wave_size=max_root_wave_size,
-        max_dts_partial_rows=max_dts_partial_rows,
-        dtype=_dtype_name_for_rust(dataset.dtype),
-        num_threads=0 if preprocess_cpu_cores is None else int(preprocess_cpu_cores),
-        nonleaf_schedule_policy=(
-            "forward" if batch_packing == "clade_first_fit" else "auto"
-        ),
-        include_family_idx=(mode == "genewise"),
-    )
-    specs: list[_ResidentBatchSpec] = []
-    for batch_index, payload in enumerate(payloads):
-        family_indices = [int(index) for index in payload["indices"]]
-        wave_layout = dict(payload["wave_layout"])
-        root_clade_rows: list[int] = []
-        clade_offset = 0
-        for family_index in family_indices:
-            family = dataset.families[family_index]
-            root_clade_rows.append(int(family["root_clade_id"]) + clade_offset)
-            clade_offset += int(family["C"])
-        metadata = BatchMetadata(
-            batch_index=batch_index,
-            family_indices=family_indices,
-            family_names=[dataset.family_names[i] for i in family_indices],
-            gene_tree_paths=[list(dataset.gene_tree_paths[i]) for i in family_indices],
-            family_count=len(family_indices),
-            clade_count=int(payload["clades"]),
-            split_count=int(payload["splits"]),
-            wave_count=int(payload["waves"]),
-            max_wave_size=int(payload["max_wave"]),
-            root_clade_rows=root_clade_rows,
-            parameter_mapping=_parameter_mapping(
-                mode=mode,
-                dataset=dataset,
-                family_indices=family_indices,
-            ),
-        )
-        specs.append(
-            _ResidentBatchSpec(
-                index=batch_index,
-                family_indices=family_indices,
-                layout_inputs=None,
-                waves=[],
-                phases=[],
-                metadata=metadata,
-                wave_layout=wave_layout,
-            )
-        )
-    return specs
-
-
-def _retained_rust_layout_available(
-    dataset: GeneDataset,
-    *,
-    mode: str,
-    small_family_max_leaves: int,
-) -> bool:
-    rust_preprocessed = getattr(dataset, "_rust_preprocessed", None)
-    if rust_preprocessed is None or mode == "genewise" or small_family_max_leaves:
-        return False
-    return callable(getattr(rust_preprocessed, "build_chunked_layouts", None))
-
-
-def _start_batch_specs_from_retained_rust(
-    dataset: GeneDataset,
-    **kwargs: Any,
-) -> tuple[ThreadPoolExecutor, Future] | None:
-    if not _retained_rust_layout_available(
-        dataset,
-        mode=kwargs["mode"],
-        small_family_max_leaves=kwargs["small_family_max_leaves"],
-    ):
-        return None
-    executor = ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="gpurec-rust-layout",
-    )
-    return executor, executor.submit(_build_batch_specs_from_retained_rust, dataset, **kwargs)
-
-
-def _finish_batch_specs_from_retained_rust(
-    handle: tuple[ThreadPoolExecutor, Future] | None,
-) -> list[_ResidentBatchSpec] | None:
-    if handle is None:
-        return None
-    executor, future = handle
-    try:
-        return future.result()
-    finally:
-        executor.shutdown(wait=True, cancel_futures=True)
-
-
-def _cancel_batch_specs_from_retained_rust(
-    handle: tuple[ThreadPoolExecutor, Future] | None,
-) -> None:
-    if handle is None:
-        return
-    executor, _future = handle
-    executor.shutdown(wait=True, cancel_futures=True)
-
-
-def _should_use_compact_retained_preprocess(
-    mode: str,
-    solver_kwargs: Mapping[str, Any],
-) -> bool:
-    if mode == "genewise":
-        return False
-    small_family_max_leaves = solver_kwargs.get("small_family_max_leaves")
-    if (
-        small_family_max_leaves is not None
-        and int(small_family_max_leaves) != 0
-    ):
-        return False
-    return (
-        bool_value("lazy_preprocess", solver_kwargs.get("lazy_preprocess", False))
-        or solver_kwargs.get("family_chunk_size") is not None
-        or solver_kwargs.get("clade_budget") is not None
-    )
-
-
-def _warm_cuda_context(device: torch.device) -> None:
-    with torch.cuda.device(device):
-        # Exercise cuBLAS and common elementwise kernels while CPU preprocessing runs.
-        probe = torch.ones((64, 64), device=device, dtype=torch.float32)
-        warmed = torch.log2(torch.exp2((probe @ probe) * 0.001) + 1.0)
-        warmed.sum()
-        torch.cuda.synchronize(device)
-
-
-def _start_cuda_context_warmup(
-    device: torch.device,
-) -> tuple[ThreadPoolExecutor, Future] | None:
-    if device.type != "cuda" or not torch.cuda.is_available():
-        return None
-    executor = ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="gpurec-cuda-warmup",
-    )
-    return executor, executor.submit(_warm_cuda_context, device)
-
-
-def _finish_cuda_context_warmup(
-    handle: tuple[ThreadPoolExecutor, Future] | None,
-) -> None:
-    if handle is None:
-        return
-    executor, future = handle
-    try:
-        try:
-            future.result()
-        except Exception:
-            pass
-    finally:
-        executor.shutdown(wait=True, cancel_futures=True)
-
-
-def _warm_resident_uniform_kernels(
-    species_helpers: dict[str, Any],
-    ancestors_T: torch.Tensor | None,
-    *,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> None:
-    if device.type != "cuda" or not torch.cuda.is_available():
-        return
-    if ancestors_T is None:
-        return
-    try:
-        from gpurec.core.kernels.dts_fused import dts_fused_parent_reduced
-        from gpurec.core.kernels.wave_step import (
-            wave_step_uniform_initial_leaf_fused_into,
-            wave_pibar_uniform_parent_fused,
-            wave_step_uniform_fused_into,
-        )
-        from gpurec.core.likelihood import E_fixed_point
-        from gpurec.core.species import species_wave_topology
-
-        with torch.cuda.device(device):
-            S = int(species_helpers["S"])
-            topology = species_wave_topology(species_helpers, S=S, device=device)
-            sp_child1 = topology["sp_child1"]
-            sp_child2 = topology["sp_child2"]
-            sp_parent = topology["sp_parent"]
-            sp_subtree_start = topology["sp_subtree_start"]
-            sp_subtree_end = topology["sp_subtree_end"]
-            max_ancestor_depth = int(topology["max_ancestor_depth"])
-            W = 1
-            C = 2
-            Pi = torch.empty((C, S), dtype=dtype, device=device)
-            Pibar = torch.empty_like(Pi)
-            row_max = torch.empty((C,), dtype=dtype, device=device)
-            mt = torch.zeros((S,), dtype=dtype, device=device)
-            E = torch.full((S,), -1.0, dtype=dtype, device=device)
-            Ebar = torch.full((S,), -2.0, dtype=dtype, device=device)
-            DL = torch.full((S,), -3.0, dtype=dtype, device=device)
-            SL1 = torch.full((S,), -4.0, dtype=dtype, device=device)
-            SL2 = torch.full((S,), -5.0, dtype=dtype, device=device)
-            leaf_species = torch.zeros((C,), dtype=torch.long, device=device)
-            leaf_logp = torch.zeros((S,), dtype=dtype, device=device)
-            dts = torch.full((W, S), -10.0, dtype=dtype, device=device)
-
-            E_fixed_point(
-                species_helpers=species_helpers,
-                log_pS=leaf_logp,
-                log_pD=leaf_logp,
-                log_pL=leaf_logp,
-                max_transfer_mat=mt,
-                max_iters=1,
-                tolerance=-1.0,
-                warm_start_E=None,
-                dtype=dtype,
-                device=device,
-                ancestors_T=ancestors_T,
-                e_shape=(S,),
-            )
-            wave_step_uniform_fused_into(
-                Pi, Pibar, Pibar, 0, W, S,
-                mt, DL, Ebar, E, SL1, SL2,
-                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
-                None, None,
-                leaf_species_idx=leaf_species,
-                leaf_logp=leaf_logp,
-                has_leaf_term=True,
-                initial_state=True,
-            )
-            wave_step_uniform_initial_leaf_fused_into(
-                Pibar, 0, W, S,
-                mt, DL, Ebar, E, SL1, SL2,
-                sp_child1, sp_child2,
-                sp_subtree_start, sp_subtree_end,
-                leaf_species,
-                leaf_logp,
-            )
-            wave_step_uniform_fused_into(
-                Pibar, Pi, Pibar, 0, W, S,
-                mt, DL, Ebar, E, SL1, SL2,
-                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
-                None, dts,
-                leaf_species_idx=leaf_species,
-                leaf_logp=leaf_logp,
-                has_leaf_term=False,
-            )
-            wave_step_uniform_fused_into(
-                Pibar, Pi, Pibar, 0, W, S,
-                mt, DL, Ebar, E, SL1, SL2,
-                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
-                None, dts,
-                leaf_species_idx=leaf_species,
-                leaf_logp=leaf_logp,
-                has_leaf_term=False,
-                store_final_pibar=True,
-                final_pibar_row_max=row_max,
-            )
-            wave_pibar_uniform_parent_fused(
-                Pi, Pibar, 0, W, S,
-                mt, sp_parent, max_ancestor_depth,
-                row_max_out=row_max,
-            )
-            lefts = torch.zeros((1,), dtype=torch.long, device=device)
-            rights = torch.ones((1,), dtype=torch.long, device=device)
-            split_logp = torch.zeros((1,), dtype=dtype, device=device)
-            eq1_parent = torch.zeros((1,), dtype=torch.long, device=device)
-            ge2_ptr = torch.tensor([0, 1], dtype=torch.long, device=device)
-            ge2_parent = torch.zeros((1,), dtype=torch.long, device=device)
-            dts_fused_parent_reduced(
-                Pi, Pibar,
-                lefts, rights,
-                sp_child1, sp_child2,
-                leaf_logp, leaf_logp, split_logp,
-                W, 1, eq1_parent, ge2_ptr[:1], ge2_parent[:0],
-            )
-            dts_fused_parent_reduced(
-                Pi, Pibar,
-                lefts, rights,
-                sp_child1, sp_child2,
-                leaf_logp, leaf_logp, split_logp,
-                W, 0, eq1_parent[:0], ge2_ptr, ge2_parent,
-            )
-            torch.cuda.synchronize(device)
-    except Exception:
-        return
-
-
-def _start_resident_uniform_kernel_warmup(
-    species_helpers: dict[str, Any],
-    ancestors_T: torch.Tensor | None,
-    *,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> tuple[ThreadPoolExecutor, Future] | None:
-    if device.type != "cuda" or not torch.cuda.is_available():
-        return None
-    executor = ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="gpurec-resident-warmup",
-    )
-    return executor, executor.submit(
-        _warm_resident_uniform_kernels,
-        species_helpers,
-        ancestors_T,
-        dtype=dtype,
-        device=device,
-    )
-
-
-def _build_static_state(
-    dataset: GeneDataset,
-    *,
-    fixed_iters_E: Optional[int],
-    max_iters_E: int,
-    tol_E: float,
-    fixed_iters_Pi: int,
-    neumann_terms: int,
-    adaptive_iters: bool,
-    adaptive_neumann_terms: bool,
-    convergence_check_interval: int,
-    e_logsumexp_tol: float,
-    pi_max_diff_tol: float,
-    gradient_change_tol: float,
-    gradient_change_rtol: float,
-    use_pruning: bool,
-    pruning_threshold: float,
-    pi_fixed_point_relaxation: float,
-    origination_prior: PreparedOriginationPrior,
-    max_wave_size: Optional[int] = 8192,
-    max_root_wave_size: Optional[int] = None,
-    max_dts_partial_rows: Optional[int] = None,
-) -> ReconStaticState:
-    """Absorb the wave-layout boilerplate that lives in
-    ``experiments/validate_three_modes.py:100-149``.
-
-    Builds a single cross-family wave layout for the entire dataset and
-    moves species helpers (and ``ancestors_T`` for uniform mode) onto the
-    target device. The result is cached on the model and reused across
-    every ``forward()`` call.
-    """
-    device = dataset.device
-    dtype = dataset.dtype
-
-    # 1. Cross-family wave layout
-    family_layout = build_family_wave_layout(
-        family_wave_inputs(dataset, range(len(dataset.families))),
-        device=device,
-        dtype=dtype,
-        max_wave_size=max_wave_size,
-        max_root_wave_size=max_root_wave_size,
-        max_dts_partial_rows=max_dts_partial_rows,
-    )
-    wave_layout = family_layout.wave_layout
-
-    # 2. Species helpers on device.
-    species_helpers, ancestors_T = dataset._species_helpers_for_mode(
-        device=device, dtype=dtype,
-    )
-
-    # 3. Other static tensors
-    unnorm_row_max = dataset.unnorm_row_max.to(device=device, dtype=dtype)
-
-    return ReconStaticState(
-        device=device,
-        dtype=dtype,
-        wave_layout=wave_layout,
-        species_helpers=species_helpers,
-        unnorm_row_max=unnorm_row_max,
-        ancestors_T=ancestors_T,
-        genewise=bool(dataset.genewise),
-        specieswise=bool(dataset.specieswise),
-        origination_prior=origination_prior,
-        origination_probs=origination_prior.probs,
-        fixed_iters_E=fixed_iters_E,
-        max_iters_E=max_iters_E,
-        tol_E=tol_E,
-        fixed_iters_Pi=fixed_iters_Pi,
-        neumann_terms=neumann_terms,
-        adaptive_iters=adaptive_iters,
-        adaptive_neumann_terms=adaptive_neumann_terms,
-        convergence_check_interval=convergence_check_interval,
-        e_logsumexp_tol=e_logsumexp_tol,
-        pi_max_diff_tol=pi_max_diff_tol,
-        gradient_change_tol=gradient_change_tol,
-        gradient_change_rtol=gradient_change_rtol,
-        use_pruning=use_pruning,
-        pruning_threshold=pruning_threshold,
-        pi_fixed_point_relaxation=pi_fixed_point_relaxation,
-    )
-
-
-def _build_batch_static_state(
-    spec: _ResidentBatchSpec,
-    *,
-    dataset: GeneDataset,
-    species_helpers: dict[str, Any],
-    ancestors_T: torch.Tensor | None,
-    unnorm_row_max: torch.Tensor,
-    fixed_iters_E: Optional[int],
-    max_iters_E: int,
-    tol_E: float,
-    fixed_iters_Pi: int,
-    neumann_terms: int,
-    adaptive_iters: bool,
-    adaptive_neumann_terms: bool,
-    convergence_check_interval: int,
-    e_logsumexp_tol: float,
-    pi_max_diff_tol: float,
-    gradient_change_tol: float,
-    gradient_change_rtol: float,
-    use_pruning: bool,
-    pruning_threshold: float,
-    pi_fixed_point_relaxation: float,
-    origination_prior: PreparedOriginationPrior,
-) -> ReconStaticState:
-    device = dataset.device
-    dtype = dataset.dtype
-    if spec.wave_layout is None:
-        if spec.layout_inputs is None:
-            raise RuntimeError("resident batch spec is missing layout inputs")
-        family_layout = build_family_wave_layout(
-            spec.layout_inputs,
-            device=device,
-            dtype=dtype,
-            waves=spec.waves,
-            phases=spec.phases,
-        )
-        wave_layout = family_layout.wave_layout
-    else:
-        wave_layout = _move_wave_layout_to_device(
-            spec.wave_layout,
-            device=device,
-            dtype=dtype,
-        )
-    return ReconStaticState(
-        device=device,
-        dtype=dtype,
-        wave_layout=wave_layout,
-        species_helpers=species_helpers,
-        unnorm_row_max=unnorm_row_max,
-        ancestors_T=ancestors_T,
-        genewise=bool(dataset.genewise),
-        specieswise=bool(dataset.specieswise),
-        origination_prior=origination_prior,
-        origination_probs=origination_prior.probs,
-        fixed_iters_E=fixed_iters_E,
-        max_iters_E=max_iters_E,
-        tol_E=tol_E,
-        fixed_iters_Pi=fixed_iters_Pi,
-        neumann_terms=neumann_terms,
-        adaptive_iters=adaptive_iters,
-        adaptive_neumann_terms=adaptive_neumann_terms,
-        convergence_check_interval=convergence_check_interval,
-        e_logsumexp_tol=e_logsumexp_tol,
-        pi_max_diff_tol=pi_max_diff_tol,
-        gradient_change_tol=gradient_change_tol,
-        gradient_change_rtol=gradient_change_rtol,
-        use_pruning=use_pruning,
-        pruning_threshold=pruning_threshold,
-        pi_fixed_point_relaxation=pi_fixed_point_relaxation,
-        clear_runtime_after_backward=True,
-    )
-
-
-def _metadata_for_full_static(
-    dataset: GeneDataset,
-    *,
-    mode: str,
-    static: ReconStaticState,
-) -> BatchMetadata:
-    layout_inputs = family_wave_inputs(dataset, range(len(dataset.families)))
-    wave_metas = static.wave_layout["wave_metas"]
-    return BatchMetadata(
-        batch_index=0,
-        family_indices=list(range(len(dataset.families))),
-        family_names=list(dataset.family_names),
-        gene_tree_paths=[list(paths) for paths in dataset.gene_tree_paths],
-        family_count=len(dataset.families),
-        clade_count=int(static.wave_layout["C"]),
-        split_count=layout_inputs.split_count,
-        wave_count=len(wave_metas),
-        max_wave_size=max((int(meta["W"]) for meta in wave_metas), default=0),
-        root_clade_rows=layout_inputs.root_clade_rows,
-        parameter_mapping=_parameter_mapping(
-            mode=mode,
-            dataset=dataset,
-            family_indices=range(len(dataset.families)),
-        ),
-    )
-
-
-def _evaluate_static_state(
-    static: ReconStaticState,
-    theta: torch.Tensor,
-    *,
-    need_grad: bool,
-    per_family: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
-    return evaluate_resident_static_state(
-        static,
-        theta,
-        need_grad=need_grad,
-        per_family=per_family,
-    )
-
-
-def _validate_genewise_loss_vector(
-    name: str,
-    value: torch.Tensor,
-    *,
-    family_count: int,
-) -> torch.Tensor:
-    if not torch.is_tensor(value):
-        raise TypeError(f"{name} must be a torch.Tensor")
-    expected_shape = (int(family_count),)
-    actual_shape = tuple(int(dim) for dim in value.shape)
-    if actual_shape != expected_shape:
-        raise ValueError(
-            f"{name} must have shape {expected_shape}, got {actual_shape}"
-        )
-    return value
-
-
-def _validate_genewise_gradient_matrix(
-    name: str,
-    value: torch.Tensor,
-    *,
-    expected_shape: tuple[int, ...],
-) -> torch.Tensor:
-    if not torch.is_tensor(value):
-        raise TypeError(f"{name} must be a torch.Tensor")
-    actual_shape = tuple(int(dim) for dim in value.shape)
-    if actual_shape != expected_shape:
-        raise ValueError(
-            f"{name} must have shape {expected_shape}, got {actual_shape}"
-        )
-    return value
-
-
-def _validate_scalar_loss(name: str, value: torch.Tensor) -> torch.Tensor:
-    if not torch.is_tensor(value):
-        raise TypeError(f"{name} must be a torch.Tensor")
-    actual_shape = tuple(int(dim) for dim in value.shape)
-    if actual_shape != ():
-        raise ValueError(f"{name} must be scalar, got shape {actual_shape}")
-    return value
-
-
-def _validate_gradient_shape(
-    name: str,
-    value: torch.Tensor,
-    *,
-    expected_shape: tuple[int, ...],
-) -> torch.Tensor:
-    if not torch.is_tensor(value):
-        raise TypeError(f"{name} must be a torch.Tensor")
-    actual_shape = tuple(int(dim) for dim in value.shape)
-    if actual_shape != expected_shape:
-        raise ValueError(
-            f"{name} must have shape {expected_shape}, got {actual_shape}"
-        )
-    return value
 
 
 class _GeneReconFullLossFunction(torch.autograd.Function):
@@ -1429,6 +312,25 @@ class GeneReconModel(torch.nn.Module):
             dtype=dataset.dtype,
             family_count=len(dataset.families) if origination_probs is not None else None,
         )
+        self._settings = SolverSettings(
+            fixed_iters_E=fixed_iters_E,
+            max_iters_E=max_iters_E,
+            tol_E=tol_E,
+            fixed_iters_Pi=fixed_iters_Pi,
+            neumann_terms=neumann_terms,
+            adaptive_iters=adaptive_iters,
+            adaptive_neumann_terms=adaptive_neumann_terms,
+            convergence_check_interval=convergence_check_interval,
+            e_logsumexp_tol=e_logsumexp_tol,
+            pi_max_diff_tol=pi_max_diff_tol,
+            gradient_change_tol=gradient_change_tol,
+            gradient_change_rtol=gradient_change_rtol,
+            use_pruning=use_pruning,
+            pruning_threshold=pruning_threshold,
+            pi_adjoint_warmstart=pi_adjoint_warmstart,
+            pi_adjoint_cache_update_mode=pi_adjoint_cache_update_mode,
+            pi_fixed_point_relaxation=pi_fixed_point_relaxation,
+        )
         self.register_buffer("origination_probs", self._origination_prior.probs)
         self.family_chunk_size = family_chunk_size
         self.clade_budget = clade_budget
@@ -1447,36 +349,45 @@ class GeneReconModel(torch.nn.Module):
             theta_init = _default_theta_init(dataset, mode)
         self.theta = torch.nn.Parameter(theta_init.clone())
 
-        self._fixed_iters_E = fixed_iters_E
-        self._max_iters_E = max_iters_E
-        self._tol_E = tol_E
-        self._fixed_iters_Pi = fixed_iters_Pi
-        self._neumann_terms = neumann_terms
-        self._adaptive_iters = adaptive_iters
-        self._adaptive_neumann_terms = adaptive_neumann_terms
-        self._convergence_check_interval = convergence_check_interval
-        self._e_logsumexp_tol = float(e_logsumexp_tol)
-        self._pi_max_diff_tol = float(pi_max_diff_tol)
-        self._gradient_change_tol = float(gradient_change_tol)
-        self._gradient_change_rtol = float(gradient_change_rtol)
-        self._use_pruning = use_pruning
-        self._pruning_threshold = pruning_threshold
-        self._pi_adjoint_warmstart = pi_adjoint_warmstart
-        self._pi_adjoint_cache_update_mode = pi_adjoint_cache_update_mode
-        self._pi_fixed_point_relaxation = pi_fixed_point_relaxation
+        self._fixed_iters_E = self._settings.fixed_iters_E
+        self._max_iters_E = self._settings.max_iters_E
+        self._tol_E = float(self._settings.tol_E)
+        self._fixed_iters_Pi = self._settings.fixed_iters_Pi
+        self._neumann_terms = self._settings.neumann_terms
+        self._adaptive_iters = self._settings.adaptive_iters
+        self._adaptive_neumann_terms = self._settings.adaptive_neumann_terms
+        self._convergence_check_interval = self._settings.convergence_check_interval
+        self._e_logsumexp_tol = float(self._settings.e_logsumexp_tol)
+        self._pi_max_diff_tol = float(self._settings.pi_max_diff_tol)
+        self._gradient_change_tol = float(self._settings.gradient_change_tol)
+        self._gradient_change_rtol = float(self._settings.gradient_change_rtol)
+        self._use_pruning = self._settings.use_pruning
+        self._pruning_threshold = self._settings.pruning_threshold
+        self._pi_adjoint_warmstart = self._settings.pi_adjoint_warmstart
+        self._pi_adjoint_cache_update_mode = (
+            self._settings.pi_adjoint_cache_update_mode
+        )
+        self._pi_fixed_point_relaxation = self._settings.pi_fixed_point_relaxation
         self.max_wave_size = max_wave_size
         self.max_root_wave_size = max_root_wave_size
         self.max_dts_partial_rows = max_dts_partial_rows
 
         self._static: ReconStaticState | None = None
         self._batch_specs: list[_ResidentBatchSpec] = []
-        self._batch_statics: list[ReconStaticState | None] = []
-        self._batch_futures: dict[int, Future[ReconStaticState]] = {}
-        self._prefetch_executor: ThreadPoolExecutor | None = None
-        self._prefetch_closed = False
-        self._batch_lock = Lock()
         self._current_batch_index = 0
         self._family_schedule_stats: _FamilyScheduleStats | None = None
+        species_helpers, ancestors_T = dataset._species_helpers_for_mode(
+            device=dataset.device,
+            dtype=dataset.dtype,
+        )
+        self._resident_common_state = ResidentCommonState(
+            species_helpers=species_helpers,
+            ancestors_T=ancestors_T,
+            unnorm_row_max=dataset.unnorm_row_max.to(
+                device=dataset.device,
+                dtype=dataset.dtype,
+            ),
+        )
 
         if self._batched_resident:
             rust_specs_kwargs = dict(
@@ -1495,16 +406,12 @@ class GeneReconModel(torch.nn.Module):
             )
             resident_warmup = None
             try:
-                species_helpers, ancestors_T = dataset._species_helpers_for_mode(
-                    device=dataset.device,
-                    dtype=dataset.dtype,
-                )
                 if (
                     self.lazy_preprocess
                     and self.prefetch_batches != 0
                     and rust_specs_handle is not None
                 ):
-                    resident_warmup = _start_resident_uniform_kernel_warmup(
+                    resident_warmup = _start_resident_uniform_kernel_warmup_impl(
                         species_helpers,
                         ancestors_T,
                         dtype=dataset.dtype,
@@ -1515,14 +422,8 @@ class GeneReconModel(torch.nn.Module):
                 )
                 rust_specs_handle = None
             finally:
-                _finish_cuda_context_warmup(resident_warmup)
+                _finish_cuda_context_warmup_impl(resident_warmup)
                 _cancel_batch_specs_from_retained_rust(rust_specs_handle)
-            self._resident_species_helpers = species_helpers
-            self._resident_ancestors_T = ancestors_T
-            self._resident_unnorm_row_max = dataset.unnorm_row_max.to(
-                device=dataset.device,
-                dtype=dataset.dtype,
-            )
             if rust_specs is None:
                 self._family_schedule_stats = _build_family_schedule_stats(
                     dataset,
@@ -1543,38 +444,30 @@ class GeneReconModel(torch.nn.Module):
                 )
             else:
                 self._batch_specs = rust_specs
-            self._batch_statics = [None for _ in self._batch_specs]
             self.batch_metadata = [spec.metadata for spec in self._batch_specs]
             if not self._batch_specs:
                 raise ValueError("GeneReconModel requires at least one family")
-            self._ensure_batch_static(0)
+            self._resident_cache = ResidentBatchCache(
+                specs=self._batch_specs,
+                build_static=self._build_batch_static,
+                prefetch_batches=self.prefetch_batches,
+            )
+            self._resident_cache.ensure(0)
             if self.lazy_preprocess:
-                self._schedule_prefetch()
+                self._resident_cache.schedule_prefetch()
             else:
                 for batch_idx in range(1, len(self._batch_specs)):
-                    self._ensure_batch_static(batch_idx)
+                    self._resident_cache.ensure(batch_idx)
         else:
-            self._static = _build_static_state(
+            self._resident_cache = None
+            self._static = _build_static_state_impl(
                 dataset,
-                fixed_iters_E=fixed_iters_E,
-                max_iters_E=max_iters_E,
-                tol_E=tol_E,
-                fixed_iters_Pi=fixed_iters_Pi,
-                neumann_terms=neumann_terms,
-                adaptive_iters=self._adaptive_iters,
-                adaptive_neumann_terms=self._adaptive_neumann_terms,
-                convergence_check_interval=self._convergence_check_interval,
-                e_logsumexp_tol=self._e_logsumexp_tol,
-                pi_max_diff_tol=self._pi_max_diff_tol,
-                gradient_change_tol=self._gradient_change_tol,
-                gradient_change_rtol=self._gradient_change_rtol,
-                use_pruning=use_pruning,
-                pruning_threshold=pruning_threshold,
-                pi_fixed_point_relaxation=self._pi_fixed_point_relaxation,
+                origination_prior=self._origination_prior,
+                common_state=self._resident_common_state,
+                settings=self._settings,
                 max_wave_size=max_wave_size,
                 max_root_wave_size=max_root_wave_size,
                 max_dts_partial_rows=max_dts_partial_rows,
-                origination_prior=self._origination_prior,
             )
             self.batch_metadata = [
                 _metadata_for_full_static(dataset, mode=mode, static=self._static)
@@ -1649,7 +542,7 @@ class GeneReconModel(torch.nn.Module):
         )
         gene_tree_paths = normalize_family_tree_paths(gene_trees)
         device = require_cuda_device(device, owner="GeneReconModel")
-        cuda_warmup = _start_cuda_context_warmup(device)
+        cuda_warmup = _start_cuda_context_warmup_impl(device)
         try:
             ds = GeneDataset.from_retained_preprocess(
                 species_tree_path=species_tree,
@@ -1665,19 +558,16 @@ class GeneReconModel(torch.nn.Module):
                 ),
             )
         finally:
-            _finish_cuda_context_warmup(cuda_warmup)
+            _finish_cuda_context_warmup_impl(cuda_warmup)
         if theta_base is not None:
             theta_base = theta_base.to(device=device)
-        theta_init = None
-        if theta_base is not None:
-            if mode == "specieswise":
-                theta_init = theta_base.unsqueeze(0).expand(int(ds.S), -1).clone()
-            elif mode == "genewise":
-                theta_init = (
-                    theta_base.unsqueeze(0).expand(len(gene_tree_paths), -1).clone()
-                )
-            else:
-                theta_init = theta_base
+        theta_init = _expand_theta_base(
+            theta_base,
+            mode=mode,
+            species_count=int(ds.S),
+            family_count=len(gene_tree_paths),
+            device=device,
+        )
         return cls(
             dataset=ds,
             mode=mode,
@@ -1722,7 +612,7 @@ class GeneReconModel(torch.nn.Module):
             device=torch.device("cpu"),
         )
         device = require_cuda_device(device, owner="GeneReconModel")
-        cuda_warmup = _start_cuda_context_warmup(device)
+        cuda_warmup = _start_cuda_context_warmup_impl(device)
         try:
             family_names, tree_paths, leaf_maps = parse_alerax_family_file(
                 families_file,
@@ -1745,17 +635,16 @@ class GeneReconModel(torch.nn.Module):
                 ),
             )
         finally:
-            _finish_cuda_context_warmup(cuda_warmup)
+            _finish_cuda_context_warmup_impl(cuda_warmup)
         if theta_base is not None:
             theta_base = theta_base.to(device=device)
-        theta_init = None
-        if theta_base is not None:
-            if mode == "specieswise":
-                theta_init = theta_base.unsqueeze(0).expand(int(ds.S), -1).clone()
-            elif mode == "genewise":
-                theta_init = theta_base.unsqueeze(0).expand(len(family_names), -1).clone()
-            else:
-                theta_init = theta_base
+        theta_init = _expand_theta_base(
+            theta_base,
+            mode=mode,
+            species_count=int(ds.S),
+            family_count=len(family_names),
+            device=device,
+        )
         return cls(
             dataset=ds,
             mode=mode,
@@ -1767,41 +656,23 @@ class GeneReconModel(torch.nn.Module):
     # Resident batch management
     # ──────────────────────────────────────────────────────────────────
     def _build_batch_static(self, batch_idx: int) -> ReconStaticState:
-        static = _build_batch_static_state(
+        static = _build_batch_static_state_impl(
             self._batch_specs[batch_idx],
             dataset=self._dataset,
-            species_helpers=self._resident_species_helpers,
-            ancestors_T=self._resident_ancestors_T,
-            unnorm_row_max=self._resident_unnorm_row_max,
-            fixed_iters_E=self._fixed_iters_E,
-            max_iters_E=self._max_iters_E,
-            tol_E=self._tol_E,
-            fixed_iters_Pi=self._fixed_iters_Pi,
-            neumann_terms=self._neumann_terms,
-            adaptive_iters=self._adaptive_iters,
-            adaptive_neumann_terms=self._adaptive_neumann_terms,
-            convergence_check_interval=self._convergence_check_interval,
-            e_logsumexp_tol=self._e_logsumexp_tol,
-            pi_max_diff_tol=self._pi_max_diff_tol,
-            gradient_change_tol=self._gradient_change_tol,
-            gradient_change_rtol=self._gradient_change_rtol,
-            use_pruning=self._use_pruning,
-            pruning_threshold=self._pruning_threshold,
-            pi_fixed_point_relaxation=self._pi_fixed_point_relaxation,
+            common_state=self._resident_common_state,
             origination_prior=self._origination_prior.select_families(
                 self._batch_specs[batch_idx].family_indices,
             ),
+            settings=self._settings,
         )
         self._apply_pi_adjoint_warmstart_config(static, clear_cache=False)
         return static
 
     def _shutdown_prefetch_executor_for_replan(self) -> None:
-        with self._batch_lock:
-            executor = self._prefetch_executor
-            self._prefetch_executor = None
-            self._batch_futures.clear()
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=True)
+        cache = getattr(self, "_resident_cache", None)
+        if cache is not None:
+            cache.close()
+        self._resident_cache = None
 
     def replan_resident_batches(
         self,
@@ -1850,11 +721,15 @@ class GeneReconModel(torch.nn.Module):
         if not specs:
             raise ValueError("replanned resident batches must not be empty")
         self._batch_specs = specs
-        self._batch_statics = [None for _ in specs]
         self.batch_metadata = [spec.metadata for spec in specs]
         self._current_batch_index = 0
-        self._ensure_batch_static(0)
-        self._schedule_prefetch()
+        self._resident_cache = ResidentBatchCache(
+            specs=self._batch_specs,
+            build_static=self._build_batch_static,
+            prefetch_batches=self.prefetch_batches,
+        )
+        self._resident_cache.ensure(0)
+        self._resident_cache.schedule_prefetch()
         return list(self.batch_metadata)
 
     def _ensure_batch_static(self, batch_idx: int) -> ReconStaticState:
@@ -1866,57 +741,28 @@ class GeneReconModel(torch.nn.Module):
             raise IndexError(
                 f"batch index {batch_idx} out of range for {len(self._batch_specs)} batches"
             )
-        with self._batch_lock:
-            static = self._batch_statics[batch_idx]
-            future = self._batch_futures.pop(batch_idx, None)
-        if static is not None:
-            return static
-        if future is not None:
-            static = future.result()
-        else:
-            static = self._build_batch_static(batch_idx)
-        with self._batch_lock:
-            existing = self._batch_statics[batch_idx]
-            if existing is None:
-                self._batch_statics[batch_idx] = static
-                return static
-            return existing
+        cache = getattr(self, "_resident_cache", None)
+        if cache is not None:
+            return cache.ensure(batch_idx)
+        raise RuntimeError("resident cache is not initialized")
 
     def _submit_prefetch(self, batch_idx: int) -> None:
-        if self._prefetch_closed:
-            return
         if batch_idx < 0 or batch_idx >= len(self._batch_specs):
             return
-        with self._batch_lock:
-            if (
-                self._batch_statics[batch_idx] is not None
-                or batch_idx in self._batch_futures
-            ):
-                return
-            if self._prefetch_executor is None:
-                self._prefetch_executor = ThreadPoolExecutor(
-                    max_workers=_RESIDENT_PREFETCH_WORKERS,
-                    thread_name_prefix="gpurec-preprocess",
-                )
-            self._batch_futures[batch_idx] = self._prefetch_executor.submit(
-                self._build_batch_static,
-                batch_idx,
-            )
+        cache = getattr(self, "_resident_cache", None)
+        if cache is not None:
+            cache.submit_prefetch(batch_idx)
+            return
+        raise RuntimeError("resident cache is not initialized")
 
     def _schedule_prefetch(self) -> None:
-        if (
-            self._prefetch_closed
-            or not self._batched_resident
-            or self.prefetch_batches == 0
-        ):
+        if not self._batched_resident or self.prefetch_batches == 0:
             return
-        start = self._current_batch_index + 1
-        if self.prefetch_batches == "all":
-            stop = len(self._batch_specs)
-        else:
-            stop = min(len(self._batch_specs), start + int(self.prefetch_batches))
-        for batch_idx in range(start, stop):
-            self._submit_prefetch(batch_idx)
+        cache = getattr(self, "_resident_cache", None)
+        if cache is not None:
+            cache.schedule_prefetch()
+            return
+        raise RuntimeError("resident cache is not initialized")
 
     def _active_static(self) -> ReconStaticState:
         if self._batched_resident:
@@ -1951,188 +797,7 @@ class GeneReconModel(torch.nn.Module):
         *,
         need_grad: bool,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        if not self._batched_resident:
-            loss, grad = _evaluate_static_state(
-                self._active_static(),
-                theta,
-                need_grad=need_grad,
-            )
-            loss = _validate_scalar_loss("full-batch NLL", loss)
-            if need_grad:
-                if grad is None:
-                    raise RuntimeError("internal error: missing full-batch gradient")
-                grad = _validate_gradient_shape(
-                    "full-batch gradient",
-                    grad,
-                    expected_shape=tuple(int(dim) for dim in theta.shape),
-                )
-            return loss, grad
-
-        if not need_grad and self._mode != "genewise":
-            first_static = self._ensure_batch_static(0)
-            e_solve = solve_resident_e(first_static, theta)
-            origination_denominator = (
-                compute_origination_denominator(
-                    e_solve.e_out["E"],
-                    self._origination_prior.probs,
-                    origination_probs_prepared=True,
-                )
-                if self._origination_prior.is_shared
-                else None
-            )
-            prepared_shared_constants = None
-            if all(
-                field in e_solve.e_out
-                for field in ("E_bar", "E_s1", "E_s2")
-            ):
-                prepared_shared_constants = prepare_shared_pi_forward_constants(
-                    E=e_solve.e_out["E"],
-                    Ebar=e_solve.e_out["E_bar"],
-                    E_s1=e_solve.e_out["E_s1"],
-                    E_s2=e_solve.e_out["E_s2"],
-                    log_pS=e_solve.log_p_s,
-                    log_pD=e_solve.log_p_d,
-                    max_transfer_mat=e_solve.max_transfer,
-                    S=int(self._dataset.S),
-                )
-            scratch_shape = (
-                max(meta.clade_count for meta in self.batch_metadata),
-                int(self._dataset.S),
-            )
-            scratch_tensors = (
-                torch.empty(
-                    scratch_shape,
-                    device=self._dataset.device,
-                    dtype=self._dataset.dtype,
-                ),
-                torch.empty(
-                    scratch_shape,
-                    device=self._dataset.device,
-                    dtype=self._dataset.dtype,
-                ),
-            )
-            total_loss = torch.zeros(
-                (),
-                device=self._dataset.device,
-                dtype=self._dataset.dtype,
-            )
-            stream_count = (
-                min(
-                    getattr(self, "shared_loss_batch_streams", 1),
-                    len(self._batch_specs),
-                )
-                if self._dataset.device.type == "cuda"
-                else 1
-            )
-            if stream_count <= 1:
-                for batch_idx in range(len(self._batch_specs)):
-                    static = self._ensure_batch_static(batch_idx)
-                    loss_i = evaluate_resident_no_grad_with_solved_e(
-                        static,
-                        e_solve,
-                        scratch_tensors=scratch_tensors,
-                        origination_denominator=origination_denominator,
-                        prepared_shared_constants=prepared_shared_constants,
-                    )
-                    loss_i = _validate_scalar_loss("full-batch NLL", loss_i)
-                    total_loss = total_loss + loss_i.to(
-                        device=total_loss.device,
-                        dtype=total_loss.dtype,
-                    )
-            else:
-                stream_scratch_tensors = [scratch_tensors]
-                for _ in range(1, stream_count):
-                    stream_scratch_tensors.append(
-                        (
-                            torch.empty(
-                                scratch_shape,
-                                device=self._dataset.device,
-                                dtype=self._dataset.dtype,
-                            ),
-                            torch.empty(
-                                scratch_shape,
-                                device=self._dataset.device,
-                                dtype=self._dataset.dtype,
-                            ),
-                        )
-                    )
-                current_stream = torch.cuda.current_stream(self._dataset.device)
-                streams = [
-                    torch.cuda.Stream(device=self._dataset.device)
-                    for _ in range(stream_count)
-                ]
-                for stream in streams:
-                    stream.wait_stream(current_stream)
-                batch_losses: list[torch.Tensor | None] = [
-                    None for _ in self._batch_specs
-                ]
-                for batch_idx in range(len(self._batch_specs)):
-                    static = self._ensure_batch_static(batch_idx)
-                    stream_idx = batch_idx % stream_count
-                    stream = streams[stream_idx]
-                    with torch.cuda.stream(stream):
-                        batch_losses[batch_idx] = (
-                            evaluate_resident_no_grad_with_solved_e(
-                                static,
-                                e_solve,
-                                scratch_tensors=stream_scratch_tensors[
-                                    stream_idx
-                                ],
-                                origination_denominator=origination_denominator,
-                                prepared_shared_constants=prepared_shared_constants,
-                            )
-                        )
-                for stream in streams:
-                    current_stream.wait_stream(stream)
-                for loss_i in batch_losses:
-                    if loss_i is None:
-                        raise RuntimeError("internal error: missing batch loss")
-                    loss_i = _validate_scalar_loss("full-batch NLL", loss_i)
-                    # Preserve the serial fp32 accumulation order.
-                    total_loss = total_loss + loss_i.to(
-                        device=total_loss.device,
-                        dtype=total_loss.dtype,
-                    )
-            return total_loss.detach(), None
-
-        total_loss = torch.zeros((), device=self._dataset.device, dtype=self._dataset.dtype)
-        grad_accumulator = (
-            GradientAccumulator.zeros_like(
-                ParameterLayout.for_mode(
-                    self._mode,
-                    species_count=int(self._dataset.S),
-                    family_count=len(self._dataset.families),
-                ),
-                theta,
-            )
-            if need_grad
-            else None
-        )
-        for batch_idx in range(len(self._batch_specs)):
-            static = self._ensure_batch_static(batch_idx)
-            theta_batch = self._theta_for_batch_index(batch_idx, theta)
-            loss_i, grad_i = _evaluate_static_state(
-                static,
-                theta_batch,
-                need_grad=need_grad,
-            )
-            loss_i = _validate_scalar_loss("batch NLL", loss_i)
-            total_loss = total_loss + loss_i.to(device=total_loss.device, dtype=total_loss.dtype)
-            if need_grad:
-                if grad_i is None or grad_accumulator is None:
-                    raise RuntimeError("internal error: missing batch gradient")
-                grad_accumulator.add(
-                    grad_i,
-                    family_indices=(
-                        self._batch_specs[batch_idx].family_indices
-                        if self._mode == "genewise"
-                        else None
-                    ),
-                )
-        return (
-            total_loss.detach(),
-            None if grad_accumulator is None else grad_accumulator.result().detach(),
-        )
+        return _stream_full_batches_impl(self, theta, need_grad=need_grad)
 
     @property
     def current_batch_metadata(self) -> BatchMetadata:
@@ -2173,16 +838,20 @@ class GeneReconModel(torch.nn.Module):
     def cached_static_states(self) -> list[ReconStaticState]:
         """Static states that are currently built and available for diagnostics."""
         if self._batched_resident:
-            return [static for static in self._batch_statics if static is not None]
+            cache = getattr(self, "_resident_cache", None)
+            if cache is not None:
+                return cache.cached()
+            return []
         return [] if self._static is None else [self._static]
 
     def drop_cached_static_states(self) -> None:
         """Release built resident batch static states while keeping batch metadata."""
         if not self._batched_resident:
             return
-        self._shutdown_prefetch_executor_for_replan()
-        with self._batch_lock:
-            self._batch_statics = [None for _ in self._batch_specs]
+        cache = getattr(self, "_resident_cache", None)
+        if cache is not None:
+            cache.drop_statics()
+            return
 
     def materialize_batches(self) -> list[BatchMetadata]:
         """Build all resident batch static states and return metadata copies.
@@ -2192,6 +861,11 @@ class GeneReconModel(torch.nn.Module):
         callers can inspect batch ownership without mutating model bookkeeping.
         """
         if self._batched_resident:
+            cache = getattr(self, "_resident_cache", None)
+            if cache is not None:
+                for batch_idx in range(len(self._batch_specs)):
+                    cache.ensure(batch_idx)
+                return list(self.batch_metadata)
             for batch_idx in range(len(self._batch_specs)):
                 self._ensure_batch_static(batch_idx)
         elif self._static is None:
@@ -2341,7 +1015,11 @@ class GeneReconModel(torch.nn.Module):
         if batch_index != self._current_batch_index:
             self.clear()
             self._current_batch_index = batch_index
-        self._ensure_batch_static(batch_index)
+        cache = getattr(self, "_resident_cache", None)
+        if cache is not None and self._batched_resident:
+            cache.select(batch_index)
+        else:
+            self._ensure_batch_static(batch_index)
         self._schedule_prefetch()
         return self.current_batch_metadata
 
@@ -2397,11 +1075,14 @@ class GeneReconModel(torch.nn.Module):
     def clear(self) -> None:
         """Release active runtime caches held by the model."""
         if self._batched_resident:
-            with self._batch_lock:
-                static = self._batch_statics[self._current_batch_index]
-            if static is not None:
-                static.warm_E = None
-                _clear_pi_adjoint_runtime_cache(static)
+            cache = getattr(self, "_resident_cache", None)
+            if cache is not None:
+                cache.clear_active_runtime()
+                static = cache.statics[cache.current_index]
+                if static is not None:
+                    _clear_pi_adjoint_runtime_cache(static)
+                return
+            raise RuntimeError("resident cache is not initialized")
             return
         static = self._active_static()
         static.warm_E = None
@@ -2409,24 +1090,10 @@ class GeneReconModel(torch.nn.Module):
 
     def close(self) -> None:
         """Stop background batch preprocessing and drop pending futures."""
-        executor = getattr(self, "_prefetch_executor", None)
-        batch_futures = getattr(self, "_batch_futures", None)
-        batch_lock = getattr(self, "_batch_lock", None)
-        if batch_lock is None:
-            self._prefetch_closed = True
-            self._prefetch_executor = None
-            if batch_futures is not None:
-                batch_futures.clear()
-        else:
-            with batch_lock:
-                self._prefetch_closed = True
-                executor = getattr(self, "_prefetch_executor", None)
-                self._prefetch_executor = None
-                batch_futures = getattr(self, "_batch_futures", None)
-                if batch_futures is not None:
-                    batch_futures.clear()
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+        cache = getattr(self, "_resident_cache", None)
+        if cache is not None:
+            cache.close()
+            self._resident_cache = None
 
     def __del__(self):
         try:

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+SUBPROCESS_TIMEOUT = 30
 
 
 def _run_inventory(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -18,6 +19,7 @@ def _run_inventory(args: list[str], cwd: Path) -> subprocess.CompletedProcess[st
         capture_output=True,
         text=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
 

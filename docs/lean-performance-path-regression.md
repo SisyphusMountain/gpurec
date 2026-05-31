@@ -32,7 +32,7 @@ For uniform Pibar, the efficient computation is:
 3. Subtract ancestor mass from the row sum.
 4. Write `Pibar` directly from the kernel.
 
-The remaining `wave_pibar_uniform_fused` kernel does this with `ancestor_cols`, but it only supports the shared/global `mt[S]` layout. It is therefore only used for non-genewise CUDA runs. The genewise path needs the same kernelized ancestor-walk computation with family-indexed constants, such as `mt[G, S]` addressed through `family_idx`, or an equivalent wave-local `mt[W, S]` layout.
+The remaining `compute_pibar` kernel does this with `ancestor_cols`, but it only supports the shared/global `max_transfer[S]` layout. It is therefore only used for non-genewise CUDA runs. The genewise path needs the same kernelized ancestor-walk computation with family-indexed constants, such as `max_transfer[G, S]` addressed through `family_idx`, or an equivalent wave-local `max_transfer[W, S]` layout.
 
 ## What Went Wrong
 
@@ -48,18 +48,18 @@ The lean version should keep one production uniform CUDA path that works for all
 - specieswise
 - genewise
 
-For genewise, that path must not fall back to `_compute_Pibar_uniform_inline` on CUDA. The retained Pibar kernel should support family-indexed `mt`/rate constants through `family_idx`, and the forward path should enable it for genewise.
+For genewise, that path must not fall back to `_compute_Pibar_uniform_inline` on CUDA. The retained Pibar kernel should support family-indexed `max_transfer`/rate constants through `family_idx`, and the forward path should enable it for genewise.
 
 The PyTorch sparse-matmul Pibar implementation should be CPU/debug fallback only, not the CUDA genewise hot path.
 
 ## Resolution
 
-The retained `wave_pibar_uniform_fused` kernel now supports all production
+The retained `compute_pibar` kernel now supports all production
 uniform layouts:
 
-- shared/global/specieswise `mt[S]`;
-- wave-local `mt[W, S]`;
-- genewise family-indexed `mt[G, S]` addressed through `family_idx`.
+- shared/global/specieswise `max_transfer[S]`;
+- wave-local `max_transfer[W, S]`;
+- genewise family-indexed `max_transfer[G, S]` addressed through `family_idx`.
 
 `Pi_wave_forward` now enables the CUDA ancestor-walk Pibar kernel whenever it
 runs on CUDA. The sparse `_compute_Pibar_uniform_inline` path is left for
@@ -78,7 +78,7 @@ Validation added:
 
 ## Related DTS Issue
 
-The current `_compute_dts_cross` still calls the fused DTS term kernel, but then materializes split terms and reduces them to parent rows outside the DTS kernel. The previously available parent-reduced DTS path was removed from the retained forward path. That may also conflict with the "only highest-performance path" goal and should be benchmarked before being discarded.
+The current `_compute_split_dts` still calls the fused DTS term kernel, but then materializes split terms and reduces them to parent rows outside the DTS kernel. The previously available parent-reduced DTS path was removed from the retained forward path. That may also conflict with the "only highest-performance path" goal and should be benchmarked before being discarded.
 
 ## `test_trees_1000` Benchmark Comparison
 
@@ -231,17 +231,17 @@ Interpretation:
 Cause of the lean genewise regression:
 
 - `main` keeps the fused uniform wrappers in `gpurec/core/kernels/wave_step.py`,
-  including `wave_step_uniform_fused_into`,
-  `wave_step_uniform_ancestor_fused`, `wave_step_uniform_csr_fused`,
-  `wave_step_uniform_two_kernel_fused`, and
-  `wave_pibar_uniform_parent_fused`.
+  including `compute_wave_step`,
+  `removed ancestor-specialized wave-step kernel`, `removed CSR-specialized wave-step kernel`,
+  `removed two-kernel wave-step path`, and
+  `compute_pibar`.
 - Lean replaced those wrappers with a `_REMOVED_UNIFORM_WRAPPERS` stub and kept
-  only the generic `wave_step_fused`, `wave_step_uniform_linear_fused`, and
-  `wave_pibar_uniform_fused` route.
-- `main` also still routes forward DTS through `dts_fused_parent_reduced`.
+  only the generic `compute_wave_step`, `compute_wave_step`, and
+  `compute_pibar` route.
+- `main` also still routes forward DTS through `compute_dts_forward`.
   Lean removed that parent-reduced DTS entrypoint from the retained forward
   path.
 - The later lean patch made genewise Pibar kernelized again, but it did not
-  restore the fused uniform wave-step/ping-pong path or parent-reduced DTS. That
+  restore the fused wave-step/ping-pong path or parent-reduced DTS. That
   left the code with an "optimized" flag verdict but not the same optimized
   algorithm.

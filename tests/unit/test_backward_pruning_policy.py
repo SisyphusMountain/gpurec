@@ -5,33 +5,33 @@ from gpurec.core.backward_pruning_policy import (
 )
 
 
-def _reference_active_mask(rhs: torch.Tensor, policy) -> torch.Tensor:
+def _reference_active_wave_rows(rhs: torch.Tensor, policy) -> torch.Tensor:
     row_absmax = rhs.abs().amax(dim=1)
-    if policy.active_mask_strict_gt:
-        return row_absmax > policy.active_mask_threshold
-    return row_absmax >= policy.active_mask_threshold
+    if policy.active_wave_row_strict_gt:
+        return row_absmax > policy.active_wave_row_threshold
+    return row_absmax >= policy.active_wave_row_threshold
 
 
 def test_default_policy_avoids_cpu_wave_skips_but_keeps_device_masks():
     policy = backward_pruning_policy(use_pruning=True, pruning_threshold=1e-6)
 
     assert policy.skip_inactive_pibar_zero is True
-    assert policy.device_active_mask_enabled is True
+    assert policy.device_active_wave_rows_enabled is True
     assert policy.cpu_wave_skip_enabled is False
-    assert policy.active_mask_threshold == 1e-6
-    assert policy.active_mask_strict_gt is False
+    assert policy.active_wave_row_threshold == 1e-6
+    assert policy.active_wave_row_strict_gt is False
 
 
-def test_no_pruning_passes_no_active_mask():
+def test_no_pruning_passes_no_active_wave_rows():
     policy = backward_pruning_policy(use_pruning=False, pruning_threshold=1e-6)
 
-    assert policy.device_active_mask_enabled is False
+    assert policy.device_active_wave_rows_enabled is False
     assert policy.cpu_wave_skip_enabled is False
-    assert policy.active_mask_threshold == 0.0
-    assert policy.active_mask_strict_gt is True
+    assert policy.active_wave_row_threshold == 0.0
+    assert policy.active_wave_row_strict_gt is True
 
 
-def test_pruning_disabled_active_mask_would_use_exact_zero_boundary():
+def test_pruning_disabled_active_wave_rows_would_use_exact_zero_boundary():
     policy = backward_pruning_policy(use_pruning=False, pruning_threshold=1e-6)
     rhs = torch.tensor(
         [
@@ -42,14 +42,14 @@ def test_pruning_disabled_active_mask_would_use_exact_zero_boundary():
         dtype=torch.float64,
     )
 
-    assert policy.device_active_mask_enabled is False
+    assert policy.device_active_wave_rows_enabled is False
     assert policy.cpu_wave_skip_enabled is False
-    assert policy.active_mask_threshold == 0.0
-    assert policy.active_mask_strict_gt is True
-    assert _reference_active_mask(rhs, policy).tolist() == [False, True, True]
+    assert policy.active_wave_row_threshold == 0.0
+    assert policy.active_wave_row_strict_gt is True
+    assert _reference_active_wave_rows(rhs, policy).tolist() == [False, True, True]
 
 
-def test_pruning_enabled_active_mask_includes_threshold_boundary():
+def test_pruning_enabled_active_wave_rows_includes_threshold_boundary():
     policy = backward_pruning_policy(use_pruning=True, pruning_threshold=1e-6)
     rhs = torch.tensor(
         [
@@ -60,9 +60,9 @@ def test_pruning_enabled_active_mask_includes_threshold_boundary():
         dtype=torch.float64,
     )
 
-    assert policy.active_mask_threshold == 1e-6
-    assert policy.active_mask_strict_gt is False
-    assert _reference_active_mask(rhs, policy).tolist() == [False, True, True]
+    assert policy.active_wave_row_threshold == 1e-6
+    assert policy.active_wave_row_strict_gt is False
+    assert _reference_active_wave_rows(rhs, policy).tolist() == [False, True, True]
 
 
 def test_skip_inactive_pibar_zero_is_fixed_enabled():

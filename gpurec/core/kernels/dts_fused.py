@@ -86,7 +86,7 @@ def _load_dts_param(param_ptr, n, s_offs, family, S: tl.constexpr, mask,
 
 
 @triton.jit
-def _dts_eq1_to_rows_kernel(
+def _single_split_dts_parent_rows_kernel(
     Pi_ptr, Pibar_ptr,
     lefts_ptr, rights_ptr,
     sp_child1_ptr, sp_child2_ptr,
@@ -94,7 +94,7 @@ def _dts_eq1_to_rows_kernel(
     log_pS_ptr,
     log_split_probs_ptr,
     eq1_parent_ids_ptr,
-    active_mask_ptr,
+    active_parent_rows_ptr,
     out_ptr,
     family_idx_ptr,
     family_offset,
@@ -106,7 +106,7 @@ def _dts_eq1_to_rows_kernel(
     SPECIES_STRIDE_D: tl.constexpr = 1,
     ROW_STRIDE_S: tl.constexpr = 0,
     SPECIES_STRIDE_S: tl.constexpr = 1,
-    USE_ACTIVE_MASK: tl.constexpr = False,
+    USE_ACTIVE_PARENT_ROWS: tl.constexpr = False,
     DTYPE: tl.constexpr = tl.float32,
 ):
     n = tl.program_id(0)
@@ -119,8 +119,8 @@ def _dts_eq1_to_rows_kernel(
     family = tl.full((), 0, dtype=tl.int64)
     if mode_pD == 4 or mode_pS == 4:
         family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
-    if USE_ACTIVE_MASK:
-        parent_active = tl.load(active_mask_ptr + parent_w)
+    if USE_ACTIVE_PARENT_ROWS:
+        parent_active = tl.load(active_parent_rows_ptr + parent_w)
         if parent_active == 0:
             tl.store(
                 out_ptr + out_base + s_offs,
@@ -179,7 +179,7 @@ def _dts_eq1_to_rows_kernel(
 
 
 @triton.jit
-def _dts_parent_reduced_ge2_stage1_kernel(
+def _multi_split_dts_tile_logsumexp_kernel(
     Pi_ptr, Pibar_ptr,
     lefts_ptr, rights_ptr,
     sp_child1_ptr, sp_child2_ptr,
@@ -188,9 +188,9 @@ def _dts_parent_reduced_ge2_stage1_kernel(
     log_split_probs_ptr,
     ge2_ptr,
     ge2_parent_ids_ptr,
-    active_mask_ptr,
-    partial_max_ptr,
-    partial_sum_ptr,
+    active_parent_rows_ptr,
+    tile_max_ptr,
+    tile_sum_ptr,
     family_idx_ptr,
     family_offset,
     split_offset,
@@ -204,7 +204,7 @@ def _dts_parent_reduced_ge2_stage1_kernel(
     SPECIES_STRIDE_D: tl.constexpr = 1,
     ROW_STRIDE_S: tl.constexpr = 0,
     SPECIES_STRIDE_S: tl.constexpr = 1,
-    USE_ACTIVE_MASK: tl.constexpr = False,
+    USE_ACTIVE_PARENT_ROWS: tl.constexpr = False,
     DTYPE: tl.constexpr = tl.float32,
 ):
     group = tl.program_id(0)
@@ -217,8 +217,8 @@ def _dts_parent_reduced_ge2_stage1_kernel(
     family = tl.full((), 0, dtype=tl.int64)
     if mode_pD == 4 or mode_pS == 4:
         family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
-    if USE_ACTIVE_MASK:
-        parent_active = tl.load(active_mask_ptr + parent_w)
+    if USE_ACTIVE_PARENT_ROWS:
+        parent_active = tl.load(active_parent_rows_ptr + parent_w)
         if parent_active == 0:
             return
 
@@ -285,24 +285,24 @@ def _dts_parent_reduced_ge2_stage1_kernel(
         m = new_m
         split_rel += 1
 
-    partial_row = group * MAX_TILES + tile_id
-    tl.store(partial_max_ptr + partial_row * S + s_offs, m, mask=mask)
-    tl.store(partial_sum_ptr + partial_row * S + s_offs, acc, mask=mask)
+    tile_row = group * MAX_TILES + tile_id
+    tl.store(tile_max_ptr + tile_row * S + s_offs, m, mask=mask)
+    tl.store(tile_sum_ptr + tile_row * S + s_offs, acc, mask=mask)
 
 
 @triton.jit
-def _dts_parent_reduced_ge2_stage2_kernel(
+def _multi_split_dts_parent_rows_kernel(
     ge2_ptr,
     ge2_parent_ids_ptr,
-    active_mask_ptr,
-    partial_max_ptr,
-    partial_sum_ptr,
+    active_parent_rows_ptr,
+    tile_max_ptr,
+    tile_sum_ptr,
     out_ptr,
     MAX_TILES,
     S: tl.constexpr,
     TILE_SPLITS: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr = False,
+    USE_ACTIVE_PARENT_ROWS: tl.constexpr = False,
     DTYPE: tl.constexpr = tl.float32,
 ):
     group = tl.program_id(0)
@@ -312,8 +312,8 @@ def _dts_parent_reduced_ge2_stage2_kernel(
 
     parent_w = tl.load(ge2_parent_ids_ptr + group).to(tl.int64)
     out_base = parent_w * S
-    if USE_ACTIVE_MASK:
-        parent_active = tl.load(active_mask_ptr + parent_w)
+    if USE_ACTIVE_PARENT_ROWS:
+        parent_active = tl.load(active_parent_rows_ptr + parent_w)
         if parent_active == 0:
             tl.store(
                 out_ptr + out_base + s_offs,
@@ -329,9 +329,9 @@ def _dts_parent_reduced_ge2_stage2_kernel(
     acc = tl.zeros([BLOCK_S], dtype=DTYPE)
     tile_id = 0
     while tile_id < n_tiles:
-        partial_row = group * MAX_TILES + tile_id
-        pm = tl.load(partial_max_ptr + partial_row * S + s_offs, mask=mask, other=-1e30)
-        ps = tl.load(partial_sum_ptr + partial_row * S + s_offs, mask=mask, other=0.0)
+        tile_row = group * MAX_TILES + tile_id
+        pm = tl.load(tile_max_ptr + tile_row * S + s_offs, mask=mask, other=-1e30)
+        ps = tl.load(tile_sum_ptr + tile_row * S + s_offs, mask=mask, other=0.0)
         new_m = tl.maximum(m, pm)
         new_m_safe = tl.where(new_m > -1e29, new_m, tl.zeros_like(new_m))
         old_term = tl.where(m > -1e29, acc * tl.exp2(m - new_m_safe), tl.zeros_like(acc))
@@ -348,7 +348,7 @@ def _dts_parent_reduced_ge2_stage2_kernel(
     tl.store(out_ptr + out_base + s_offs, result, mask=mask)
 
 
-def dts_fused_parent_reduced(
+def compute_dts_forward(
     Pi,
     Pibar,
     lefts,
@@ -364,7 +364,7 @@ def dts_fused_parent_reduced(
     ge2_ptr,
     ge2_parent_ids,
     out=None,
-    active_mask=None,
+    active_parent_rows=None,
     family_idx=None,
     family_offset=0,
     tile_splits=64,
@@ -376,7 +376,7 @@ def dts_fused_parent_reduced(
     """Parent-reduced DTS forward recompute.
 
     Eq1 splits write directly into their parent rows. Ge2 parents are reduced
-    through the retained two-stage tiled partial max/sum path, avoiding the
+    through the retained two-stage tiled max/sum path, avoiding the
     full ``[n_splits, S]`` DTS materialization.
     """
     N = lefts.shape[0]
@@ -406,7 +406,7 @@ def dts_fused_parent_reduced(
         BLOCK_S = min(512, triton.next_power_of_2(S))
         launch_options = {}
         grid_eq1 = (n_eq1, triton.cdiv(S, BLOCK_S))
-        _dts_eq1_to_rows_kernel[grid_eq1](
+        _single_split_dts_parent_rows_kernel[grid_eq1](
             Pi.contiguous(),
             Pibar.contiguous(),
             lefts,
@@ -417,7 +417,7 @@ def dts_fused_parent_reduced(
             log_pS_vec,
             lsp,
             eq1_reduce_idx,
-            active_mask if active_mask is not None else eq1_reduce_idx,
+            active_parent_rows if active_parent_rows is not None else eq1_reduce_idx,
             out,
             family_idx if family_idx is not None else eq1_reduce_idx,
             int(family_offset),
@@ -429,7 +429,7 @@ def dts_fused_parent_reduced(
             SPECIES_STRIDE_D=species_stride_D,
             ROW_STRIDE_S=row_stride_S,
             SPECIES_STRIDE_S=species_stride_S,
-            USE_ACTIVE_MASK=bool(active_mask is not None),
+            USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
             DTYPE=_tl_float_dtype(Pi.dtype),
             **launch_options,
         )
@@ -454,11 +454,11 @@ def dts_fused_parent_reduced(
         ge2_max_fanout = int((ge2_ptr[1:] - ge2_ptr[:-1]).max().item())
     tile_splits = max(1, int(tile_splits))
     max_tiles = max(1, triton.cdiv(int(ge2_max_fanout), tile_splits))
-    partial_shape = (n_groups * max_tiles, S)
-    partial_max = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
-    partial_sum = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
-    grid_stage1 = (n_groups, max_tiles, triton.cdiv(S, BLOCK_S))
-    _dts_parent_reduced_ge2_stage1_kernel[grid_stage1](
+    tile_buffer_shape = (n_groups * max_tiles, S)
+    tile_max_buffer = torch.empty(tile_buffer_shape, device=Pi.device, dtype=Pi.dtype)
+    tile_sum_buffer = torch.empty(tile_buffer_shape, device=Pi.device, dtype=Pi.dtype)
+    tile_grid = (n_groups, max_tiles, triton.cdiv(S, BLOCK_S))
+    _multi_split_dts_tile_logsumexp_kernel[tile_grid](
         Pi.contiguous(),
         Pibar.contiguous(),
         lefts,
@@ -470,9 +470,9 @@ def dts_fused_parent_reduced(
         lsp,
         ge2_ptr,
         ge2_parent_ids,
-        active_mask if active_mask is not None else ge2_parent_ids,
-        partial_max,
-        partial_sum,
+        active_parent_rows if active_parent_rows is not None else ge2_parent_ids,
+        tile_max_buffer,
+        tile_sum_buffer,
         family_idx if family_idx is not None else ge2_parent_ids,
         int(family_offset),
         split_offset=n_eq1,
@@ -486,23 +486,23 @@ def dts_fused_parent_reduced(
         SPECIES_STRIDE_D=species_stride_D,
         ROW_STRIDE_S=row_stride_S,
         SPECIES_STRIDE_S=species_stride_S,
-        USE_ACTIVE_MASK=bool(active_mask is not None),
+        USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
         DTYPE=_tl_float_dtype(Pi.dtype),
         **launch_options,
     )
-    grid_stage2 = (n_groups, triton.cdiv(S, BLOCK_S))
-    _dts_parent_reduced_ge2_stage2_kernel[grid_stage2](
+    row_grid = (n_groups, triton.cdiv(S, BLOCK_S))
+    _multi_split_dts_parent_rows_kernel[row_grid](
         ge2_ptr,
         ge2_parent_ids,
-        active_mask if active_mask is not None else ge2_parent_ids,
-        partial_max,
-        partial_sum,
+        active_parent_rows if active_parent_rows is not None else ge2_parent_ids,
+        tile_max_buffer,
+        tile_sum_buffer,
         out,
         MAX_TILES=max_tiles,
         S=S,
         TILE_SPLITS=tile_splits,
         BLOCK_S=BLOCK_S,
-        USE_ACTIVE_MASK=bool(active_mask is not None),
+        USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
         DTYPE=_tl_float_dtype(Pi.dtype),
         **launch_options,
     )

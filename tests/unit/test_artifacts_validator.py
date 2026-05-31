@@ -12,6 +12,7 @@ from gpurec.workflow.config import RunConfig
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "validate_output_artifacts.py"
+SUBPROCESS_TIMEOUT = 30
 
 
 def _run_validator(*args: str) -> subprocess.CompletedProcess[str]:
@@ -21,6 +22,7 @@ def _run_validator(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
 

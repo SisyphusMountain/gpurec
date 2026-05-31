@@ -1,11 +1,11 @@
 import pytest
 import torch
 
-from gpurec.core.kernels.dts_fused import dts_fused_parent_reduced
+from gpurec.core.kernels.dts_fused import compute_dts_forward
 from gpurec.core.kernels.wave_step import (
-    wave_step_uniform_initial_leaf_fused_into,
-    wave_pibar_uniform_parent_fused,
-    wave_step_uniform_fused_into,
+    compute_leaf_initial_wave_step,
+    compute_pibar,
+    compute_wave_step,
 )
 
 
@@ -21,13 +21,13 @@ def _logsumexp2_reference(terms: torch.Tensor) -> torch.Tensor:
     return torch.log2(torch.exp2(terms - safe).sum(dim=0)) + vmax
 
 
-def _uniform_pibar_reference(Pi_W, mt, ancestors):
+def _pibar_reference(Pi_W, max_transfer, ancestors):
     pi_max = Pi_W.max(dim=1, keepdim=True).values
     pi_exp = torch.exp2(Pi_W - pi_max)
     row_sum = pi_exp.sum(dim=1, keepdim=True)
     ancestor_sum = pi_exp @ ancestors.T
     denom = row_sum - ancestor_sum
-    return torch.where(denom > 0, torch.log2(denom) + pi_max + mt, float("-inf"))
+    return torch.where(denom > 0, torch.log2(denom) + pi_max + max_transfer, float("-inf"))
 
 
 def _wave_step_reference(Pi_W, Pibar_W, DL, Ebar, E, SL1, SL2, sp_child1, sp_child2, leaf_term):
@@ -158,7 +158,7 @@ def _subtree_intervals_from_parent(parent):
 
 
 @pytest.mark.parametrize("per_clade_constants", [False, True])
-def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_constants):
+def test_wave_step_matches_sparse_ancestor_reference(per_clade_constants):
     torch.manual_seed(7)
     device = torch.device("cuda")
     dtype = torch.float32
@@ -177,14 +177,14 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
         family_idx = torch.zeros((C,), device=device, dtype=torch.long)
         family_idx[ws:ws + W] = torch.arange(W, device=device, dtype=torch.long)
         family_indexed_consts = True
-        mt = torch.randn((W, S), device=device, dtype=dtype) * 0.1
+        max_transfer = torch.randn((W, S), device=device, dtype=dtype) * 0.1
         DL = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
         Ebar = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 1.5
         E = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.5
         SL1 = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
         SL2 = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
     else:
-        mt = torch.randn((S,), device=device, dtype=dtype) * 0.1
+        max_transfer = torch.randn((S,), device=device, dtype=dtype) * 0.1
         DL = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 2.0
         Ebar = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 1.5
         E = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 2.5
@@ -193,7 +193,7 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
 
     leaf_term = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 4.0
     Pi_W = Pi[ws:ws + W]
-    Pibar_ref = _uniform_pibar_reference(Pi_W, mt, ancestors)
+    Pibar_ref = _pibar_reference(Pi_W, max_transfer, ancestors)
     Pi_ref = _wave_step_reference(
         Pi_W,
         Pibar_ref,
@@ -208,27 +208,27 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
     )
 
     Pibar = torch.full_like(Pi, float("-inf"))
-    wave_pibar_uniform_parent_fused(
+    compute_pibar(
         Pi,
         Pibar,
         ws,
         W,
         S,
-        mt,
+        max_transfer,
         sp_parent,
         max_depth,
         family_idx=family_idx,
         family_indexed_consts=family_indexed_consts,
     )
     Pi_out = Pi.clone()
-    wave_step_uniform_fused_into(
+    compute_wave_step(
         Pi,
         Pi_out,
         Pibar,
         ws,
         W,
         S,
-        mt,
+        max_transfer,
         DL,
         Ebar,
         E,
@@ -254,7 +254,7 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
     torch.testing.assert_close(max_diff, expected_diff, rtol=2e-5, atol=2e-5)
 
 
-def test_wave_step_uniform_local_input_rows_match_global_offset():
+def test_wave_step_local_input_rows_match_global_offset():
     torch.manual_seed(17)
     device = torch.device("cuda")
     dtype = torch.float32
@@ -266,7 +266,7 @@ def test_wave_step_uniform_local_input_rows_match_global_offset():
     ws = 3
     C = W + 6
     Pi = torch.randn((C, S), device=device, dtype=dtype) * 1.1 - 3.0
-    mt = torch.randn((S,), device=device, dtype=dtype) * 0.1
+    max_transfer = torch.randn((S,), device=device, dtype=dtype) * 0.1
     DL = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 2.0
     Ebar = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 1.5
     E = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 2.5
@@ -278,14 +278,14 @@ def test_wave_step_uniform_local_input_rows_match_global_offset():
     Pi_out_global = Pi.clone()
     Pibar_global = torch.full_like(Pi, float("-inf"))
     row_max_global = torch.full((C,), float("-inf"), device=device, dtype=dtype)
-    wave_step_uniform_fused_into(
+    compute_wave_step(
         Pi,
         Pi_out_global,
         Pibar_global,
         ws,
         W,
         S,
-        mt,
+        max_transfer,
         DL,
         Ebar,
         E,
@@ -304,14 +304,14 @@ def test_wave_step_uniform_local_input_rows_match_global_offset():
     Pi_out_local = Pi.clone()
     Pibar_local = torch.full_like(Pi, float("-inf"))
     row_max_local = torch.full((C,), float("-inf"), device=device, dtype=dtype)
-    wave_step_uniform_fused_into(
+    compute_wave_step(
         Pi[ws:ws + W].contiguous(),
         Pi_out_local,
         Pibar_local,
         ws,
         W,
         S,
-        mt,
+        max_transfer,
         DL,
         Ebar,
         E,
@@ -350,7 +350,7 @@ def test_wave_step_uniform_local_input_rows_match_global_offset():
 
 
 @pytest.mark.parametrize("leaf_logp_mode", ["shared", "genewise_scalar", "genewise_specieswise"])
-def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp_mode):
+def test_wave_step_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp_mode):
     torch.manual_seed(13)
     device = torch.device("cuda")
     dtype = torch.float32
@@ -371,7 +371,7 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
     ws = 2
     C = W + 4
     Pi = torch.randn((C, S), device=device, dtype=dtype) * 1.2 - 3.0
-    mt = torch.randn((G, S), device=device, dtype=dtype) * 0.1
+    max_transfer = torch.randn((G, S), device=device, dtype=dtype) * 0.1
     DL = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.0
     Ebar = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 1.5
     E = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.5
@@ -403,14 +403,14 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
 
     Pibar_dense = torch.full_like(Pi, float("-inf"))
     Pi_dense_out = Pi.clone()
-    wave_step_uniform_fused_into(
+    compute_wave_step(
         Pi,
         Pi_dense_out,
         Pibar_dense,
         ws,
         W,
         S,
-        mt,
+        max_transfer,
         DL,
         Ebar,
         E,
@@ -430,14 +430,14 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
 
     Pibar_indexed = torch.full_like(Pi, float("-inf"))
     Pi_indexed_out = Pi.clone()
-    wave_step_uniform_fused_into(
+    compute_wave_step(
         Pi,
         Pi_indexed_out,
         Pibar_indexed,
         ws,
         W,
         S,
-        mt,
+        max_transfer,
         DL,
         Ebar,
         E,
@@ -488,7 +488,7 @@ def test_initial_leaf_specialization_matches_generic_initial_state(leaf_logp_mod
     family_idx = torch.tensor([0, 0, 0, 1, 2, 1, 2, 0], device=device, dtype=torch.long)
     leaf_species_idx = torch.full((C,), -1, device=device, dtype=torch.long)
     leaf_species_idx[ws:ws + W] = torch.tensor([3, 1, -1, 2], device=device)
-    mt = torch.randn((G, S), device=device, dtype=dtype) * 0.1
+    max_transfer = torch.randn((G, S), device=device, dtype=dtype) * 0.1
     DL = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.0
     Ebar = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 1.5
     E = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.5
@@ -503,14 +503,14 @@ def test_initial_leaf_specialization_matches_generic_initial_state(leaf_logp_mod
 
     generic = torch.empty_like(Pi)
     pibar = torch.empty_like(Pi)
-    wave_step_uniform_fused_into(
+    compute_wave_step(
         Pi,
         generic,
         pibar,
         ws,
         W,
         S,
-        mt,
+        max_transfer,
         DL,
         Ebar,
         E,
@@ -528,12 +528,12 @@ def test_initial_leaf_specialization_matches_generic_initial_state(leaf_logp_mod
         initial_state=True,
     )
     specialized = torch.empty_like(Pi)
-    wave_step_uniform_initial_leaf_fused_into(
+    compute_leaf_initial_wave_step(
         specialized,
         ws,
         W,
         S,
-        mt,
+        max_transfer,
         DL,
         Ebar,
         E,
@@ -558,7 +558,7 @@ def test_initial_leaf_specialization_matches_generic_initial_state(leaf_logp_mod
     )
 
 
-def test_dts_parent_reduced_skips_output_initialization_when_all_rows_covered():
+def test_dts_forward_skips_output_initialization_when_all_rows_covered():
     device = torch.device("cuda")
     dtype = torch.float32
     torch.manual_seed(17)
@@ -586,7 +586,7 @@ def test_dts_parent_reduced_skips_output_initialization_when_all_rows_covered():
     log_pS = torch.randn((S,), device=device, dtype=dtype) * 0.1 - 2.0
     split_logp = torch.tensor([-0.25, -0.75], device=device, dtype=dtype)
 
-    initialized = dts_fused_parent_reduced(
+    initialized = compute_dts_forward(
         Pi,
         Pibar,
         lefts,
@@ -603,7 +603,7 @@ def test_dts_parent_reduced_skips_output_initialization_when_all_rows_covered():
         ge2_parent_ids,
         initialize_out=True,
     )
-    uninitialized = dts_fused_parent_reduced(
+    uninitialized = compute_dts_forward(
         Pi,
         Pibar,
         lefts,

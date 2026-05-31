@@ -39,7 +39,7 @@ Largest production symbols by source length:
 - `gpurec/api/uniform_chunked.py:721` `UniformChunkedReconModel`, 458 lines.
 - `gpurec/workflow/optimize.py:306` `OptimizationRunner`, 439 lines.
 - `gpurec/core/kernels/wave_backward.py:1033`
-  `_dts_cross_backward_accum_kernel`, 416 lines.
+  `_split_dts_vjp_kernel`, 416 lines.
 - `gpurec/optimization/batched_lbfgs.py:25` `BatchedLBFGS`, 384 lines.
 - `gpurec/core/forward.py:53` `Pi_wave_forward`, 345 lines.
 
@@ -106,13 +106,12 @@ removed and are guarded against returning.
    fp32 CUDA tensors, then catches broad `Exception` at
    `gpurec/core/kernels/wave_backward.py:1935`.  Warnings are limited to
    non-`auto` modes.  There are env-toggle tests, but no direct test for
-   `uniform_cross_pibar_vjp_tree_from_ud_cuda`.
+   `accumulate_split_pibar_vjp`.
 
 9. Backward and DTS kernel coverage is thin relative to risk.  Direct kernel
    tests import forward wave-step functions, but no direct tests were found for
-   `dts_fused_parent_reduced`, `wave_backward_uniform_fused`,
-   `dts_cross_backward_accum_fused`, `wave_backward_uniform_nosplit_cuda`, or
-   the CUDA Pibar prototype.
+   `compute_dts_forward`, `compute_wave_adjoint`,
+   `accumulate_split_dts_vjp`, or `accumulate_split_pibar_vjp`.
 
 10. `preprocess.cpp` had relied on transitive includes.  The direct `<set>`
     include is now present because the retained C++ source uses `std::set`.
@@ -437,7 +436,7 @@ removed and are guarded against returning.
   disabled, default penalty 316.22776601683796, 100 Adam warmup steps,
   Strong-Wolfe LBFGS, L1 KKT residual checks, timestamped output directories,
   `latest_run.txt`, and the archive/delete-or-migrate criterion.
-- `active_mask_from_rhs_absmax_fused()` now documents its bf16 boundary before
+- `compute_active_wave_rows_from_adjoint()` now documents its bf16 boundary before
   any dtype cleanup.  The helper remains a private retained-kernel helper that
   accepts fp32/fp64/bf16 CUDA tensors for standalone row-mask experiments, while
   the public retained `Pi_wave_backward` path still supports only fp32/fp64 and

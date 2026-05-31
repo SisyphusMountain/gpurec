@@ -1,9 +1,8 @@
 """Backward pass: retained Triton CUDA path for Pi adjoints.
 
 The production Pi backward/gradient path is the retained fused Triton path for
-``float32``/``float64`` tensors and currently requires ``S > 256`` species
-nodes.  Tiny species trees are useful for parser/config tests but need a
-small-species backward fallback before they can be end-to-end optimizer smokes.
+``float32``/``float64`` tensors.  The older small-species ``S > 256`` gate has
+been removed so fused kernels can run end-to-end on these trees too.
 """
 
 import torch
@@ -103,7 +102,7 @@ def Pi_wave_backward(
     Computes dL/dPi via Neumann series per wave (root→leaves), then
     accumulates parameter gradients.  Always operates in batched mode
     internally; a single gene tree (family_idx=None) is handled as G=1.  The
-    retained fused path requires CUDA, ``float32``/``float64``, and ``S > 256``.
+    retained fused path requires CUDA and ``float32``/``float64`` inputs.
 
     Args:
         wave_layout: dict from build_wave_layout()
@@ -120,7 +119,7 @@ def Pi_wave_backward(
         use_pruning: whether to prune waves with negligible adjoint gradient
         family_idx: Long[C] clade→family mapping. None → auto-wrapped as G=1.
         uniform_pibar_row_max: optional [C] final forward-side row max values
-            for uniform Pibar. Required by fused cross-Pibar VJP paths.
+            for Pibar. Required by fused split-Pibar VJP paths.
         origination_probs: optional [S] or [F, S] root-species origination
             probabilities. ``None`` keeps the historical uniform distribution.
         origination_probs_prepared: when True, skip validation/renormalization
@@ -144,12 +143,12 @@ def Pi_wave_backward(
             'grad_max_transfer_mat': [S] or [G, S] gradient wrt max_transfer_mat
     """
     from .kernels.wave_backward import (
-        wave_backward_uniform_fused,
-        dts_cross_backward_accum_fused,
-        uniform_cross_pibar_vjp_tree_from_ud_fused,
-        active_mask_from_rhs_absmax_fused,
+        compute_wave_adjoint,
+        accumulate_split_dts_vjp,
+        accumulate_split_pibar_vjp,
+        compute_active_wave_rows_from_adjoint,
     )
-    from .forward import _compute_dts_cross as _compute_dts_cross_for_backward
+    from .forward import _compute_split_dts as _compute_split_dts_for_backward
 
     wave_metas = wave_layout['wave_metas']
     C, S = Pi_star_wave.shape
@@ -164,8 +163,6 @@ def Pi_wave_backward(
     if dtype not in _SUPPORTED_BACKWARD_FLOAT_DTYPES:
         raise RuntimeError("Pi_wave_backward fused path requires float32 or float64")
     fixed_point_relaxation = fixed_point_relaxation_value(fixed_point_relaxation)
-    if S <= 256:
-        raise RuntimeError("Pi_wave_backward fused path requires S > 256")
     if initial_v_pi is not None:
         if not torch.is_tensor(initial_v_pi):
             raise TypeError("initial_v_pi must be a tensor when provided")
@@ -176,7 +173,7 @@ def Pi_wave_backward(
             )
         initial_v_pi = initial_v_pi.to(device=device, dtype=dtype).contiguous()
 
-    dts_grad_mt_two_stage_tile_splits = 128
+    dts_max_transfer_gradient_tile_splits = 128
 
     species_topology = species_wave_topology(
         species_helpers,
@@ -219,7 +216,7 @@ def Pi_wave_backward(
         max_transfer_mat=max_transfer_mat,
     )
 
-    mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 2 else max_transfer_mat
+    max_transfer_mat = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 2 else max_transfer_mat
 
     G = int(E.shape[0]) if E.ndim == 2 else 1
 
@@ -232,7 +229,7 @@ def Pi_wave_backward(
         )
 
     param_kwargs = dict(S=S, device=target_device, dtype=dtype, family_rows=G)
-    mt_family = as_family_species(mt_squeezed, name="max_transfer_mat", **param_kwargs)
+    max_transfer_family = as_family_species(max_transfer_mat, name="max_transfer_mat", **param_kwargs)
     E_family = as_family_species(E, name="E", **param_kwargs)
     Ebar_family = as_family_species(Ebar, name="Ebar", **param_kwargs)
     E_s1_family = as_family_species(E_s1, name="E_s1", **param_kwargs)
@@ -242,7 +239,7 @@ def Pi_wave_backward(
     log_pD_family = as_family_species(log_pD, name="log_pD", **param_kwargs)
     log_pS_family = as_family_species(log_pS, name="log_pS", **param_kwargs)
     if _auto_wrapped:
-        mt_shared = mt_squeezed[0] if mt_squeezed.ndim == 2 else mt_squeezed
+        max_transfer_shared = max_transfer_mat[0] if max_transfer_mat.ndim == 2 else max_transfer_mat
         E_shared = E[0]
         Ebar_shared = Ebar[0]
         E_s1_shared = E_s1[0]
@@ -253,7 +250,7 @@ def Pi_wave_backward(
         SL1_shared = (log_pS_shared + E_s2_shared).contiguous()
         SL2_shared = (log_pS_shared + E_s1_shared).contiguous()
     else:
-        mt_shared = E_shared = Ebar_shared = E_s1_shared = E_s2_shared = None
+        max_transfer_shared = E_shared = Ebar_shared = E_s1_shared = E_s2_shared = None
         log_pD_shared = log_pS_shared = None
         DL_shared = SL1_shared = SL2_shared = None
 
@@ -262,7 +259,7 @@ def Pi_wave_backward(
         and _family_species_shape_ok(Ebar_family)
         and _family_species_shape_ok(E_s1_family)
         and _family_species_shape_ok(E_s2_family)
-        and _family_species_shape_ok(mt_family)
+        and _family_species_shape_ok(max_transfer_family)
         and _family_species_shape_ok(log_pD_family)
         and _family_species_shape_ok(log_pS_family)
     )
@@ -278,12 +275,12 @@ def Pi_wave_backward(
     def _wave_consts(ws, we, *, family_indexed):
         """Return constants for the current self-loop wave."""
         if _auto_wrapped:
-            return mt_shared, DL_shared, E_shared, Ebar_shared, SL1_shared, SL2_shared
+            return max_transfer_shared, DL_shared, E_shared, Ebar_shared, SL1_shared, SL2_shared
         if family_indexed:
-            return mt_family, DL_family, E_family, Ebar_family, SL1_family, SL2_family
+            return max_transfer_family, DL_family, E_family, Ebar_family, SL1_family, SL2_family
         fi_w = family_idx[ws:we]
         return (
-            mt_family[fi_w],
+            max_transfer_family[fi_w],
             DL_family[fi_w],
             E_family[fi_w],
             Ebar_family[fi_w],
@@ -358,7 +355,7 @@ def Pi_wave_backward(
 
     grad_log_pD = torch.zeros_like(log_pD)
     grad_log_pS = torch.zeros_like(log_pS)
-    grad_mt = torch.zeros_like(mt_squeezed)
+    grad_max_transfer_mat = torch.zeros_like(max_transfer_mat)
     grad_E_acc = torch.zeros_like(E)
     grad_Ebar_acc = torch.zeros_like(Ebar)
     grad_E_s1_acc = torch.zeros_like(E_s1)
@@ -375,11 +372,11 @@ def Pi_wave_backward(
         use_pruning=use_pruning,
         pruning_threshold=pruning_threshold,
     )
-    active_mask_threshold = pruning_policy.active_mask_threshold
+    active_wave_row_threshold = pruning_policy.active_wave_row_threshold
 
-    def _compute_active_mask(rhs):
-        return active_mask_from_rhs_absmax_fused(
-            rhs, active_mask_threshold, use_pruning=use_pruning
+    def _compute_active_wave_rows(rhs):
+        return compute_active_wave_rows_from_adjoint(
+            rhs, active_wave_row_threshold, use_pruning=use_pruning
         )
 
     skip_inactive_pibar_zero = pruning_policy.skip_inactive_pibar_zero
@@ -391,10 +388,10 @@ def Pi_wave_backward(
         we = meta['end']
         W = meta['W']
 
-        # The fused uniform kernel treats rhs as read-only, and this wave's
-        # later cross-DTS/Pibar adjoints accumulate into child rows.
+        # The fused backward kernel treats rhs as read-only, and this wave's
+        # later split-DTS/Pibar adjoints accumulate into child rows.
         rhs_k = accumulated_rhs[ws:we]
-        active_mask = _compute_active_mask(rhs_k).contiguous() if use_pruning else None
+        active_parent_rows = _compute_active_wave_rows(rhs_k).contiguous() if use_pruning else None
 
         leaf_wt = None
         wave_has_leaf_term = (
@@ -407,10 +404,10 @@ def Pi_wave_backward(
             log_pD_dts = log_pD_shared if _auto_wrapped else log_pD_param
             log_pS_dts = log_pS_shared if _auto_wrapped else log_pS_param
             with torch.no_grad():
-                dts_r = _compute_dts_cross_for_backward(
+                dts_r = _compute_split_dts_for_backward(
                     Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
                     sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
-                    active_mask=active_mask,
+                    active_parent_rows=active_parent_rows,
                     family_idx=None if _auto_wrapped else family_idx,
                     family_offset=0 if _auto_wrapped else ws,
                 )
@@ -418,7 +415,7 @@ def Pi_wave_backward(
             dts_r = None
 
         use_family_indexed_self_loop = not _auto_wrapped
-        mt_w, DL_w, E_w, Ebar_w, SL1_w, SL2_w = _wave_consts(
+        max_transfer_w, DL_w, E_w, Ebar_w, SL1_w, SL2_w = _wave_consts(
             ws, we, family_indexed=use_family_indexed_self_loop
         )
 
@@ -462,17 +459,17 @@ def Pi_wave_backward(
             and grad_Ebar_acc.ndim == 2
             and grad_E_s1_acc.ndim == 2
             and grad_E_s2_acc.ndim == 2
-            and grad_mt.ndim == 2
+            and grad_max_transfer_mat.ndim == 2
             and int(grad_E_acc.shape[0]) == 1
             and int(grad_Ebar_acc.shape[0]) == 1
             and int(grad_E_s1_acc.shape[0]) == 1
             and int(grad_E_s2_acc.shape[0]) == 1
-            and int(grad_mt.shape[0]) == 1
+            and int(grad_max_transfer_mat.shape[0]) == 1
             and int(grad_E_acc.shape[1]) == S
             and int(grad_Ebar_acc.shape[1]) == S
             and int(grad_E_s1_acc.shape[1]) == S
             and int(grad_E_s2_acc.shape[1]) == S
-            and int(grad_mt.shape[1]) == S
+            and int(grad_max_transfer_mat.shape[1]) == S
             and (param_grad_vector or param_grad_scalar)
         )
         self_loop_grad_targets = None
@@ -484,19 +481,19 @@ def Pi_wave_backward(
                 grad_Ebar_acc[0],
                 grad_E_s1_acc[0],
                 grad_E_s2_acc[0],
-                grad_mt[0],
+                grad_max_transfer_mat[0],
                 param_grad_vector,
             )
-        wave_result = wave_backward_uniform_fused(
+        wave_result = compute_wave_adjoint(
             Pi_star_wave, Pibar_star_wave, ws, W, S,
             dts_r, rhs_k,
-            mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+            max_transfer_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
             sp_child1_wave, sp_child2_wave, leaf_wt,
             neumann_terms=neumann_terms,
             leaf_species_idx=leaf_species_index_wave,
             leaf_logp=uniform_leaf_logp,
             has_leaf_term=wave_has_leaf_term,
-            active_mask=active_mask,
+            active_parent_rows=active_parent_rows,
             sp_parent=sp_parent_wave,
             max_ancestor_depth=max_ancestor_depth,
             pibar_row_max=forward_pibar_row_max,
@@ -525,10 +522,10 @@ def Pi_wave_backward(
         else:
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_result
         solved_slice = solved_v_pi[ws:we]
-        if active_mask is None:
+        if active_parent_rows is None:
             solved_slice.copy_(v_k)
         else:
-            solved_slice.copy_(torch.where(active_mask[:, None], v_k, 0.0))
+            solved_slice.copy_(torch.where(active_parent_rows[:, None], v_k, 0.0))
         self_loop_grads_accumulated = triton_accum_self_loop_grads
 
         if not self_loop_grads_accumulated:
@@ -540,7 +537,7 @@ def Pi_wave_backward(
                 and grad_Ebar_acc.ndim == 2
                 and grad_E_s1_acc.ndim == 2
                 and grad_E_s2_acc.ndim == 2
-                and grad_mt.ndim == 2
+                and grad_max_transfer_mat.ndim == 2
             ):
                 aw0_sum = aw0.sum(dim=0)
                 aw2_sum = aw2.sum(dim=0)
@@ -550,7 +547,7 @@ def Pi_wave_backward(
                 grad_Ebar_acc[0] += aw1.sum(dim=0).to(dtype=grad_Ebar_acc.dtype)
                 grad_E_s1_acc[0] += aw4.sum(dim=0).to(dtype=grad_E_s1_acc.dtype)
                 grad_E_s2_acc[0] += aw3.sum(dim=0).to(dtype=grad_E_s2_acc.dtype)
-                grad_mt[0] += aw2_sum.to(dtype=grad_mt.dtype)
+                grad_max_transfer_mat[0] += aw2_sum.to(dtype=grad_max_transfer_mat.dtype)
             else:
                 _scatter_accum(grad_log_pD, aw0)
                 _scatter_accum(grad_log_pS, aw345)
@@ -558,7 +555,7 @@ def Pi_wave_backward(
                 _scatter_accum(grad_Ebar_acc, aw1)
                 _scatter_accum(grad_E_s1_acc, aw4)
                 _scatter_accum(grad_E_s2_acc, aw3)
-                _scatter_accum(grad_mt, aw2)
+                _scatter_accum(grad_max_transfer_mat, aw2)
 
         if meta['has_splits'] and dts_r is not None:
             sl = meta['sl']
@@ -571,45 +568,45 @@ def Pi_wave_backward(
                 dts_log_pS = log_pS_shared
                 dts_grad_log_pD = grad_log_pD[0]
                 dts_grad_log_pS = grad_log_pS[0]
-                dts_grad_mt = grad_mt[0] if grad_mt.ndim == 2 else grad_mt
-                dts_mt = mt_shared
+                dts_grad_max_transfer_mat = grad_max_transfer_mat[0] if grad_max_transfer_mat.ndim == 2 else grad_max_transfer_mat
+                dts_max_transfer_mat = max_transfer_shared
                 dts_family_idx = None
             else:
                 dts_log_pD = log_pD_param
                 dts_log_pS = log_pS_param
                 dts_grad_log_pD = grad_log_pD
                 dts_grad_log_pS = grad_log_pS
-                dts_grad_mt = grad_mt
-                dts_mt = mt_family
+                dts_grad_max_transfer_mat = grad_max_transfer_mat
+                dts_max_transfer_mat = max_transfer_family
                 dts_family_idx = family_idx
-            dts_accum_result = dts_cross_backward_accum_fused(
+            dts_accum_result = accumulate_split_dts_vjp(
                 Pi_star_wave, Pibar_star_wave, v_k, ws,
                 sl, sr, reduce_idx, wlsp,
                 dts_log_pD, dts_log_pS,
                 sp_child1, sp_child2, accumulated_rhs, S,
-                active_mask=active_mask,
+                active_parent_rows=active_parent_rows,
                 merge_s_term=True,
                 grad_log_pD=dts_grad_log_pD,
                 grad_log_pS=dts_grad_log_pS,
-                grad_mt=dts_grad_mt,
+                grad_max_transfer_mat=dts_grad_max_transfer_mat,
                 accum_param_reductions=True,
-                accum_mt_reduction=True,
+                accumulate_max_transfer_gradient=True,
                 output_pibar_ud=True,
-                output_pibar_side_active=True,
-                pibar_side_threshold=0.0,
-                mt_squeezed=dts_mt,
+                output_active_split_sides=True,
+                active_split_side_threshold=0.0,
+                max_transfer_mat=dts_max_transfer_mat,
                 pibar_row_max=forward_pibar_row_max,
-                grad_mt_two_stage=(
-                    dts_grad_mt.ndim == 1
-                    and int(dts_grad_mt.numel()) == S
+                stage_max_transfer_gradient_by_tile=(
+                    dts_grad_max_transfer_mat.ndim == 1
+                    and int(dts_grad_max_transfer_mat.numel()) == S
                 ),
-                grad_mt_two_stage_tile_splits=dts_grad_mt_two_stage_tile_splits,
+                max_transfer_gradient_tile_splits=dts_max_transfer_gradient_tile_splits,
                 skip_inactive_pibar_output_zero=skip_inactive_pibar_zero,
                 family_idx=dts_family_idx,
             )
-            grad_Pibar_l, grad_Pibar_r, pibar_side_active, _param_pD, _param_pS = dts_accum_result
+            grad_Pibar_l, grad_Pibar_r, active_split_sides, _param_pD, _param_pS = dts_accum_result
 
-            uniform_cross_pibar_vjp_tree_from_ud_fused(
+            accumulate_split_pibar_vjp(
                 Pi_star_wave,
                 grad_Pibar_l,
                 grad_Pibar_r,
@@ -617,16 +614,16 @@ def Pi_wave_backward(
                 sr,
                 accumulated_rhs,
                 S,
-                active_mask=active_mask,
+                active_parent_rows=active_parent_rows,
                 reduce_idx=reduce_idx,
                 pibar_row_max=forward_pibar_row_max,
                 skip_zero_sides=True,
-                side_active=pibar_side_active,
+                active_split_sides=active_split_sides,
                 compact_level_ptr=compact_level_ptr,
                 compact_level_parents=compact_level_parents,
                 compact_level_child1=compact_level_child1,
                 compact_level_child2=compact_level_child2,
-                side_active_threshold=0.0,
+                active_split_side_threshold=0.0,
             )
 
     result = {
@@ -637,7 +634,7 @@ def Pi_wave_backward(
         'grad_E_s2': grad_E_s2_acc,
         'grad_log_pD': grad_log_pD,
         'grad_log_pS': grad_log_pS,
-        'grad_max_transfer_mat': grad_mt,
+        'grad_max_transfer_mat': grad_max_transfer_mat,
         'n_waves_total': n_waves_total,
         'n_waves_skipped': n_waves_skipped,
         'n_waves_processed': n_waves_total - n_waves_skipped,

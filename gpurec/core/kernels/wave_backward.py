@@ -1,7 +1,7 @@
 """Fused Triton kernels for the retained wave-backward fast path.
 
 This module also contains private standalone diagnostics/helpers used by that
-path.  In particular, ``active_mask_from_rhs_absmax_fused()`` accepts bf16
+path.  In particular, ``compute_active_wave_rows_from_adjoint()`` accepts bf16
 inputs for standalone row-mask experiments, but the retained public
 ``Pi_wave_backward`` path rejects bf16 before this helper is reached.
 """
@@ -98,7 +98,7 @@ def _dts_grad_layout(grad, *, family_idx, S):
         raise ValueError("unsupported DTS gradient layout") from exc
 
 
-def _uniform_backward_const_layout(const_tensor, family_idx, family_indexed):
+def _backward_const_addressing_mode(const_tensor, family_idx, family_indexed):
     """Return addressing mode for self-loop constants.
 
     Modes:
@@ -117,7 +117,7 @@ def _uniform_backward_const_layout(const_tensor, family_idx, family_indexed):
     return 0
 
 
-def _uniform_backward_leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, family_indexed):
+def _backward_leaf_logp_addressing_mode(use_leaf_index, leaf_logp, family_idx, family_indexed):
     """Return addressing mode for leaf log-probabilities in the self-loop."""
     if not use_leaf_index:
         return 0
@@ -137,9 +137,9 @@ def _uniform_backward_leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, fami
 
 
 @triton.jit
-def _active_mask_from_rhs_absmax_kernel(
+def _active_wave_rows_from_adjoint_kernel(
     rhs_ptr,          # [W, S]
-    active_mask_ptr,  # [W] bool
+    active_parent_rows_ptr,  # [W] bool
     threshold,
     S: tl.constexpr,
     stride: tl.constexpr,
@@ -163,11 +163,11 @@ def _active_mask_from_rhs_absmax_kernel(
     else:
         active = row_max >= threshold
     lane = tl.arange(0, 1)
-    tl.store(active_mask_ptr + w + lane, active)
+    tl.store(active_parent_rows_ptr + w + lane, active)
 
 
-def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
-    """Build the row activity mask for backward pruning in one Triton launch.
+def compute_active_wave_rows_from_adjoint(rhs, threshold, *, use_pruning=True):
+    """Build active parent-row flags for backward pruning in one Triton launch.
 
     This is a private retained-kernel helper, not a public dtype policy.  The
     helper accepts fp32/fp64/bf16 CUDA tensors for standalone mask experiments;
@@ -177,21 +177,21 @@ def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
     if rhs.ndim != 2:
         raise ValueError("rhs must be a 2D tensor")
     if rhs.device.type != "cuda":
-        raise ValueError("active_mask_from_rhs_absmax_fused requires a CUDA tensor")
+        raise ValueError("compute_active_wave_rows_from_adjoint requires a CUDA tensor")
     if rhs.dtype not in _SUPPORTED_FLOAT_DTYPES:
         raise ValueError(
-            "active_mask_from_rhs_absmax_fused supports fp32/fp64/bf16 tensors"
+            "compute_active_wave_rows_from_adjoint supports fp32/fp64/bf16 tensors"
         )
 
     W, S = rhs.shape
-    active_mask = torch.empty((W,), device=rhs.device, dtype=torch.bool)
+    active_parent_rows = torch.empty((W,), device=rhs.device, dtype=torch.bool)
     if W == 0:
-        return active_mask
+        return active_parent_rows
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
-    _active_mask_from_rhs_absmax_kernel[(W,)](
+    _active_wave_rows_from_adjoint_kernel[(W,)](
         rhs,
-        active_mask,
+        active_parent_rows,
         float(threshold),
         S,
         rhs.stride(0),
@@ -199,18 +199,18 @@ def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
         STRICT_GT=bool(not use_pruning),
         DTYPE=_tl_float_dtype(rhs.dtype),
     )
-    return active_mask
+    return active_parent_rows
 
 @triton.jit
-def _wave_backward_uniform_2d_precompute_kernel(
+def _self_loop_coefficients_kernel(
     Pi_star_ptr,
     Pibar_star_ptr,
     Pibar_row_max_ptr,
     dts_r_ptr,
     has_splits: tl.constexpr,
     rhs_ptr,
-    active_mask_ptr,
-    mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    active_parent_rows_ptr,
+    max_transfer_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
     sp_child1_ptr, sp_child2_ptr, sp_parent_ptr,
     leaf_term_ptr,
     leaf_species_ptr,
@@ -232,7 +232,7 @@ def _wave_backward_uniform_2d_precompute_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
+    USE_ACTIVE_PARENT_ROWS: tl.constexpr,
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
     DTYPE: tl.constexpr,
@@ -247,8 +247,8 @@ def _wave_backward_uniform_2d_precompute_kernel(
     s_offs = tl.arange(0, BLOCK_S)
     row_valid = rows < W
     species_valid = s_offs < S
-    if USE_ACTIVE_MASK:
-        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    if USE_ACTIVE_PARENT_ROWS:
+        row_active = tl.load(active_parent_rows_ptr + rows, mask=row_valid, other=0) != 0
     else:
         row_active = row_valid
     row_mask = row_valid & row_active
@@ -400,11 +400,11 @@ def _wave_backward_uniform_2d_precompute_kernel(
 
 
 @triton.jit
-def _wave_backward_uniform_2d_jt_kernel(
+def _self_loop_adjoint_update_kernel(
     term_in_ptr,
     term_out_ptr,
     rhs_update_ptr,
-    active_mask_ptr,
+    active_parent_rows_ptr,
     diag_ptr,
     pibar_coeff_ptr,
     p_prime_ptr,
@@ -425,7 +425,7 @@ def _wave_backward_uniform_2d_jt_kernel(
     BLOCK_S: tl.constexpr,
     BLOCK_NODES: tl.constexpr,
     N_LEVELS: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
+    USE_ACTIVE_PARENT_ROWS: tl.constexpr,
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     FIXED_POINT_UPDATE: tl.constexpr,
     FIXED_POINT_RELAXATION: tl.constexpr,
@@ -438,8 +438,8 @@ def _wave_backward_uniform_2d_jt_kernel(
     s_offs = tl.arange(0, BLOCK_S)
     row_valid = rows < W
     species_valid = s_offs < S
-    if USE_ACTIVE_MASK:
-        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    if USE_ACTIVE_PARENT_ROWS:
+        row_active = tl.load(active_parent_rows_ptr + rows, mask=row_valid, other=0) != 0
     else:
         row_active = row_valid
     row_mask = row_valid & row_active
@@ -553,14 +553,14 @@ def _wave_backward_uniform_2d_jt_kernel(
 
 
 @triton.jit
-def _wave_backward_uniform_param_store_kernel(
+def _self_loop_parameter_gradient_kernel(
     Pi_star_ptr,
     Pibar_star_ptr,
     dts_r_ptr,
     has_splits: tl.constexpr,
     v_k_ptr,
-    active_mask_ptr,
-    mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    active_parent_rows_ptr,
+    max_transfer_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
     sp_child1_ptr, sp_child2_ptr,
     leaf_term_ptr,
     leaf_species_ptr,
@@ -572,7 +572,7 @@ def _wave_backward_uniform_param_store_kernel(
     grad_Ebar_ptr,
     grad_E_s1_ptr,
     grad_E_s2_ptr,
-    grad_mt_ptr,
+    grad_max_transfer_ptr,
     aw0_ptr,
     aw1_ptr,
     aw2_ptr,
@@ -588,7 +588,7 @@ def _wave_backward_uniform_param_store_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
+    USE_ACTIVE_PARENT_ROWS: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
     ACCUM_GRADS: tl.constexpr,
     PARAM_GRAD_VECTOR: tl.constexpr,
@@ -603,8 +603,8 @@ def _wave_backward_uniform_param_store_kernel(
     s_offs = tl.arange(0, BLOCK_S)
     row_valid = rows < W
     species_valid = s_offs < S
-    if USE_ACTIVE_MASK:
-        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    if USE_ACTIVE_PARENT_ROWS:
+        row_active = tl.load(active_parent_rows_ptr + rows, mask=row_valid, other=0) != 0
     else:
         row_active = row_valid
     row_mask = row_valid & row_active
@@ -761,7 +761,7 @@ def _wave_backward_uniform_param_store_kernel(
             mask=species_valid,
         )
         tl.atomic_add(
-            grad_mt_ptr + s_offs,
+            grad_max_transfer_ptr + s_offs,
             aw2_s,
             sem="relaxed",
             mask=species_valid,
@@ -775,18 +775,18 @@ def _wave_backward_uniform_param_store_kernel(
         tl.store(aw4_ptr + out_offsets, tl.where(mask, _aw4, zero), mask=store_mask)
 
 
-def _wave_backward_uniform_2d(
+def _run_self_loop_backward_2d(
     Pi_star, Pibar_star, ws, W, S,
     dts_r,
     rhs,
-    mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+    max_transfer_mat, DL_const, Ebar, E, SL1_const, SL2_const,
     sp_child1, sp_child2, leaf_term_wt,
     *,
     neumann_terms,
     leaf_species_idx,
     leaf_logp,
     has_leaf_term,
-    active_mask,
+    active_parent_rows,
     sp_parent,
     max_ancestor_depth,
     pibar_row_max,
@@ -803,7 +803,7 @@ def _wave_backward_uniform_2d(
     return_residual_stats=False,
     fixed_point_relaxation=1.0,
 ):
-    """Retained 2D row-block/full-species tree-reduction self-loop."""
+    """Run the self-loop backward solve for one clade wave."""
     if Pi_star.device.type != "cuda":
         raise RuntimeError("GPUREC self-loop 2D fast path requires CUDA tensors")
     if Pi_star.dtype not in (torch.float32, torch.float64):
@@ -890,15 +890,15 @@ def _wave_backward_uniform_2d(
 
     launch_options = {"num_warps": 8}
 
-    _wave_backward_uniform_2d_precompute_kernel[(n_row_blocks,)](
+    _self_loop_coefficients_kernel[(n_row_blocks,)](
         Pi_star,
         Pibar_star,
         pibar_row_max,
         dts_r if dts_r is not None else Pi_star,
         dts_r is not None,
         rhs,
-        active_mask if active_mask is not None else rhs,
-        mt_squeezed,
+        active_parent_rows if active_parent_rows is not None else rhs,
+        max_transfer_mat,
         DL_const,
         Ebar,
         E,
@@ -927,7 +927,7 @@ def _wave_backward_uniform_2d(
         USE_LEAF_INDEX=bool(use_leaf_index),
         HAS_LEAF_TERM=bool(has_leaf_term),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
-        USE_ACTIVE_MASK=bool(active_mask is not None),
+        USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
         SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
         CONST_LAYOUT=int(const_layout),
         DTYPE=_tl_float_dtype(dtype),
@@ -936,92 +936,20 @@ def _wave_backward_uniform_2d(
     )
 
     jt_options = {"num_warps": 2}
-    if initial_v is not None:
-        if tuple(initial_v.shape) != scratch_shape:
-            raise ValueError(
-                f"initial_v shape {tuple(initial_v.shape)} does not match "
-                f"wave scratch shape {scratch_shape}"
-            )
-        v_k.copy_(initial_v.to(device=device, dtype=dtype).contiguous())
-        for _n in range(int(neumann_terms)):
-            _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
-                v_k,
-                spec_buf,
-                rhs,
-                active_mask if active_mask is not None else rhs,
-                aw0,
-                aw1,
-                aw2,
-                aw3,
-                aw4,
-                sp_child1,
-                sp_child2,
-                sp_parent,
-                compact_level_ptr,
-                compact_level_parents,
-                compact_level_child1,
-                compact_level_child2,
-                pibar_corr,
-                v_k,
-                W,
-                S,
-                block_w,
-                block_s,
-                block_nodes,
-                compact_level_ptr.numel() - 1,
-                USE_ACTIVE_MASK=bool(active_mask is not None),
-                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-                FIXED_POINT_UPDATE=True,
-                FIXED_POINT_RELAXATION=fixed_point_relaxation,
-                DTYPE=_tl_float_dtype(dtype),
-                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-                **jt_options,
-            )
-    else:
-        for n in range(int(neumann_terms)):
-            term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
-            term_out = spec_buf if n % 2 == 0 else term_buf
-            _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
-                term_in,
-                term_out,
-                rhs,
-                active_mask if active_mask is not None else rhs,
-                aw0,
-                aw1,
-                aw2,
-                aw3,
-                aw4,
-                sp_child1,
-                sp_child2,
-                sp_parent,
-                compact_level_ptr,
-                compact_level_parents,
-                compact_level_child1,
-                compact_level_child2,
-                pibar_corr,
-                v_k,
-                W,
-                S,
-                block_w,
-                block_s,
-                block_nodes,
-                compact_level_ptr.numel() - 1,
-                USE_ACTIVE_MASK=bool(active_mask is not None),
-                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-                FIXED_POINT_UPDATE=False,
-                FIXED_POINT_RELAXATION=1.0,
-                DTYPE=_tl_float_dtype(dtype),
-                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-                **jt_options,
-            )
 
-    residual_stats = None
-    if return_residual_stats:
-        _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
-            v_k,
-            term_buf,
+    def _launch_self_loop_adjoint_update(
+        term_in,
+        term_out,
+        v_accum,
+        *,
+        fixed_point_update,
+        relaxation,
+    ):
+        _self_loop_adjoint_update_kernel[(n_row_blocks,)](
+            term_in,
+            term_out,
             rhs,
-            active_mask if active_mask is not None else rhs,
+            active_parent_rows if active_parent_rows is not None else rhs,
             aw0,
             aw1,
             aw2,
@@ -1035,31 +963,68 @@ def _wave_backward_uniform_2d(
             compact_level_child1,
             compact_level_child2,
             pibar_corr,
-            term_buf,
+            v_accum,
             W,
             S,
             block_w,
             block_s,
             block_nodes,
             compact_level_ptr.numel() - 1,
-            USE_ACTIVE_MASK=bool(active_mask is not None),
+            USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
             SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-            FIXED_POINT_UPDATE=True,
-            FIXED_POINT_RELAXATION=1.0,
+            FIXED_POINT_UPDATE=bool(fixed_point_update),
+            FIXED_POINT_RELAXATION=relaxation,
             DTYPE=_tl_float_dtype(dtype),
             USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
             **jt_options,
         )
+
+    if initial_v is not None:
+        if tuple(initial_v.shape) != scratch_shape:
+            raise ValueError(
+                f"initial_v shape {tuple(initial_v.shape)} does not match "
+                f"wave scratch shape {scratch_shape}"
+            )
+        v_k.copy_(initial_v.to(device=device, dtype=dtype).contiguous())
+        for _n in range(int(neumann_terms)):
+            _launch_self_loop_adjoint_update(
+                v_k,
+                v_k,
+                v_k,
+                fixed_point_update=True,
+                relaxation=fixed_point_relaxation,
+            )
+    else:
+        for n in range(int(neumann_terms)):
+            term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
+            term_out = spec_buf if n % 2 == 0 else term_buf
+            _launch_self_loop_adjoint_update(
+                term_in,
+                term_out,
+                v_k,
+                fixed_point_update=False,
+                relaxation=1.0,
+            )
+
+    residual_stats = None
+    if return_residual_stats:
+        _launch_self_loop_adjoint_update(
+            v_k,
+            term_buf,
+            term_buf,
+            fixed_point_update=True,
+            relaxation=1.0,
+        )
         residual = term_buf - v_k
         rhs_for_scale = rhs
-        if active_mask is not None:
+        if active_parent_rows is not None:
             residual = torch.where(
-                active_mask[:, None],
+                active_parent_rows[:, None],
                 residual,
                 torch.zeros_like(residual),
             )
             rhs_for_scale = torch.where(
-                active_mask[:, None],
+                active_parent_rows[:, None],
                 rhs,
                 torch.zeros_like(rhs),
             )
@@ -1083,7 +1048,7 @@ def _wave_backward_uniform_2d(
             grad_Ebar_ptr,
             grad_E_s1_ptr,
             grad_E_s2_ptr,
-            grad_mt_ptr,
+            grad_max_transfer_ptr,
             param_grad_vector,
         ) = self_loop_grad_targets
         aw345_ptr = aw0
@@ -1094,18 +1059,18 @@ def _wave_backward_uniform_2d(
         grad_Ebar_ptr = aw0
         grad_E_s1_ptr = aw0
         grad_E_s2_ptr = aw0
-        grad_mt_ptr = aw0
+        grad_max_transfer_ptr = aw0
         param_grad_vector = False
         aw345_ptr = aw345
 
-    _wave_backward_uniform_param_store_kernel[(n_row_blocks,)](
+    _self_loop_parameter_gradient_kernel[(n_row_blocks,)](
         Pi_star,
         Pibar_star,
         dts_r if dts_r is not None else Pi_star,
         dts_r is not None,
         v_k,
-        active_mask if active_mask is not None else rhs,
-        mt_squeezed,
+        active_parent_rows if active_parent_rows is not None else rhs,
+        max_transfer_mat,
         DL_const,
         Ebar,
         E,
@@ -1123,7 +1088,7 @@ def _wave_backward_uniform_2d(
         grad_Ebar_ptr,
         grad_E_s1_ptr,
         grad_E_s2_ptr,
-        grad_mt_ptr,
+        grad_max_transfer_ptr,
         aw0,
         aw1,
         aw2,
@@ -1139,7 +1104,7 @@ def _wave_backward_uniform_2d(
         USE_LEAF_INDEX=bool(use_leaf_index),
         HAS_LEAF_TERM=bool(has_leaf_term),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
-        USE_ACTIVE_MASK=bool(active_mask is not None),
+        USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
         CONST_LAYOUT=int(const_layout),
         ACCUM_GRADS=bool(accum_self_loop_grads),
         PARAM_GRAD_VECTOR=bool(param_grad_vector),
@@ -1156,17 +1121,17 @@ def _wave_backward_uniform_2d(
     return v_k, aw0, aw1, aw2, aw345, aw3, aw4
 
 
-def wave_backward_uniform_fused(
+def compute_wave_adjoint(
     Pi_star, Pibar_star, ws, W, S,
     dts_r,
     rhs,
-    mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+    max_transfer_mat, DL_const, Ebar, E, SL1_const, SL2_const,
     sp_child1, sp_child2, leaf_term_wt,
     neumann_terms=3,
     leaf_species_idx=None,
     leaf_logp=None,
     has_leaf_term=True,
-    active_mask=None,
+    active_parent_rows=None,
     sp_parent=None,
     max_ancestor_depth=None,
     pibar_row_max=None,
@@ -1191,7 +1156,7 @@ def wave_backward_uniform_fused(
         S: number of species
         dts_r: [W, S] or None
         rhs: [W, S] incoming adjoint
-        mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const:
+        max_transfer_mat, DL_const, Ebar, E, SL1_const, SL2_const:
             [S], [W, S], or [G, S] when family_indexed_consts=True
         sp_child1, sp_child2: [S] long
         leaf_term_wt: [W, S]
@@ -1211,7 +1176,7 @@ def wave_backward_uniform_fused(
         and leaf_species_idx is not None
         and leaf_logp is not None
     )
-    const_layout = _uniform_backward_const_layout(
+    const_layout = _backward_const_addressing_mode(
         DL_const, family_idx, bool(family_indexed_consts)
     )
     if bool(family_indexed_consts) and use_leaf_index:
@@ -1221,7 +1186,7 @@ def wave_backward_uniform_fused(
             leaf_logp = leaf_logp.expand(-1, S).contiguous()
         else:
             leaf_logp = leaf_logp.contiguous()
-    leaf_logp_mode = _uniform_backward_leaf_logp_mode(
+    leaf_logp_mode = _backward_leaf_logp_addressing_mode(
         use_leaf_index, leaf_logp, family_idx, bool(family_indexed_consts)
     )
     if family_idx is not None:
@@ -1238,7 +1203,7 @@ def wave_backward_uniform_fused(
         raise ValueError("pibar_row_max is required for the retained backward fast path")
     pibar_row_max = pibar_row_max.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
 
-    return _wave_backward_uniform_2d(
+    return _run_self_loop_backward_2d(
         Pi_star,
         Pibar_star,
         ws,
@@ -1246,7 +1211,7 @@ def wave_backward_uniform_fused(
         S,
         dts_r,
         rhs,
-        mt_squeezed,
+        max_transfer_mat,
         DL_const,
         Ebar,
         E,
@@ -1259,7 +1224,7 @@ def wave_backward_uniform_fused(
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
         has_leaf_term=requested_has_leaf_term,
-        active_mask=active_mask,
+        active_parent_rows=active_parent_rows,
         sp_parent=sp_parent,
         max_ancestor_depth=max_ancestor_depth,
         pibar_row_max=pibar_row_max,
@@ -1279,17 +1244,17 @@ def wave_backward_uniform_fused(
 
 
 # =========================================================================
-# Cross-clade DTS backward kernel
+# Split DTS backward kernel
 # =========================================================================
 
 @triton.jit
-def _dts_cross_backward_accum_kernel(
+def _split_dts_vjp_kernel(
     # Converged values [C, S]
     Pi_star_ptr,
     Pibar_star_ptr,
     # Neumann-solved adjoint [W, S]
     v_k_ptr,
-    active_mask_ptr,   # optional [W] bool parent row activity mask
+    active_parent_rows_ptr,   # optional [W] bool active parent-row flags
     # Split metadata
     sl_ptr,            # [n_ws] int64 — left child global clade index
     sr_ptr,            # [n_ws] int64 — right child global clade index
@@ -1310,44 +1275,44 @@ def _dts_cross_backward_accum_kernel(
     param_pS_ptr,         # [n_ws]
     grad_log_pD_ptr,      # optional scalar accumulation target
     grad_log_pS_ptr,      # optional scalar accumulation target
-    grad_mt_ptr,          # optional scalar/[S] accumulation target
-    grad_mt_partial_ptr,  # optional [ceil(n_ws/tile_splits), S] two-stage vector accumulation
+    grad_max_transfer_ptr,          # optional scalar/[S] accumulation target
+    grad_max_transfer_tiles_ptr,  # optional [ceil(n_ws/tile_splits), S] two-stage vector accumulation
     pibar_ud_ptr,         # optional [2 * n_ws, S] initial Pibar VJP subtree values
     pibar_A_ptr,          # optional [2 * n_ws] row sums of pibar_ud
-    pibar_side_active_ptr, # optional [2 * n_ws] exact nonzero u_d row mask
-    mt_ptr,               # optional [S] max transfer mat for Pibar denom reuse
-    pibar_row_max_ptr,    # optional [C] Pi-row max from forward uniform Pibar
-    side_active_threshold_ptr,
+    active_split_sides_ptr, # optional [2 * n_ws] exact nonzero u_d row mask
+    max_transfer_ptr,               # optional [S] max transfer mat for Pibar denom reuse
+    pibar_row_max_ptr,    # optional [C] Pi-row max from forward Pibar
+    active_split_side_threshold_ptr,
     # Dimensions
     ws,                # wave start offset (parent row = ws + reduce_idx)
     S: tl.constexpr,
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
+    USE_ACTIVE_PARENT_ROWS: tl.constexpr,
     USE_ATOMICS: tl.constexpr,
     MERGE_S_TERM: tl.constexpr,
     DEVICE_SCALAR_PARAMS: tl.constexpr,
     PARAM_LAYOUT: tl.constexpr,
     PARAM_GRAD_LAYOUT: tl.constexpr,
-    MT_LAYOUT: tl.constexpr,
-    GRAD_MT_LAYOUT: tl.constexpr,
+    MAX_TRANSFER_LAYOUT: tl.constexpr,
+    GRAD_MAX_TRANSFER_LAYOUT: tl.constexpr,
     ACCUM_PARAM_REDUCTIONS: tl.constexpr,
-    ACCUM_MT_REDUCTION: tl.constexpr,
-    GRAD_MT_SCALAR: tl.constexpr,
-    GRAD_MT_TWO_STAGE: tl.constexpr,
-    GRAD_MT_TILE_SPLITS: tl.constexpr,
+    ACCUM_MAX_TRANSFER_GRADIENT: tl.constexpr,
+    MAX_TRANSFER_GRAD_SCALAR: tl.constexpr,
+    MAX_TRANSFER_GRAD_TILES: tl.constexpr,
+    MAX_TRANSFER_GRAD_TILE_SPLITS: tl.constexpr,
     OUTPUT_PIBAR_UD: tl.constexpr,
-    OUTPUT_SIDE_ACTIVE: tl.constexpr,
-    SIDE_ACTIVE_THRESHOLD_ENABLED: tl.constexpr,
+    OUTPUT_ACTIVE_SPLIT_SIDES: tl.constexpr,
+    ACTIVE_SPLIT_SIDE_THRESHOLD_ENABLED: tl.constexpr,
     SKIP_INACTIVE_PIBAR_OUTPUT_ZERO: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    """DTS cross-clade backward with direct accumulation of Pi adjoints.
+    """DTS split backward with direct accumulation of Pi adjoints.
 
     It writes direct Pi contributions into accumulated_rhs instead of materializing
     grad_Pi_l/grad_Pi_r and relying on two PyTorch index_add_ calls.
-    Pibar adjoints are still materialized because they feed the uniform Pibar
-    VJP kernel.
+    Pibar adjoints are still materialized because they feed the Pibar VJP
+    kernel.
     """
     NEG_LARGE: tl.constexpr = -1e30
 
@@ -1357,8 +1322,8 @@ def _dts_cross_backward_accum_kernel(
     sr = tl.load(sr_ptr + i).to(tl.int64)
     parent_w = tl.load(reduce_idx_ptr + i).to(tl.int64)
     wlsp = tl.load(wlsp_ptr + i).to(DTYPE)
-    if USE_ACTIVE_MASK:
-        parent_active = tl.load(active_mask_ptr + parent_w)
+    if USE_ACTIVE_PARENT_ROWS:
+        parent_active = tl.load(active_parent_rows_ptr + parent_w)
         if parent_active == 0:
             out_base = i * S
             ud_l_base = i * S
@@ -1369,9 +1334,9 @@ def _dts_cross_backward_accum_kernel(
                 tl.store(param_pD_ptr + i + _scalar_off, zero_scalar)
                 tl.store(param_pS_ptr + i + _scalar_off, zero_scalar)
             if OUTPUT_PIBAR_UD:
-                if OUTPUT_SIDE_ACTIVE:
-                    tl.store(pibar_side_active_ptr + i + _scalar_off, 0)
-                    tl.store(pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off, 0)
+                if OUTPUT_ACTIVE_SPLIT_SIDES:
+                    tl.store(active_split_sides_ptr + i + _scalar_off, 0)
+                    tl.store(active_split_sides_ptr + tl.num_programs(0) + i + _scalar_off, 0)
                 if SKIP_INACTIVE_PIBAR_OUTPUT_ZERO:
                     return
                 tl.store(pibar_A_ptr + i + _scalar_off, zero_scalar)
@@ -1401,7 +1366,7 @@ def _dts_cross_backward_accum_kernel(
     else:
         parent_family = 0
 
-    if MT_LAYOUT == 1 or GRAD_MT_LAYOUT == 1:
+    if MAX_TRANSFER_LAYOUT == 1 or GRAD_MAX_TRANSFER_LAYOUT == 1:
         family_l = tl.load(family_idx_ptr + sl).to(tl.int64)
         family_r = tl.load(family_idx_ptr + sr).to(tl.int64)
     else:
@@ -1505,23 +1470,23 @@ def _dts_cross_backward_accum_kernel(
             tl.store(pi_l_out, pi_l_cur + vd0 + vd1, mask=mask)
             tl.store(pi_r_out, pi_r_cur + vd0 + vd2, mask=mask)
         if OUTPUT_PIBAR_UD:
-            if MT_LAYOUT == 1:
-                mt_l = tl.load(mt_ptr + family_l * S + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
-                mt_r = tl.load(mt_ptr + family_r * S + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+            if MAX_TRANSFER_LAYOUT == 1:
+                max_transfer_l = tl.load(max_transfer_ptr + family_l * S + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+                max_transfer_r = tl.load(max_transfer_ptr + family_r * S + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
             else:
-                mt = tl.load(mt_ptr + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
-                mt_l = mt
-                mt_r = mt
+                max_transfer = tl.load(max_transfer_ptr + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+                max_transfer_l = max_transfer
+                max_transfer_r = max_transfer
             finite_l = (Pibar_l > -1e29) & mask
             finite_r = (Pibar_r > -1e29) & mask
             inv_denom_l = tl.where(
                 finite_l,
-                tl.exp2(row_max_l + mt_l - Pibar_l),
+                tl.exp2(row_max_l + max_transfer_l - Pibar_l),
                 tl.zeros([BLOCK_S], dtype=DTYPE),
             )
             inv_denom_r = tl.where(
                 finite_r,
-                tl.exp2(row_max_r + mt_r - Pibar_r),
+                tl.exp2(row_max_r + max_transfer_r - Pibar_r),
                 tl.zeros([BLOCK_S], dtype=DTYPE),
             )
             ud_l = vd2 * inv_denom_l
@@ -1530,8 +1495,8 @@ def _dts_cross_backward_accum_kernel(
             tl.store(pibar_ud_ptr + (tl.num_programs(0) + i) * S + s_offs, ud_r, mask=valid_mask)
             sum_ud_l += tl.sum(tl.where(mask, ud_l, 0.0), axis=0)
             sum_ud_r += tl.sum(tl.where(mask, ud_r, 0.0), axis=0)
-            if OUTPUT_SIDE_ACTIVE:
-                if SIDE_ACTIVE_THRESHOLD_ENABLED:
+            if OUTPUT_ACTIVE_SPLIT_SIDES:
+                if ACTIVE_SPLIT_SIDE_THRESHOLD_ENABLED:
                     side_abs_bound_l += tl.sum(tl.where(mask, tl.abs(ud_l), 0.0), axis=0)
                     side_abs_bound_r += tl.sum(tl.where(mask, tl.abs(ud_r), 0.0), axis=0)
                 else:
@@ -1551,39 +1516,39 @@ def _dts_cross_backward_accum_kernel(
         else:
             sum_pD += tl.sum(vd0, axis=0)
             sum_pS += tl.sum(vd3 + vd4, axis=0)
-        if ACCUM_MT_REDUCTION:
-            mt_contrib = vd1 + vd2
-            if GRAD_MT_LAYOUT == 1:
+        if ACCUM_MAX_TRANSFER_GRADIENT:
+            max_transfer_contrib = vd1 + vd2
+            if GRAD_MAX_TRANSFER_LAYOUT == 1:
                 tl.atomic_add(
-                    grad_mt_ptr + family_l * S + s_offs,
+                    grad_max_transfer_ptr + family_l * S + s_offs,
                     vd2,
                     sem="relaxed",
                     mask=mask,
                 )
                 tl.atomic_add(
-                    grad_mt_ptr + family_r * S + s_offs,
+                    grad_max_transfer_ptr + family_r * S + s_offs,
                     vd1,
                     sem="relaxed",
                     mask=mask,
                 )
-            elif GRAD_MT_SCALAR:
+            elif MAX_TRANSFER_GRAD_SCALAR:
                 tl.atomic_add(
-                    grad_mt_ptr + _scalar_off,
-                    tl.sum(tl.where(mask, mt_contrib, 0.0), axis=0),
+                    grad_max_transfer_ptr + _scalar_off,
+                    tl.sum(tl.where(mask, max_transfer_contrib, 0.0), axis=0),
                     sem="relaxed",
                 )
-            elif GRAD_MT_TWO_STAGE:
-                mt_tile = i // GRAD_MT_TILE_SPLITS
+            elif MAX_TRANSFER_GRAD_TILES:
+                max_transfer_tile = i // MAX_TRANSFER_GRAD_TILE_SPLITS
                 tl.atomic_add(
-                    grad_mt_partial_ptr + mt_tile * S + s_offs,
-                    mt_contrib,
+                    grad_max_transfer_tiles_ptr + max_transfer_tile * S + s_offs,
+                    max_transfer_contrib,
                     sem="relaxed",
                     mask=mask,
                 )
             else:
                 tl.atomic_add(
-                    grad_mt_ptr + s_offs,
-                    mt_contrib,
+                    grad_max_transfer_ptr + s_offs,
+                    max_transfer_contrib,
                     sem="relaxed",
                     mask=mask,
                 )
@@ -1629,20 +1594,20 @@ def _dts_cross_backward_accum_kernel(
     if OUTPUT_PIBAR_UD:
         tl.store(pibar_A_ptr + i + _scalar_off, sum_ud_l)
         tl.store(pibar_A_ptr + tl.num_programs(0) + i + _scalar_off, sum_ud_r)
-        if OUTPUT_SIDE_ACTIVE:
-            if SIDE_ACTIVE_THRESHOLD_ENABLED:
-                threshold = tl.load(side_active_threshold_ptr).to(DTYPE)
+        if OUTPUT_ACTIVE_SPLIT_SIDES:
+            if ACTIVE_SPLIT_SIDE_THRESHOLD_ENABLED:
+                threshold = tl.load(active_split_side_threshold_ptr).to(DTYPE)
                 bound_l = side_abs_bound_l
                 bound_r = side_abs_bound_r
-                tl.store(pibar_side_active_ptr + i + _scalar_off, bound_l > threshold)
+                tl.store(active_split_sides_ptr + i + _scalar_off, bound_l > threshold)
                 tl.store(
-                    pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off,
+                    active_split_sides_ptr + tl.num_programs(0) + i + _scalar_off,
                     bound_r > threshold,
                 )
             else:
-                tl.store(pibar_side_active_ptr + i + _scalar_off, side_nonzero_l != 0)
+                tl.store(active_split_sides_ptr + i + _scalar_off, side_nonzero_l != 0)
                 tl.store(
-                    pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off,
+                    active_split_sides_ptr + tl.num_programs(0) + i + _scalar_off,
                     side_nonzero_r != 0,
                 )
 
@@ -1702,16 +1667,16 @@ def _dts_cross_backward_accum_kernel(
 
 
 @triton.jit
-def _dts_grad_mt_two_stage_reduce_kernel(
-    partial_ptr,   # [n_tiles, S]
-    grad_mt_ptr,   # [S]
+def _dts_max_transfer_gradient_kernel(
+    gradient_tile_ptr,   # [n_tiles, S]
+    grad_max_transfer_ptr,   # [S]
     n_tiles: tl.constexpr,
     S: tl.constexpr,
     BLOCK_TILES: tl.constexpr,
     BLOCK_S: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    """Reduce split-tile DTS grad_mt partials by species."""
+    """Reduce tiled DTS max_transfer_mat gradients by species."""
     s_block = tl.program_id(0)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     valid_s = s_offs < S
@@ -1722,39 +1687,39 @@ def _dts_grad_mt_two_stage_reduce_kernel(
         tile_offs = tile_start + tl.arange(0, BLOCK_TILES)
         mask = (tile_offs[:, None] < n_tiles) & valid_s[None, :]
         vals = tl.load(
-            partial_ptr + tile_offs[:, None] * S + s_offs[None, :],
+            gradient_tile_ptr + tile_offs[:, None] * S + s_offs[None, :],
             mask=mask,
             other=0.0,
         )
         acc += tl.sum(vals, axis=0)
         tile_start += BLOCK_TILES
 
-    current = tl.load(grad_mt_ptr + s_offs, mask=valid_s, other=0.0)
-    tl.store(grad_mt_ptr + s_offs, current + acc, mask=valid_s)
+    current = tl.load(grad_max_transfer_ptr + s_offs, mask=valid_s, other=0.0)
+    tl.store(grad_max_transfer_ptr + s_offs, current + acc, mask=valid_s)
 
 
-def dts_cross_backward_accum_fused(
+def accumulate_split_dts_vjp(
     Pi_star, Pibar_star, v_k, ws,
     sl, sr, reduce_idx, wlsp,
     log_pD, log_pS,
     sp_child1, sp_child2,
     accumulated_rhs,
     S,
-    active_mask=None,
+    active_parent_rows=None,
     use_atomics=True,
     merge_s_term=False,
     grad_log_pD=None,
     grad_log_pS=None,
-    grad_mt=None,
+    grad_max_transfer_mat=None,
     accum_param_reductions=False,
-    accum_mt_reduction=False,
+    accumulate_max_transfer_gradient=False,
     output_pibar_ud=False,
-    output_pibar_side_active=False,
-    pibar_side_threshold=0.0,
-    mt_squeezed=None,
+    output_active_split_sides=False,
+    active_split_side_threshold=0.0,
+    max_transfer_mat=None,
     pibar_row_max=None,
-    grad_mt_two_stage=False,
-    grad_mt_two_stage_tile_splits=128,
+    stage_max_transfer_gradient_by_tile=False,
+    max_transfer_gradient_tile_splits=128,
     skip_inactive_pibar_output_zero=False,
     family_idx=None,
 ):
@@ -1782,47 +1747,47 @@ def dts_cross_backward_accum_fused(
             raise ValueError("grad_log_pD/grad_log_pS must use the same DTS gradient layout")
     else:
         param_grad_layout = 0
-    if accum_mt_reduction and grad_mt is None:
-        raise ValueError("grad_mt is required when accumulating DTS mt reductions")
-    if accum_mt_reduction:
-        if grad_mt.numel() == 1 or (grad_mt.ndim == 1 and int(grad_mt.shape[0]) == int(S)):
-            grad_mt_layout = 0
-        elif family_idx_arg is not None and grad_mt.ndim == 2 and int(grad_mt.shape[1]) == int(S):
-            grad_mt_layout = 1
+    if accumulate_max_transfer_gradient and grad_max_transfer_mat is None:
+        raise ValueError("grad_max_transfer_mat is required when accumulating DTS max_transfer_mat gradients")
+    if accumulate_max_transfer_gradient:
+        if grad_max_transfer_mat.numel() == 1 or (grad_max_transfer_mat.ndim == 1 and int(grad_max_transfer_mat.shape[0]) == int(S)):
+            grad_max_transfer_layout = 0
+        elif family_idx_arg is not None and grad_max_transfer_mat.ndim == 2 and int(grad_max_transfer_mat.shape[1]) == int(S):
+            grad_max_transfer_layout = 1
         else:
-            raise ValueError("DTS mt reduction target must be scalar, [S], or [G, S]")
+            raise ValueError("DTS max_transfer reduction target must be scalar, [S], or [G, S]")
     else:
-        grad_mt_layout = 0
-    if output_pibar_ud and (mt_squeezed is None or pibar_row_max is None):
-        raise ValueError("mt_squeezed and pibar_row_max are required when outputting Pibar u_d")
+        grad_max_transfer_layout = 0
+    if output_pibar_ud and (max_transfer_mat is None or pibar_row_max is None):
+        raise ValueError("max_transfer_mat and pibar_row_max are required when outputting Pibar u_d")
     if output_pibar_ud:
-        if mt_squeezed.ndim == 1 and int(mt_squeezed.shape[0]) == int(S):
-            mt_layout = 0
-        elif family_idx_arg is not None and mt_squeezed.ndim == 2 and int(mt_squeezed.shape[1]) == int(S):
-            mt_layout = 1
+        if max_transfer_mat.ndim == 1 and int(max_transfer_mat.shape[0]) == int(S):
+            max_transfer_layout = 0
+        elif family_idx_arg is not None and max_transfer_mat.ndim == 2 and int(max_transfer_mat.shape[1]) == int(S):
+            max_transfer_layout = 1
         else:
-            raise ValueError("mt_squeezed must have shape [S] or [G, S] when outputting Pibar u_d")
+            raise ValueError("max_transfer_mat must have shape [S] or [G, S] when outputting Pibar u_d")
     else:
-        mt_layout = 0
+        max_transfer_layout = 0
     if output_pibar_ud and pibar_row_max.numel() < Pi_star.shape[0]:
         raise ValueError("pibar_row_max must contain one row-max value per Pi row")
-    if output_pibar_side_active and not output_pibar_ud:
-        raise ValueError("output_pibar_side_active requires output_pibar_ud")
-    if torch.is_tensor(pibar_side_threshold):
-        if pibar_side_threshold.numel() != 1:
-            raise ValueError("pibar_side_threshold tensor must contain one value")
-        side_threshold_enabled = bool(output_pibar_side_active)
-        side_active_threshold_arg = _device_scalar_param(
-            pibar_side_threshold, device=device, dtype=dtype
+    if output_active_split_sides and not output_pibar_ud:
+        raise ValueError("output_active_split_sides requires output_pibar_ud")
+    if torch.is_tensor(active_split_side_threshold):
+        if active_split_side_threshold.numel() != 1:
+            raise ValueError("active_split_side_threshold tensor must contain one value")
+        active_split_side_threshold_enabled = bool(output_active_split_sides)
+        active_split_side_threshold_arg = _device_scalar_param(
+            active_split_side_threshold, device=device, dtype=dtype
         )
     else:
-        pibar_side_threshold = float(pibar_side_threshold)
-        if pibar_side_threshold < 0.0:
-            raise ValueError("pibar_side_threshold must be non-negative")
-        side_threshold_enabled = bool(output_pibar_side_active and pibar_side_threshold > 0.0)
-        side_active_threshold_arg = (
-            torch.tensor([pibar_side_threshold], device=device, dtype=dtype)
-            if side_threshold_enabled
+        active_split_side_threshold = float(active_split_side_threshold)
+        if active_split_side_threshold < 0.0:
+            raise ValueError("active_split_side_threshold must be non-negative")
+        active_split_side_threshold_enabled = bool(output_active_split_sides and active_split_side_threshold > 0.0)
+        active_split_side_threshold_arg = (
+            torch.tensor([active_split_side_threshold], device=device, dtype=dtype)
+            if active_split_side_threshold_enabled
             else None
         )
 
@@ -1838,9 +1803,9 @@ def dts_cross_backward_accum_fused(
     else:
         pibar_ud = None
         pibar_A = None
-    pibar_side_active = (
+    active_split_sides = (
         torch.empty((2 * n_ws,), device=device, dtype=torch.bool)
-        if output_pibar_side_active
+        if output_active_split_sides
         else None
     )
     if accum_param_reductions:
@@ -1854,44 +1819,44 @@ def dts_cross_backward_accum_fused(
     dummy = pibar_ud if output_pibar_ud else grad_Pibar_l
     grad_log_pD_arg = grad_log_pD if accum_param_reductions else dummy
     grad_log_pS_arg = grad_log_pS if accum_param_reductions else dummy
-    grad_mt_arg = grad_mt if accum_mt_reduction else dummy
+    grad_max_transfer_arg = grad_max_transfer_mat if accumulate_max_transfer_gradient else dummy
     pibar_ud_arg = pibar_ud if output_pibar_ud else dummy
     pibar_A_arg = pibar_A if output_pibar_ud else dummy
-    pibar_side_active_arg = pibar_side_active if output_pibar_side_active else dummy
-    mt_arg = mt_squeezed.contiguous() if output_pibar_ud and not mt_squeezed.is_contiguous() else mt_squeezed
+    active_split_sides_arg = active_split_sides if output_active_split_sides else dummy
+    max_transfer_arg = max_transfer_mat.contiguous() if output_pibar_ud and not max_transfer_mat.is_contiguous() else max_transfer_mat
     pibar_row_max_arg = (
         pibar_row_max.contiguous()
         if output_pibar_ud and not pibar_row_max.is_contiguous()
         else pibar_row_max
     )
-    mt_arg = mt_arg if output_pibar_ud else dummy
+    max_transfer_arg = max_transfer_arg if output_pibar_ud else dummy
     pibar_row_max_arg = pibar_row_max_arg if output_pibar_ud else dummy
-    side_active_threshold_arg = side_active_threshold_arg if side_threshold_enabled else dummy
+    active_split_side_threshold_arg = active_split_side_threshold_arg if active_split_side_threshold_enabled else dummy
     family_idx_kernel_arg = family_idx_arg if family_idx_arg is not None else sl
-    grad_mt_scalar = bool(accum_mt_reduction and grad_mt.numel() == 1)
-    use_grad_mt_two_stage = bool(
-        grad_mt_two_stage
-        and accum_mt_reduction
-        and grad_mt_layout == 0
-        and not grad_mt_scalar
-        and grad_mt.numel() == S
+    grad_max_transfer_scalar = bool(accumulate_max_transfer_gradient and grad_max_transfer_mat.numel() == 1)
+    use_max_transfer_grad_tiles = bool(
+        stage_max_transfer_gradient_by_tile
+        and accumulate_max_transfer_gradient
+        and grad_max_transfer_layout == 0
+        and not grad_max_transfer_scalar
+        and grad_max_transfer_mat.numel() == S
     )
-    grad_mt_two_stage_tile_splits = max(1, int(grad_mt_two_stage_tile_splits))
-    n_grad_mt_tiles = triton.cdiv(n_ws, grad_mt_two_stage_tile_splits)
-    if use_grad_mt_two_stage:
-        grad_mt_partial = torch.empty((n_grad_mt_tiles, S), device=device, dtype=dtype)
-        grad_mt_partial.zero_()
+    max_transfer_gradient_tile_splits = max(1, int(max_transfer_gradient_tile_splits))
+    n_max_transfer_grad_tiles = triton.cdiv(n_ws, max_transfer_gradient_tile_splits)
+    if use_max_transfer_grad_tiles:
+        grad_max_transfer_tiles = torch.empty((n_max_transfer_grad_tiles, S), device=device, dtype=dtype)
+        grad_max_transfer_tiles.zero_()
     else:
-        grad_mt_partial = dummy
+        grad_max_transfer_tiles = dummy
 
     stride_C = Pi_star.stride(0)
     BLOCK_S = min(256, triton.next_power_of_2(S))
     launch_options = {"num_warps": 8}
 
-    _dts_cross_backward_accum_kernel[(n_ws,)](
+    _split_dts_vjp_kernel[(n_ws,)](
         Pi_star, Pibar_star,
         v_k,
-        active_mask if active_mask is not None else v_k,
+        active_parent_rows if active_parent_rows is not None else v_k,
         sl, sr, reduce_idx, wlsp_flat,
         log_pD_arg, log_pS_arg, family_idx_kernel_arg,
         sp_child1, sp_child2,
@@ -1899,65 +1864,65 @@ def dts_cross_backward_accum_fused(
         grad_Pibar_l if grad_Pibar_l is not None else pibar_ud,
         grad_Pibar_r if grad_Pibar_r is not None else pibar_ud,
         param_pD_arg, param_pS_arg,
-        grad_log_pD_arg, grad_log_pS_arg, grad_mt_arg,
-        grad_mt_partial,
-        pibar_ud_arg, pibar_A_arg, pibar_side_active_arg, mt_arg, pibar_row_max_arg,
-        side_active_threshold_arg,
+        grad_log_pD_arg, grad_log_pS_arg, grad_max_transfer_arg,
+        grad_max_transfer_tiles,
+        pibar_ud_arg, pibar_A_arg, active_split_sides_arg, max_transfer_arg, pibar_row_max_arg,
+        active_split_side_threshold_arg,
         ws, S, stride_C, BLOCK_S,
-        USE_ACTIVE_MASK=bool(active_mask is not None),
+        USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
         USE_ATOMICS=bool(use_atomics),
         MERGE_S_TERM=bool(merge_s_term),
         DEVICE_SCALAR_PARAMS=bool(device_scalar_params),
         PARAM_LAYOUT=int(param_layout),
         PARAM_GRAD_LAYOUT=int(param_grad_layout),
-        MT_LAYOUT=int(mt_layout),
-        GRAD_MT_LAYOUT=int(grad_mt_layout),
+        MAX_TRANSFER_LAYOUT=int(max_transfer_layout),
+        GRAD_MAX_TRANSFER_LAYOUT=int(grad_max_transfer_layout),
         ACCUM_PARAM_REDUCTIONS=bool(accum_param_reductions),
-        ACCUM_MT_REDUCTION=bool(accum_mt_reduction),
-        GRAD_MT_SCALAR=bool(grad_mt_scalar),
-        GRAD_MT_TWO_STAGE=bool(use_grad_mt_two_stage),
-        GRAD_MT_TILE_SPLITS=grad_mt_two_stage_tile_splits,
+        ACCUM_MAX_TRANSFER_GRADIENT=bool(accumulate_max_transfer_gradient),
+        MAX_TRANSFER_GRAD_SCALAR=bool(grad_max_transfer_scalar),
+        MAX_TRANSFER_GRAD_TILES=bool(use_max_transfer_grad_tiles),
+        MAX_TRANSFER_GRAD_TILE_SPLITS=max_transfer_gradient_tile_splits,
         OUTPUT_PIBAR_UD=bool(output_pibar_ud),
-        OUTPUT_SIDE_ACTIVE=bool(output_pibar_side_active),
-        SIDE_ACTIVE_THRESHOLD_ENABLED=side_threshold_enabled,
+        OUTPUT_ACTIVE_SPLIT_SIDES=bool(output_active_split_sides),
+        ACTIVE_SPLIT_SIDE_THRESHOLD_ENABLED=active_split_side_threshold_enabled,
         SKIP_INACTIVE_PIBAR_OUTPUT_ZERO=bool(skip_inactive_pibar_output_zero),
         DTYPE=_tl_float_dtype(dtype),
         **launch_options,
     )
 
-    if use_grad_mt_two_stage:
-        mt_block_s = min(64, triton.next_power_of_2(S))
-        mt_block_tiles = 16
-        _dts_grad_mt_two_stage_reduce_kernel[(triton.cdiv(S, mt_block_s),)](
-            grad_mt_partial,
-            grad_mt,
-            n_grad_mt_tiles,
+    if use_max_transfer_grad_tiles:
+        max_transfer_block_s = min(64, triton.next_power_of_2(S))
+        max_transfer_block_tiles = 16
+        _dts_max_transfer_gradient_kernel[(triton.cdiv(S, max_transfer_block_s),)](
+            grad_max_transfer_tiles,
+            grad_max_transfer_mat,
+            n_max_transfer_grad_tiles,
             S,
-            mt_block_tiles,
-            mt_block_s,
+            max_transfer_block_tiles,
+            max_transfer_block_s,
             DTYPE=_tl_float_dtype(dtype),
             num_warps=4,
         )
 
     if output_pibar_ud:
-        if output_pibar_side_active:
-            return pibar_ud, pibar_A, pibar_side_active, param_pD, param_pS
+        if output_active_split_sides:
+            return pibar_ud, pibar_A, active_split_sides, param_pD, param_pS
         return pibar_ud, pibar_A, param_pD, param_pS
     return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
 
 
 # =========================================================================
-# Uniform Pibar VJP for cross-clade gradients
+# Pibar VJP for split gradients
 # =========================================================================
 
 @triton.jit
-def _pibar_ud_side_active_kernel(
+def _active_split_sides_for_pibar_vjp_kernel(
     pibar_ud_ptr,        # [n_rows, S]
-    side_active_ptr,     # [n_rows] bool
-    side_active_threshold_ptr,
+    active_split_sides_ptr,     # [n_rows] bool
+    active_split_side_threshold_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    SIDE_ACTIVE_THRESHOLD_ENABLED: tl.constexpr,
+    ACTIVE_SPLIT_SIDE_THRESHOLD_ENABLED: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Mark split-side rows whose staged u_d should run Pibar tree work."""
@@ -1975,24 +1940,24 @@ def _pibar_ud_side_active_kernel(
         row_abssum += tl.sum(tl.where(mask, abs_vals, 0.0), axis=0)
 
     lane = tl.arange(0, 1)
-    if SIDE_ACTIVE_THRESHOLD_ENABLED:
-        threshold = tl.load(side_active_threshold_ptr).to(DTYPE)
-        tl.store(side_active_ptr + row + lane, row_abssum > threshold)
+    if ACTIVE_SPLIT_SIDE_THRESHOLD_ENABLED:
+        threshold = tl.load(active_split_side_threshold_ptr).to(DTYPE)
+        tl.store(active_split_sides_ptr + row + lane, row_abssum > threshold)
     else:
-        tl.store(side_active_ptr + row + lane, row_absmax != 0.0)
+        tl.store(active_split_sides_ptr + row + lane, row_absmax != 0.0)
 
 
 @triton.jit
-def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
+def _pibar_vjp_kernel(
     Pi_star_ptr,          # [C, S]
     pibar_ud_ptr,         # [2 * n_ws, S], initial subtree values u_d
     pibar_A_ptr,          # [2 * n_ws], sum_s u_d[s] per split side
-    side_active_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
+    active_split_sides_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
     sl_ptr,               # [n_ws]
     sr_ptr,               # [n_ws]
-    reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
-    active_mask_ptr,      # optional [W] bool parent row activity mask
-    pibar_row_max_ptr,    # [C], Pi-row max from forward uniform Pibar
+    reduce_idx_ptr,       # [n_ws], used with active_parent_rows_ptr when enabled
+    active_parent_rows_ptr,      # optional [W] bool active parent-row flags
+    pibar_row_max_ptr,    # [C], Pi-row max from forward Pibar
     compact_level_ptr,    # [N_LEVELS + 1]
     compact_level_parent_ptr, # [total internal nodes across levels]
     compact_level_child1_ptr, # [total internal nodes across levels]
@@ -2003,27 +1968,27 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
     N_LEVELS: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
-    USE_SIDE_ACTIVE: tl.constexpr,
+    USE_ACTIVE_PARENT_ROWS: tl.constexpr,
+    USE_ACTIVE_SPLIT_SIDES: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    """Uniform Pibar from-u_d tree correction using compact per-level nodes."""
+    """Pibar from-u_d tree correction using compact per-level nodes."""
     NEG_LARGE: tl.constexpr = -1e30
 
     row = tl.program_id(0)
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
-    if USE_SIDE_ACTIVE:
-        side_active = tl.load(side_active_ptr + row)
-        if side_active == 0:
+    if USE_ACTIVE_SPLIT_SIDES:
+        active_split_sides = tl.load(active_split_sides_ptr + row)
+        if active_split_sides == 0:
             return
 
     child_l = tl.load(sl_ptr + split_i).to(tl.int64)
     child_r = tl.load(sr_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
-    if USE_ACTIVE_MASK:
+    if USE_ACTIVE_PARENT_ROWS:
         parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
-        row_active = tl.load(active_mask_ptr + parent_w)
+        row_active = tl.load(active_parent_rows_ptr + parent_w)
         if row_active == 0:
             return
     else:
@@ -2067,7 +2032,7 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
         tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
 
 
-def uniform_cross_pibar_vjp_tree_from_ud_fused(
+def accumulate_split_pibar_vjp(
     Pi_star,
     pibar_ud,
     pibar_A,
@@ -2075,59 +2040,59 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     sr,
     accumulated_rhs,
     S,
-    active_mask=None,
+    active_parent_rows=None,
     reduce_idx=None,
     pibar_row_max=None,
     skip_zero_sides=False,
-    side_active=None,
+    active_split_sides=None,
     compact_level_ptr=None,
     compact_level_parents=None,
     compact_level_child1=None,
     compact_level_child2=None,
-    side_active_threshold=0.0,
+    active_split_side_threshold=0.0,
 ):
-    """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
+    """Pibar VJP tree correction from DTS-staged u_d."""
     n_ws = sl.shape[0]
     if n_ws == 0:
         return
-    if active_mask is not None and reduce_idx is None:
-        raise ValueError("reduce_idx is required when active_mask is provided")
+    if active_parent_rows is not None and reduce_idx is None:
+        raise ValueError("reduce_idx is required when active_parent_rows is provided")
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for DTS-staged Pibar VJP")
-    if torch.is_tensor(side_active_threshold):
-        if side_active_threshold.numel() != 1:
-            raise ValueError("side_active_threshold tensor must contain one value")
-        side_active_threshold_enabled = True
-        side_active_threshold_arg = _device_scalar_param(
-            side_active_threshold, device=Pi_star.device, dtype=Pi_star.dtype
+    if torch.is_tensor(active_split_side_threshold):
+        if active_split_side_threshold.numel() != 1:
+            raise ValueError("active_split_side_threshold tensor must contain one value")
+        active_split_side_threshold_enabled = True
+        active_split_side_threshold_arg = _device_scalar_param(
+            active_split_side_threshold, device=Pi_star.device, dtype=Pi_star.dtype
         )
     else:
-        side_active_threshold = float(side_active_threshold)
-        if side_active_threshold < 0.0:
-            raise ValueError("side_active_threshold must be non-negative")
-        side_active_threshold_enabled = side_active_threshold > 0.0
-        side_active_threshold_arg = (
-            torch.tensor([side_active_threshold], device=Pi_star.device, dtype=Pi_star.dtype)
-            if side_active_threshold_enabled
+        active_split_side_threshold = float(active_split_side_threshold)
+        if active_split_side_threshold < 0.0:
+            raise ValueError("active_split_side_threshold must be non-negative")
+        active_split_side_threshold_enabled = active_split_side_threshold > 0.0
+        active_split_side_threshold_arg = (
+            torch.tensor([active_split_side_threshold], device=Pi_star.device, dtype=Pi_star.dtype)
+            if active_split_side_threshold_enabled
             else None
         )
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
     launch_options = {"num_warps": 4}
     stride_C = Pi_star.stride(0)
-    if side_active is not None:
-        if side_active.numel() != 2 * n_ws:
-            raise ValueError("side_active must have one entry per split side")
-        side_active = side_active.contiguous()
+    if active_split_sides is not None:
+        if active_split_sides.numel() != 2 * n_ws:
+            raise ValueError("active_split_sides must have one entry per split side")
+        active_split_sides = active_split_sides.contiguous()
     elif skip_zero_sides:
-        side_active = torch.empty((2 * n_ws,), device=Pi_star.device, dtype=torch.bool)
-        _pibar_ud_side_active_kernel[(2 * n_ws,)](
+        active_split_sides = torch.empty((2 * n_ws,), device=Pi_star.device, dtype=torch.bool)
+        _active_split_sides_for_pibar_vjp_kernel[(2 * n_ws,)](
             pibar_ud,
-            side_active,
-            side_active_threshold_arg if side_active_threshold_enabled else pibar_ud,
+            active_split_sides,
+            active_split_side_threshold_arg if active_split_side_threshold_enabled else pibar_ud,
             S,
             BLOCK_S,
-            SIDE_ACTIVE_THRESHOLD_ENABLED=bool(side_active_threshold_enabled),
+            ACTIVE_SPLIT_SIDE_THRESHOLD_ENABLED=bool(active_split_side_threshold_enabled),
             DTYPE=_tl_float_dtype(Pi_star.dtype),
             **launch_options,
         )
@@ -2145,15 +2110,15 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     compact_level_parents = compact_level_parents.contiguous()
     compact_level_child1 = compact_level_child1.contiguous()
     compact_level_child2 = compact_level_child2.contiguous()
-    _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel[(2 * n_ws,)](
+    _pibar_vjp_kernel[(2 * n_ws,)](
         Pi_star,
         pibar_ud,
         pibar_A,
-        side_active if side_active is not None else pibar_A,
+        active_split_sides if active_split_sides is not None else pibar_A,
         sl,
         sr,
         reduce_idx if reduce_idx is not None else sl,
-        active_mask if active_mask is not None else pibar_ud,
+        active_parent_rows if active_parent_rows is not None else pibar_ud,
         pibar_row_max,
         compact_level_ptr,
         compact_level_parents,
@@ -2165,9 +2130,9 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         stride_C,
         BLOCK_S,
         N_LEVELS=compact_level_ptr.numel() - 1,
-        USE_ACTIVE_MASK=bool(active_mask is not None),
-        USE_SIDE_ACTIVE=bool(side_active is not None),
+        USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
+        USE_ACTIVE_SPLIT_SIDES=bool(active_split_sides is not None),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         **launch_options,
     )
-    return side_active
+    return active_split_sides

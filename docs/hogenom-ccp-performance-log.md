@@ -77,12 +77,12 @@ Top kernel families in the chunk-300 `nsys` report:
 
 | kernel | launches | total GPU time | avg launch |
 | --- | ---: | ---: | ---: |
-| `_wave_backward_uniform_2d_jt_kernel` | 2226 | 0.268 s | 120.4 us |
-| `_wave_step_uniform_kernel` | 2226 | 0.195 s | 87.5 us |
-| `_dts_cross_backward_accum_kernel` | 358 | 0.161 s | 451.1 us |
-| `_dts_parent_reduced_ge2_stage1_kernel` | 708 | 0.101 s | 142.9 us |
-| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 358 | 0.106 s | 296.9 us |
-| `_wave_backward_uniform_2d_precompute_kernel` | 371 | 0.067 s | 181.8 us |
+| `_self_loop_adjoint_update_kernel` | 2226 | 0.268 s | 120.4 us |
+| `_wave_step_kernel` | 2226 | 0.195 s | 87.5 us |
+| `_split_dts_vjp_kernel` | 358 | 0.161 s | 451.1 us |
+| `_multi_split_dts_tile_logsumexp_kernel` | 708 | 0.101 s | 142.9 us |
+| `_pibar_vjp_kernel` | 358 | 0.106 s | 296.9 us |
+| `_self_loop_coefficients_kernel` | 371 | 0.067 s | 181.8 us |
 
 The corresponding `nsys` export did not include GPU metrics counters.  The
 previous profiled pass with the same kernel defaults but host pruning enabled
@@ -91,16 +91,16 @@ flight 48.1%, DRAM read 27.7%, and DRAM write 20.5%.
 
 Nsight Compute on representative chunk-300 kernels:
 
-- `_wave_step_uniform_kernel` at grid 8192 is healthy: 81.3% compute/memory
+- `_wave_step_kernel` at grid 8192 is healthy: 81.3% compute/memory
   throughput, 93% achieved occupancy, 5.33 waves per SM.
-- `_wave_backward_uniform_2d_jt_kernel` at a representative grid 4337 is
+- `_self_loop_adjoint_update_kernel` at a representative grid 4337 is
   memory-heavy: about 67% DRAM throughput, 56-57% compute throughput, 48-49%
   achieved occupancy, 11.29 waves per SM.  Registers cap theoretical occupancy
   at 50%.
-- Early `_wave_backward_uniform_2d_jt_kernel` launches still include tiny grids
+- Early `_self_loop_adjoint_update_kernel` launches still include tiny grids
   such as grid 1, which are expected after the leaf/frontier phase and are
   deeply underutilized individually.  They are not the main total-time driver.
-- `_dts_cross_backward_accum_kernel` improved after forcing 8 launch warps:
+- `_split_dts_vjp_kernel` improved after forcing 8 launch warps:
   a representative grid 2718 now uses 40 registers/thread, reaches 100%
   theoretical occupancy and 94.1% achieved occupancy, and takes 225.6 us.
   Throughput is still only 55.9% memory, 52.1% DRAM, and 31.3% compute, so the
@@ -233,7 +233,7 @@ diagnostic run.
 ## 2D Self-Loop Retuning Plan
 
 After no-host pruning, the largest remaining kernel bucket is still
-`_wave_backward_uniform_2d_jt_kernel`: 2,226 launches and 0.271 s total GPU time
+`_self_loop_adjoint_update_kernel`: 2,226 launches and 0.271 s total GPU time
 in the chunk-300 `nsys` run.  Earlier tuning selected
 `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=4` and `GPUREC_SELF_LOOP_2D_BLOCK_NODES=128`,
 but that was measured before the host-pruning change.
@@ -267,8 +267,8 @@ The retained 2D self-loop path has a separate
 `GPUREC_SELF_LOOP_2D_NUM_WARPS` knob for the precompute and parameter-store
 kernels.  The accepted retune above targeted the `J^T` kernel via
 `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS`, but the current HOGENOM profile still spends
-about 0.066 s in `_wave_backward_uniform_2d_precompute_kernel` and 0.049 s in
-`_wave_backward_uniform_param_store_kernel`.  Test
+about 0.066 s in `_self_loop_coefficients_kernel` and 0.049 s in
+`_self_loop_parameter_gradient_kernel`.  Test
 `GPUREC_SELF_LOOP_2D_NUM_WARPS` in `{4, 8, 16}` on the accepted depth-first
 315k layout.  Accept only if event timing improves and an `nsys` profile shows
 the precompute/store buckets shrink without increasing the dominant `J^T`
@@ -286,14 +286,14 @@ event-timing improvement over the default 8-warps setting:
 ## Current 2D Jt NCU Plan
 
 The accepted depth-first 315k profile still spends about 0.263-0.265 s in
-`_wave_backward_uniform_2d_jt_kernel`, making it the largest single kernel
+`_self_loop_adjoint_update_kernel`, making it the largest single kernel
 bucket.  Before changing that path again, refresh Nsight Compute on the current
 default layout because the scheduler, no-host-pruning default, and several
 launch-shape defaults have changed since the earlier representative NCU note.
 
 Plan:
 
-- run Nsight Compute on a representative `_wave_backward_uniform_2d_jt_kernel`
+- run Nsight Compute on a representative `_self_loop_adjoint_update_kernel`
   launch from the accepted HOGENOM layout;
 - capture occupancy, register count, memory throughput, DRAM throughput, and
   stall/memory-pressure evidence;
@@ -323,7 +323,7 @@ Next experiment:
   follow-up NCU/`nsys` profile confirms reduced Jt cost or lower register/local
   memory pressure;
 - if the knobs do not help, the next code-level target is reducing the amount
-  of per-program species-tree state kept live in `_wave_backward_uniform_2d_jt_kernel`.
+  of per-program species-tree state kept live in `_self_loop_adjoint_update_kernel`.
 
 Sweep result:
 
@@ -419,10 +419,10 @@ Nsight Systems result:
 
 - report: `profiling/hogenom_ccp/nsys_stream_depthff315_cuda_nosplit.nsys-rep`;
 - total CUDA kernel time: 1.114 s versus prior 1.143 s baseline;
-- `_wave_backward_uniform_2d_jt_kernel`: 0.232 s / 1464 launches versus
+- `_self_loop_adjoint_update_kernel`: 0.232 s / 1464 launches versus
   roughly 0.265 s / 1548 launches in the baseline;
-- `_wave_backward_uniform_2d_precompute_kernel`: 0.061 s / 244 launches;
-- `_wave_backward_uniform_param_store_kernel`: 0.045 s / 244 launches;
+- `_self_loop_coefficients_kernel`: 0.061 s / 244 launches;
+- `_self_loop_parameter_gradient_kernel`: 0.045 s / 244 launches;
 - `gpurec_wave_backward_nosplit_uniform_fp32`: 0.0187 s / 14 launches.
 
 Conclusion: the no-split CUDA router is a real HOGENOM speed win, currently
@@ -508,14 +508,14 @@ wave count.  A fresh stream timing run measured median forward+backward
 ## Forward Wave-Step Retuning Plan
 
 With the latest no-host-pruning and 2D `J^T` defaults, the next largest kernel
-bucket is `_wave_step_uniform_kernel`: 2,226 launches and 0.214 s total GPU time
+bucket is `_wave_step_kernel`: 2,226 launches and 0.214 s total GPU time
 in the chunk-300 `nsys` run.  Earlier NCU showed a representative full wave as
 healthy, so expect only small gains, but this bucket is now large enough to test
 instead of guessing.
 
 Next experiment:
 
-- add diagnostic environment overrides for the shared uniform wave-step launch
+- add diagnostic environment overrides for the shared wave-step launch
   shape;
 - test `GPUREC_WAVE_STEP_NUM_WARPS` in `{2, 4, 8}` and
   `GPUREC_WAVE_STEP_BLOCK_S` in `{128, 256, 512}`;
@@ -537,13 +537,13 @@ Results:
 Nsight Compute on `NUM_WARPS=8 BLOCK_S=256` full-wave launches reports about
 89% compute/memory throughput, 93% achieved occupancy, 40 registers/thread, and
 10.67 waves per SM.  The final Pibar recomputation bucket also improved in the
-`nsys` run (`0.0305 s -> 0.0276 s`) because it shares the uniform wave-step
+`nsys` run (`0.0305 s -> 0.0276 s`) because it shares the wave-step
 launch helper.  Set the default `GPUREC_WAVE_STEP_NUM_WARPS` value to 8 and keep
 `BLOCK_S=256`.
 
 ## Pibar From-UD Retuning Plan
 
-After the forward wave-step retune, `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`
+After the forward wave-step retune, `_pibar_vjp_kernel`
 is still about 0.106 s of GPU time.  It uses the same compact species-level
 tree reduction shape for every split side and currently hardcodes
 `BLOCK_S=256` and `num_warps=4`.
@@ -574,9 +574,9 @@ future diagnostics.
 ## Parent-Reduced DTS Retuning Plan
 
 The parent-reduced DTS forward recompute still accounts for a meaningful share
-of the pass: `_dts_parent_reduced_ge2_stage1_kernel` is about 0.108 s,
-`_dts_eq1_to_rows_kernel` about 0.020 s, and stage 2 about 0.009 s.  This path
-uses `BLOCK_S=128` and `tile_splits=64` today.
+of the pass: `_multi_split_dts_tile_logsumexp_kernel` is about 0.108 s,
+`_single_split_dts_parent_rows_kernel` about 0.020 s, and `_multi_split_dts_parent_rows_kernel` about
+0.009 s.  This path uses `BLOCK_S=128` and `tile_splits=64` today.
 
 Next experiment:
 
@@ -589,7 +589,7 @@ Next experiment:
 
 Results:
 
-| setting | warm fwd+bwd | forward | peak alloc | `nsys` pass | stage1 GPU time | conclusion |
+| setting | warm fwd+bwd | forward | peak alloc | `nsys` pass | first pass GPU time | conclusion |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | `BLOCK_S=128 TILE_SPLITS=64` | 1.264 s | 0.328 s | 5.92 GiB | 1.380 s | 0.1078 s | baseline |
 | `BLOCK_S=256 TILE_SPLITS=64` | 1.256 s | 0.324 s | 5.92 GiB | 1.371 s | 0.1012 s | accepted |
@@ -714,11 +714,11 @@ Top kernel comparison:
 
 | kernel | sequential total | depth first-fit total | note |
 | --- | ---: | ---: | --- |
-| `_wave_backward_uniform_2d_jt_kernel` | 0.267 s / 2226 launches | 0.265 s / 1548 launches | fewer but larger launches |
-| `_wave_step_uniform_kernel` | 0.195 s / 2226 launches | 0.192 s / 1548 launches | fewer but larger launches |
-| `_dts_cross_backward_accum_kernel` | 0.161 s / 358 launches | 0.166 s / 244 launches | regresses per launch |
-| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 0.106 s / 358 launches | 0.107 s / 244 launches | unchanged total |
-| `_dts_parent_reduced_ge2_stage1_kernel` | 0.101 s / 708 launches | 0.097 s / 478 launches | small win |
+| `_self_loop_adjoint_update_kernel` | 0.267 s / 2226 launches | 0.265 s / 1548 launches | fewer but larger launches |
+| `_wave_step_kernel` | 0.195 s / 2226 launches | 0.192 s / 1548 launches | fewer but larger launches |
+| `_split_dts_vjp_kernel` | 0.161 s / 358 launches | 0.166 s / 244 launches | regresses per launch |
+| `_pibar_vjp_kernel` | 0.106 s / 358 launches | 0.107 s / 244 launches | unchanged total |
+| `_multi_split_dts_tile_logsumexp_kernel` | 0.101 s / 708 launches | 0.097 s / 478 launches | small win |
 
 The scheduling change lowers launch count and profiler wall time, but most GPU
 time is still row/split work in the same backward buckets.  Further scheduling
@@ -730,7 +730,7 @@ and its parameter-gradient/reduction overhead.
 ## 2D Backward Alternative Survey Plan
 
 The accepted HOGENOM scheduling policy still spends about 0.265 s in
-`_wave_backward_uniform_2d_jt_kernel`, 0.066 s in its precompute kernel,
+`_self_loop_adjoint_update_kernel`, 0.066 s in its precompute kernel,
 0.049 s in parameter-store, and about 0.054 s in PyTorch reductions.  Before
 rewriting that path, inspect `main` and archived docs for the older non-2D /
 no-split / staged alternatives:
@@ -775,8 +775,8 @@ suite, but warm HOGENOM timing regressed:
 | depth first-fit 315k baseline | 1.247 s | 0.927 s | 5.90 GiB | 1.343 s | 1.143 s |
 | 2D param accumulation prototype | 1.267 s | 0.948 s | 5.78 GiB | 1.429 s | 1.223 s |
 
-Nsight Systems showed why: `_wave_backward_uniform_param_accum_kernel` cost
-0.193 s, replacing `_wave_backward_uniform_param_store_kernel` at 0.049 s plus
+Nsight Systems showed why: `_self_loop_parameter_gradient_kernel` cost
+0.193 s, replacing `_self_loop_parameter_gradient_kernel` at 0.049 s plus
 PyTorch reductions at 0.054 s.  The atomic accumulation path saved some memory
 and launch count, but the atomics were much slower than storing row
 contributions and reducing them with PyTorch.  Do not revive this approach
@@ -827,11 +827,11 @@ removes only 186 launches and shifts work into larger kernels:
 
 | kernel | 8192 total | 16384 total | note |
 | --- | ---: | ---: | --- |
-| `_wave_backward_uniform_2d_jt_kernel` | 0.265 s / 1548 launches | 0.264 s / 1512 launches | launch count slightly lower |
-| `_wave_step_uniform_kernel` | 0.192 s / 1548 launches | 0.193 s / 1512 launches | no real improvement |
-| `_dts_cross_backward_accum_kernel` | 0.166 s / 244 launches | 0.170 s / 244 launches | worse per launch |
-| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 0.107 s / 244 launches | 0.107 s / 244 launches | unchanged total |
-| `_wave_backward_uniform_2d_precompute_kernel` | 0.066 s / 258 launches | 0.067 s / 252 launches | unchanged total |
+| `_self_loop_adjoint_update_kernel` | 0.265 s / 1548 launches | 0.264 s / 1512 launches | launch count slightly lower |
+| `_wave_step_kernel` | 0.192 s / 1548 launches | 0.193 s / 1512 launches | no real improvement |
+| `_split_dts_vjp_kernel` | 0.166 s / 244 launches | 0.170 s / 244 launches | worse per launch |
+| `_pibar_vjp_kernel` | 0.107 s / 244 launches | 0.107 s / 244 launches | unchanged total |
+| `_self_loop_coefficients_kernel` | 0.066 s / 258 launches | 0.067 s / 252 launches | unchanged total |
 
 Conclusion: keep `max_wave_size=8192` as the lean default.  `16384` can be an
 explicit speed/memory experiment because event timings were about 6 ms faster,
@@ -926,7 +926,7 @@ experiment only.
 ## DTS Accumulation Plan
 
 The current tuned chunk-300 profile still spends about 0.179 s of GPU time in
-`_dts_cross_backward_accum_kernel`.  NCU showed this kernel at roughly 52%
+`_split_dts_vjp_kernel`.  NCU showed this kernel at roughly 52%
 memory throughput, 26% compute throughput, 96 registers/thread, and 41.7%
 theoretical occupancy.  Before rewriting it, sweep the existing two-stage
 `grad_mt` reduction tile size:
@@ -938,7 +938,7 @@ theoretical occupancy.  Before rewriting it, sweep the existing two-stage
   materially.
 
 If none of those improve the pass, the next kernel-level work should target
-register pressure and memory traffic inside `_dts_cross_backward_accum_kernel`
+register pressure and memory traffic inside `_split_dts_vjp_kernel`
 rather than its reduction staging.
 
 Tile-size sweep results at chunk size 300:
@@ -953,7 +953,7 @@ Tile-size sweep results at chunk size 300:
 
 The 256 value looked slightly better in one uninstrumented run, but a follow-up
 Nsight Systems run measured 1.495 s under profiler overhead and
-`_dts_cross_backward_accum_kernel` at 0.187 s, worse than the tuned-default
+`_split_dts_vjp_kernel` at 0.187 s, worse than the tuned-default
 `nsys` report at 1.471 s / 0.179 s.  Keep 128 as the default; retain the
 environment override only for future diagnostics.
 
@@ -972,12 +972,12 @@ did not confirm a GPU-time win.  The report
 `profiling/hogenom_ccp/nsys_stream_depthff315_dtsgradmt256.nsys-rep` measured
 1.347 s profiled, 48,030 CUDA kernel launches, and 1.145 s of GPU kernel time;
 the accepted depth-first 315k baseline measured 1.343 s profiled, 48,030
-launches, and 1.143 s GPU kernel time.  `_dts_cross_backward_accum_kernel`
+launches, and 1.143 s GPU kernel time.  `_split_dts_vjp_kernel`
 measured 0.167 s at tile 256 versus 0.166 s in the baseline.  Keep the tile
 default at 128.
 
 Next DTS experiment: reduce the Triton species block size for
-`_dts_cross_backward_accum_kernel`.  The current block size is 256 species,
+`_split_dts_vjp_kernel`.  The current block size is 256 species,
 which NCU reports at 96 registers/thread and only 41.7% theoretical occupancy.
 Test `GPUREC_DTS_BLOCK_S=64` and `128` against the default `256`; accept a
 change only if whole-dataset warm timing improves and the follow-up `nsys`
@@ -993,7 +993,7 @@ DTS launch-shape sweep:
 | `GPUREC_DTS_NUM_WARPS=8` | 1.315 s | 1.458 s | 0.166 s | accepted |
 | `GPUREC_DTS_NUM_WARPS=16` | 1.315 s | not run | not run | tied with 8 |
 
-Set `_dts_cross_backward_accum_kernel` default `num_warps` to 8.  Keep
+Set `_split_dts_vjp_kernel` default `num_warps` to 8.  Keep
 `GPUREC_DTS_NUM_WARPS` and `GPUREC_DTS_BLOCK_S` as diagnostic overrides.
 
 ## Post-Promotion Batch-Scheduling Sweep Plan
@@ -1042,14 +1042,14 @@ Nsight Systems comparison:
 | 320k + DTS rows 100k, auto no-split | 1.340 s | 47,612 | 1.1199 s | fewer launches but slower kernels |
 
 The 320k layout removes 110 launches and slightly reduces the 2D `J^T` bucket
-(`0.2319 s -> 0.2309 s`), but `_dts_cross_backward_accum_kernel` regresses
+(`0.2319 s -> 0.2309 s`), but `_split_dts_vjp_kernel` regresses
 (`0.1633 s -> 0.1716 s`).  Keep the 315k/8192 layout as the default and treat
 the DTS partial-row cap as a diagnostic/memory-guard option only.
 
 ## Current DTS Accumulation NCU Plan
 
 The current auto no-split baseline still spends about 0.163 s of GPU time in
-`_dts_cross_backward_accum_kernel`.  The previous DTS launch-shape sweeps found
+`_split_dts_vjp_kernel`.  The previous DTS launch-shape sweeps found
 `GPUREC_DTS_NUM_WARPS=8` best, but those measurements predate the promoted
 CUDA no-split default and were mostly Nsight Systems summaries.  Before making
 another DTS kernel change, capture Nsight Compute for a representative heavy
@@ -1083,7 +1083,7 @@ limited.  Another broad launch-shape sweep is unlikely to help.  The profile
 instead points to memory traffic and irregular branch behavior.
 
 Next narrow experiment: when a split parent is inactive, the DTS kernel already
-writes `pibar_side_active=false` for both child-side rows.  The downstream
+writes `active_split_sides=false` for both child-side rows.  The downstream
 Pibar-from-UD kernel checks that mask before reading `pibar_ud` or `pibar_A`.
 Therefore, test skipping the expensive inactive-row zero fill of `pibar_ud`
 and `pibar_A`.  Accept only if targeted parity tests pass and `nsys` confirms
@@ -1131,9 +1131,9 @@ must remain explicitly zero.
 Next experiment:
 
 - add an environment-controlled default-on skip for inactive scratch zero fills
-  in `_wave_backward_uniform_2d_precompute_kernel` and
-  `_wave_backward_uniform_2d_jt_kernel`;
-- do not change `_wave_backward_uniform_param_store_kernel`;
+  in `_self_loop_coefficients_kernel` and
+  `_self_loop_adjoint_update_kernel`;
+- do not change `_self_loop_parameter_gradient_kernel`;
 - verify targeted parity tests and HOGENOM loss/gradient;
 - compare default skip against `GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO=0`;
 - accept only if `nsys` confirms the 2D precompute/`J^T` buckets or total GPU
@@ -1268,7 +1268,7 @@ eliminated for the HOGENOM specieswise path.
 
 ## Final Pibar Recompute Fusion Plan
 
-The current accepted profile still launches `_wave_pibar_uniform_parent_kernel`
+The current accepted profile still launches `_pibar_kernel`
 258 times, costing about 0.027 s of GPU kernel time.  This kernel runs after
 the last fixed Pi iteration to recompute final Pibar rows and row maxima for
 backward.  The last wave-step launch already has the final Pi output in hand,
@@ -1277,17 +1277,17 @@ final result are only known after all species entries have been produced.
 
 Next experiment:
 
-- add an optional final-Pibar mode to `_wave_step_uniform_kernel`;
+- add an optional final-Pibar mode to `_wave_step_kernel`;
 - on the last Pi iteration, after storing final Pi, perform the same row
   max/sum and ancestor-walk Pibar computation inside the wave-step kernel;
-- keep the separate `_wave_pibar_uniform_parent_kernel` as a fallback and for
+- keep the separate `_pibar_kernel` as a fallback and for
   non-final callers;
 - preserve the existing root-wave skip, since all-root waves do not need saved
   Pibar rows for backward;
 - verify forward/backward parity and HOGENOM loss/gradient;
 - benchmark event timing and confirm with `nsys`;
 - accept only if the removed Pibar launches are not replaced by an equal or
-  larger increase in `_wave_step_uniform_kernel` time.
+  larger increase in `_wave_step_kernel` time.
 
 Result: accepted as a small launch/GPU-time cleanup, with
 `GPUREC_FUSE_FINAL_PIBAR=0` retained as the old separate-recompute path.
@@ -1312,7 +1312,7 @@ Nsight Systems confirmation:
 | reduction-reuse baseline | 1.281 s | 47,478 | 1.0605 s | 0.1937 s | 0.0270 s |
 | fused final Pibar | 1.265 s | 47,220 | 1.0528 s | 0.2194 s | removed |
 
-The final Pibar work moves into `_wave_step_uniform_kernel`, but not one-for-one:
+The final Pibar work moves into `_wave_step_kernel`, but not one-for-one:
 the wave-step bucket grows by 0.0257 s while the separate Pibar bucket
 disappears at 0.0270 s, and 258 launches are removed.  The event timing is
 within noise, so this is a cleanup rather than a user-visible speed jump.
@@ -1368,7 +1368,7 @@ kernels without the impossible leaf-hit term.
 ## Current Wave-Step NCU Plan
 
 After final-Pibar fusion and non-leaf leaf-term specialization,
-`_wave_step_uniform_kernel` is the largest current GPU bucket:
+`_wave_step_kernel` is the largest current GPU bucket:
 1,548 launches and 0.2151 s in
 `profiling/hogenom_ccp/nsys_stream_depthff315_nonleaf_leafterm.sqlite`.  The
 previous wave-step NCU diagnosis predates both changes, so profile the current
@@ -1507,9 +1507,9 @@ Top bucket movement:
 
 | kernel bucket | previous | CUDA split |
 | --- | ---: | ---: |
-| `_wave_backward_uniform_2d_jt_kernel` | 0.2098 s / 1464 launches | removed |
-| `_wave_backward_uniform_2d_precompute_kernel` | 0.0491 s / 244 launches | removed |
-| `_wave_backward_uniform_param_store_kernel` | 0.0441 s / 244 launches | removed |
+| `_self_loop_adjoint_update_kernel` | 0.2098 s / 1464 launches | removed |
+| `_self_loop_coefficients_kernel` | 0.0491 s / 244 launches | removed |
+| `_self_loop_parameter_gradient_kernel` | 0.0441 s / 244 launches | removed |
 | `gpurec_wave_backward_nosplit_uniform_fp32` | 0.0187 s / 14 launches | 0.1485 s / 258 launches |
 | PyTorch sum reductions | 0.0447 s / 2887 launches | 0.0032 s / 1423 launches |
 
@@ -1814,11 +1814,11 @@ Top GPU buckets after the change:
 
 | kernel bucket | launches | GPU time |
 | --- | ---: | ---: |
-| `_wave_step_uniform_kernel` | 1,548 | 0.2128 s |
-| `_dts_cross_backward_accum_kernel` | 244 | 0.1540 s |
-| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 244 | 0.1063 s |
+| `_wave_step_kernel` | 1,548 | 0.2128 s |
+| `_split_dts_vjp_kernel` | 244 | 0.1540 s |
+| `_pibar_vjp_kernel` | 244 | 0.1063 s |
 | `gpurec_wave_backward_nosplit_uniform_fp32` | 258 | 0.0994 s |
-| `_dts_parent_reduced_ge2_stage1_kernel` | 478 | 0.0969 s |
+| `_multi_split_dts_tile_logsumexp_kernel` | 478 | 0.0969 s |
 
 Diagnosis: the weighted-origination support had accidentally put validation
 and root-row adjoint setup in the hot path.  The repeated CUDA `.item()`
@@ -1867,7 +1867,7 @@ too little expected gain at this point.
 
 ## Current DTS Backward NCU Plan
 
-After the prepared-origination fast path, `_dts_cross_backward_accum_kernel` is
+After the prepared-origination fast path, `_split_dts_vjp_kernel` is
 the second largest kernel bucket at about 0.154 s over 244 launches.  The
 largest observed launch in
 `profiling/hogenom_ccp/nsys_stream_depthff315_prepared_orig.sqlite` is matching
@@ -1908,7 +1908,7 @@ are accessed, and should not be attempted without a more specific design.
 
 The current prepared-origination profile still contains 1,809 PyTorch
 `FillFunctor<float>` launches, about 0.0228 s of GPU time.  One repeated source
-is `dts_fused_parent_reduced`, which allocates every DTS-R output as
+is `compute_dts_forward`, which allocates every DTS-R output as
 `torch.full((W, S), -inf)` before launching the eq1/ge2 parent-reduced kernels.
 
 For wave-ordered CCP batches, a wave with `meta["has_splits"]` should contain
@@ -1938,7 +1938,7 @@ looked slightly better, but Nsight Systems did not confirm a real improvement.
 
 The fill skip removed 488 fill launches and about 5 ms from the FillFunctor
 bucket, but profiler noise or allocator/cache effects moved more time into the
-main kernels (`_dts_cross_backward_accum_kernel` and the CUDA self-loop both
+main kernels (`_split_dts_vjp_kernel` and the CUDA self-loop both
 rose in the profiled pass).  Since the acceptance criterion required lower
 total GPU kernel time, the code change was reverted.
 
@@ -1946,7 +1946,7 @@ total GPU kernel time, the code change was reverted.
 
 After the prepared-origination fast path, the Pibar-from-UD VJP kernel remains
 one of the largest single GPU buckets:
-`_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` takes about 0.106 s
+`_pibar_vjp_kernel` takes about 0.106 s
 over 244 launches in
 `profiling/hogenom_ccp/nsys_stream_depthff315_prepared_orig.sqlite`.  The
 largest observed launch is match index 172, at about 2.05 ms.
@@ -2391,7 +2391,7 @@ mapping work.  The code change was removed; keep the default PyTorch
 ## CUDA Pibar-From-UD Plan
 
 The current accepted profile still spends about `0.106 s` in
-`_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`.  The NCU diagnosis for a
+`_pibar_vjp_kernel`.  The NCU diagnosis for a
 large launch showed high achieved occupancy but poor memory coalescing:
 DRAM throughput was high, useful bytes per sector were low, and excessive
 global sectors were about 60% of total sectors.  Retuning
@@ -2412,7 +2412,7 @@ Experiment:
 - keep the existing Triton compact path as the default and fallback;
 - support fp32 CUDA only, matching the HOGENOM profile and the main-branch
   prototype;
-- preserve `active_mask`, `side_active`, and compact species-level semantics;
+- preserve `active_mask`, `active_split_sides`, and compact species-level semantics;
 - verify targeted parity with the flag enabled;
 - benchmark HOGENOM event timing first, then run `nsys` only if the CUDA route
   improves the whole-dataset median.
@@ -2544,13 +2544,13 @@ the paired check favors 256, no `nsys` run is needed.
 After promoting CUDA Pibar, the largest remaining buckets in
 `nsys_stream_depthff315_cuda_pibar` are:
 
-- `_wave_step_uniform_kernel`: about `0.215 s`;
-- `_dts_cross_backward_accum_kernel`: about `0.157 s`;
+- `_wave_step_kernel`: about `0.215 s`;
+- `_split_dts_vjp_kernel`: about `0.157 s`;
 - `gpurec_wave_backward_nosplit_uniform_fp32`: about `0.103 s`;
-- `_dts_parent_reduced_ge2_stage1_kernel`: about `0.096 s`;
-- `gpurec_pibar_from_ud_shared_fp32`: about `0.083 s`.
+- `_multi_split_dts_tile_logsumexp_kernel`: about `0.096 s`;
+- `pibar_vjp_fp32`: about `0.083 s`.
 
-The DTS NCU result says `_dts_cross_backward_accum_kernel` is not occupancy- or
+The DTS NCU result says `_split_dts_vjp_kernel` is not occupancy- or
 register-limited, so a broad rewrite is not justified by launch-shape tuning.
 However, the old DTS launch-shape sweep predates CUDA Pibar and several
 accepted changes.  Run a narrow sanity check of existing diagnostic knobs only:
@@ -2818,7 +2818,7 @@ new packing policy from this search.
 
 The no-family-cap 305k layout has larger split-bearing batches than the
 conservative 300-family layout, and the current `nsys` profiles still spend
-about `0.096 s` in `_dts_parent_reduced_ge2_stage1_kernel`.  The existing
+about `0.096 s` in `_multi_split_dts_tile_logsumexp_kernel`.  The existing
 parent-reduced DTS retune picked `BLOCK_S=256` and `TILE_SPLITS=64` before the
 CUDA split/Pibar changes and before the 305k no-family-cap runtime layout was
 validated.
@@ -2860,7 +2860,7 @@ total GPU kernel time regresses.  Keep `TILE_SPLITS=64`.
 
 ## Forward Multi-Iteration Wave-Step Plan
 
-The current fixed-Pi forward path launches `_wave_step_uniform_kernel` once per
+The current fixed-Pi forward path launches `_wave_step_kernel` once per
 wave per fixed local Pi iteration.  With the HOGENOM setting
 `fixed_iters_Pi=6`, the current 305k no-family-cap layout therefore launches
 `245 * 6 = 1470` wave-step kernels, making this the largest remaining kernel
@@ -2923,7 +2923,7 @@ Before attempting any other forward rewrite, refresh Nsight Compute on the
 current best no-family-cap 305k layout rather than relying only on the older
 conservative-layout wave-step NCU.
 
-The largest `_wave_step_uniform_kernel` launch in
+The largest `_wave_step_kernel` launch in
 `nsys_stream_depthff305_nofam_cuda_pibar.sqlite` is match index 29, about
 `0.448 ms` with grid 8192.  Capture that launch and inspect occupancy,
 registers, spills, memory throughput, branch efficiency, and scheduler stalls.
@@ -2976,7 +2976,7 @@ The latest NCU on the no-family-cap 305k layout says the hot wave-step launch is
 healthy but has a remaining memory-coalescing issue.  One existing runtime knob
 changes the work inside that kernel without code edits:
 `GPUREC_FUSE_FINAL_PIBAR=0` moves final Pibar recomputation back out of the last
-wave-step iteration and into separate `_wave_pibar_uniform_parent_kernel`
+wave-step iteration and into separate `_pibar_kernel`
 launches.
 
 This was previously tested on an older conservative layout and was roughly tied
@@ -3025,7 +3025,7 @@ Prototype plan:
 
 - add a cached int32 species ancestor table to `species_wave_topology`;
 - add an opt-in `GPUREC_WAVE_STEP_ANCESTOR_TABLE=1` path in
-  `_wave_step_uniform_kernel`;
+  `_wave_step_kernel`;
 - keep the parent-pointer walk as the default fallback until parity and
   profiling pass;
 - verify targeted forward/backward parity with the flag forced on;
@@ -3037,7 +3037,7 @@ Result: rejected and removed.
 Correctness before removal:
 
 - `GPUREC_WAVE_STEP_ANCESTOR_TABLE=1 pytest -q
-  tests/kernels/test_wave_step_uniform_forward_kernel.py
+  tests/kernels/test_wave_step_forward_kernel.py
   tests/unit/test_specieswise_uniform.py`: 10 passed;
 - `GPUREC_WAVE_STEP_ANCESTOR_TABLE=1 pytest -q` on the targeted
   `GeneReconModel` and `UniformChunkedReconModel` resident parity subset:
@@ -3060,7 +3060,7 @@ parent walk.  Since the event median regressed by about `52.7 ms`, do not run
 The current no-family-cap 305k `nsys` trace is still GPU-kernel dominated:
 `0.718 s` of GPU kernel time inside a `0.784 s` measured pass.  The largest
 remaining forward-side non-wave-step bucket is
-`_dts_parent_reduced_ge2_stage1_kernel`, about `0.096 s` over 456 launches.
+`_multi_split_dts_tile_logsumexp_kernel`, about `0.096 s` over 456 launches.
 
 The parent-reduced DTS block-size retune picked `GPUREC_DTS_PARENT_BLOCK_S=256`
 on an older conservative layout.  The no-family-cap layout has different wave

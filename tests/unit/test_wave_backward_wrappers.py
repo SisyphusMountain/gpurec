@@ -4,9 +4,9 @@ import pytest
 import torch
 
 from gpurec.core.kernels.wave_backward import (
-    dts_cross_backward_accum_fused,
-    uniform_cross_pibar_vjp_tree_from_ud_fused,
-    wave_backward_uniform_fused,
+    accumulate_split_dts_vjp,
+    accumulate_split_pibar_vjp,
+    compute_wave_adjoint,
 )
 
 
@@ -21,7 +21,7 @@ def _wave_backward_kwargs() -> dict[str, object]:
         "S": species,
         "dts_r": None,
         "rhs": torch.zeros((wave_size, species), dtype=torch.float32),
-        "mt_squeezed": torch.zeros(species, dtype=torch.float32),
+        "max_transfer_mat": torch.zeros(species, dtype=torch.float32),
         "DL_const": torch.zeros(species, dtype=torch.float32),
         "Ebar": torch.zeros(species, dtype=torch.float32),
         "E": torch.zeros(species, dtype=torch.float32),
@@ -85,7 +85,7 @@ def _pibar_vjp_kwargs() -> dict[str, object]:
         ),
     ],
 )
-def test_wave_backward_uniform_fused_requires_retained_metadata_before_launch(
+def test_compute_wave_adjoint_requires_retained_metadata_before_launch(
     field: str,
     message: str,
 ) -> None:
@@ -93,84 +93,84 @@ def test_wave_backward_uniform_fused_requires_retained_metadata_before_launch(
     kwargs[field] = None
 
     with pytest.raises(ValueError, match=message):
-        wave_backward_uniform_fused(**kwargs)
+        compute_wave_adjoint(**kwargs)
 
 
-def test_dts_cross_backward_output_requires_pibar_metadata_before_launch() -> None:
+def test_split_dts_vjp_output_requires_pibar_metadata_before_launch() -> None:
     kwargs = _dts_backward_kwargs()
 
     with pytest.raises(
         ValueError,
-        match="mt_squeezed and pibar_row_max are required when outputting Pibar u_d",
+        match="max_transfer_mat and pibar_row_max are required when outputting Pibar u_d",
     ):
-        dts_cross_backward_accum_fused(**kwargs, output_pibar_ud=True)
+        accumulate_split_dts_vjp(**kwargs, output_pibar_ud=True)
 
 
-def test_dts_cross_backward_rejects_invalid_pibar_mt_shape_before_launch() -> None:
+def test_split_dts_vjp_rejects_invalid_pibar_max_transfer_shape_before_launch() -> None:
     kwargs = _dts_backward_kwargs()
 
     with pytest.raises(
         ValueError,
-        match=r"mt_squeezed must have shape \[S\] or \[G, S\]",
+        match=r"max_transfer_mat must have shape \[S\] or \[G, S\]",
     ):
-        dts_cross_backward_accum_fused(
+        accumulate_split_dts_vjp(
             **kwargs,
             output_pibar_ud=True,
-            mt_squeezed=torch.zeros((2, 2), dtype=torch.float32),
+            max_transfer_mat=torch.zeros((2, 2), dtype=torch.float32),
             pibar_row_max=torch.zeros(2, dtype=torch.float32),
         )
 
 
-def test_dts_cross_backward_rejects_short_pibar_row_max_before_launch() -> None:
+def test_split_dts_vjp_rejects_short_pibar_row_max_before_launch() -> None:
     kwargs = _dts_backward_kwargs()
 
     with pytest.raises(ValueError, match="one row-max value per Pi row"):
-        dts_cross_backward_accum_fused(
+        accumulate_split_dts_vjp(
             **kwargs,
             output_pibar_ud=True,
-            mt_squeezed=torch.zeros(3, dtype=torch.float32),
+            max_transfer_mat=torch.zeros(3, dtype=torch.float32),
             pibar_row_max=torch.zeros(1, dtype=torch.float32),
         )
 
 
-def test_dts_cross_backward_side_activity_requires_staged_pibar_output() -> None:
+def test_split_dts_vjp_active_split_sides_requires_staged_pibar_output() -> None:
     kwargs = _dts_backward_kwargs()
 
-    with pytest.raises(ValueError, match="output_pibar_side_active requires output_pibar_ud"):
-        dts_cross_backward_accum_fused(**kwargs, output_pibar_side_active=True)
+    with pytest.raises(ValueError, match="output_active_split_sides requires output_pibar_ud"):
+        accumulate_split_dts_vjp(**kwargs, output_active_split_sides=True)
 
 
-def test_uniform_pibar_vjp_requires_reduce_idx_with_active_mask_before_launch() -> None:
+def test_pibar_vjp_requires_reduce_idx_with_active_parent_rows_before_launch() -> None:
     kwargs = _pibar_vjp_kwargs()
 
-    with pytest.raises(ValueError, match="reduce_idx is required when active_mask is provided"):
-        uniform_cross_pibar_vjp_tree_from_ud_fused(
+    with pytest.raises(ValueError, match="reduce_idx is required when active_parent_rows is provided"):
+        accumulate_split_pibar_vjp(
             **kwargs,
-            active_mask=torch.ones(1, dtype=torch.bool),
+            active_parent_rows=torch.ones(1, dtype=torch.bool),
             reduce_idx=None,
         )
 
 
-def test_uniform_pibar_vjp_requires_pibar_row_max_before_launch() -> None:
+def test_pibar_vjp_requires_pibar_row_max_before_launch() -> None:
     kwargs = _pibar_vjp_kwargs()
     kwargs["pibar_row_max"] = None
 
     with pytest.raises(ValueError, match="pibar_row_max is required for DTS-staged Pibar VJP"):
-        uniform_cross_pibar_vjp_tree_from_ud_fused(**kwargs)
+        accumulate_split_pibar_vjp(**kwargs)
 
 
-def test_uniform_pibar_vjp_rejects_vector_side_threshold_before_launch() -> None:
+def test_pibar_vjp_rejects_vector_side_threshold_before_launch() -> None:
     kwargs = _pibar_vjp_kwargs()
 
-    with pytest.raises(ValueError, match="side_active_threshold tensor must contain one value"):
-        uniform_cross_pibar_vjp_tree_from_ud_fused(
+    with pytest.raises(ValueError, match="active_split_side_threshold tensor must contain one value"):
+        accumulate_split_pibar_vjp(
             **kwargs,
-            side_active_threshold=torch.zeros(2, dtype=torch.float32),
+            active_split_side_threshold=torch.zeros(2, dtype=torch.float32),
         )
 
 
-def test_uniform_pibar_vjp_rejects_negative_side_threshold_before_launch() -> None:
+def test_pibar_vjp_rejects_negative_side_threshold_before_launch() -> None:
     kwargs = _pibar_vjp_kwargs()
 
-    with pytest.raises(ValueError, match="side_active_threshold must be non-negative"):
-        uniform_cross_pibar_vjp_tree_from_ud_fused(**kwargs, side_active_threshold=-0.1)
+    with pytest.raises(ValueError, match="active_split_side_threshold must be non-negative"):
+        accumulate_split_pibar_vjp(**kwargs, active_split_side_threshold=-0.1)

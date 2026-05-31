@@ -19,14 +19,14 @@ where (W(d)) is the set of split programs or split-side programs writing to that
 
 | Area                                                      | Current state                                                                                                                                          | Recommendation                                                                                                                        |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **DTS parameter gradients**                               | Many programs atomically accumulate `grad_log_pD`, `grad_log_pS`, and `grad_mt`. There is already a two-stage special case for shared `[S]` `grad_mt`. | **Best first target.** Extend the existing two-stage pattern to `grad_log_pD` and `grad_log_pS`, especially for shared `[S]` layouts. |
-| **Self-loop parameter gradients**                         | `ACCUM_GRADS=True` atomically accumulates shared gradient vectors/scalars; `ACCUM_GRADS=False` stores full per-row `aw*` tensors.                      | **Good second target.** Use tiled partial reductions, not full `[W,S]` materialization if memory traffic is high.                     |
+| **DTS parameter gradients**                               | Many programs atomically accumulate `grad_log_pD`, `grad_log_pS`, and `grad_max_transfer_mat`. There is already a two-stage special case for shared `[S]` `grad_max_transfer_mat`. | **Best first target.** Extend the existing two-stage pattern to `grad_log_pD` and `grad_log_pS`, especially for shared `[S]` layouts. |
+| **Self-loop parameter gradients**                         | `ACCUM_GRADS=True` atomically accumulates shared gradient vectors/scalars; `ACCUM_GRADS=False` stores full per-row `aw*` tensors.                      | **Good second target.** Use tiled tiled reductions, not full `[W,S]` materialization if memory traffic is high.                     |
 | **DTS direct child `Pi` adjoints into `accumulated_rhs`** | One program per split row; multiple writers can hit the same child row/species.                                                                        | **Do not just disable atomics.** Use child-grouped metadata, segmented reduction, or a verified unique-destination fast path.         |
 | **Uniform Pibar final add into `accumulated_rhs`**        | One program per split side; final add is atomic.                                                                                                       | Possible, but requires child-grouped reduction or child-major layout. This looks structural, not a simple atomic toggle.              |
 
-For **DTS parameter gradients**, your own notes already identify the right precedent: `grad_mt_two_stage=True` accumulates into `grad_mt_partial[tile, s]` and then reduces partials into `grad_mt`; the same pattern is suggested for `grad_log_pD` and `grad_log_pS`.  The code confirms the two-stage `grad_mt` path: it allocates `grad_mt_partial`, launches `_dts_cross_backward_accum_kernel`, then runs `_dts_grad_mt_two_stage_reduce_kernel`. 
+For **DTS parameter gradients**, your own notes already identify the right precedent: `stage_max_transfer_gradient_by_tile=True` accumulates into `grad_max_transfer_tiles[tile, s]` and then reduces tiles into `grad_max_transfer_mat`; the same pattern is suggested for `grad_log_pD` and `grad_log_pS`.  The code confirms the two-stage `grad_max_transfer_mat` path: it allocates `grad_max_transfer_tiles`, launches `_split_dts_vjp_kernel`, then runs `_dts_max_transfer_gradient_kernel`.
 
-For **self-loop parameter gradients**, atomics are not mathematically required. The existing non-atomic path stores `aw0`, `aw1`, `aw2`, `aw345`, `aw3`, and `aw4`, but that costs full `[W,S]` scratch traffic plus reductions.  The code matches this: when `ACCUM_GRADS` is true it does atomic adds into gradient buffers; otherwise it stores the `aw*` tensors.  A better variant would be partials like:
+For **self-loop parameter gradients**, atomics are not mathematically required. The existing non-atomic path stores `aw0`, `aw1`, `aw2`, `aw345`, `aw3`, and `aw4`, but that costs full `[W,S]` scratch traffic plus reductions.  The code matches this: when `ACCUM_GRADS` is true it does atomic adds into gradient buffers; otherwise it stores the `aw*` tensors.  A better variant would be tiles like:
 
 [
 P_{t,s}=\sum_{w \in \text{tile }t} a_{w,s},
@@ -53,14 +53,14 @@ I would implement in this order:
 
 1. **Extend two-stage partial reduction for DTS parameter gradients**: start with shared `[S]` `grad_log_pD` and `grad_log_pS`. This is the cleanest “less atomics” win because it does not affect `accumulated_rhs` wave ordering.
 
-2. **Benchmark self-loop parameter-gradient partials**: compare current direct atomics against `[tile, S]` partials plus one reduction kernel. Do not fall back to full `aw*` materialization unless memory bandwidth is not the bottleneck.
+2. **Benchmark self-loop parameter-gradient tiles**: compare current direct atomics against `[tile, S]` tiles plus one reduction kernel. Do not fall back to full `aw*` materialization unless memory bandwidth is not the bottleneck.
 
-3. **Add a destination-multiplicity verifier for `accumulated_rhs`**: only use `USE_ATOMICS=False` on waves where every destination is unique. Your notes explicitly recommend this before using the unsafe branch. 
+3. **Add a destination-multiplicity verifier for `accumulated_rhs`**: only use `USE_ATOMICS=False` on waves where every destination is unique. Your notes explicitly recommend this before using the unsafe branch.
 
-4. **Prototype child-grouped reductions for `accumulated_rhs`**: this is the real way to remove those atomics. It needs reverse adjacency metadata grouped by child row or a segmented reduction over materialized split contributions. 
+4. **Prototype child-grouped reductions for `accumulated_rhs`**: this is the real way to remove those atomics. It needs reverse adjacency metadata grouped by child row or a segmented reduction over materialized split contributions.
 
-5. **Treat Pibar as a layout/reduction redesign**, not an atomic micro-optimization. The notes say that kernel has looked memory/coalescing limited, so simply changing atomic behavior is unlikely to be enough. 
+5. **Treat Pibar as a layout/reduction redesign**, not an atomic micro-optimization. The notes say that kernel has looked memory/coalescing limited, so simply changing atomic behavior is unlikely to be enough.
 
-The non-negotiable constraint is that each wave must see `accumulated_rhs[ws:we]` only after all later/rootward contributions have landed, and cross-clade DTS/Pibar updates must go to child rows for earlier waves to consume. Any staged reduction must finish inside the current wave before the next reverse wave reads those child rows. 
+The non-negotiable constraint is that each wave must see `accumulated_rhs[ws:we]` only after all later/rootward contributions have landed, and split DTS/Pibar updates must go to child rows for earlier waves to consume. Any staged reduction must finish inside the current wave before the next reverse wave reads those child rows.
 
 So: **yes, you can plausibly make it faster with fewer atomics, but the safe high-value path is staged reduction for parameter gradients first. For `accumulated_rhs`, atomics are currently guarding real write conflicts; removing them requires new grouping/reduction metadata, not just a flag change.**

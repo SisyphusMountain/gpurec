@@ -5,12 +5,12 @@ from dataclasses import dataclass
 import torch
 
 from .kernels.wave_step import (
-    wave_step_uniform_fused_into,
-    wave_step_uniform_initial_leaf_fused_into,
-    wave_pibar_uniform_parent_fused,
+    compute_leaf_initial_wave_step,
+    compute_pibar,
+    compute_wave_step,
 )
 from .kernels.dts_fused import (
-    dts_fused_parent_reduced,
+    compute_dts_forward,
     prepare_dts_forward_param,
 )
 from ._helpers import _nvtx_range
@@ -148,7 +148,7 @@ def prepare_shared_pi_forward_constants(
     DL_const = 1.0 + log_pD + E
     SL1_const = log_pS + E_s2
     SL2_const = log_pS + E_s1
-    mt_squeezed = (
+    max_transfer_mat = (
         max_transfer_mat.squeeze(-1)
         if max_transfer_mat.ndim > 1
         else max_transfer_mat
@@ -157,7 +157,7 @@ def prepare_shared_pi_forward_constants(
         log_pS.expand(S).contiguous() if log_pS.ndim == 0 else log_pS.contiguous()
     )
     return {
-        "wave_consts": (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed),
+        "wave_consts": (DL_const, SL1_const, SL2_const, Ebar, E, max_transfer_mat),
         "uniform_leaf_logp": uniform_leaf_logp,
         "dts_log_pD_param": prepare_dts_forward_param(
             log_pD,
@@ -175,16 +175,16 @@ def prepare_shared_pi_forward_constants(
 
 
 # ---------------------------------------------------------------------------
-# Cross-clade DTS
+# Split DTS
 # ---------------------------------------------------------------------------
 
-def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
-                       S, device, dtype, active_mask=None,
+def _compute_split_dts(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
+                       S, device, dtype, active_parent_rows=None,
                        family_idx=None,
                        family_offset=0,
                        prepared_log_pD=None,
                        prepared_log_pS=None):
-    """Compute DTS cross-clade terms and reduce to [W, S] for one wave."""
+    """Compute DTS split terms and reduce to [W, S] for one wave."""
     sl = meta['sl']
     sr = meta['sr']
     wlsp = meta['log_split_probs']
@@ -192,8 +192,8 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
     n_eq1 = meta.get('n_eq1', 0)
     ge2_parent_ids = meta.get('ge2_parent_ids', sl[:0])
     covered_parent_rows = int(n_eq1) + int(ge2_parent_ids.numel())
-    initialize_out = active_mask is not None or covered_parent_rows != int(W)
-    return dts_fused_parent_reduced(
+    initialize_out = active_parent_rows is not None or covered_parent_rows != int(W)
+    return compute_dts_forward(
         Pi, Pibar, sl, sr,
         sp_child1, sp_child2,
         log_pD, log_pS, wlsp,
@@ -202,7 +202,7 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
         meta.get('eq1_reduce_idx', sl[:0]),
         meta.get('ge2_ptr', sl.new_zeros((1,), dtype=torch.long)),
         ge2_parent_ids,
-        active_mask=active_mask,
+        active_parent_rows=active_parent_rows,
         family_idx=family_idx,
         family_offset=family_offset,
         tile_splits=64,
@@ -360,7 +360,7 @@ def Pi_wave_forward(
         Ebar_family = as_family_species(Ebar, name="Ebar", **param_kwargs)
         E_s1_family = as_family_species(E_s1, name="E_s1", **param_kwargs)
         E_s2_family = as_family_species(E_s2, name="E_s2", **param_kwargs)
-        mt_family = as_family_species(
+        max_transfer_family = as_family_species(
             max_transfer_mat.squeeze(-1), name="max_transfer_mat", **param_kwargs
         )
         log_pD_param = as_family_param(log_pD, name="log_pD", **param_kwargs)
@@ -369,7 +369,7 @@ def Pi_wave_forward(
         log_pS_family = as_family_species(log_pS, name="log_pS", **param_kwargs)
     else:
         E_family = Ebar_family = E_s1_family = E_s2_family = None
-        mt_family = None
+        max_transfer_family = None
         log_pD_param = log_pD
         log_pS_param = log_pS
         log_pD_family = log_pD
@@ -407,7 +407,7 @@ def Pi_wave_forward(
                 SL2_const = log_pS + E_s1
 
         with _nvtx_range("Pi setup uniform tensors"):
-            mt_squeezed = (
+            max_transfer_mat = (
                 max_transfer_mat.squeeze(-1)
                 if max_transfer_mat.ndim > 1
                 else max_transfer_mat
@@ -418,7 +418,7 @@ def Pi_wave_forward(
                 SL2_const = SL2_const.contiguous()
                 Ebar_family = Ebar_family.contiguous()
                 E_family = E_family.contiguous()
-                mt_family = mt_family.contiguous()
+                max_transfer_family = max_transfer_family.contiguous()
                 uniform_leaf_logp = log_pS_family.contiguous()
             else:
                 uniform_leaf_logp = (
@@ -434,10 +434,10 @@ def Pi_wave_forward(
                 SL2_const,
                 Ebar_family,
                 E_family,
-                mt_family,
+                max_transfer_family,
             )
         else:
-            wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
+            wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, max_transfer_mat)
         dts_log_pD_param = prepare_dts_forward_param(
             log_pD_param,
             0,
@@ -525,7 +525,7 @@ def Pi_wave_forward(
     pi_wave_deltas: list[float | None] = [None] * len(wave_metas)
 
     def _run_wave_self_loop(meta, dts_r, leaf_wt, DL_w, SL1_w, SL2_w,
-                            Ebar_w, E_w, mt_w, wave_index):
+                            Ebar_w, E_w, max_transfer_w, wave_index):
         ws = meta['start']
         _we = meta['end']
         W = meta['W']
@@ -574,9 +574,9 @@ def Pi_wave_forward(
                 and leaf_species_index is not None
                 and not check_convergence
             ):
-                wave_step_uniform_initial_leaf_fused_into(
+                compute_leaf_initial_wave_step(
                     pi_out, ws, W, S,
-                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    max_transfer_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                     sp_child1, sp_child2,
                     sp_subtree_start, sp_subtree_end,
                     leaf_species_index,
@@ -590,9 +590,9 @@ def Pi_wave_forward(
                 if local_iter == 1 and initial_nonleaf_input is not None:
                     step_pi_in = initial_nonleaf_input
                     step_input_ws = 0
-                wave_step_uniform_fused_into(
+                compute_wave_step(
                     step_pi_in, pi_out, Pibar, ws, W, S,
-                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    max_transfer_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                     sp_child1, sp_child2, sp_parent, max_ancestor_depth,
                     leaf_wt, dts_r,
                     leaf_species_idx=leaf_species_index,
@@ -628,18 +628,18 @@ def Pi_wave_forward(
                     pi_wave_iterations[wave_index] = iteration_count
                     pi_wave_converged[wave_index] = True
                     if not skip_final_pibar:
-                        wave_pibar_uniform_parent_fused(
+                        compute_pibar(
                             Pi, Pibar, ws, W, S,
-                            mt_w, sp_parent, max_ancestor_depth,
+                            max_transfer_w, sp_parent, max_ancestor_depth,
                             row_max_out=uniform_pibar_row_max,
                             family_idx=family_idx if batched else None,
                             family_indexed_consts=batched,
                         )
                     return
             if needs_final_pibar and not store_final_pibar:
-                wave_pibar_uniform_parent_fused(
+                compute_pibar(
                     Pi, Pibar, ws, W, S,
-                    mt_w, sp_parent, max_ancestor_depth,
+                    max_transfer_w, sp_parent, max_ancestor_depth,
                     row_max_out=uniform_pibar_row_max,
                     family_idx=family_idx if batched else None,
                     family_indexed_consts=batched,
@@ -654,7 +654,7 @@ def Pi_wave_forward(
             if meta['has_splits']:
                 if emit_progress:
                     _progress("dts_start", wave_index, None, meta)
-                dts_r = _compute_dts_cross(
+                dts_r = _compute_split_dts(
                     Pi, Pibar, meta, sp_child1, sp_child2,
                     log_pD_param, log_pS_param, S, device, dtype,
                     family_idx=family_idx if batched else None,
@@ -665,10 +665,10 @@ def Pi_wave_forward(
             else:
                 dts_r = None
 
-            DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = wave_consts
+            DL_w, SL1_w, SL2_w, Ebar_w, E_w, max_transfer_w = wave_consts
             _run_wave_self_loop(
                 meta, dts_r, uniform_leaf_logp, DL_w, SL1_w, SL2_w,
-                Ebar_w, E_w, mt_w, wave_index,
+                Ebar_w, E_w, max_transfer_w, wave_index,
             )
         if emit_progress:
             _progress("done")
