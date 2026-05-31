@@ -6,10 +6,11 @@ Future file paths named in this plan are optional proposed targets until a
 slice creates them.
 
 Status note: the shared bounded optimizer helper slice, workflow
-`BatchFinalCache`, workflow transition ops bundle, and workflow loop-policy
-extraction have since landed. The active API slice is factory-only
-`GeneReconModel` builder extraction; see
-`docs/api-model-builder-refactor-plan-2026-05-31.md`.
+`BatchFinalCache`, workflow transition ops bundle, workflow loop-policy
+extraction, API model-builder extraction, API genewise streaming helper, API
+resident runtime helper, and LBFGSB fallback helper extraction have since
+landed. See `docs/lbfgsb-fallback-refactor-plan-2026-05-31.md` for the latest
+optimizer slice.
 
 The historical split had already reduced the two original largest files
 substantially. The remaining large production groups at the time were:

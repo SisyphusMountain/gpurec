@@ -9,6 +9,29 @@ from gpurec.optimization import LBFGSB
 from gpurec.optimization.lbfgsb import _LineSearchResult
 
 
+def test_lbfgsb_private_fallback_methods_remain_on_optimizer_instances():
+    assert _LineSearchResult.__module__ == "gpurec.optimization.lbfgsb"
+
+    x = torch.nn.Parameter(torch.zeros(2, dtype=torch.float64))
+    optimizer = LBFGSB([x], lower_bound=-1.0, upper_bound=1.0)
+
+    for name in (
+        "_projected_gradient_direction",
+        "_projected_gradient_sign_direction",
+        "_projected_gradient_topk_sign_direction",
+        "_topk_sign_fallback_sizes",
+        "_topk_sign_fallback_search",
+        "_coordinate_sign_fallback_search",
+        "_remaining_loss_eval_budget",
+        "_loss_resolution",
+        "_tiny_progress",
+        "_fallback_needs_competition",
+        "_compete_projected_gradient_fallbacks",
+        "_adaptive_projected_gradient_alpha",
+    ):
+        assert callable(getattr(optimizer, name, None)), name
+
+
 def _quadratic_model_value(
     x0: torch.Tensor,
     grad: torch.Tensor,

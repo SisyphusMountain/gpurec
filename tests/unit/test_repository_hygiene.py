@@ -451,6 +451,51 @@ def test_internal_api_helper_modules_document_support_boundary():
     assert "Direct imports from `gpurec.core` are unstable" in docs_readme
 
 
+def test_internal_optimization_helper_modules_document_support_boundary():
+    root = Path(__file__).resolve().parents[2]
+    fallback_module = ast.parse(
+        (root / "gpurec" / "optimization" / "_lbfgsb_fallbacks.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    fallback_doc = " ".join((ast.get_docstring(fallback_module) or "").split())
+    fallback_docstrings = {
+        node.name: " ".join((ast.get_docstring(node) or "").split())
+        for node in fallback_module.body
+        if isinstance(node, ast.ClassDef)
+    }
+
+    for token in (
+        "Internal projected-gradient fallback helpers",
+        "private optimization support",
+        "not a public import surface",
+    ):
+        assert token in fallback_doc
+    assert (
+        "Private projected-gradient fallback/search methods"
+        in fallback_docstrings["LBFGSBFallbackMixin"]
+    )
+
+    for node in ast.walk(fallback_module):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith("gpurec.api")
+            assert not node.module.startswith("gpurec.workflow")
+            assert not node.module.startswith("gpurec.core")
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("gpurec.api")
+                assert not alias.name.startswith("gpurec.workflow")
+                assert not alias.name.startswith("gpurec.core")
+
+    runtime_imports = [
+        node.module
+        for node in fallback_module.body
+        if isinstance(node, ast.ImportFrom) and node.module
+    ]
+    assert "gpurec.optimization.lbfgsb" not in runtime_imports
+    assert "lbfgsb" not in runtime_imports
+
+
 def test_workflow_numeric_validation_uses_shared_helpers():
     root = Path(__file__).resolve().parents[2]
     shared_validation_source = (root / "gpurec" / "_validation.py").read_text(
