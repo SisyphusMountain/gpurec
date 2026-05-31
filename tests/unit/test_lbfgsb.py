@@ -32,6 +32,23 @@ def test_lbfgsb_private_fallback_methods_remain_on_optimizer_instances():
         assert callable(getattr(optimizer, name, None)), name
 
 
+def test_lbfgsb_private_subspace_methods_remain_on_optimizer_instances():
+    x = torch.nn.Parameter(torch.zeros(2, dtype=torch.float64))
+    optimizer = LBFGSB([x], lower_bound=-1.0, upper_bound=1.0)
+
+    for name in (
+        "_active_mask",
+        "_history_matrices",
+        "_theta",
+        "_b_matvec",
+        "_reduced_cg_direction",
+        "_generalized_cauchy_point",
+        "_candidate_direction",
+        "_limit_subspace_step",
+    ):
+        assert callable(getattr(optimizer, name, None)), name
+
+
 def _quadratic_model_value(
     x0: torch.Tensor,
     grad: torch.Tensor,

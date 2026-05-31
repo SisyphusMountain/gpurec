@@ -458,10 +458,21 @@ def test_internal_optimization_helper_modules_document_support_boundary():
             encoding="utf-8"
         )
     )
+    subspace_module = ast.parse(
+        (root / "gpurec" / "optimization" / "_lbfgsb_subspace.py").read_text(
+            encoding="utf-8"
+        )
+    )
     fallback_doc = " ".join((ast.get_docstring(fallback_module) or "").split())
+    subspace_doc = " ".join((ast.get_docstring(subspace_module) or "").split())
     fallback_docstrings = {
         node.name: " ".join((ast.get_docstring(node) or "").split())
         for node in fallback_module.body
+        if isinstance(node, ast.ClassDef)
+    }
+    subspace_docstrings = {
+        node.name: " ".join((ast.get_docstring(node) or "").split())
+        for node in subspace_module.body
         if isinstance(node, ast.ClassDef)
     }
 
@@ -476,24 +487,55 @@ def test_internal_optimization_helper_modules_document_support_boundary():
         in fallback_docstrings["LBFGSBFallbackMixin"]
     )
 
-    for node in ast.walk(fallback_module):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            assert not node.module.startswith("gpurec.api")
-            assert not node.module.startswith("gpurec.workflow")
-            assert not node.module.startswith("gpurec.core")
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                assert not alias.name.startswith("gpurec.api")
-                assert not alias.name.startswith("gpurec.workflow")
-                assert not alias.name.startswith("gpurec.core")
+    for token in (
+        "Internal Cauchy/subspace direction helpers",
+        "private optimization support",
+        "not a public import surface",
+    ):
+        assert token in subspace_doc
+    assert (
+        "Private generalized-Cauchy and free-subspace methods"
+        in subspace_docstrings["LBFGSBSubspaceMixin"]
+    )
 
-    runtime_imports = [
-        node.module
-        for node in fallback_module.body
-        if isinstance(node, ast.ImportFrom) and node.module
+    subspace_top_level_imports = []
+    for node in subspace_module.body:
+        if isinstance(node, ast.Import):
+            subspace_top_level_imports.extend(
+                ("import", alias.name, None) for alias in node.names
+            )
+        if isinstance(node, ast.ImportFrom) and node.module:
+            subspace_top_level_imports.append(
+                (
+                    "from",
+                    node.module,
+                    tuple(alias.name for alias in node.names),
+                )
+            )
+    assert subspace_top_level_imports == [
+        ("import", "torch", None),
+        ("from", "torch", ("Tensor",)),
     ]
-    assert "gpurec.optimization.lbfgsb" not in runtime_imports
-    assert "lbfgsb" not in runtime_imports
+
+    for module in (fallback_module, subspace_module):
+        for node in ast.walk(module):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert not node.module.startswith("gpurec.api")
+                assert not node.module.startswith("gpurec.workflow")
+                assert not node.module.startswith("gpurec.core")
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith("gpurec.api")
+                    assert not alias.name.startswith("gpurec.workflow")
+                    assert not alias.name.startswith("gpurec.core")
+
+        runtime_imports = [
+            node.module
+            for node in module.body
+            if isinstance(node, ast.ImportFrom) and node.module
+        ]
+        assert "gpurec.optimization.lbfgsb" not in runtime_imports
+        assert "lbfgsb" not in runtime_imports
 
 
 def test_workflow_numeric_validation_uses_shared_helpers():
