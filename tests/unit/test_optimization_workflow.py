@@ -9,9 +9,11 @@ import torch
 
 import gpurec.api._uniform_chunked_eval as uniform_chunked_eval_module
 import gpurec.api.uniform_chunked as uniform_chunked_module
+import gpurec.workflow._stopping_policy as stopping_policy_module
 from gpurec import UniformChunkedReconModel
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow._runtime_state import _ResumeState, _resume_state_from_payload
+from gpurec.workflow._stopping_policy import _active_batch_patience
 from gpurec.workflow.optimize import (
     OptimizationRunner,
     _step_stopping_status,
@@ -537,6 +539,76 @@ def test_step_stopping_status_matches_optimizer_loop_order(
     )
 
     assert status == expected
+
+
+@pytest.mark.parametrize(
+    ("configured_patience", "expected"),
+    [(-1, -1), (0, 0), (1, 1), (4, 3)],
+)
+def test_active_batch_patience_caps_positive_values(
+    configured_patience: int,
+    expected: int,
+):
+    assert _active_batch_patience(configured_patience) == expected
+
+
+def test_step_stopping_status_allows_explicit_patience_overrides(tmp_path: Path):
+    config = _run_config(
+        tmp_path,
+        loss_patience=10,
+        best_likelihood_patience=10,
+    )
+
+    assert _step_stopping_status(
+        config,
+        step=2,
+        stable_loss_steps=1,
+        best_step=0,
+        loss_patience=1,
+        best_likelihood_patience=1,
+    ) == {"status": "converged", "reason": "loss_change_patience"}
+    assert _step_stopping_status(
+        config,
+        step=2,
+        stable_loss_steps=0,
+        best_step=0,
+        loss_patience=0,
+        best_likelihood_patience=1,
+    ) == {"status": "converged", "reason": "best_likelihood_patience"}
+    assert _step_stopping_status(
+        config,
+        step=20,
+        stable_loss_steps=20,
+        best_step=0,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    ) is None
+
+
+def test_step_stopping_status_requires_best_step_for_best_likelihood_stop(
+    tmp_path: Path,
+):
+    status = _step_stopping_status(
+        _run_config(tmp_path, loss_patience=0, best_likelihood_patience=1),
+        step=10,
+        stable_loss_steps=0,
+        best_step=None,
+    )
+
+    assert status is None
+
+
+def test_optimize_reexports_stopping_policy_helpers():
+    import importlib
+
+    optimize_module = importlib.import_module("gpurec.workflow.optimize")
+
+    assert optimize_module._step_stopping_status is (
+        stopping_policy_module._step_stopping_status
+    )
+    assert optimize_module._active_batch_patience is (
+        stopping_policy_module._active_batch_patience
+    )
 
 
 def test_optimize_reexports_workflow_run_state_classes():

@@ -75,6 +75,10 @@ from ._step_plan import (
     select_step_optimization_plan,
 )
 from ._solver_stage import SolverStageController
+from ._stopping_policy import (
+    _active_batch_patience,
+    _step_stopping_status,
+)
 from ._transitions import (
     apply_iteration_transition,
 )
@@ -129,7 +133,6 @@ from ._runtime_helpers import (
     _drop_cached_static_states_if_needed,
 )
 
-_ACTIVE_BATCH_LBFGS_STALL_PATIENCE = 3
 _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
 _BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
     {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
@@ -154,38 +157,6 @@ def _sync_artifact_hooks() -> None:
     _finalization_module._clear_cuda_allocator_cache_if_needed = (
         _clear_cuda_allocator_cache_if_needed
     )
-
-
-def _step_stopping_status(
-    config: RunConfig,
-    *,
-    step: int,
-    stable_loss_steps: int,
-    best_step: int | None,
-    loss_patience: int | None = None,
-    best_likelihood_patience: int | None = None,
-) -> dict[str, str] | None:
-    loss_patience = config.loss_patience if loss_patience is None else loss_patience
-    best_likelihood_patience = (
-        config.best_likelihood_patience
-        if best_likelihood_patience is None
-        else best_likelihood_patience
-    )
-    if loss_patience and stable_loss_steps >= loss_patience:
-        return {"status": "converged", "reason": "loss_change_patience"}
-    if (
-        best_likelihood_patience
-        and best_step is not None
-        and step - int(best_step) >= best_likelihood_patience
-    ):
-        return {"status": "converged", "reason": "best_likelihood_patience"}
-    return None
-
-
-def _active_batch_patience(configured_patience: int) -> int:
-    if configured_patience <= 0:
-        return configured_patience
-    return min(configured_patience, _ACTIVE_BATCH_LBFGS_STALL_PATIENCE)
 
 
 class OptimizationRunner:
