@@ -25,7 +25,6 @@ _FD_NEWTON_FALLBACK_LINE_SEARCH_MAX_STEPS = 2
 _FD_NEWTON_LARGE_BATCH_MAX_LS = 8
 
 
-
 @dataclass
 class _FDNewtonRuntime:
     config: RunConfig
@@ -38,6 +37,30 @@ class _FDNewtonRuntime:
     evaluate_genewise_loss_vector_probe: Callable[[GeneReconModel, bool], torch.Tensor]
     projected_grad_inf: Callable[[GeneReconModel, float, float], tuple[torch.Tensor, float]]
 
+
+def _set_model_theta(
+    model: GeneReconModel,
+    theta: torch.Tensor,
+) -> None:
+    with torch.no_grad():
+        model.theta.copy_(theta)
+
+
+def _fd_newton_runtime_for_runner(runner: Any) -> _FDNewtonRuntime:
+    return _FDNewtonRuntime(
+        config=runner.config,
+        active_batch_indices=runner.evaluation._active_batch_indices,
+        set_model_theta=_set_model_theta,
+        evaluate_active_genewise_vector_grad_at_current_theta=(
+            runner._evaluate_active_genewise_vector_grad_at_current_theta
+        ),
+        evaluate_genewise_loss_vector_probe=(
+            runner._evaluate_genewise_loss_vector_probe
+        ),
+        projected_grad_inf=runner.evaluation.projected_grad_inf,
+    )
+
+
 @dataclass
 class _FDNewtonHessianState:
     batch_index: int
@@ -48,6 +71,33 @@ class _FDNewtonHessianState:
     active_grad: torch.Tensor
     active_loss: torch.Tensor
     updates_since_refresh: int = 0
+
+
+def active_fd_newton_step_for_runner(
+    runner: Any,
+    model: GeneReconModel,
+    *,
+    solver_stage: str,
+    hessian_state: _FDNewtonHessianState | None = None,
+    update_hessian_with_bfgs: bool = True,
+    step_scale: float = 1.0,
+    use_line_search: bool = True,
+    reject_loss_increases_after_step: bool = False,
+    hessian_refresh_steps: int | None = None,
+    line_search_max_steps: int | None = None,
+) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
+    return active_fd_newton_step(
+        _fd_newton_runtime_for_runner(runner),
+        model,
+        solver_stage=solver_stage,
+        hessian_state=hessian_state,
+        update_hessian_with_bfgs=update_hessian_with_bfgs,
+        step_scale=step_scale,
+        use_line_search=use_line_search,
+        reject_loss_increases_after_step=reject_loss_increases_after_step,
+        hessian_refresh_steps=hessian_refresh_steps,
+        line_search_max_steps=line_search_max_steps,
+    )
 
 
 def _fd_newton_state_matches(

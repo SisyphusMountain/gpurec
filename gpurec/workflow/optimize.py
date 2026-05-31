@@ -99,9 +99,8 @@ from ._rows import (
     _IterationArtifactsContext,  # noqa: F401
 )
 from ._fd_newton import (
-    _FDNewtonHessianState,
-    _FDNewtonRuntime,
-    active_fd_newton_step as _active_fd_newton_step_impl,
+    _FDNewtonHessianState,  # noqa: F401
+    active_fd_newton_step_for_runner as _run_active_fd_newton_step,
 )
 from ._adaptive_rebatch import _AdaptiveRebatchState
 from ._loop_policies import (
@@ -336,50 +335,7 @@ class OptimizationRunner:
             baseline_at_check_iters=baseline_at_check_iters,
         )
 
-    def _active_fd_newton_step(
-        self,
-        model: GeneReconModel,
-        *,
-        solver_stage: str,
-        hessian_state: _FDNewtonHessianState | None = None,
-        update_hessian_with_bfgs: bool = True,
-        step_scale: float = 1.0,
-        use_line_search: bool = True,
-        reject_loss_increases_after_step: bool = False,
-        hessian_refresh_steps: int | None = None,
-        line_search_max_steps: int | None = None,
-    ) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
-        def set_model_theta(
-            model_arg: GeneReconModel,
-            theta: torch.Tensor,
-        ) -> None:
-            with torch.no_grad():
-                model_arg.theta.copy_(theta)
-
-        runtime = _FDNewtonRuntime(
-            config=self.config,
-            active_batch_indices=self.evaluation._active_batch_indices,
-            set_model_theta=set_model_theta,
-            evaluate_active_genewise_vector_grad_at_current_theta=(
-                self._evaluate_active_genewise_vector_grad_at_current_theta
-            ),
-            evaluate_genewise_loss_vector_probe=(
-                self._evaluate_genewise_loss_vector_probe
-            ),
-            projected_grad_inf=self.evaluation.projected_grad_inf,
-        )
-        return _active_fd_newton_step_impl(
-            runtime,
-            model,
-            solver_stage=solver_stage,
-            hessian_state=hessian_state,
-            update_hessian_with_bfgs=update_hessian_with_bfgs,
-            step_scale=step_scale,
-            use_line_search=use_line_search,
-            reject_loss_increases_after_step=reject_loss_increases_after_step,
-            hessian_refresh_steps=hessian_refresh_steps,
-            line_search_max_steps=line_search_max_steps,
-        )
+    _active_fd_newton_step = _run_active_fd_newton_step
 
     def _record(self, row: dict[str, Any]) -> None:
         self.history.append(row)
