@@ -14,6 +14,9 @@ import torch
 from torch import Tensor
 from torch.optim import Optimizer
 
+from ._bounds import BoxBoundsMixin
+from ._closures import VectorClosureMixin
+
 
 LossClosure = Callable[[], Tensor]
 
@@ -67,7 +70,7 @@ def _cubic_interpolate(
     return _clamp_tensor(torch.where(valid, min_pos, midpoint), xmin_bound, xmax_bound)
 
 
-class BatchedLBFGS(Optimizer):
+class BatchedLBFGS(BoxBoundsMixin, VectorClosureMixin, Optimizer):
     """Limited-memory BFGS with independent state along dimension 0.
 
     Parameters
@@ -120,6 +123,9 @@ class BatchedLBFGS(Optimizer):
     lower bound with positive gradient, or at an upper bound with negative
     gradient, are treated as inactive for convergence and search directions.
     """
+
+    _optimizer_name = "BatchedLBFGS"
+    _bounds_broadcast_to_flat = True
 
     def __init__(
         self,
@@ -199,117 +205,6 @@ class BatchedLBFGS(Optimizer):
     def _set_flat_param(self, flat: Tensor) -> None:
         with torch.no_grad():
             self._param.copy_(flat.reshape_as(self._param))
-
-    def _project_flat(
-        self,
-        flat: Tensor,
-        lower_bound: float | Tensor | None,
-        upper_bound: float | Tensor | None,
-    ) -> Tensor:
-        lower, upper = self._bounds_for_flat(flat, lower_bound, upper_bound)
-        projected = flat
-        if lower is not None:
-            projected = torch.maximum(projected, lower)
-        if upper is not None:
-            projected = torch.minimum(projected, upper)
-        return projected
-
-    def _bound_for_flat(
-        self,
-        bound: float | Tensor | None,
-        flat: Tensor,
-    ) -> Tensor | None:
-        if bound is None:
-            return None
-        if torch.is_tensor(bound):
-            bound_tensor = bound.detach().to(device=flat.device, dtype=flat.dtype)
-        else:
-            bound_tensor = torch.as_tensor(bound, device=flat.device, dtype=flat.dtype)
-        if bound_tensor.ndim == 0:
-            return bound_tensor
-        if tuple(bound_tensor.shape) == tuple(flat.shape):
-            return bound_tensor
-        if tuple(bound_tensor.shape) == tuple(self._param.shape):
-            return bound_tensor.reshape_as(flat)
-        try:
-            return torch.broadcast_to(bound_tensor, self._param.shape).reshape_as(flat)
-        except RuntimeError:
-            return torch.broadcast_to(bound_tensor, flat.shape)
-
-    def _bounds_for_flat(
-        self,
-        flat: Tensor,
-        lower_bound: float | Tensor | None,
-        upper_bound: float | Tensor | None,
-    ) -> tuple[Tensor | None, Tensor | None]:
-        lower = self._bound_for_flat(lower_bound, flat)
-        upper = self._bound_for_flat(upper_bound, flat)
-        if lower is not None and upper is not None and bool((lower > upper).any()):
-            raise ValueError("lower_bound must be <= upper_bound")
-        return lower, upper
-
-    def _projected_gradient(
-        self,
-        flat: Tensor,
-        grad: Tensor,
-        lower_bound: float | Tensor | None,
-        upper_bound: float | Tensor | None,
-    ) -> Tensor:
-        return flat - self._project_flat(flat - grad, lower_bound, upper_bound)
-
-    def _feasible_direction(
-        self,
-        flat: Tensor,
-        direction: Tensor,
-        lower_bound: float | Tensor | None,
-        upper_bound: float | Tensor | None,
-    ) -> Tensor:
-        lower, upper = self._bounds_for_flat(flat, lower_bound, upper_bound)
-        feasible = torch.ones_like(direction, dtype=torch.bool)
-        if lower is not None:
-            feasible = feasible & ((flat > lower) | (direction >= 0))
-        if upper is not None:
-            feasible = feasible & ((flat < upper) | (direction <= 0))
-        return torch.where(feasible, direction, torch.zeros_like(direction))
-
-    def _gather_flat_grad(self) -> Tensor:
-        grad = self._param.grad
-        if grad is None:
-            return torch.zeros_like(self._flat_param())
-        if grad.is_sparse:
-            grad = grad.to_dense()
-        if torch.is_complex(grad):
-            raise TypeError("BatchedLBFGS only supports real-valued gradients")
-        return grad.detach().reshape(self._batch_size(), -1)
-
-    def _loss_vector(self, loss: Tensor) -> Tensor:
-        if not torch.is_tensor(loss):
-            raise TypeError("BatchedLBFGS closure must return a Tensor")
-        B = self._batch_size()
-        if loss.numel() != B:
-            raise ValueError(
-                "BatchedLBFGS closure must return one loss per parameter row; "
-                f"got shape {tuple(loss.shape)} for batch size {B}"
-            )
-        return loss.detach().reshape(B)
-
-    def _evaluate_with_grad(self, closure: LossClosure) -> tuple[Tensor, Tensor]:
-        with torch.enable_grad():
-            loss = closure()
-        return self._loss_vector(loss), self._gather_flat_grad()
-
-    def _evaluate_loss(
-        self,
-        closure: LossClosure,
-        loss_closure: LossClosure | None,
-    ) -> Tensor:
-        if loss_closure is None:
-            with torch.enable_grad():
-                loss = closure()
-        else:
-            with torch.no_grad():
-                loss = loss_closure()
-        return self._loss_vector(loss)
 
     def _evaluate_trial_with_grad(
         self,

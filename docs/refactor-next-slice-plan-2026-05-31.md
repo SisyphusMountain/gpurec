@@ -2,6 +2,8 @@
 
 This is a documentation-only supervisor plan for the next refactor slice on the
 dirty `production` worktree. Source code was not edited for this pass.
+Future file paths named in this plan are optional proposed targets until a
+slice creates them.
 
 The current uncommitted split has already reduced the two original largest
 files substantially, but the remaining large production groups are still:

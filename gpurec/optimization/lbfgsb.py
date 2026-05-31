@@ -10,6 +10,10 @@ import torch
 from torch import Tensor
 from torch.optim import Optimizer
 
+from ._armijo import ScalarArmijoMixin
+from ._bounds import BoxBoundsMixin
+from ._closures import ScalarClosureMixin
+
 
 LossClosure = Callable[[], Tensor]
 
@@ -29,7 +33,7 @@ class _LineSearchResult:
     armijo_required_decrease: float
 
 
-class LBFGSB(Optimizer):
+class LBFGSB(BoxBoundsMixin, ScalarClosureMixin, ScalarArmijoMixin, Optimizer):
     """Limited-memory BFGS with box constraints.
 
     This is a PyTorch implementation of the L-BFGS-B structure described by
@@ -38,6 +42,9 @@ class LBFGSB(Optimizer):
     The implementation is scoped to gpurec's single dense parameter tensor and
     uses loss-only Armijo probes for line search.
     """
+
+    _optimizer_name = "LBFGSB"
+    _bounds_scalar_to_flat = True
 
     def __init__(
         self,
@@ -146,60 +153,6 @@ class LBFGSB(Optimizer):
         with torch.no_grad():
             self._param.copy_(flat.reshape_as(self._param))
 
-    def _bound_for_flat(
-        self,
-        bound: float | Tensor | None,
-        flat: Tensor,
-    ) -> Tensor | None:
-        if bound is None:
-            return None
-        if torch.is_tensor(bound):
-            bound_tensor = bound.detach().to(device=flat.device, dtype=flat.dtype)
-        else:
-            bound_tensor = torch.as_tensor(bound, device=flat.device, dtype=flat.dtype)
-        if bound_tensor.ndim == 0:
-            return torch.full_like(flat, bound_tensor)
-        if tuple(bound_tensor.shape) == tuple(flat.shape):
-            return bound_tensor
-        if tuple(bound_tensor.shape) == tuple(self._param.shape):
-            return bound_tensor.reshape_as(flat)
-        return torch.broadcast_to(bound_tensor, self._param.shape).reshape_as(flat)
-
-    def _bounds_for_flat(
-        self,
-        flat: Tensor,
-        lower_bound: float | Tensor | None,
-        upper_bound: float | Tensor | None,
-    ) -> tuple[Tensor | None, Tensor | None]:
-        lower = self._bound_for_flat(lower_bound, flat)
-        upper = self._bound_for_flat(upper_bound, flat)
-        if lower is not None and upper is not None and bool((lower > upper).any()):
-            raise ValueError("lower_bound must be <= upper_bound")
-        return lower, upper
-
-    def _project_flat(
-        self,
-        flat: Tensor,
-        lower_bound: float | Tensor | None,
-        upper_bound: float | Tensor | None,
-    ) -> Tensor:
-        lower, upper = self._bounds_for_flat(flat, lower_bound, upper_bound)
-        projected = flat
-        if lower is not None:
-            projected = torch.maximum(projected, lower)
-        if upper is not None:
-            projected = torch.minimum(projected, upper)
-        return projected
-
-    def _projected_gradient(
-        self,
-        flat: Tensor,
-        grad: Tensor,
-        lower_bound: float | Tensor | None,
-        upper_bound: float | Tensor | None,
-    ) -> Tensor:
-        return flat - self._project_flat(flat - grad, lower_bound, upper_bound)
-
     def _active_mask(
         self,
         flat: Tensor,
@@ -215,73 +168,6 @@ class LBFGSB(Optimizer):
         if upper is not None:
             active = active | ((flat >= upper - active_tol) & (grad <= 0))
         return active
-
-    def _gather_flat_grad(self) -> Tensor:
-        grad = self._param.grad
-        if grad is None:
-            return torch.zeros_like(self._flat_param())
-        if grad.is_sparse:
-            grad = grad.to_dense()
-        if torch.is_complex(grad):
-            raise TypeError("LBFGSB only supports real-valued gradients")
-        return grad.detach().reshape(-1)
-
-    def _evaluate_with_grad(self, closure: LossClosure) -> tuple[Tensor, Tensor]:
-        with torch.enable_grad():
-            loss = closure()
-        if not torch.is_tensor(loss) or loss.numel() != 1:
-            raise ValueError("LBFGSB closure must return a scalar Tensor")
-        return loss.detach().reshape(()), self._gather_flat_grad()
-
-    def _evaluate_loss(
-        self,
-        closure: LossClosure,
-        loss_closure: LossClosure | None,
-    ) -> Tensor:
-        if loss_closure is None:
-            with torch.enable_grad():
-                loss = closure()
-        else:
-            with torch.no_grad():
-                loss = loss_closure()
-        if not torch.is_tensor(loss) or loss.numel() != 1:
-            raise ValueError("LBFGSB loss closure must return a scalar Tensor")
-        return loss.detach().reshape(())
-
-    def _armijo_accepts(
-        self,
-        *,
-        trial_loss: Tensor,
-        loss: Tensor,
-        trial_gtd: Tensor,
-        c1: float,
-    ) -> bool:
-        if (
-            not torch.isfinite(trial_loss)
-            or not torch.isfinite(loss)
-            or not torch.isfinite(trial_gtd)
-        ):
-            return False
-        trial_value = float(trial_loss.detach().cpu())
-        loss_value = float(loss.detach().cpu())
-        gtd_value = float(trial_gtd.detach().cpu())
-        armijo_value = loss_value + c1 * gtd_value
-        threshold = min(armijo_value, math.nextafter(loss_value, -math.inf))
-        return trial_value <= threshold
-
-    def _armijo_required_decrease(
-        self,
-        *,
-        loss: Tensor,
-        trial_gtd: Tensor,
-        c1: float,
-    ) -> float:
-        loss_value = float(loss.detach().cpu())
-        gtd_value = float(trial_gtd.detach().cpu())
-        armijo_threshold = loss_value + c1 * gtd_value
-        strict_threshold = math.nextafter(loss_value, -math.inf)
-        threshold = min(armijo_threshold, strict_threshold)
-        return max(0.0, loss_value - threshold)
 
     def _backtracking_line_search(
         self,
