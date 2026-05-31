@@ -50,7 +50,6 @@ from ._step_execution import (
 )
 from ._step_execution import _restore_theta_if_nonfinite_update
 from ._phase import (
-    _adagrad_restart_phase_name,
     _continues_after_adagrad_restart_prefix,
     _uses_adagrad_restart_prefix,
 )
@@ -105,6 +104,12 @@ from ._fd_newton import (
     active_fd_newton_step as _active_fd_newton_step_impl,
 )
 from ._adaptive_rebatch import _AdaptiveRebatchState
+from ._loop_policies import (
+    _LoopPolicyContext,
+    _LoopPolicyInputs,
+    _LoopPolicyState,
+    apply_post_step_loop_policies,
+)
 from ._runtime_helpers import (
     _clear_cached_solver_runtime_state,
     _clear_cuda_allocator_cache_if_needed,
@@ -893,6 +898,20 @@ class OptimizationRunner:
             adagrad_restart_dynamic_enabled=adagrad_restart_dynamic_enabled,
             lbfgsb_loss_schedule=lbfgsb_loss_schedule,
         )
+        loop_policy_context = _LoopPolicyContext(
+            config=config,
+            batchwise_active_optimizer=batchwise_active_optimizer,
+            batchwise_active_optimizer_phases=frozenset(_BATCHWISE_ACTIVE_OPTIMIZERS),
+            global_solver_warmup=global_solver_warmup,
+            adagrad_restart_dynamic_enabled=adagrad_restart_dynamic_enabled,
+            adagrad_restart_specs=adagrad_restart_specs,
+            lbfgsb_loss_schedule=lbfgsb_loss_schedule,
+        )
+        loop_policy_state = _LoopPolicyState(
+            objective_state=objective_state,
+            batch_state=batch_state,
+            lbfgsb_state=lbfgsb_state,
+        )
 
         def _print_progress_row(
             *,
@@ -1189,349 +1208,51 @@ class OptimizationRunner:
                     )
                     adaptive_rebatch_stop = adaptive_rebatch_decision.stop
 
-                active_objective_scope = (
-                    batchwise_active_optimizer
-                    and phase in _BATCHWISE_ACTIVE_OPTIMIZERS
+                loop_policy = apply_post_step_loop_policies(
+                    loop_policy_context,
+                    loop_policy_state,
+                    _LoopPolicyInputs(
+                        step=step,
+                        phase=phase,
+                        metrics=metrics,
+                        model=model,
+                        optimizer=run_state.optimizer,
+                        adagrad_restart_active_phase=adagrad_restart_active_phase,
+                        adagrad_restart_phase_step=adagrad_restart_phase_step,
+                    ),
                 )
-                solver_stage_scope = active_objective_scope or global_solver_warmup
-                if solver_stage_scope:
-                    metrics.setdefault(
-                        "optimizer/solver_stage",
-                        batch_state.solver_stage,
-                    )
-                active_family_count = (
-                    max(1, int(metrics.get("optimizer/batch_family_count", 1)))
-                    if active_objective_scope
-                    else 1
-                )
-                effective_loss_change_tol = float(config.loss_change_tol)
-                effective_loss_patience = int(config.loss_patience)
-                if phase == "lbfgsb" and lbfgsb_loss_schedule:
-                    lbfgsb_state.loss_schedule_index = min(
-                        lbfgsb_state.loss_schedule_index,
-                        len(lbfgsb_loss_schedule) - 1,
-                    )
-                    loss_phase = lbfgsb_loss_schedule[lbfgsb_state.loss_schedule_index]
-                    effective_loss_change_tol = float(loss_phase.loss_change_tol)
-                    effective_loss_patience = int(loss_phase.loss_patience)
-                    metrics["optimizer/lbfgsb_loss_schedule_index"] = float(
-                        lbfgsb_state.loss_schedule_index
-                    )
-                    metrics["optimizer/lbfgsb_loss_schedule_phases"] = float(
-                        len(lbfgsb_loss_schedule)
-                    )
-                    metrics["optimizer/lbfgsb_loss_schedule_active_tol"] = (
-                        effective_loss_change_tol
-                    )
-                    metrics["optimizer/lbfgsb_loss_schedule_active_patience"] = (
-                        float(effective_loss_patience)
-                    )
-                loss_change_tol_bits = effective_loss_change_tol * active_family_count
+                active_objective_scope = loop_policy.active_objective_scope
+                solver_stage_scope = loop_policy.solver_stage_scope
+                effective_loss_patience = loop_policy.effective_loss_patience
+                loss_change_tol_bits = loop_policy.loss_change_tol_bits
                 best_likelihood_min_delta_bits = (
-                    config.best_likelihood_min_delta * active_family_count
+                    loop_policy.best_likelihood_min_delta_bits
                 )
-                objective = float(metrics["likelihood/data_nll_bits"])
-                delta = (
-                    None
-                    if objective_state.previous_objective is None
-                    else objective_state.previous_objective - objective
+                objective = loop_policy.objective
+                delta = loop_policy.delta
+                projected_lbfgs_backoff = loop_policy.projected_lbfgs_backoff
+                projected_lbfgs_min_lr_reached = (
+                    loop_policy.projected_lbfgs_min_lr_reached
                 )
-                projected_lbfgs_backoff = False
-                projected_lbfgs_min_lr_reached = False
-                bounded_high_projected_plateau = False
-                if phase in {"projected-lbfgs", "lbfgsb"} and run_state.optimizer is not None:
-                    metric_prefix = (
-                        "projected_lbfgs" if phase == "projected-lbfgs" else "lbfgsb"
-                    )
-                    projected_inf_raw = metrics.get("grad/projected_inf")
-                    projected_inf_value = (
-                        float(projected_inf_raw)
-                        if projected_inf_raw is not None
-                        else float("inf")
-                    )
-                    accepted = bool(
-                        metrics.get(f"optimizer/{metric_prefix}_accepted", True)
-                    )
-                    plateau = delta is not None and delta <= loss_change_tol_bits
-                    high_projected_grad = projected_inf_value > config.projected_grad_tol
-                    bounded_high_projected_plateau = (
-                        config.loss_stop_projected_grad_gate
-                        and high_projected_grad
-                        and (plateau or not accepted)
-                    )
-                    if (
-                        phase == "projected-lbfgs"
-                        and high_projected_grad
-                        and (plateau or not accepted)
-                    ):
-                        group = run_state.optimizer.param_groups[0]
-                        old_lr = float(group["lr"])
-                        min_lr = float(config.projected_lbfgs_min_lr)
-                        shrink = float(group.get("shrink", 0.5))
-                        accepted_alpha = float(
-                            metrics.get("optimizer/projected_lbfgs_alpha", 0.0)
-                        )
-                        if 0.0 < accepted_alpha < old_lr:
-                            candidate_lr = accepted_alpha * shrink
-                        else:
-                            candidate_lr = old_lr * shrink
-                        new_lr = max(min_lr, candidate_lr)
-                        if new_lr < old_lr:
-                            group["lr"] = new_lr
-                            projected_lbfgs_backoff = True
-                        else:
-                            projected_lbfgs_min_lr_reached = True
-                        metrics["optimizer/projected_lbfgs_projected_grad_tol"] = (
-                            float(config.projected_grad_tol)
-                        )
-                        metrics[
-                            "optimizer/projected_lbfgs_loss_stop_projected_grad_gate"
-                        ] = bool(config.loss_stop_projected_grad_gate)
-                        metrics["optimizer/projected_lbfgs_lr_before"] = old_lr
-                        metrics["optimizer/projected_lbfgs_lr_after"] = new_lr
-                        metrics["optimizer/projected_lbfgs_lr_reduced"] = (
-                            projected_lbfgs_backoff
-                        )
-                        metrics["optimizer/projected_lbfgs_min_lr_reached"] = (
-                            projected_lbfgs_min_lr_reached
-                        )
-                        metrics["optimizer/projected_lbfgs_high_projected_grad"] = True
-                    else:
-                        metrics[f"optimizer/{metric_prefix}_projected_grad_tol"] = (
-                            float(config.projected_grad_tol)
-                        )
-                        metrics[
-                            f"optimizer/{metric_prefix}_loss_stop_projected_grad_gate"
-                        ] = bool(config.loss_stop_projected_grad_gate)
-                        if phase == "projected-lbfgs":
-                            metrics["optimizer/projected_lbfgs_lr_reduced"] = False
-                            metrics["optimizer/projected_lbfgs_min_lr_reached"] = False
-                        metrics[f"optimizer/{metric_prefix}_high_projected_grad"] = (
-                            high_projected_grad
-                        )
-                        metrics[f"optimizer/{metric_prefix}_blocked_loss_stop"] = (
-                            bounded_high_projected_plateau
-                        )
-                objective_plateau_this_row = (
-                    delta is not None
-                    and delta <= loss_change_tol_bits
-                    and not projected_lbfgs_backoff
-                    and not projected_lbfgs_min_lr_reached
+                bounded_high_projected_plateau = (
+                    loop_policy.bounded_high_projected_plateau
                 )
-                if objective_plateau_this_row and not bounded_high_projected_plateau:
-                    objective_state.stable_loss_steps += 1
-                else:
-                    objective_state.stable_loss_steps = 0
-                objective_state.previous_objective = objective
-                adagrad_restart_phase_next_index: int | None = None
-                adagrad_restart_phase_next_start_step: int | None = None
-                adagrad_restart_terminal_status: dict[str, str] | None = None
-                if (
-                    adagrad_restart_dynamic_enabled
-                    and adagrad_restart_active_phase is not None
-                    and adagrad_restart_phase_step is not None
-                ):
-                    phase_done_by_loss = (
-                        objective_state.stable_loss_steps
-                        >= int(config.adagrad_restart_phase_loss_patience)
-                    )
-                    phase_done_by_cap = (
-                        adagrad_restart_phase_step + 1
-                        >= int(adagrad_restart_active_phase.phase.steps)
-                    )
-                    phase_done_reason = None
-                    if phase_done_by_loss:
-                        phase_done_reason = "loss_change_patience"
-                    elif phase_done_by_cap:
-                        phase_done_reason = "phase_step_cap"
-                    if phase_done_reason is not None:
-                        last_adagrad_phase = (
-                            adagrad_restart_active_phase.index + 1
-                            >= len(adagrad_restart_specs)
-                        )
-                        metrics["optimizer/adagrad_restart_dynamic_phase"] = True
-                        metrics["optimizer/adagrad_restart_phase_complete"] = True
-                        metrics["optimizer/adagrad_restart_phase_complete_reason"] = (
-                            phase_done_reason
-                        )
-                        metrics["optimizer/adagrad_restart_phase_loss_patience"] = (
-                            float(config.adagrad_restart_phase_loss_patience)
-                        )
-                        if last_adagrad_phase:
-                            if _continues_after_adagrad_restart_prefix(
-                                config.optimizer
-                            ):
-                                metrics["optimizer/adagrad_restart_next_phase"] = (
-                                    "lbfgsb"
-                                )
-                                adagrad_restart_phase_next_index = (
-                                    len(adagrad_restart_specs)
-                                )
-                                adagrad_restart_phase_next_start_step = step + 1
-                            else:
-                                adagrad_restart_terminal_status = {
-                                    "status": "converged",
-                                    "reason": (
-                                        "adagrad_restart_phase_loss_patience"
-                                        if phase_done_by_loss
-                                        else "adagrad_restart_schedule_complete"
-                                    ),
-                                }
-                        else:
-                            adagrad_restart_phase_next_index = (
-                                adagrad_restart_active_phase.index + 1
-                            )
-                            adagrad_restart_phase_next_start_step = step + 1
-                            metrics["optimizer/adagrad_restart_next_phase"] = (
-                                _adagrad_restart_phase_name(
-                                    adagrad_restart_specs,
-                                    adagrad_restart_phase_next_index,
-                                )
-                            )
-                    else:
-                        metrics["optimizer/adagrad_restart_dynamic_phase"] = True
-                        metrics["optimizer/adagrad_restart_phase_complete"] = False
-
-                if active_objective_scope:
-                    (
-                        row_best_nll,
-                        row_best_step,
-                        _,
-                    ) = batch_state.update_best(
-                        objective=objective,
-                        step=step,
-                        best_likelihood_min_delta_bits=best_likelihood_min_delta_bits,
-                    )
-                    save_best_after_row = False
-                else:
-                    (
-                        row_best_nll,
-                        row_best_step,
-                        save_best_after_row,
-                    ) = objective_state.update_best(
-                        objective=objective,
-                        step=step,
-                        best_likelihood_min_delta_bits=best_likelihood_min_delta_bits,
-                    )
-
-                lbfgsb_high_kkt_status: dict[str, str] | None = None
-                high_kkt_stop_patience = 0
-                high_kkt_stop_signal = False
-                high_kkt_objective_stalled = False
-                if phase == "lbfgsb":
-                    if bool(metrics.get("optimizer/lbfgsb_fallback_used", False)):
-                        lbfgsb_state.fallback_used_count += 1
-                    high_kkt_stall_count = int(
-                        metrics.get("optimizer/lbfgsb_high_kkt_stall_count", 0)
-                    )
-                    high_kkt_stop_patience = int(
-                        config.lbfgsb_high_kkt_stop_patience
-                    )
-                    fallback_used_this_row = bool(
-                        metrics.get("optimizer/lbfgsb_fallback_used", False)
-                    )
-                    fallback_budget_exhausted_this_row = bool(
-                        metrics.get(
-                            "optimizer/lbfgsb_fallback_budget_exhausted",
-                            False,
-                        )
-                    )
-                    high_kkt_stop_signal = high_kkt_stall_count >= (
-                        2 if high_kkt_stop_patience <= 1 else high_kkt_stop_patience
-                    ) or (
-                        high_kkt_stall_count >= high_kkt_stop_patience
-                        and (
-                            fallback_used_this_row
-                            or fallback_budget_exhausted_this_row
-                        )
-                    )
-                    high_kkt_objective_stalled = objective_plateau_this_row
-                high_kkt_final_loss_phase = (
-                    not lbfgsb_loss_schedule
-                    or lbfgsb_state.loss_schedule_index >= len(lbfgsb_loss_schedule) - 1
+                row_best_nll = loop_policy.row_best_nll
+                row_best_step = loop_policy.row_best_step
+                save_best_after_row = loop_policy.save_best_after_row
+                adagrad_restart_phase_next_index = (
+                    loop_policy.adagrad_restart_phase_next_index
                 )
-                high_kkt_stop_ready = (
-                    high_kkt_stop_patience > 0
-                    and high_kkt_stop_signal
-                    and high_kkt_objective_stalled
-                    and high_kkt_final_loss_phase
-                    and lbfgsb_state.fallback_used_count
-                    >= int(config.lbfgsb_high_kkt_stop_min_fallbacks)
+                adagrad_restart_phase_next_start_step = (
+                    loop_policy.adagrad_restart_phase_next_start_step
                 )
-                metrics["optimizer/lbfgsb_fallback_used_count"] = float(
-                    lbfgsb_state.fallback_used_count
+                adagrad_restart_terminal_status = (
+                    loop_policy.adagrad_restart_terminal_status
                 )
-                metrics["optimizer/lbfgsb_high_kkt_stop_patience"] = float(
-                    high_kkt_stop_patience
+                lbfgsb_high_kkt_status = loop_policy.lbfgsb_high_kkt_status
+                lbfgsb_loss_schedule_next_index = (
+                    loop_policy.lbfgsb_loss_schedule_next_index
                 )
-                metrics["optimizer/lbfgsb_high_kkt_stop_min_fallbacks"] = float(
-                    int(config.lbfgsb_high_kkt_stop_min_fallbacks)
-                )
-                metrics["optimizer/lbfgsb_high_kkt_objective_stalled"] = (
-                    high_kkt_objective_stalled
-                )
-                metrics["optimizer/lbfgsb_high_kkt_final_loss_phase"] = (
-                    high_kkt_final_loss_phase
-                )
-                metrics["optimizer/lbfgsb_high_kkt_stop_ready"] = (
-                    high_kkt_stop_ready
-                )
-                if high_kkt_stop_ready:
-                    lbfgsb_high_kkt_status = {
-                        "status": "converged",
-                        "reason": "lbfgsb_high_kkt_tiny_progress_patience",
-                    }
-
-                lbfgsb_loss_schedule_next_index: int | None = None
-                if (
-                    phase == "lbfgsb"
-                    and lbfgsb_loss_schedule
-                    and lbfgsb_high_kkt_status is None
-                    and effective_loss_patience
-                    and objective_state.stable_loss_steps >= effective_loss_patience
-                    and lbfgsb_state.loss_schedule_index + 1
-                    < len(lbfgsb_loss_schedule)
-                ):
-                    lbfgsb_loss_schedule_next_index = (
-                        lbfgsb_state.loss_schedule_index + 1
-                    )
-                    next_loss_phase = lbfgsb_loss_schedule[
-                        lbfgsb_loss_schedule_next_index
-                    ]
-                    metrics["optimizer/lbfgsb_loss_schedule_advance"] = True
-                    metrics["optimizer/lbfgsb_loss_schedule_next_index"] = float(
-                        lbfgsb_loss_schedule_next_index
-                    )
-                    metrics["optimizer/lbfgsb_loss_schedule_next_tol"] = float(
-                        next_loss_phase.loss_change_tol
-                    )
-                    metrics["optimizer/lbfgsb_loss_schedule_next_patience"] = float(
-                        next_loss_phase.loss_patience
-                    )
-                    if (
-                        config.lbfgsb_loss_schedule_force_fallback
-                        and run_state.optimizer is not None
-                    ):
-                        opt_state = run_state.optimizer.state.get(model.theta)
-                        if isinstance(opt_state, dict):
-                            previous_stalls = int(
-                                opt_state.get("consecutive_high_kkt_stalls", 0)
-                            )
-                            opt_state["consecutive_high_kkt_stalls"] = max(
-                                previous_stalls,
-                                2,
-                            )
-                            metrics[
-                                "optimizer/lbfgsb_loss_schedule_force_fallback_next"
-                            ] = True
-                            metrics[
-                                "optimizer/lbfgsb_loss_schedule_force_fallback_previous_stalls"
-                            ] = float(previous_stalls)
-                elif phase == "lbfgsb" and lbfgsb_loss_schedule:
-                    metrics["optimizer/lbfgsb_loss_schedule_advance"] = False
-                    metrics[
-                        "optimizer/lbfgsb_loss_schedule_force_fallback_next"
-                    ] = False
 
                 artifacts = build_iteration_artifacts(
                     iteration_artifacts_context,
