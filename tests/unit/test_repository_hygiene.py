@@ -4061,10 +4061,32 @@ def test_uniform_chunked_state_container_is_internal():
     exported_names = ast.literal_eval(all_assignment.value)
 
     assert "UniformChunkedState" not in class_names
-    assert "_UniformChunkedState" in class_names
+    assert "_UniformChunkedState" not in class_names
     assert name_refs == []
     assert "UniformChunkedState" not in exported_names
     assert "_UniformChunkedState" not in exported_names
+
+
+def test_uniform_chunked_keeps_private_layout_aliases_unexported():
+    import gpurec.api._uniform_chunked_layout as layout
+    import gpurec.api.uniform_chunked as uniform_chunked
+
+    moved_private_names = (
+        "_UniformBuiltChunk",
+        "_UniformChunkSpec",
+        "_UniformChunkedState",
+        "_built_chunks_from_rust",
+        "_dtype_name_for_rust",
+        "_move_wave_layout_to_device",
+    )
+
+    assert uniform_chunked.__all__ == [
+        "UniformChunkMetadata",
+        "UniformChunkedReconModel",
+    ]
+    for name in moved_private_names:
+        assert getattr(uniform_chunked, name) is getattr(layout, name)
+        assert name not in uniform_chunked.__all__
 
 
 def test_uniform_chunked_keeps_private_evaluator_aliases_unexported():

@@ -94,6 +94,44 @@ def test_uniform_chunked_chunk_stats_row_has_public_stats_shape():
     }
 
 
+def test_uniform_chunked_built_chunks_from_rust_normalizes_payload_tensors():
+    payloads = [
+        {
+            "indices": [1, "2"],
+            "clades": "5",
+            "splits": 7,
+            "wave_layout": {
+                "float_rows": torch.tensor([1.0, 2.0], dtype=torch.float32),
+                "int_rows": [torch.tensor([3, 4], dtype=torch.int64)],
+            },
+            "waves": 3,
+            "max_wave": "4",
+            "split_rows": 11,
+            "max_wave_split_rows": "6",
+        }
+    ]
+
+    (built,) = uniform_chunked_module._built_chunks_from_rust(
+        payloads,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
+
+    assert built.spec == uniform_chunked_module._UniformChunkSpec(
+        indices=[1, 2],
+        clades=5,
+        splits=7,
+    )
+    assert built.waves == 3
+    assert built.max_wave == 4
+    assert built.split_rows == 11
+    assert built.max_wave_split_rows == 6
+    assert built.wave_layout["float_rows"].dtype is torch.float64
+    assert built.wave_layout["float_rows"].device.type == "cpu"
+    assert built.wave_layout["int_rows"][0].dtype is torch.int64
+    assert built.wave_layout["int_rows"][0].device.type == "cpu"
+
+
 def test_uniform_chunked_read_only_helper_delegates_to_result_core(monkeypatch):
     state = object()
     theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
