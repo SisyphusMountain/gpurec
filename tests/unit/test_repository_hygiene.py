@@ -3077,6 +3077,7 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
         "gpurec/workflow/__init__.py": "Public lazy export facade",
         "gpurec/workflow/config.py": "Public flat `RunConfig`",
         "gpurec/workflow/optimize.py": "Public runner implementation",
+        "gpurec/workflow/_run_state.py": "Internal optimizer run-state plumbing",
         "gpurec/workflow/sampling.py": "Public runner implementation",
         "gpurec/workflow/checkpoint.py": "Supported lower-level checkpoint tooling",
         "gpurec/workflow/_artifact_publish.py": "Internal staged-artifact publication",
@@ -3123,12 +3124,26 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
             "CUDA readiness checks",
             "Direct users should normally construct",
         ),
+        "gpurec/workflow/_run_state.py": (
+            "Internal optimizer run-state plumbing",
+            "private workflow state containers",
+            "not a public workflow API surface",
+        ),
     }
     for path, tokens in internal_docstring_tokens.items():
         module = ast.parse((root / path).read_text(encoding="utf-8"))
         docstring = " ".join((ast.get_docstring(module) or "").split())
         for token in tokens:
             assert token in docstring
+
+    for path in _tracked_files(root, "gpurec/workflow/_*.py"):
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(module):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert node.module not in {
+                    "optimize",
+                    "gpurec.workflow.optimize",
+                }, path
 
 
 def test_newick_input_subset_is_documented_on_public_surfaces():

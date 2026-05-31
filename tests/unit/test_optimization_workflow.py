@@ -538,6 +538,23 @@ def test_step_stopping_status_matches_optimizer_loop_order(
     assert status == expected
 
 
+def test_optimize_reexports_workflow_run_state_classes():
+    import importlib
+
+    from gpurec.workflow import _run_state
+
+    optimize_module = importlib.import_module("gpurec.workflow.optimize")
+
+    for name in (
+        "ObjectiveState",
+        "BatchRunState",
+        "RestartRunState",
+        "LBFGSBRunState",
+        "_OptimizationRunState",
+    ):
+        assert getattr(optimize_module, name) is getattr(_run_state, name)
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
