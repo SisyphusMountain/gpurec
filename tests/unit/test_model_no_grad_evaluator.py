@@ -6,6 +6,7 @@ import pytest
 import torch
 
 import gpurec.api.autograd as api_autograd
+import gpurec.api._streaming as api_streaming
 import gpurec.api.model as api_model
 import gpurec.api._uniform_evaluator as api_evaluator
 
@@ -310,53 +311,8 @@ def test_reconciliation_state_delegates_to_resident_export_evaluator(monkeypatch
     assert state.max_transfer is solve.max_transfer
 
 
-def test_model_evaluate_static_state_delegates_to_uniform_evaluator(monkeypatch):
-    static = object()
-    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
-    expected_loss = torch.tensor([4.0, 5.0], dtype=torch.float64)
-    expected_grad = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float64)
-    calls: list[dict[str, object]] = []
-
-    def fake_evaluate_resident_static_state(
-        static_arg,
-        theta_arg,
-        *,
-        need_grad,
-        per_family=False,
-    ):
-        calls.append(
-            {
-                "static": static_arg,
-                "theta": theta_arg,
-                "need_grad": need_grad,
-                "per_family": per_family,
-            }
-        )
-        return expected_loss, expected_grad
-
-    monkeypatch.setattr(
-        api_model,
-        "evaluate_resident_static_state",
-        fake_evaluate_resident_static_state,
-    )
-
-    loss, grad = api_model._evaluate_static_state(
-        static,
-        theta,
-        need_grad=True,
-        per_family=True,
-    )
-
-    assert loss is expected_loss
-    assert grad is expected_grad
-    assert calls == [
-        {
-            "static": static,
-            "theta": theta,
-            "need_grad": True,
-            "per_family": True,
-        }
-    ]
+def test_model_evaluate_static_state_alias_uses_uniform_evaluator():
+    assert api_model._evaluate_static_state is api_evaluator.evaluate_resident_static_state
 
 
 def test_full_genewise_nll_and_grad_rejects_bad_single_static_loss_shape(
@@ -432,9 +388,13 @@ def test_stream_full_batches_rejects_non_scalar_single_static_loss(monkeypatch):
         assert per_family is False
         return torch.ones((2,), dtype=theta_arg.dtype), None
 
-    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+    monkeypatch.setattr(
+        api_streaming,
+        "evaluate_resident_static_state",
+        fake_evaluate_static_state,
+    )
 
-    with pytest.raises(ValueError, match="full-batch NLL.*scalar"):
+    with pytest.raises(ValueError, match="full-batch NLL.*shape"):
         model._stream_full_batches(model.theta, need_grad=False)
 
 
@@ -455,7 +415,11 @@ def test_stream_full_batches_rejects_bad_single_static_gradient_shape(monkeypatc
             torch.zeros((1, theta_arg.shape[1]), dtype=theta_arg.dtype),
         )
 
-    monkeypatch.setattr(api_model, "_evaluate_static_state", fake_evaluate_static_state)
+    monkeypatch.setattr(
+        api_streaming,
+        "evaluate_resident_static_state",
+        fake_evaluate_static_state,
+    )
 
     with pytest.raises(ValueError, match="full-batch gradient.*shape"):
         model._stream_full_batches(model.theta, need_grad=True)
@@ -797,9 +761,9 @@ def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
         )
         return torch.tensor(float(len(calls)), dtype=torch.float32)
 
-    monkeypatch.setattr(api_model, "solve_resident_e", fake_solve_resident_e)
+    monkeypatch.setattr(api_streaming, "solve_resident_e", fake_solve_resident_e)
     monkeypatch.setattr(
-        api_model,
+        api_streaming,
         "evaluate_resident_no_grad_with_solved_e",
         fake_evaluate_resident_no_grad_with_solved_e,
     )
@@ -839,17 +803,17 @@ def test_shared_no_grad_full_loss_rejects_vector_batch_loss(monkeypatch):
     e_solve = SimpleNamespace(e_out={"E": torch.full((7,), -3.0)})
 
     monkeypatch.setattr(
-        api_model,
+        api_streaming,
         "solve_resident_e",
         lambda static_arg, theta_arg: e_solve,
     )
     monkeypatch.setattr(
-        api_model,
+        api_streaming,
         "evaluate_resident_no_grad_with_solved_e",
         lambda *args, **kwargs: torch.ones((1,), dtype=torch.float32),
     )
 
-    with pytest.raises(ValueError, match="full-batch NLL.*scalar"):
+    with pytest.raises(ValueError, match="full-batch NLL.*shape"):
         model._stream_full_batches(theta, need_grad=False)
 
 

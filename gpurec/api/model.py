@@ -27,12 +27,7 @@ from typing import Any, Optional, Sequence
 import torch
 
 from gpurec._validation import disabled_adaptive_neumann_terms_value
-from gpurec.core.model import (
-    GeneDataset,
-    normalize_family_selection,
-    normalize_family_tree_paths,
-    parse_alerax_family_file,
-)
+from gpurec.core.model import GeneDataset
 from gpurec.core.origination import (
     OriginationPrior,
     PreparedOriginationPrior,
@@ -55,6 +50,10 @@ from ._batch_specs import (
     _build_family_schedule_stats as _build_family_schedule_stats_impl,
 )
 from ._model_config import SolverSettings
+from ._model_builders import (
+    build_from_alerax_families_inputs,
+    build_from_trees_inputs,
+)
 from ._model_types import (
     ActiveFamilyBatch,
     BatchMetadata,
@@ -78,7 +77,6 @@ from ._tensor_validation import (
 )
 from ._theta_init import (
     _default_theta_init as _default_theta_init_impl,
-    _expand_theta_base,
     _mode_to_flags as _mode_to_flags_impl,
     _normalize_mode as _normalize_mode_impl,
     _validate_gene_dtype,
@@ -86,12 +84,10 @@ from ._theta_init import (
 from ._uniform_evaluator import (
     evaluate_resident_export_state,
     evaluate_resident_no_grad,
-    evaluate_resident_no_grad_with_solved_e,
     evaluate_resident_static_state as _evaluate_static_state_impl,
 )
 from ._warmup import (
     _finish_cuda_context_warmup as _finish_cuda_context_warmup_impl,
-    _start_cuda_context_warmup as _start_cuda_context_warmup_impl,
     _start_resident_uniform_kernel_warmup as _start_resident_uniform_kernel_warmup_impl,
 )
 from .autograd import _GeneReconFunction, ReconStaticState, _clear_pi_adjoint_runtime_cache
@@ -106,7 +102,6 @@ from ._validation import (
     positive_int,
     require_cuda_device,
     require_default_objective,
-    theta_init_base_from_rates,
     validate_theta_shape,
 )
 
@@ -136,7 +131,6 @@ _default_theta_init = _default_theta_init_impl
 # Keep canonical tensor validators and static-build helpers authoritative.
 _evaluate_static_state = _evaluate_static_state_impl
 _metadata_for_full_static = _metadata_for_full_static_impl
-
 
 
 class _GeneReconFullLossFunction(torch.autograd.Function):
@@ -527,53 +521,21 @@ class GeneReconModel(torch.nn.Module):
         preprocess_cpu_cores : int | None
             Optional worker thread count for CPU preprocessing.
         """
-        mode = _normalize_mode(mode)
-        genewise, specieswise = _mode_to_flags(mode)
-        require_default_objective("GeneReconModel")
-        dtype = _validate_gene_dtype(dtype)
-        solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
-        preprocess_cpu_cores = optional_positive_int(
-            "preprocess_cpu_cores",
-            preprocess_cpu_cores,
-        )
-        theta_base = theta_init_base_from_rates(
-            theta_init_rates,
-            dtype=dtype,
-            device=torch.device("cpu"),
-        )
-        gene_tree_paths = normalize_family_tree_paths(gene_trees)
-        device = require_cuda_device(device, owner="GeneReconModel")
-        cuda_warmup = _start_cuda_context_warmup_impl(device)
-        try:
-            ds = GeneDataset.from_retained_preprocess(
-                species_tree_path=species_tree,
-                gene_tree_paths=gene_tree_paths,
-                genewise=genewise,
-                specieswise=specieswise,
-                dtype=dtype,
-                device=device,
-                preprocess_cpu_cores=preprocess_cpu_cores,
-                compact_families=_should_use_compact_retained_preprocess(
-                    mode,
-                    solver_kwargs,
-                ),
-            )
-        finally:
-            _finish_cuda_context_warmup_impl(cuda_warmup)
-        if theta_base is not None:
-            theta_base = theta_base.to(device=device)
-        theta_init = _expand_theta_base(
-            theta_base,
+        inputs = build_from_trees_inputs(
+            species_tree=species_tree,
+            gene_trees=gene_trees,
             mode=mode,
-            species_count=int(ds.S),
-            family_count=len(gene_tree_paths),
             device=device,
+            dtype=dtype,
+            theta_init_rates=theta_init_rates,
+            preprocess_cpu_cores=preprocess_cpu_cores,
+            solver_kwargs=solver_kwargs,
         )
         return cls(
-            dataset=ds,
-            mode=mode,
-            theta_init=theta_init,
-            **solver_kwargs,
+            dataset=inputs.dataset,
+            mode=inputs.mode,
+            theta_init=inputs.theta_init,
+            **inputs.solver_kwargs,
         )
 
     @classmethod
@@ -597,60 +559,23 @@ class GeneReconModel(torch.nn.Module):
         Newick subset as :meth:`from_trees`. ``preprocess_cpu_cores``
         optionally fixes the worker thread count for CPU preprocessing.
         """
-        mode = _normalize_mode(mode)
-        genewise, specieswise = _mode_to_flags(mode)
-        require_default_objective("GeneReconModel")
-        dtype = _validate_gene_dtype(dtype)
-        start, max_families = normalize_family_selection(start, max_families)
-        solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
-        preprocess_cpu_cores = optional_positive_int(
-            "preprocess_cpu_cores",
-            preprocess_cpu_cores,
-        )
-        theta_base = theta_init_base_from_rates(
-            theta_init_rates,
-            dtype=dtype,
-            device=torch.device("cpu"),
-        )
-        device = require_cuda_device(device, owner="GeneReconModel")
-        cuda_warmup = _start_cuda_context_warmup_impl(device)
-        try:
-            family_names, tree_paths, leaf_maps = parse_alerax_family_file(
-                families_file,
-                start=start,
-                max_families=max_families,
-            )
-            ds = GeneDataset.from_retained_preprocess(
-                species_tree_path=species_tree,
-                gene_tree_paths=tree_paths,
-                genewise=genewise,
-                specieswise=specieswise,
-                dtype=dtype,
-                device=device,
-                preprocess_cpu_cores=preprocess_cpu_cores,
-                family_names=family_names,
-                leaf_species_maps=leaf_maps,
-                compact_families=_should_use_compact_retained_preprocess(
-                    mode,
-                    solver_kwargs,
-                ),
-            )
-        finally:
-            _finish_cuda_context_warmup_impl(cuda_warmup)
-        if theta_base is not None:
-            theta_base = theta_base.to(device=device)
-        theta_init = _expand_theta_base(
-            theta_base,
+        inputs = build_from_alerax_families_inputs(
+            species_tree=species_tree,
+            families_file=families_file,
             mode=mode,
-            species_count=int(ds.S),
-            family_count=len(family_names),
+            start=start,
+            max_families=max_families,
             device=device,
+            dtype=dtype,
+            theta_init_rates=theta_init_rates,
+            preprocess_cpu_cores=preprocess_cpu_cores,
+            solver_kwargs=solver_kwargs,
         )
         return cls(
-            dataset=ds,
-            mode=mode,
-            theta_init=theta_init,
-            **solver_kwargs,
+            dataset=inputs.dataset,
+            mode=inputs.mode,
+            theta_init=inputs.theta_init,
+            **inputs.solver_kwargs,
         )
 
     # ──────────────────────────────────────────────────────────────────

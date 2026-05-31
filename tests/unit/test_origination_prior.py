@@ -167,7 +167,9 @@ def test_gene_recon_model_threads_prepared_origination_prior(monkeypatch):
         device=_cpu(),
         S=3,
         families=[object(), object()],
+        unnorm_row_max=torch.zeros(3, dtype=torch.float64),
     )
+    dataset._species_helpers_for_mode = lambda *, device, dtype: ({}, None)
     static = SimpleNamespace()
     build_calls: list[PreparedOriginationPrior] = []
 
@@ -180,7 +182,11 @@ def test_gene_recon_model_threads_prepared_origination_prior(monkeypatch):
         "require_cuda_device",
         lambda device, *, owner: torch.device(device),
     )
-    monkeypatch.setattr(api_model, "_build_static_state", fake_build_static_state)
+    monkeypatch.setattr(
+        api_model,
+        "_build_static_state_impl",
+        fake_build_static_state,
+    )
     monkeypatch.setattr(
         api_model,
         "_metadata_for_full_static",

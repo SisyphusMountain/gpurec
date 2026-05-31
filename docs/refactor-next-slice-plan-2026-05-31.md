@@ -5,12 +5,14 @@ dirty `production` worktree. Source code was not edited for this pass.
 Future file paths named in this plan are optional proposed targets until a
 slice creates them.
 
-Status note: the shared bounded optimizer helper slice and the workflow
-`BatchFinalCache` extraction have since landed. The remaining workflow items in
-this plan are loop-policy consolidation and possible shared model-cache helpers.
+Status note: the shared bounded optimizer helper slice, workflow
+`BatchFinalCache`, workflow transition ops bundle, and workflow loop-policy
+extraction have since landed. The active API slice is factory-only
+`GeneReconModel` builder extraction; see
+`docs/api-model-builder-refactor-plan-2026-05-31.md`.
 
-The current uncommitted split has already reduced the two original largest
-files substantially, but the remaining large production groups are still:
+The historical split had already reduced the two original largest files
+substantially. The remaining large production groups at the time were:
 
 | Group | Current size | Current shape |
 | --- | ---: | --- |
@@ -302,6 +304,10 @@ Acceptance criteria:
 
 Start this after workflow parity is stable. The API group has more public
 surface risk than the optimizer group.
+
+Status note: the first API sub-slice is intentionally factory-only. It adds
+`gpurec/api/_model_builders.py` and leaves resident-batch runtime plus
+genewise streaming inside `model.py` until factory parity is green.
 
 ### Goal
 

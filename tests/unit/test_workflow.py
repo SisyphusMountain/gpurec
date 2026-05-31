@@ -18,6 +18,7 @@ import gpurec
 import gpurec.backtracking as backtracking
 import gpurec.core.preprocess_rust as preprocess_rust
 import gpurec.entropy as entropy
+import gpurec.api._model_builders as api_model_builders
 import gpurec.api.model as api_model
 import gpurec.api.uniform_chunked as uniform_chunked_api
 import gpurec.workflow as workflow
@@ -3505,9 +3506,9 @@ def test_gene_recon_from_trees_normalizes_mode_like_uniform_api(
         calls["theta_shape"] = None if theta_init is None else tuple(theta_init.shape)
         calls["theta_dtype"] = None if theta_init is None else theta_init.dtype
 
-    monkeypatch.setattr(api_model, "GeneDataset", FakeDataset)
+    monkeypatch.setattr(api_model_builders, "GeneDataset", FakeDataset)
     monkeypatch.setattr(
-        api_model,
+        api_model_builders,
         "require_cuda_device",
         lambda device, *, owner: torch.device("cpu"),
     )
