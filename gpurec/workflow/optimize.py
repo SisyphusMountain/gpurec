@@ -41,7 +41,7 @@ from ._finalization import (
     finalize_optimization,
 )
 from ._step_execution import (
-    _StepExecutionContext,
+    _StepExecutionContext,  # noqa: F401
     _StepExecutionState,
     execute_optimization_step,
 )
@@ -58,13 +58,14 @@ from ._run_state import (
     RestartRunState,
     _OptimizationRunState,
 )
+from ._run_contexts import _build_workflow_run_contexts
 from ._run_setup import _derive_workflow_run_setup
 from ._optimizer_factory import (
     _make_optimizer,
     _refresh_optimizer_runtime_options,
 )
 from ._step_plan import (
-    _StepPlanningContext,
+    _StepPlanningContext,  # noqa: F401
     _StepPlanningState,
     prepare_initial_optimization_plan,
     select_step_optimization_plan,
@@ -95,7 +96,7 @@ from ._result import (
 )
 from ._rows import build_iteration_artifacts
 from ._rows import (
-    _IterationArtifactsContext,
+    _IterationArtifactsContext,  # noqa: F401
 )
 from ._fd_newton import (
     _FDNewtonHessianState,
@@ -104,15 +105,15 @@ from ._fd_newton import (
 )
 from ._adaptive_rebatch import _AdaptiveRebatchState
 from ._loop_policies import (
-    _LoopPolicyContext,
+    _LoopPolicyContext,  # noqa: F401
     _LoopPolicyInputs,
     _LoopPolicyState,
     apply_post_step_loop_policies,
 )
 from ._hessian_sgd_policy import (
-    HESSIAN_SGD_LINE_SEARCH_MAX_STEPS as _HESSIAN_SGD_LINE_SEARCH_MAX_STEPS,
-    HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES as _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES,
-    HESSIAN_SGD_NO_LINE_REFRESH_STEPS as _HESSIAN_SGD_NO_LINE_REFRESH_STEPS,
+    HESSIAN_SGD_LINE_SEARCH_MAX_STEPS as _HESSIAN_SGD_LINE_SEARCH_MAX_STEPS,  # noqa: F401
+    HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES as _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES,  # noqa: F401
+    HESSIAN_SGD_NO_LINE_REFRESH_STEPS as _HESSIAN_SGD_NO_LINE_REFRESH_STEPS,  # noqa: F401
     hessian_sgd_active_clade_count,
     hessian_sgd_line_search_decision,
 )
@@ -457,46 +458,31 @@ class OptimizationRunner:
             config,
             batchwise_active_optimizer_phases=_BATCHWISE_ACTIVE_OPTIMIZERS,
         )
-        adagrad_restart_specs = run_setup.adagrad_restart_specs
         adagrad_restart_step_limit = run_setup.adagrad_restart_step_limit
         lbfgsb_loss_schedule = run_setup.lbfgsb_loss_schedule
         adagrad_restart_dynamic_enabled = run_setup.adagrad_restart_dynamic_enabled
         batchwise_active_optimizer = run_setup.batchwise_active_optimizer
-        batchwise_batched_lbfgs = run_setup.batchwise_batched_lbfgs
-        batchwise_fd_newton = run_setup.batchwise_fd_newton
         batchwise_hessian_sgd = run_setup.batchwise_hessian_sgd
         started = time.perf_counter()
-        planning_context = _StepPlanningContext(
+        run_contexts = _build_workflow_run_contexts(
+            config=config,
+            run_setup=run_setup,
             solver=self.solver_stage,
-            config=config,
-            adagrad_restart_specs=adagrad_restart_specs,
-            adagrad_restart_step_limit=adagrad_restart_step_limit,
-            adagrad_restart_dynamic_enabled=adagrad_restart_dynamic_enabled,
-            adagrad_restart_dynamic_state_loaded=False,
-            batchwise_active_optimizer=batchwise_active_optimizer,
-            batchwise_active_optimizer_phases=frozenset(_BATCHWISE_ACTIVE_OPTIMIZERS),
-            batchwise_batched_lbfgs=batchwise_batched_lbfgs,
-            batchwise_fd_newton=batchwise_fd_newton,
-            batchwise_hessian_sgd=batchwise_hessian_sgd,
-            clear_cached_solver_runtime_state=_clear_cached_solver_runtime_state,
-            make_optimizer=self._make_optimizer,
-        )
-        step_execution_context = _StepExecutionContext(
-            config=config,
             evaluation=self.evaluation,
-            solver=self.solver_stage,
-            batchwise_active_optimizer=batchwise_active_optimizer,
-            fd_adam_warmup_steps=config.fd_adam_warmup_steps,
-            hessian_sgd_no_line_refresh_min_clades=_HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES,
-            hessian_sgd_no_line_refresh_steps=_HESSIAN_SGD_NO_LINE_REFRESH_STEPS,
-            hessian_sgd_line_search_max_steps=_HESSIAN_SGD_LINE_SEARCH_MAX_STEPS,
+            batchwise_active_optimizer_phases=_BATCHWISE_ACTIVE_OPTIMIZERS,
+            make_optimizer=self._make_optimizer,
             active_fd_newton_step=self._active_fd_newton_step,
         )
+        planning_context = run_contexts.planning_context
+        step_execution_context = run_contexts.step_execution_context
+        solver_warmup_enabled = run_contexts.solver_warmup_enabled
+        global_solver_warmup = run_contexts.global_solver_warmup
+        iteration_artifacts_context = run_contexts.iteration_artifacts_context
+        loop_policy_context = run_contexts.loop_policy_context
         adaptive_rebatch_enabled = bool(
             config.adaptive_rebatch
             and batchwise_active_optimizer
         )
-        solver_warmup_enabled = self.solver_stage.uses_warmup()
         batch_state = BatchRunState(
             solver_stage=("warmup" if solver_warmup_enabled else "full"),
         )
@@ -529,7 +515,6 @@ class OptimizationRunner:
             current_phase="",
             batch_final_cache=None,
         )
-        global_solver_warmup = solver_warmup_enabled and not batchwise_active_optimizer
         adaptive_state = _AdaptiveRebatchState.create(
             enabled=adaptive_rebatch_enabled,
             model=model,
@@ -537,21 +522,6 @@ class OptimizationRunner:
         )
         best_checkpoint = config.out_dir / "checkpoints" / "best.pt"
         latest_checkpoint = config.out_dir / "checkpoints" / "latest.pt"
-        iteration_artifacts_context = _IterationArtifactsContext(
-            active_objective_scope=batchwise_active_optimizer,
-            global_solver_warmup=global_solver_warmup,
-            adagrad_restart_dynamic_enabled=adagrad_restart_dynamic_enabled,
-            lbfgsb_loss_schedule=lbfgsb_loss_schedule,
-        )
-        loop_policy_context = _LoopPolicyContext(
-            config=config,
-            batchwise_active_optimizer=batchwise_active_optimizer,
-            batchwise_active_optimizer_phases=frozenset(_BATCHWISE_ACTIVE_OPTIMIZERS),
-            global_solver_warmup=global_solver_warmup,
-            adagrad_restart_dynamic_enabled=adagrad_restart_dynamic_enabled,
-            adagrad_restart_specs=adagrad_restart_specs,
-            lbfgsb_loss_schedule=lbfgsb_loss_schedule,
-        )
         loop_policy_state = _LoopPolicyState(
             objective_state=objective_state,
             batch_state=batch_state,
