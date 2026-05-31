@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import gpurec.api._uniform_chunked_eval as uniform_chunked_eval_module
 import gpurec.api.uniform_chunked as uniform_chunked_module
 from gpurec import UniformChunkedReconModel
 from gpurec.workflow.config import RunConfig
@@ -99,7 +100,7 @@ def test_uniform_chunked_read_only_helper_delegates_to_result_core(monkeypatch):
                 "grad_enabled": torch.is_grad_enabled(),
             }
         )
-        return uniform_chunked_module._UniformChunkedEvaluation(
+        return uniform_chunked_eval_module._UniformChunkedEvaluation(
             loss=expected_loss,
             grad_theta=None,
             stats=expected_stats,
@@ -107,12 +108,12 @@ def test_uniform_chunked_read_only_helper_delegates_to_result_core(monkeypatch):
         )
 
     monkeypatch.setattr(
-        uniform_chunked_module,
+        uniform_chunked_eval_module,
         "_evaluate_chunked_uniform_result",
         fake_evaluate_chunked_uniform_result,
     )
 
-    result = uniform_chunked_module._evaluate_chunked_uniform_read_only(
+    result = uniform_chunked_eval_module._evaluate_chunked_uniform_read_only(
         state,
         theta,
         collect_per_family=True,
@@ -165,7 +166,7 @@ def test_uniform_chunked_read_only_result_allows_bf16_boundary(monkeypatch):
         raise RuntimeError("sentinel after dtype boundary")
 
     monkeypatch.setattr(
-        uniform_chunked_module,
+        uniform_chunked_eval_module,
         "_selected_chunks",
         fake_selected_chunks,
     )

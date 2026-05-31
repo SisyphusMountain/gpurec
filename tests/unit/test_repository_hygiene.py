@@ -2574,7 +2574,7 @@ def test_model_reconciliation_state_uses_export_evaluator():
 def test_uniform_chunked_uses_shared_pi_output_root_nll_helper():
     root = Path(__file__).resolve().parents[2]
     module = ast.parse(
-        (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
+        (root / "gpurec" / "api" / "_uniform_chunked_eval.py").read_text(
             encoding="utf-8"
         )
     )
@@ -3651,6 +3651,37 @@ def test_uniform_chunked_state_container_is_internal():
     assert "_UniformChunkedState" not in exported_names
 
 
+def test_uniform_chunked_keeps_private_evaluator_aliases_unexported():
+    import gpurec.api._uniform_chunked_eval as evaluator
+    import gpurec.api.uniform_chunked as uniform_chunked
+
+    moved_private_names = (
+        "_PI_BACKWARD_COUNTER_KEYS",
+        "_PI_BACKWARD_TENSOR_KEYS",
+        "_UniformChunkedEvaluation",
+        "_UniformChunkedReadOnlyEvaluation",
+        "_UniformChunkStatsRow",
+        "_chunk_stats_row",
+        "_e_adjoint_stats_fields",
+        "_evaluate_chunked_uniform",
+        "_evaluate_chunked_uniform_read_only",
+        "_evaluate_chunked_uniform_result",
+        "_new_pi_backward_accumulator",
+        "_require_chunked_gradient_dtype",
+        "_root_count_tensor",
+        "_selected_chunks",
+        "_time_cuda_ms",
+    )
+
+    assert uniform_chunked.__all__ == [
+        "UniformChunkMetadata",
+        "UniformChunkedReconModel",
+    ]
+    for name in moved_private_names:
+        assert getattr(uniform_chunked, name) is getattr(evaluator, name)
+        assert name not in uniform_chunked.__all__
+
+
 def test_second_order_docs_reference_current_public_loss_apis():
     root = Path(__file__).resolve().parents[2]
     note = (
@@ -4486,7 +4517,7 @@ def test_pi_wave_backward_signature_omits_unused_ancestors_t():
     assert "ancestors_T" not in (ast.get_docstring(function) or "")
 
     for path in (
-        root / "gpurec" / "api" / "uniform_chunked.py",
+        root / "gpurec" / "api" / "_uniform_chunked_eval.py",
         root / "gpurec" / "optimization" / "implicit_grad.py",
         root / "profiling" / "bench_uniform_forward_backward_pipeline.py",
     ):

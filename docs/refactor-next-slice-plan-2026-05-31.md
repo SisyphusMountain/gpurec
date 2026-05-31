@@ -13,6 +13,12 @@ run-state helper extraction, and workflow transition DTO extraction have since
 landed. See `docs/workflow-transition-types-refactor-plan-2026-05-31.md` for
 the latest workflow slice.
 
+Status note: the UniformChunked evaluation-bloat slice extracted the private
+chunked evaluation implementation into `gpurec/api/_uniform_chunked_eval.py`
+while keeping `UniformChunkedReconModel`, `UniformChunkMetadata`, chunk/state
+containers, and old private import aliases in `gpurec/api/uniform_chunked.py`.
+See `docs/api-uniform-chunked-eval-refactor-plan-2026-05-31.md`.
+
 The historical split had already reduced the two original largest files
 substantially. The remaining large production groups at the time were:
 

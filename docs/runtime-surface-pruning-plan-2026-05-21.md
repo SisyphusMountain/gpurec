@@ -86,6 +86,12 @@ Plan:
 evaluation, loss/gradient scaling, metadata, and dtype policy already present
 in or adjacent to `GeneReconModel`.
 
+Addressed first API cleanup slice: chunked evaluation internals now live in the
+private `gpurec/api/_uniform_chunked_eval.py` helper.  The public
+`UniformChunkedReconModel` / `UniformChunkMetadata` facade, constructor flow,
+chunk/state containers, and old private import aliases remain in
+`gpurec/api/uniform_chunked.py`.
+
 Plan:
 
 - Move chunk selection and `loss_and_grad(chunk_indices=...)` into the shared
