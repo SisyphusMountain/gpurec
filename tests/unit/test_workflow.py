@@ -9996,6 +9996,81 @@ def test_final_iteration_check_falls_back_to_smaller_clade_budget(
     assert fallback_model.closed
 
 
+def test_final_iteration_check_retries_after_cache_drop_for_memory_error(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        clade_budget=500_000,
+        final_check_iters=32,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    baseline_loss_vec, baseline_grad = model.full_genewise_nll_and_grad(
+        need_grad=True
+    )
+    assert baseline_grad is not None
+    eval_calls = 0
+    cache_clear_calls: list[int] = []
+    build_calls: list[int | None] = []
+
+    def flaky_full_genewise_nll_and_grad(*, need_grad: bool):
+        nonlocal eval_calls
+        assert need_grad is True
+        eval_calls += 1
+        if eval_calls == 1:
+            raise RuntimeError(
+                "2D self-loop fast path estimated scratch 0.00 GiB above memory budget"
+            )
+        return baseline_loss_vec.clone(), baseline_grad.clone()
+
+    def record_cache_clear(model_arg):
+        assert model_arg is model
+        cache_clear_calls.append(len(model.solver_configs))
+
+    def fail_build_alerax_workflow_model(fallback_config, *, prefetch_batches):
+        build_calls.append(fallback_config.clade_budget)
+        raise AssertionError("cache-drop retry should avoid smaller-clade fallback")
+
+    model.full_genewise_nll_and_grad = flaky_full_genewise_nll_and_grad
+    monkeypatch.setattr(
+        optimize_workflow,
+        "_clear_cuda_allocator_cache_if_needed",
+        record_cache_clear,
+    )
+    monkeypatch.setattr(
+        optimize_workflow,
+        "build_alerax_workflow_model",
+        fail_build_alerax_workflow_model,
+    )
+
+    metrics = runner._evaluate_final_iteration_check(
+        model,
+        baseline_loss=baseline_loss_vec.sum(),
+        baseline_grad=baseline_grad,
+    )
+
+    assert eval_calls == 2
+    assert cache_clear_calls == [0]
+    assert build_calls == []
+    assert model.drop_cached_static_states_calls == 1
+    assert metrics["optimizer/final_check_status"] == "ok"
+    assert metrics["optimizer/final_check_source"] == "recomputed_after_cache_drop"
+    assert "2D self-loop fast path" in metrics["optimizer/final_check_reason"]
+    assert "2D self-loop fast path" in metrics["optimizer/final_check_fallback_reason"]
+    assert "optimizer/final_check_fallback_clade_budget" not in metrics
+    assert metrics["optimizer/final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
+    assert metrics["optimizer/final_check_grad_max_abs_delta"] == pytest.approx(0.0)
+    assert model.solver_configs == [
+        {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
+    ]
+
+
 def test_hessian_sgd_advances_batch_after_best_likelihood_stall(
     tmp_path: Path,
 ):
@@ -11497,6 +11572,74 @@ def test_final_iteration_check_skipped_or_disabled_reports_reason(tmp_path: Path
         disabled_metrics["optimizer/final_check_reason"]
         == "final_check_iters_disabled"
     )
+
+
+def test_final_iteration_check_compat_import_and_runner_delegation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    finalization_module = importlib.import_module("gpurec.workflow._finalization")
+    assert (
+        finalization_module._evaluate_final_iteration_check
+        is optimize_workflow._evaluate_final_iteration_check_impl
+    )
+
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        mode="genewise",
+    )
+    runner = OptimizationRunner(config)
+    model = object()
+    baseline_loss = torch.tensor(1.0)
+    baseline_grad = torch.zeros(1)
+    calls: dict[str, object] = {}
+
+    def fake_final_iteration_check(
+        config_arg,
+        *,
+        solver,
+        evaluation,
+        model,
+        baseline_loss,
+        baseline_grad,
+        baseline_at_check_iters=False,
+    ):
+        calls.update(
+            {
+                "config": config_arg,
+                "solver": solver,
+                "evaluation": evaluation,
+                "model": model,
+                "baseline_loss": baseline_loss,
+                "baseline_grad": baseline_grad,
+                "baseline_at_check_iters": baseline_at_check_iters,
+            }
+        )
+        return {"optimizer/final_check_status": "sentinel"}
+
+    monkeypatch.setattr(
+        optimize_workflow,
+        "_evaluate_final_iteration_check_impl",
+        fake_final_iteration_check,
+    )
+
+    metrics = runner._evaluate_final_iteration_check(
+        model,
+        baseline_loss=baseline_loss,
+        baseline_grad=baseline_grad,
+        baseline_at_check_iters=True,
+    )
+
+    assert metrics == {"optimizer/final_check_status": "sentinel"}
+    assert calls["config"] is config
+    assert calls["solver"] is runner.solver_stage
+    assert calls["model"] is model
+    assert calls["baseline_loss"] is baseline_loss
+    assert calls["baseline_grad"] is baseline_grad
+    assert calls["baseline_at_check_iters"] is True
+    assert callable(calls["evaluation"].evaluate_and_backward)
+    assert callable(calls["evaluation"].evaluate_genewise_vector_and_grad)
 
 
 def test_optimization_runner_batched_lbfgs_resume_restores_state(tmp_path: Path):
