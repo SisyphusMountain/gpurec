@@ -12,6 +12,7 @@ import gpurec.api.uniform_chunked as uniform_chunked_module
 import gpurec.workflow._adaptive_rebatch as adaptive_rebatch_module
 import gpurec.workflow._stopping_policy as stopping_policy_module
 from gpurec import UniformChunkedReconModel
+from gpurec.workflow._batch_final_cache import BatchFinalCache
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow._run_state import (
     BatchRunState,
@@ -28,10 +29,13 @@ from gpurec.workflow._runtime_state import (
 from gpurec.workflow._stopping_policy import _active_batch_patience
 from gpurec.workflow._step_plan import _StepPlanningContext, _StepPlanningState
 from gpurec.workflow._transitions import (
+    IterationTransition,
     IterationTransitionContext,
     IterationTransitionInputs,
     IterationTransitionOps,
     apply_iteration_transition,
+    build_batch_transition_checkpoint_status,
+    execute_iteration_transition,
 )
 from gpurec.workflow.optimize import (
     OptimizationRunner,
@@ -725,13 +729,57 @@ def test_transitions_reexports_workflow_transition_classifier():
     )
 
 
-def _transition_test_ops(save_calls: list[dict[str, object]]) -> IterationTransitionOps:
+def test_transitions_reexports_workflow_transition_execution_helpers():
+    import importlib
+
+    transitions = importlib.import_module("gpurec.workflow._transitions")
+
+    assert transitions.build_batch_transition_checkpoint_status is (
+        build_batch_transition_checkpoint_status
+    )
+    assert transitions.execute_iteration_transition is execute_iteration_transition
+
+    status = build_batch_transition_checkpoint_status(
+        {"status": "running", "reason": "running"},
+        SimpleNamespace(active_index=2, solver_stage="warmup", local_step=3),
+        previous_objective=12.5,
+        stable_loss_steps=4,
+        best_nll_bits=9.5,
+        best_step=8,
+    )
+    assert status == {
+        "status": "running",
+        "reason": "running",
+        "active_batch_index": 2,
+        "active_solver_stage": "warmup",
+        "active_batch_local_step": 3,
+        "previous_objective": 12.5,
+        "stable_loss_steps": 4,
+        "best_nll_bits": 9.5,
+        "best_step": 8,
+    }
+
+
+def _transition_test_ops(
+    save_calls: list[dict[str, object]],
+    *,
+    progress_calls: list[dict[str, object]] | None = None,
+    clear_static_calls: list[object] | None = None,
+) -> IterationTransitionOps:
     def save_status(path, **kwargs):
         save_calls.append({"path": path, **kwargs})
 
+    def clear_cached_static_states_if_needed(model):
+        if clear_static_calls is not None:
+            clear_static_calls.append(model)
+
+    def print_progress_row(**kwargs):
+        if progress_calls is not None:
+            progress_calls.append(kwargs)
+
     return IterationTransitionOps(
         active_batch_indices=lambda model: torch.arange(1),
-        clear_cached_static_states_if_needed=lambda model: None,
+        clear_cached_static_states_if_needed=clear_cached_static_states_if_needed,
         clear_cached_solver_runtime_state=lambda model: setattr(
             model,
             "cleared_runtime",
@@ -748,7 +796,7 @@ def _transition_test_ops(save_calls: list[dict[str, object]]) -> IterationTransi
         resume_state_from_payload=lambda path, payload: SimpleNamespace(),
         save_status=save_status,
         adaptive_checkpoint_status=lambda status: {"wrapped": status},
-        print_progress_row=lambda **kwargs: None,
+        print_progress_row=print_progress_row,
         fd_adam_warmup_steps=2,
     )
 
@@ -798,6 +846,327 @@ def _transition_test_inputs(
         adagrad_restart_phase_next_start_step=None,
         lbfgsb_loss_schedule_next_index=None,
     )
+
+
+def _execute_transition_for_test(
+    tmp_path: Path,
+    *,
+    transition: IterationTransition,
+    status: dict[str, str] | None = None,
+    model: object | None = None,
+    objective_state: ObjectiveState | None = None,
+    batch_state: BatchRunState | None = None,
+    restart_state: RestartRunState | None = None,
+    lbfgsb_state: LBFGSBRunState | None = None,
+    adaptive_state: object | None = None,
+    planning_state: _StepPlanningState | None = None,
+    optimizer: object | None = None,
+    fd_newton_hessian_state: object | None = None,
+    hessian_sgd_line_search_active: bool = True,
+    hessian_sgd_low_accept_steps: int = 3,
+    resume_info: dict[str, object] | None = None,
+    checkpoint_every: int | None = 1,
+    log_every: int = 1,
+    batch_final_cache: BatchFinalCache | None = None,
+):
+    save_calls: list[dict[str, object]] = []
+    progress_calls: list[dict[str, object]] = []
+    clear_static_calls: list[object] = []
+    solver_calls: list[tuple[object, str]] = []
+
+    if model is None:
+        model = SimpleNamespace(replanned_indices=[])
+
+        def replan_resident_batches(indices):
+            model.replanned_indices.append(tuple(indices))
+
+        model.replan_resident_batches = replan_resident_batches
+    if objective_state is None:
+        objective_state = ObjectiveState(previous_objective=10.0, stable_loss_steps=4)
+    if batch_state is None:
+        batch_state = BatchRunState(
+            active_index=1,
+            local_step=5,
+            solver_stage="warmup",
+            best_nll=3.0,
+            best_step=8,
+            optimizer_batch_index=1,
+        )
+    if restart_state is None:
+        restart_state = RestartRunState(
+            dynamic_enabled=True,
+            phase_index=0,
+            phase_start_step=0,
+            active_phase_index=1,
+        )
+    if lbfgsb_state is None:
+        lbfgsb_state = LBFGSBRunState(fallback_used_count=5)
+    if adaptive_state is None:
+        adaptive_state = SimpleNamespace(
+            batch_plan_generation=2,
+            last_checked_converged_count=7,
+        )
+    if planning_state is None:
+        planning_state = _transition_test_planning_state()
+    if optimizer is None:
+        optimizer = object()
+    if fd_newton_hessian_state is None:
+        fd_newton_hessian_state = object()
+    if resume_info is None:
+        resume_info = {"resume": "kept"}
+
+    result = execute_iteration_transition(
+        transition=transition,
+        status=status or {"status": "running", "reason": "running"},
+        model=model,
+        objective_state=objective_state,
+        batch_state=batch_state,
+        restart_state=restart_state,
+        lbfgsb_state=lbfgsb_state,
+        adaptive_state=adaptive_state,
+        planning_state=planning_state,
+        optimizer=optimizer,
+        fd_newton_hessian_state=fd_newton_hessian_state,
+        hessian_sgd_line_search_active=hessian_sgd_line_search_active,
+        hessian_sgd_low_accept_steps=hessian_sgd_low_accept_steps,
+        resume_info=resume_info,
+        step=8,
+        phase="adagrad-restarts:phase0",
+        objective=1.25,
+        row_best_nll=0.75,
+        row={"delta_likelihood_bits": 0.5},
+        checkpoint_status={"status": "running", "reason": "running", "base": "kept"},
+        solver=SimpleNamespace(
+            configure_active_stage=lambda model_arg, stage: solver_calls.append(
+                (model_arg, stage)
+            )
+        ),
+        batch_final_cache=batch_final_cache,
+        latest_checkpoint=tmp_path / "latest.pt",
+        log_every=log_every,
+        checkpoint_every=checkpoint_every,
+        ops=_transition_test_ops(
+            save_calls,
+            progress_calls=progress_calls,
+            clear_static_calls=clear_static_calls,
+        ),
+    )
+
+    return SimpleNamespace(
+        result=result,
+        save_calls=save_calls,
+        progress_calls=progress_calls,
+        clear_static_calls=clear_static_calls,
+        solver_calls=solver_calls,
+        model=model,
+        objective_state=objective_state,
+        batch_state=batch_state,
+        restart_state=restart_state,
+        lbfgsb_state=lbfgsb_state,
+        adaptive_state=adaptive_state,
+        planning_state=planning_state,
+        optimizer=optimizer,
+        fd_newton_hessian_state=fd_newton_hessian_state,
+    )
+
+
+def test_execute_iteration_transition_noop_preserves_status_and_state(
+    tmp_path: Path,
+):
+    transition = IterationTransition()
+
+    case = _execute_transition_for_test(
+        tmp_path,
+        transition=transition,
+        checkpoint_every=0,
+    )
+
+    assert case.result.status == {"status": "running", "reason": "running"}
+    assert case.result.continue_loop is False
+    assert case.result.break_loop is False
+    assert case.result.optimizer is case.optimizer
+    assert case.result.fd_newton_hessian_state is case.fd_newton_hessian_state
+    assert case.result.hessian_sgd_line_search_active is True
+    assert case.result.hessian_sgd_low_accept_steps == 3
+    assert case.result.resume_info == {"resume": "kept"}
+    assert case.result.planning_state is case.planning_state
+    assert case.save_calls == []
+    assert case.progress_calls == []
+
+
+def test_execute_iteration_transition_adagrad_terminal_saves_terminal_status(
+    tmp_path: Path,
+):
+    terminal_status = {
+        "status": "converged",
+        "reason": "adagrad_restart_schedule_complete",
+    }
+    transition = IterationTransition(
+        status=terminal_status,
+        break_loop=True,
+        action="adagrad_restart_terminal",
+    )
+
+    case = _execute_transition_for_test(tmp_path, transition=transition)
+
+    assert case.result.status == terminal_status
+    assert case.result.continue_loop is False
+    assert case.result.break_loop is True
+    assert case.result.optimizer is case.optimizer
+    assert case.result.resume_info == {"resume": "kept"}
+    assert len(case.progress_calls) == 1
+    assert case.progress_calls[0]["step"] == 8
+    assert case.progress_calls[0]["phase"] == "adagrad-restarts:phase0"
+    assert case.save_calls[0]["path"] == tmp_path / "latest.pt"
+    assert case.save_calls[0]["optimizer"] is case.optimizer
+    assert case.save_calls[0]["next_step"] == 9
+    assert case.save_calls[0]["status"] == {
+        "wrapped": {
+            "status": "converged",
+            "reason": "adagrad_restart_schedule_complete",
+            "base": "kept",
+        }
+    }
+
+
+def test_execute_iteration_transition_adagrad_advance_resets_dynamic_phase(
+    tmp_path: Path,
+):
+    transition = IterationTransition(
+        continue_loop=True,
+        action="adagrad_restart_advance",
+        next_adagrad_phase=(2, 9),
+    )
+
+    case = _execute_transition_for_test(tmp_path, transition=transition)
+
+    assert case.result.status == {"status": "running", "reason": "running"}
+    assert case.result.continue_loop is True
+    assert case.result.break_loop is False
+    assert case.result.optimizer is None
+    assert case.result.resume_info == {}
+    assert case.restart_state.phase_index == 2
+    assert case.restart_state.phase_start_step == 9
+    assert case.restart_state.active_phase_index is None
+    assert case.batch_state.optimizer_batch_index is None
+    assert case.objective_state.previous_objective is None
+    assert case.objective_state.stable_loss_steps == 0
+    assert case.result.planning_state.restart_dynamic_phase_index == 2
+    assert case.result.planning_state.restart_dynamic_phase_start_step == 9
+    assert case.result.planning_state.active_adagrad_restart_phase_index is None
+    assert case.result.planning_state.active_optimizer_batch_index is None
+    assert case.result.planning_state.previous_objective is None
+    assert case.result.planning_state.stable_loss_steps == 0
+    assert case.result.planning_state.lbfgsb_fallback_used_count == 5
+    assert len(case.progress_calls) == 1
+    assert case.save_calls[0]["optimizer"] is None
+    assert case.save_calls[0]["status"] == {
+        "wrapped": {
+            "status": "running",
+            "reason": "running",
+            "base": "kept",
+        }
+    }
+
+
+def test_execute_iteration_transition_adaptive_rebatch_resets_active_state(
+    tmp_path: Path,
+):
+    cache = BatchFinalCache(
+        loss=torch.zeros(3),
+        grad=torch.zeros(3, 1),
+        ready=torch.ones(3, dtype=torch.bool),
+    )
+    transition = IterationTransition(
+        continue_loop=True,
+        action="adaptive_rebatch",
+        adaptive_rebatch_indices=[0, 2],
+    )
+
+    case = _execute_transition_for_test(
+        tmp_path,
+        transition=transition,
+        batch_final_cache=cache,
+    )
+
+    assert case.result.status == {"status": "running", "reason": "running"}
+    assert case.result.continue_loop is True
+    assert case.result.break_loop is False
+    assert case.result.optimizer is None
+    assert case.result.fd_newton_hessian_state is None
+    assert case.result.hessian_sgd_line_search_active is False
+    assert case.result.hessian_sgd_low_accept_steps == 0
+    assert case.result.resume_info == {}
+    assert case.adaptive_state.batch_plan_generation == 3
+    assert case.adaptive_state.last_checked_converged_count == 0
+    assert case.model.replanned_indices == [(0, 2)]
+    assert case.clear_static_calls == [case.model]
+    assert case.batch_state.active_index == 0
+    assert case.batch_state.local_step == 2
+    assert case.batch_state.solver_stage == "full"
+    assert case.batch_state.best_nll is None
+    assert case.batch_state.best_step is None
+    assert case.batch_state.optimizer_batch_index is None
+    assert case.objective_state.previous_objective is None
+    assert case.objective_state.stable_loss_steps == 0
+    assert cache.ready.tolist() == [False, True, False]
+    assert case.solver_calls == [(case.model, "full")]
+    assert case.result.planning_state.active_batch_index == 0
+    assert case.result.planning_state.active_optimizer_batch_index is None
+    assert case.result.planning_state.previous_objective is None
+    assert case.result.planning_state.stable_loss_steps == 0
+    assert case.result.planning_state.lbfgsb_fallback_used_count == 5
+    assert case.save_calls[0]["optimizer"] is None
+    assert case.save_calls[0]["status"] == {
+        "wrapped": {
+            "status": "running",
+            "reason": "running",
+            "base": "kept",
+            "active_batch_index": 0,
+            "active_solver_stage": "full",
+            "active_batch_local_step": 2,
+            "previous_objective": None,
+            "stable_loss_steps": 0,
+            "best_nll_bits": None,
+            "best_step": None,
+        }
+    }
+
+
+def test_execute_iteration_transition_lbfgsb_loss_schedule_updates_retry_state(
+    tmp_path: Path,
+):
+    objective_state = ObjectiveState(previous_objective=11.0, stable_loss_steps=6)
+    lbfgsb_state = LBFGSBRunState(fallback_used_count=8, loss_schedule_index=0)
+    transition = IterationTransition(
+        continue_loop=True,
+        action="lbfgsb_loss_schedule",
+        lbfgsb_loss_schedule_next_index=1,
+    )
+
+    case = _execute_transition_for_test(
+        tmp_path,
+        transition=transition,
+        objective_state=objective_state,
+        lbfgsb_state=lbfgsb_state,
+        checkpoint_every=0,
+    )
+
+    assert case.result.status == {"status": "running", "reason": "running"}
+    assert case.result.continue_loop is True
+    assert case.result.break_loop is False
+    assert case.result.optimizer is case.optimizer
+    assert case.result.fd_newton_hessian_state is case.fd_newton_hessian_state
+    assert case.result.hessian_sgd_line_search_active is True
+    assert case.result.hessian_sgd_low_accept_steps == 3
+    assert case.result.resume_info == {}
+    assert lbfgsb_state.loss_schedule_index == 1
+    assert objective_state.previous_objective == 11.0
+    assert objective_state.stable_loss_steps == 0
+    assert case.result.planning_state.previous_objective == 11.0
+    assert case.result.planning_state.stable_loss_steps == 0
+    assert case.result.planning_state.lbfgsb_fallback_used_count == 8
+    assert case.save_calls == []
 
 
 @pytest.mark.parametrize(
