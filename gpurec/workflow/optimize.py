@@ -10,6 +10,8 @@ import torch
 from gpurec.api.model import GeneReconModel
 
 from . import _artifacts as _artifact_module
+from . import _evaluation as _evaluation_module
+from . import _finalization as _finalization_module
 from ._cleanup import close_model_after_error
 from ._metadata import (
     checkpoint_status_dict,
@@ -37,6 +39,7 @@ from ._evaluation import (
 )
 from ._finalization import (
     _FinalizationInputs,
+    _evaluate_final_iteration_check as _evaluate_final_iteration_check_impl,
     finalize_optimization,
 )
 from ._step_execution import (
@@ -136,6 +139,11 @@ _POST_STEP_OPTIMIZERS = frozenset(
 def _sync_artifact_hooks() -> None:
     _artifact_module._write_rate_table = _write_rate_table
     _artifact_module._write_per_family_likelihoods = _write_per_family_likelihoods
+    _evaluation_module.build_alerax_workflow_model = build_alerax_workflow_model
+    _finalization_module.build_alerax_workflow_model = build_alerax_workflow_model
+    _finalization_module._clear_cuda_allocator_cache_if_needed = (
+        _clear_cuda_allocator_cache_if_needed
+    )
 
 
 def _step_stopping_status(
@@ -573,8 +581,32 @@ class OptimizationRunner:
     ) -> torch.optim.Optimizer:
         return _make_optimizer(self.config, model, phase)
 
+    def _final_iteration_check_iters(self) -> int:
+        return self.solver_stage.final_iteration_check_iters()
+
+    def _evaluate_and_backward(
+        self,
+        model: GeneReconModel,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        return self.evaluation.evaluate_and_backward(model)
+
     def _evaluate_loss_only_probe(self, model: GeneReconModel) -> torch.Tensor:
         return self.evaluation.evaluate_loss_only_probe(model)
+
+    def _evaluate_genewise_vector_and_grad(
+        self,
+        model: GeneReconModel,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        return self.evaluation.evaluate_genewise_vector_and_grad(model)
+
+    def _evaluate_genewise_vector_and_grad_with_memory_fallback(
+        self,
+        model: GeneReconModel,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        _sync_artifact_hooks()
+        return self.evaluation.evaluate_genewise_vector_and_grad_with_memory_fallback(
+            model,
+        )
 
     def _evaluate_genewise_loss_vector_probe(
         self,
@@ -607,6 +639,69 @@ class OptimizationRunner:
         return self.evaluation.evaluate_active_genewise_vector_grad_at_current_theta(
             model,
             solver_stage=solver_stage,
+        )
+
+    def _active_batch_metrics(
+        self,
+        model: GeneReconModel,
+        *,
+        loss_vec: torch.Tensor,
+        solver_stage: str,
+    ) -> dict[str, Any]:
+        return self.evaluation.active_batch_metrics(
+            model,
+            loss_vec=loss_vec,
+            solver_stage=solver_stage,
+        )
+
+    def _projected_grad_inf(
+        self,
+        model: GeneReconModel,
+        *,
+        lower_bound: float,
+        upper_bound: float,
+    ) -> tuple[torch.Tensor, float]:
+        return self.evaluation.projected_grad_inf(
+            model,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+        )
+
+    def _evaluate_final_iteration_check(
+        self,
+        model: GeneReconModel,
+        *,
+        baseline_loss: torch.Tensor,
+        baseline_grad: torch.Tensor,
+        baseline_at_check_iters: bool = False,
+    ) -> dict[str, Any]:
+        _sync_artifact_hooks()
+        runner = self
+
+        class _EvaluationFacade:
+            def evaluate_and_backward(
+                self,
+                model_arg: GeneReconModel,
+            ) -> tuple[torch.Tensor, dict[str, Any]]:
+                return runner._evaluate_and_backward(model_arg)
+
+            def evaluate_genewise_vector_and_grad(
+                self,
+                model_arg: GeneReconModel,
+            ) -> tuple[torch.Tensor, dict[str, Any]]:
+                return runner._evaluate_genewise_vector_and_grad(model_arg)
+
+            def _final_eval_fallback_clade_budgets(self) -> list[int]:
+                return runner.evaluation._final_eval_fallback_clade_budgets()
+
+        return _evaluate_final_iteration_check_impl(
+            self.config,
+            solver=self.solver_stage,
+            evaluation=_EvaluationFacade(),
+            model=model,
+            baseline_loss=baseline_loss,
+            baseline_grad=baseline_grad,
+            baseline_at_check_iters=baseline_at_check_iters,
         )
 
     def _active_fd_newton_step(
@@ -811,6 +906,7 @@ class OptimizationRunner:
             hessian_sgd_no_line_refresh_min_clades=_HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES,
             hessian_sgd_no_line_refresh_steps=_HESSIAN_SGD_NO_LINE_REFRESH_STEPS,
             hessian_sgd_line_search_max_steps=_HESSIAN_SGD_LINE_SEARCH_MAX_STEPS,
+            active_fd_newton_step=self._active_fd_newton_step,
         )
         adaptive_rebatch_enabled = bool(
             config.adaptive_rebatch

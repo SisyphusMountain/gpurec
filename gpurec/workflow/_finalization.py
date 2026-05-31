@@ -138,6 +138,8 @@ def finalize_optimization(
     if final_eval_failed:
         final_eval_s = time.perf_counter() - final_eval_started
         final_improved = False
+        status["status"] = "failed"
+        status["reason"] = "nonfinite_objective_or_gradient"
         final_nll_bits = (
             math.nan if inputs.previous_objective is None else float(inputs.previous_objective)
         )
@@ -468,6 +470,7 @@ def _evaluate_final_iteration_check(
         }
 
     try:
+        _clear_cuda_allocator_cache_if_needed(model)
         _clear_cached_solver_runtime_state(model)
         configure_solver(
             fixed_iters_E=check_iters_E,

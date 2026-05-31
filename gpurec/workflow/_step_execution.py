@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
 from gpurec.api.model import GeneReconModel
 from gpurec.api.autograd import _clear_pi_adjoint_runtime_cache
 
-from ._fd_newton import (
-    _FDNewtonHessianState,
-    _FDNewtonRuntime,
-    active_fd_newton_step as _active_fd_newton_step_impl,
-)
+from ._fd_newton import _FDNewtonHessianState
 from ._runtime_helpers import (
     _commit_pi_adjoint_pending_caches,
     _discard_pi_adjoint_pending_caches,
@@ -88,44 +84,6 @@ def _active_adam_step(
     return loss_vec, metrics, 2
 
 
-def _active_fd_newton_step(
-    model: GeneReconModel,
-    *,
-    evaluation: EvaluationOps,
-    config: Any,
-    solver_stage: str,
-    hessian_state: _FDNewtonHessianState | None = None,
-    update_hessian_with_bfgs: bool = True,
-    step_scale: float = 1.0,
-    use_line_search: bool = True,
-    reject_loss_increases_after_step: bool = False,
-    hessian_refresh_steps: int | None = None,
-    line_search_max_steps: int | None = None,
-) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
-    runtime = _FDNewtonRuntime(
-        config=config,
-        active_batch_indices=evaluation._active_batch_indices,
-        set_model_theta=_set_model_theta,
-        evaluate_active_genewise_vector_grad_at_current_theta=(
-            evaluation.evaluate_active_genewise_vector_grad_at_current_theta
-        ),
-        evaluate_genewise_loss_vector_probe=evaluation.evaluate_genewise_loss_vector_probe,
-        projected_grad_inf=evaluation.projected_grad_inf,
-    )
-    return _active_fd_newton_step_impl(
-        runtime,
-        model,
-        solver_stage=solver_stage,
-        hessian_state=hessian_state,
-        update_hessian_with_bfgs=update_hessian_with_bfgs,
-        step_scale=step_scale,
-        use_line_search=use_line_search,
-        reject_loss_increases_after_step=reject_loss_increases_after_step,
-        hessian_refresh_steps=hessian_refresh_steps,
-        line_search_max_steps=line_search_max_steps,
-    )
-
-
 def _clear_solver_runtime_state_preserving_pi_cache(model: GeneReconModel) -> None:
     statics = getattr(model, "cached_static_states", None)
     if statics is None:
@@ -163,6 +121,10 @@ class _StepExecutionContext:
     hessian_sgd_no_line_refresh_min_clades: int
     hessian_sgd_no_line_refresh_steps: int
     hessian_sgd_line_search_max_steps: int
+    active_fd_newton_step: Callable[
+        ...,
+        tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState],
+    ]
 
 
 @dataclass
@@ -619,10 +581,9 @@ def execute_optimization_step(
                     hessian_refresh_steps,
                     hessian_sgd_no_line_refresh_steps,
                 )
-                loss_vec_current, metrics, closure_evals, next_fd_state = _active_fd_newton_step(
+            loss_vec_current, metrics, closure_evals, next_fd_state = (
+                context.active_fd_newton_step(
                     model,
-                    evaluation=evaluation,
-                    config=config,
                     solver_stage=active_solver_stage,
                     hessian_state=(
                         None
@@ -646,6 +607,7 @@ def execute_optimization_step(
                         else None
                     ),
                 )
+            )
             next_fd_newton_hessian_state = next_fd_state
             if hessian_sgd_validation_step:
                 metrics["optimizer/fd_newton_subphase"] = "hessian_sgd_validation"

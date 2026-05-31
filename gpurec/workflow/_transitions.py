@@ -193,14 +193,23 @@ def _classify_iteration_transition(
             save_best=False,
         )
 
-    if step_status is not None and active_objective_scope and active_batch_count > 1:
+    if step_status is not None and active_objective_scope:
+        if batch_state_active_index + 1 < active_batch_count:
+            return IterationTransition(
+                continue_loop=True,
+                reset_optimizer=True,
+                save_latest=False,
+                save_best=False,
+                action="next_batch",
+                next_batch_active_index=batch_state_active_index + 1,
+            )
         return IterationTransition(
-            continue_loop=True,
-            reset_optimizer=True,
+            status=step_status,
+            break_loop=True,
+            action="step_stopping",
+            reset_optimizer=False,
             save_latest=False,
             save_best=False,
-            action="next_batch",
-            next_batch_active_index=min(batch_state_active_index + 1, active_batch_count - 1),
         )
 
     if step_status is not None and not active_objective_scope:
@@ -1040,10 +1049,10 @@ def execute_iteration_post_step_transition(
                     )
                 cache_active_batch_final_result(
                     model,
-                    loss_vec_current,
-                    batch_final_loss_cache,
-                    batch_final_grad_cache,
-                    batch_final_cache_ready,
+                    loss_vec=loss_vec_current,
+                    batch_final_loss_cache=batch_final_loss_cache,
+                    batch_final_grad_cache=batch_final_grad_cache,
+                    batch_final_cache_ready=batch_final_cache_ready,
                 )
                 model.clear()
             warmup_switch = False
@@ -1310,7 +1319,7 @@ def _execute_iteration_full_transition(
         lbfgsb_loss_schedule_next_index=lbfgsb_loss_schedule_next_index,
         lbfgsb_high_kkt_status=None,
         projected_lbfgs_min_lr_reached=projected_lbfgs_min_lr_reached,
-        hessian_sgd_activate_line_search=hessian_sgd_activate_line_search,
+        hessian_sgd_activate_line_search=False,
         step_status=None,
         active_objective_scope=active_objective_scope,
         active_batch_count=active_batch_count,

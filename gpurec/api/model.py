@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -62,7 +64,7 @@ from ._model_types import (
     _ResidentBatchSpec,
     _public_family_value,
 )
-from ._resident_cache import ResidentBatchCache
+from ._resident_cache import ResidentBatchCache, _RESIDENT_PREFETCH_WORKERS
 from ._static_builder import (
     ResidentCommonState,
     _build_batch_static_state as _build_batch_static_state_impl,
@@ -109,7 +111,6 @@ from ._validation import (
 )
 
 _UNSET = object()
-
 
 
 # Canonical helper implementation aliases from the split modules.
@@ -753,6 +754,9 @@ class GeneReconModel(torch.nn.Module):
         if cache is not None:
             cache.submit_prefetch(batch_idx)
             return
+        if hasattr(self, "_batch_statics") or getattr(self, "_prefetch_closed", False):
+            self._submit_legacy_prefetch(batch_idx)
+            return
         raise RuntimeError("resident cache is not initialized")
 
     def _schedule_prefetch(self) -> None:
@@ -762,7 +766,52 @@ class GeneReconModel(torch.nn.Module):
         if cache is not None:
             cache.schedule_prefetch()
             return
+        if hasattr(self, "_batch_statics") or getattr(self, "_prefetch_closed", False):
+            self._schedule_legacy_prefetch()
+            return
         raise RuntimeError("resident cache is not initialized")
+
+    def _legacy_prefetch_guard(self):
+        lock = getattr(self, "_batch_lock", None)
+        return lock if lock is not None else nullcontext()
+
+    def _submit_legacy_prefetch(self, batch_idx: int) -> None:
+        if getattr(self, "_prefetch_closed", False):
+            return
+        statics = getattr(self, "_batch_statics", None)
+        futures = getattr(self, "_batch_futures", None)
+        if statics is None:
+            raise RuntimeError("resident cache is not initialized")
+        if futures is None:
+            futures = {}
+            self._batch_futures = futures
+        if batch_idx < 0 or batch_idx >= len(statics):
+            return
+        with self._legacy_prefetch_guard():
+            if statics[batch_idx] is not None or batch_idx in futures:
+                return
+            executor = getattr(self, "_prefetch_executor", None)
+            if executor is None:
+                executor = ThreadPoolExecutor(
+                    max_workers=_RESIDENT_PREFETCH_WORKERS,
+                    thread_name_prefix="gpurec-preprocess",
+                )
+                self._prefetch_executor = executor
+            futures[batch_idx] = executor.submit(self._build_batch_static, batch_idx)
+
+    def _schedule_legacy_prefetch(self) -> None:
+        if getattr(self, "_prefetch_closed", False):
+            return
+        statics = getattr(self, "_batch_statics", None)
+        if statics is None:
+            raise RuntimeError("resident cache is not initialized")
+        start = self._current_batch_index + 1
+        if self.prefetch_batches == "all":
+            stop = len(statics)
+        else:
+            stop = min(len(statics), start + int(self.prefetch_batches))
+        for batch_idx in range(start, stop):
+            self._submit_legacy_prefetch(batch_idx)
 
     def _active_static(self) -> ReconStaticState:
         if self._batched_resident:
@@ -1082,6 +1131,15 @@ class GeneReconModel(torch.nn.Module):
                 if static is not None:
                     _clear_pi_adjoint_runtime_cache(static)
                 return
+            statics = getattr(self, "_batch_statics", None)
+            if statics is not None:
+                batch_idx = getattr(self, "_current_batch_index", 0)
+                if 0 <= batch_idx < len(statics):
+                    static = statics[batch_idx]
+                    if static is not None:
+                        static.warm_E = None
+                        _clear_pi_adjoint_runtime_cache(static)
+                return
             raise RuntimeError("resident cache is not initialized")
             return
         static = self._active_static()
@@ -1090,10 +1148,29 @@ class GeneReconModel(torch.nn.Module):
 
     def close(self) -> None:
         """Stop background batch preprocessing and drop pending futures."""
+        self._prefetch_closed = True
         cache = getattr(self, "_resident_cache", None)
         if cache is not None:
             cache.close()
             self._resident_cache = None
+        self._close_legacy_prefetch_executor()
+
+    def _close_legacy_prefetch_executor(self) -> None:
+        executor = getattr(self, "_prefetch_executor", None)
+        lock = getattr(self, "_batch_lock", None)
+        if lock is None:
+            self._prefetch_executor = None
+            futures = getattr(self, "_batch_futures", None)
+            if futures is not None:
+                futures.clear()
+        else:
+            with lock:
+                self._prefetch_executor = None
+                futures = getattr(self, "_batch_futures", None)
+                if futures is not None:
+                    futures.clear()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def __del__(self):
         try:
