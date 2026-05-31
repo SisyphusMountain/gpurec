@@ -9,6 +9,7 @@ import torch
 
 import gpurec.api._uniform_chunked_eval as uniform_chunked_eval_module
 import gpurec.api.uniform_chunked as uniform_chunked_module
+import gpurec.workflow._adaptive_rebatch as adaptive_rebatch_module
 import gpurec.workflow._stopping_policy as stopping_policy_module
 from gpurec import UniformChunkedReconModel
 from gpurec.workflow.config import RunConfig
@@ -607,6 +608,12 @@ def test_optimize_reexports_stopping_policy_helpers():
         stopping_policy_module._step_stopping_status
     )
     assert optimize_module._active_batch_patience is (
+        stopping_policy_module._active_batch_patience
+    )
+
+
+def test_adaptive_rebatch_uses_shared_active_batch_patience():
+    assert adaptive_rebatch_module._active_batch_patience is (
         stopping_policy_module._active_batch_patience
     )
 

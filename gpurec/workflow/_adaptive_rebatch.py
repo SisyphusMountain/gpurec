@@ -9,15 +9,9 @@ import torch
 from gpurec.api.model import GeneReconModel
 
 from ._runtime_state import _ResumeState
+from ._stopping_policy import _active_batch_patience
 
-_ACTIVE_BATCH_REBATCH_PATIENCE = 3
 _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
-
-
-def _active_batch_patience(configured_patience: int) -> int:
-    if configured_patience <= 0:
-        return configured_patience
-    return min(configured_patience, _ACTIVE_BATCH_REBATCH_PATIENCE)
 
 
 @dataclass

@@ -3365,7 +3365,7 @@ def test_runtime_surface_plan_documents_workflow_submodule_ownership():
             "Internal pure Hessian-SGD workflow threshold policy"
         ),
         "gpurec/workflow/_stopping_policy.py": (
-            "Internal pure optimizer stopping and patience policy"
+            "Internal pure optimizer stopping and active-batch patience policy"
         ),
         "gpurec/workflow/_route_defaults.py": (
             "Internal production route/default policy helper"
