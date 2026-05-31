@@ -30,6 +30,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_log2_utils.py \
   tests/unit/test_model_no_grad_evaluator.py \
   tests/unit/test_origination_probs.py \
+  tests/unit/test_optimization_helpers.py \
   tests/unit/test_optimization_workflow.py \
   tests/unit/test_alerax_family_input.py \
   tests/unit/test_artifacts_validator.py \
@@ -59,7 +60,8 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_validation.py \
   tests/unit/test_wave_backward_wrappers.py \
   tests/unit/test_workflow.py \
-  tests/unit/test_workflow_artifacts.py
+  tests/unit/test_workflow_artifacts.py \
+  tests/unit/test_workflow_batch_final_cache.py
 ```
 
 Small CUDA smoke, when GPU memory allows:

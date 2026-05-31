@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import re
-import sys
 from typing import Any
 
 
@@ -35,8 +34,8 @@ REQUIRED_RELEASE_ARTIFACTS = (
     "docs/input-preparation.md",
     "docs/known-limitations.md",
     "docs/lean-fast-path.md",
-    "docs/long-validation-workflow.md",
     "docs/lean-performance-path-regression.md",
+    "docs/long-validation-workflow.md",
     "docs/optimization-workflow-call-graph.md",
     "docs/output-artifacts.md",
     "docs/platform-matrix.md",
