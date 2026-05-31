@@ -16,6 +16,7 @@ from ._artifacts import (
     _final_solver_summary_metrics,
     _write_final_artifacts,
 )
+from ._batch_final_cache import BatchFinalCache
 from ._result import OptimizationResult, optimization_result_from_summary
 from .config import LossStopPhase, RunConfig, effective_route_metadata
 from ._evaluation import (
@@ -56,9 +57,7 @@ class _FinalizationInputs:
     lbfgsb_loss_schedule: tuple[LossStopPhase, ...]
     lbfgsb_loss_schedule_index: int
     batchwise_active_optimizer: bool
-    batch_final_loss_cache: torch.Tensor | None
-    batch_final_grad_cache: torch.Tensor | None
-    batch_final_cache_ready: torch.Tensor | None
+    batch_final_cache: BatchFinalCache | None
     runtime_seed_context: dict[str, Any]
     started: float
     current_phase: str
@@ -91,16 +90,14 @@ def finalize_optimization(
     model.theta.grad = None
     final_per_family_nll: torch.Tensor | None = None
     final_closure_evals = 1
+    cached_batch_final_result = (
+        inputs.batch_final_cache.cached_final_result()
+        if inputs.batchwise_active_optimizer and inputs.batch_final_cache is not None
+        else None
+    )
 
-    if (
-        inputs.batchwise_active_optimizer
-        and inputs.batch_final_loss_cache is not None
-        and inputs.batch_final_grad_cache is not None
-        and inputs.batch_final_cache_ready is not None
-        and bool(inputs.batch_final_cache_ready.all().item())
-    ):
-        final_per_family_nll = inputs.batch_final_loss_cache.detach().clone()
-        model.theta.grad = inputs.batch_final_grad_cache.detach().clone()
+    if cached_batch_final_result is not None:
+        final_per_family_nll, model.theta.grad = cached_batch_final_result
         final_loss = final_per_family_nll.sum()
         final_metrics = {
             "likelihood/data_nll_bits": float(final_loss.detach().cpu()),

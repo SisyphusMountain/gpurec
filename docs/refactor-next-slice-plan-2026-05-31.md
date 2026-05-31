@@ -5,6 +5,10 @@ dirty `production` worktree. Source code was not edited for this pass.
 Future file paths named in this plan are optional proposed targets until a
 slice creates them.
 
+Status note: the shared bounded optimizer helper slice and the workflow
+`BatchFinalCache` extraction have since landed. The remaining workflow items in
+this plan are loop-policy consolidation and possible shared model-cache helpers.
+
 The current uncommitted split has already reduced the two original largest
 files substantially, but the remaining large production groups are still:
 
@@ -216,11 +220,13 @@ hierarchy. Inputs should be plain context dataclasses already owned by
 - terminal status, if any;
 - whether the loop should block normal loss-stop handling.
 
-Add `gpurec/workflow/_batch_final_cache.py`:
+Completed in the batch-final-cache slice:
 
-- `BatchFinalCache`
-- `create_batch_final_cache(model)`
-- `cache_active_batch_final_result(model, loss_vec, cache, active_batch_indices)`
+- `gpurec/workflow/_batch_final_cache.py`
+- `BatchFinalCache.create(model)`
+- `BatchFinalCache.cache(model=..., loss_vec=..., active_indices=...)`
+- `BatchFinalCache.invalidate(...)`
+- `BatchFinalCache.cached_final_result()`
 
 This removes three parallel tensors and repeated `is not None` guards from
 `OptimizationRunner.run()`, while preserving checkpoint payload fields.

@@ -23,19 +23,20 @@ from .checkpoint import (
     validate_checkpoint_model_compatibility,
 )
 from ._artifacts import (
-    _FINAL_ARTIFACT_FILES,
+    _FINAL_ARTIFACT_FILES,  # noqa: F401
     _RUN_CONFIG_ARTIFACT_FILE,
-    _RUN_MANIFEST_ARTIFACT_FILE,
-    _final_check_summary_metrics,
-    _run_manifest_hash,
+    _RUN_MANIFEST_ARTIFACT_FILE,  # noqa: F401
+    _final_check_summary_metrics,  # noqa: F401
+    _run_manifest_hash,  # noqa: F401
     _runtime_seed_context_from_environment,
     _write_per_family_likelihoods,
     _write_rate_table,
 )
+from ._batch_final_cache import BatchFinalCache
 from ._evaluation import (
     EvaluationOps,
-    _clear_solver_runtime_state_preserving_pi_cache,
-    _is_memory_retryable_runtime_error,
+    _clear_solver_runtime_state_preserving_pi_cache,  # noqa: F401
+    _is_memory_retryable_runtime_error,  # noqa: F401
 )
 from ._finalization import (
     _FinalizationInputs,
@@ -89,7 +90,7 @@ from .diagnostics import (
 from .model_factory import build_alerax_workflow_model
 from ._result import (
     OptimizationResult,
-    optimization_result_from_summary as _optimization_result_from_summary,
+    optimization_result_from_summary as _optimization_result_from_summary,  # noqa: F401
 )
 from ._rows import build_iteration_artifacts
 from ._rows import (
@@ -106,8 +107,8 @@ from ._adaptive_rebatch import _AdaptiveRebatchState
 from ._runtime_helpers import (
     _clear_cached_solver_runtime_state,
     _clear_cuda_allocator_cache_if_needed,
-    _commit_pi_adjoint_pending_caches,
-    _discard_pi_adjoint_pending_caches,
+    _commit_pi_adjoint_pending_caches,  # noqa: F401
+    _discard_pi_adjoint_pending_caches,  # noqa: F401
     _drop_cached_static_states_if_needed,
 )
 
@@ -275,9 +276,7 @@ class _OptimizationRunState:
     fd_newton_hessian_state: _FDNewtonHessianState | None = None
     hessian_sgd_line_search_active: bool = False
     hessian_sgd_low_accept_steps: int = 0
-    batch_final_loss_cache: torch.Tensor | None = None
-    batch_final_grad_cache: torch.Tensor | None = None
-    batch_final_cache_ready: torch.Tensor | None = None
+    batch_final_cache: BatchFinalCache | None = None
     status: dict[str, str] = field(
         default_factory=lambda: {"status": "running", "reason": "running"}
     )
@@ -374,10 +373,6 @@ class _OptimizationRunState:
         latest_checkpoint: Path,
         checkpoint_every: int | None,
         log_every: int,
-        cache_active_batch_final_result: Callable[
-            [GeneReconModel, torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None],
-            None,
-        ],
         active_batch_indices: Callable[[GeneReconModel], torch.Tensor],
         clear_cached_static_states_if_needed: Callable[[GeneReconModel], None],
         clear_cached_solver_runtime_state: Callable[[GeneReconModel], None],
@@ -415,9 +410,7 @@ class _OptimizationRunState:
             hessian_sgd_line_search_active=self.hessian_sgd_line_search_active,
             hessian_sgd_low_accept_steps=self.hessian_sgd_low_accept_steps,
             resume_info=self.resume_info,
-            batch_final_loss_cache=self.batch_final_loss_cache,
-            batch_final_grad_cache=self.batch_final_grad_cache,
-            batch_final_cache_ready=self.batch_final_cache_ready,
+            batch_final_cache=self.batch_final_cache,
             solver_stage_scope=solver_stage_scope,
             batchwise_hessian_sgd=batchwise_hessian_sgd,
             global_solver_warmup=global_solver_warmup,
@@ -427,7 +420,6 @@ class _OptimizationRunState:
             latest_checkpoint=latest_checkpoint,
             checkpoint_every=checkpoint_every,
             log_every=log_every,
-            cache_active_batch_final_result=cache_active_batch_final_result,
             active_batch_indices=active_batch_indices,
             clear_cached_static_states_if_needed=clear_cached_static_states_if_needed,
             clear_cached_solver_runtime_state=clear_cached_solver_runtime_state,
@@ -459,9 +451,7 @@ class _OptimizationRunState:
         )
         context.hessian_sgd_low_accept_steps = self.hessian_sgd_low_accept_steps
         context.resume_info = self.resume_info
-        context.batch_final_loss_cache = self.batch_final_loss_cache
-        context.batch_final_grad_cache = self.batch_final_grad_cache
-        context.batch_final_cache_ready = self.batch_final_cache_ready
+        context.batch_final_cache = self.batch_final_cache
         context.solver_stage_scope = solver_stage_scope
         context.current_phase = current_phase
         return context
@@ -749,33 +739,6 @@ class OptimizationRunner:
             line_search_max_steps=line_search_max_steps,
         )
 
-    def _cache_active_batch_final_result(
-        self,
-        model: GeneReconModel,
-        *,
-        loss_vec: torch.Tensor,
-        batch_final_loss_cache: torch.Tensor | None,
-        batch_final_grad_cache: torch.Tensor | None,
-        batch_final_cache_ready: torch.Tensor | None,
-    ) -> None:
-        if (
-            batch_final_loss_cache is None
-            or batch_final_grad_cache is None
-            or batch_final_cache_ready is None
-        ):
-            return
-        idx = self.evaluation._active_batch_indices(model)
-        if idx.numel() == 0:
-            return
-        batch_final_loss_cache.index_copy_(0, idx, loss_vec.detach().index_select(0, idx))
-        if model.theta.grad is not None:
-            batch_final_grad_cache.index_copy_(
-                0,
-                idx,
-                model.theta.grad.detach().index_select(0, idx),
-            )
-        batch_final_cache_ready.index_fill_(0, idx, True)
-
     def _record(self, row: dict[str, Any]) -> None:
         self.history.append(row)
         append_jsonl(self.history_jsonl, row)
@@ -943,9 +906,7 @@ class OptimizationRunner:
             lbfgsb_state=lbfgsb_state,
             planning_state=planning_state,
             current_phase="",
-            batch_final_loss_cache=None,
-            batch_final_grad_cache=None,
-            batch_final_cache_ready=None,
+            batch_final_cache=None,
         )
         global_solver_warmup = solver_warmup_enabled and not batchwise_active_optimizer
         adaptive_state = _AdaptiveRebatchState.create(
@@ -1083,20 +1044,7 @@ class OptimizationRunner:
                         f"checkpoint active batch {batch_state.active_index} exceeds "
                         f"{len(model.batch_metadata)} model batches"
                     )
-                batch_final_loss_cache = torch.empty(
-                    (int(model.n_families),),
-                    device=model.theta.device,
-                    dtype=model.theta.dtype,
-                )
-                run_state.batch_final_loss_cache = batch_final_loss_cache
-                batch_final_grad_cache = torch.empty_like(model.theta)
-                run_state.batch_final_grad_cache = batch_final_grad_cache
-                batch_final_cache_ready = torch.zeros(
-                    (int(model.n_families),),
-                    device=model.theta.device,
-                    dtype=torch.bool,
-                )
-                run_state.batch_final_cache_ready = batch_final_cache_ready
+                run_state.batch_final_cache = BatchFinalCache.create(model)
                 if model.current_batch_index != batch_state.active_index:
                     _clear_cached_solver_runtime_state(model)
                 model.select_batch(batch_state.active_index)
@@ -1145,7 +1093,6 @@ class OptimizationRunner:
                 latest_checkpoint=latest_checkpoint,
                 checkpoint_every=config.checkpoint_every,
                 log_every=config.log_every,
-                cache_active_batch_final_result=self._cache_active_batch_final_result,
                 active_batch_indices=self.evaluation._active_batch_indices,
                 clear_cached_static_states_if_needed=_drop_cached_static_states_if_needed,
                 clear_cached_solver_runtime_state=_clear_cached_solver_runtime_state,
@@ -1233,30 +1180,22 @@ class OptimizationRunner:
                 if (
                     phase == "batched-lbfgs"
                     and batch_state.solver_stage == "full"
-                    and run_state.batch_final_loss_cache is not None
-                    and run_state.batch_final_grad_cache is not None
-                    and run_state.batch_final_cache_ready is not None
+                    and run_state.batch_final_cache is not None
                 ):
-                    self._cache_active_batch_final_result(
-                        model,
+                    run_state.batch_final_cache.cache(
+                        model=model,
                         loss_vec=loss_vec_current,
-                        batch_final_loss_cache=run_state.batch_final_loss_cache,
-                        batch_final_grad_cache=run_state.batch_final_grad_cache,
-                        batch_final_cache_ready=run_state.batch_final_cache_ready,
+                        active_indices=self.evaluation._active_batch_indices(model),
                     )
                 elif (
                     phase in {"adam-fd-newton", "hessian-sgd"}
                     and step_result.cacheable_active_batch_final_result
-                    and run_state.batch_final_loss_cache is not None
-                    and run_state.batch_final_grad_cache is not None
-                    and run_state.batch_final_cache_ready is not None
+                    and run_state.batch_final_cache is not None
                 ):
-                    self._cache_active_batch_final_result(
-                        model,
+                    run_state.batch_final_cache.cache(
+                        model=model,
                         loss_vec=loss_vec_current,
-                        batch_final_loss_cache=run_state.batch_final_loss_cache,
-                        batch_final_grad_cache=run_state.batch_final_grad_cache,
-                        batch_final_cache_ready=run_state.batch_final_cache_ready,
+                        active_indices=self.evaluation._active_batch_indices(model),
                     )
                 if phase.startswith("adagrad-restarts:") and adagrad_restart_active_phase is not None:
                     adagrad_restart_phase_step = (
@@ -1900,9 +1839,7 @@ class OptimizationRunner:
                     lbfgsb_loss_schedule=lbfgsb_loss_schedule,
                     lbfgsb_loss_schedule_index=lbfgsb_state.loss_schedule_index,
                     batchwise_active_optimizer=batchwise_active_optimizer,
-                    batch_final_loss_cache=run_state.batch_final_loss_cache,
-                    batch_final_grad_cache=run_state.batch_final_grad_cache,
-                    batch_final_cache_ready=run_state.batch_final_cache_ready,
+                    batch_final_cache=run_state.batch_final_cache,
                     runtime_seed_context=runtime_seed_context,
                     started=started,
                     current_phase=current_phase,

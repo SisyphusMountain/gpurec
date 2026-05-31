@@ -9,6 +9,7 @@ import torch
 from gpurec.api.model import GeneReconModel
 
 from ._adaptive_rebatch import _AdaptiveRebatchState
+from ._batch_final_cache import BatchFinalCache
 from ._fd_newton import _FDNewtonHessianState
 from ._runtime_helpers import _is_finite_tensor
 from ._solver_stage import SolverStageController
@@ -265,7 +266,7 @@ def execute_iteration_transition(
     row: dict[str, Any],
     checkpoint_status: dict[str, Any],
     solver: SolverStageController,
-    batch_final_cache_ready: torch.Tensor | None,
+    batch_final_cache: BatchFinalCache | None,
     batchwise_hessian_sgd: bool,
     best_checkpoint: Path,
     latest_checkpoint: Path,
@@ -371,18 +372,10 @@ def execute_iteration_transition(
         objective_state.reset_tracking()
         optimizer_out = None
         adaptive_state.last_checked_converged_count = 0
-        if batch_final_cache_ready is not None and (
+        if batch_final_cache is not None and (
             transition.adaptive_rebatch_indices is not None
         ):
-            batch_final_cache_ready.index_fill_(
-                0,
-                torch.as_tensor(
-                    transition.adaptive_rebatch_indices,
-                    dtype=torch.long,
-                    device=batch_final_cache_ready.device,
-                ),
-                False,
-            )
+            batch_final_cache.invalidate(transition.adaptive_rebatch_indices)
         solver.configure_active_stage(
             model,
             batch_state.solver_stage,
@@ -489,9 +482,7 @@ class IterationTransitionContext:
     hessian_sgd_line_search_active: bool
     hessian_sgd_low_accept_steps: int
     resume_info: dict[str, Any]
-    batch_final_loss_cache: torch.Tensor | None
-    batch_final_grad_cache: torch.Tensor | None
-    batch_final_cache_ready: torch.Tensor | None
+    batch_final_cache: BatchFinalCache | None
     solver_stage_scope: bool
     batchwise_hessian_sgd: bool
     global_solver_warmup: bool
@@ -501,10 +492,6 @@ class IterationTransitionContext:
     latest_checkpoint: Path
     checkpoint_every: int | None
     log_every: int
-    cache_active_batch_final_result: Callable[
-        [GeneReconModel, torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None],
-        None,
-    ]
     active_batch_indices: Callable[[GeneReconModel], torch.Tensor]
     clear_cached_static_states_if_needed: Callable[[GeneReconModel], None]
     clear_cached_solver_runtime_state: Callable[[GeneReconModel], None]
@@ -570,9 +557,7 @@ def execute_iteration_full_transition(
         hessian_sgd_line_search_active=context.hessian_sgd_line_search_active,
         hessian_sgd_low_accept_steps=context.hessian_sgd_low_accept_steps,
         resume_info=context.resume_info,
-        batch_final_loss_cache=context.batch_final_loss_cache,
-        batch_final_grad_cache=context.batch_final_grad_cache,
-        batch_final_cache_ready=context.batch_final_cache_ready,
+        batch_final_cache=context.batch_final_cache,
         step=inputs.step,
         phase=inputs.phase,
         row=inputs.row,
@@ -595,7 +580,6 @@ def execute_iteration_full_transition(
         row_best_nll=inputs.row_best_nll,
         row_best_step=inputs.row_best_step,
         lbfgsb_high_kkt_status=inputs.lbfgsb_high_kkt_status,
-        cache_active_batch_final_result=context.cache_active_batch_final_result,
         active_batch_indices=context.active_batch_indices,
         clear_cached_static_states_if_needed=context.clear_cached_static_states_if_needed,
         clear_cached_solver_runtime_state=context.clear_cached_solver_runtime_state,
@@ -907,9 +891,7 @@ def execute_iteration_post_step_transition(
     hessian_sgd_line_search_active: bool,
     hessian_sgd_low_accept_steps: int,
     resume_info: dict[str, Any],
-    batch_final_loss_cache: torch.Tensor | None,
-    batch_final_grad_cache: torch.Tensor | None,
-    batch_final_cache_ready: torch.Tensor | None,
+    batch_final_cache: BatchFinalCache | None,
     step: int,
     phase: str,
     row: dict[str, Any],
@@ -928,10 +910,6 @@ def execute_iteration_post_step_transition(
     active_objective_scope: bool,
     active_batch_count: int,
     lbfgsb_high_kkt_status: dict[str, str] | None,
-    cache_active_batch_final_result: Callable[
-        [GeneReconModel, torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None],
-        None,
-    ],
     active_batch_indices: Callable[[GeneReconModel], torch.Tensor],
     clear_cached_solver_runtime_state: Callable[[GeneReconModel], None],
     load_checkpoint_fn: Callable[[Path], dict[str, Any]],
@@ -1047,13 +1025,12 @@ def execute_iteration_post_step_transition(
                         ),
                         current_phase=current_phase,
                     )
-                cache_active_batch_final_result(
-                    model,
-                    loss_vec=loss_vec_current,
-                    batch_final_loss_cache=batch_final_loss_cache,
-                    batch_final_grad_cache=batch_final_grad_cache,
-                    batch_final_cache_ready=batch_final_cache_ready,
-                )
+                if batch_final_cache is not None:
+                    batch_final_cache.cache(
+                        model=model,
+                        loss_vec=loss_vec_current,
+                        active_indices=active_batch_indices(model),
+                    )
                 model.clear()
             warmup_switch = False
         else:
@@ -1254,9 +1231,7 @@ def _execute_iteration_full_transition(
     hessian_sgd_line_search_active: bool,
     hessian_sgd_low_accept_steps: int,
     resume_info: dict[str, Any],
-    batch_final_loss_cache: torch.Tensor | None,
-    batch_final_grad_cache: torch.Tensor | None,
-    batch_final_cache_ready: torch.Tensor | None,
+    batch_final_cache: BatchFinalCache | None,
     step: int,
     phase: str,
     row: dict[str, Any],
@@ -1279,10 +1254,6 @@ def _execute_iteration_full_transition(
     row_best_nll: float | None,
     row_best_step: int | None,
     lbfgsb_high_kkt_status: dict[str, str] | None,
-    cache_active_batch_final_result: Callable[
-        [GeneReconModel, torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None],
-        None,
-    ],
     active_batch_indices: Callable[[GeneReconModel], torch.Tensor],
     clear_cached_static_states_if_needed: Callable[[GeneReconModel], None],
     clear_cached_solver_runtime_state: Callable[[GeneReconModel], None],
@@ -1351,7 +1322,7 @@ def _execute_iteration_full_transition(
         row=row,
         checkpoint_status=checkpoint_status,
         solver=solver,
-        batch_final_cache_ready=batch_final_cache_ready,
+        batch_final_cache=batch_final_cache,
         batchwise_hessian_sgd=batchwise_hessian_sgd,
         best_checkpoint=best_checkpoint,
         latest_checkpoint=latest_checkpoint,
@@ -1397,9 +1368,7 @@ def _execute_iteration_full_transition(
         hessian_sgd_line_search_active=transition_result.hessian_sgd_line_search_active,
         hessian_sgd_low_accept_steps=transition_result.hessian_sgd_low_accept_steps,
         resume_info=transition_result.resume_info,
-        batch_final_loss_cache=batch_final_loss_cache,
-        batch_final_grad_cache=batch_final_grad_cache,
-        batch_final_cache_ready=batch_final_cache_ready,
+        batch_final_cache=batch_final_cache,
         step=step,
         phase=phase,
         row=row,
@@ -1418,7 +1387,6 @@ def _execute_iteration_full_transition(
         active_objective_scope=active_objective_scope,
         active_batch_count=active_batch_count,
         lbfgsb_high_kkt_status=lbfgsb_high_kkt_status,
-        cache_active_batch_final_result=cache_active_batch_final_result,
         active_batch_indices=active_batch_indices,
         clear_cached_solver_runtime_state=clear_cached_solver_runtime_state,
         load_checkpoint_fn=load_checkpoint_fn,

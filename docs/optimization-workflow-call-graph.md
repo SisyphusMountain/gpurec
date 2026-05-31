@@ -179,10 +179,10 @@ Default route: `mode=genewise`, `optimizer=hessian-sgd`.
    difference Newton runtime (`gpurec/workflow/_step_execution.py:622`).
 5. The active-batch evaluator calls `model.nll_per_family()` and zeros inactive
    rows (`gpurec/workflow/_evaluation.py:293`).
-6. Finalization prefers cached active-batch final loss/gradient when every
-   family row is ready, otherwise it recomputes with
+6. `BatchFinalCache` owns cached active-batch final loss/gradient readiness.
+   Finalization uses it when every family row is ready, otherwise it recomputes with
    `evaluate_genewise_vector_and_grad_with_memory_fallback()`
-   (`gpurec/workflow/_finalization.py:95` and
+   (`gpurec/workflow/_batch_final_cache.py` and
    `gpurec/workflow/_finalization.py:114`).
 
 Other genewise optimizers (`batched-lbfgs`, `adam-fd-newton`) reuse the same
