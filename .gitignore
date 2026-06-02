@@ -1,87 +1,35 @@
-# Build artifacts
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.so
-*.o
-a.out
 *.egg-info/
-dist/
 build/
+dist/
+.venv/
 
-# Profiling & temporary
-prof_logs/
-nsys_reports/
+.mypy_cache/
 .pytest_cache/
-.tmp/
+.ruff_cache/
 .preprocess_cache/
-latest_run.txt
-test_script.py
-*.log
 
-# Data & output
-extra/
-scenarios/
-output_test/
+output/
 output_*/
-examples/output/
-tests/data/**/output/
+tmp_*/
 wandb/
+*.log
+uv.lock
 
-# Notebooks (large, tracked separately)
-*.ipynb
-!notebooks/optimize_hogenom_ccp_adam_oscillation.ipynb
-!notebooks/reconcile_hogenom_ccp_gpurec.ipynb
-
-# IDE
-.vscode/
-.idea/
-
-# Thesis (separate repo)
-These/
-
-# Rust build artifacts
-rustree/target/
 crates/*/target/
 
-# Test benchmark outputs
-tests/integration/*.csv
-tests/profiling/*.png
-tests/profiling/*.json
-profiling/*/artifacts/
-profiling/ancestor_batching/
-profiling/bf16_backward_nsys/
-profiling/bf16_handoff_prod/
-profiling/hogenom_ccp/
-profiling/specieswise_worker3/
+*.ipynb
+!notebooks/lean_basic_workflow.ipynb
 
-# Test data (generated, too large for git)
-tests/data/test_trees_20/
-tests/data/test_trees_100/
-tests/data/test_trees_1000/
-tests/data/test_trees_10000/
-tests/data/test_trees_dtl01/
-tests/data/HOGENOM/
-tests/data/davin/
-tests/data/hogenom_bench/
-tests/data.tar.gz
-
-# Vendored library (separate repo)
-logmatmul/
-rustree/
 AleRax.zip
 AleRax_fixed/
 AleRax_oliver/
 Alerax_new_oliver/
 DTLsim/
+extra/
+logmatmul/
 oliver_code/
+rustree/
 rustree.broken-*/
-
-# Generated graphs / session artifacts
-callgraph*
-*.session.txt
-2026-*.txt
-
-# Other
-torch/
-uv.lock

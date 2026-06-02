@@ -1,270 +1,99 @@
-"""Fused Triton kernels for wave-step computation."""
-
-from dataclasses import dataclass
-
-import torch
 import triton
 import triton.language as tl
 
 
-LEAF_LOGP_BY_SPECIES = 0
-LEAF_LOGP_BY_FAMILY = 1
-LEAF_LOGP_BY_FAMILY_SPECIES = 2
-
-CONST_SHARED_SPECIES = 0
-CONST_FAMILY_SPECIES = 2
-
-_TL_LEAF_LOGP_BY_FAMILY = tl.constexpr(LEAF_LOGP_BY_FAMILY)
-_TL_LEAF_LOGP_BY_FAMILY_SPECIES = tl.constexpr(LEAF_LOGP_BY_FAMILY_SPECIES)
-_TL_CONST_FAMILY_SPECIES = tl.constexpr(CONST_FAMILY_SPECIES)
+def _prepare_wave_launch(S: int, const_tensor) -> tuple[int, int]:
+    const_row_stride = 0 if int(const_tensor.shape[0]) == 1 else int(const_tensor.stride(0))
+    return int(min(256, triton.next_power_of_2(S))), const_row_stride
 
 
-@dataclass(frozen=True)
-class _WaveLaunchConfig:
-    block_s: int
-    num_warps: int
-    const_layout: int
-    const_row_stride: int
-    const_species_stride: int
+@triton.jit
+def _row_logsumexp(Pi_ptr, base, S: tl.constexpr, BLOCK_S: tl.constexpr):
+    row_max = tl.full([1], value=-1e30, dtype=tl.float32)
+    row_sum = tl.full([1], value=0.0, dtype=tl.float32)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_ptr + base + s_offs, mask=mask, other=-1e30)
+        new_max = tl.maximum(row_max, tl.max(pi_val, axis=0))
+        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+        row_max = new_max
+    return row_max, row_sum
 
 
-def _species_block_size(S: int, *, default_cap: int = 256) -> int:
-    """Return the species tile width for wave-step kernels."""
-    return int(min(triton.next_power_of_2(default_cap), triton.next_power_of_2(S)))
+@triton.jit
+def _pibar_tile(
+    Pi_ptr,
+    base,
+    s_offs,
+    mask,
+    row_max,
+    row_sum,
+    max_transfer,
+    sp_parent_ptr,
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+):
+    ancestor_sum = tl.zeros([BLOCK_S], dtype=tl.float32)
+    cur = s_offs.to(tl.int64)
+    for _ in range(0, MAX_ANCESTOR_DEPTH):
+        cur_valid = mask & (cur >= 0) & (cur < S)
+        pi_anc = tl.load(Pi_ptr + base + cur, mask=cur_valid, other=-1e30)
+        ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=tl.float32))
+        cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int64)
+    denom = row_sum - ancestor_sum
+    return tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer, -1e30)
 
-
-def _wave_num_warps() -> int:
-    return 8
-
-
-def _leaf_logp_addressing_mode(use_leaf_index: bool, leaf_logp, family_idx, S: int) -> int:
-    """Return the Triton leaf-logp addressing mode for leaf-index hits."""
-    if not use_leaf_index or family_idx is None:
-        return LEAF_LOGP_BY_SPECIES
-    if leaf_logp.ndim == 1:
-        if int(leaf_logp.numel()) == int(S):
-            return LEAF_LOGP_BY_SPECIES
-        return LEAF_LOGP_BY_FAMILY
-    if leaf_logp.ndim == 2:
-        return LEAF_LOGP_BY_FAMILY_SPECIES
-    raise ValueError("batched leaf_logp must have shape [G] or [G, S]")
-
-
-def _const_addressing_mode(const_tensor, family_idx, family_indexed: bool) -> int:
-    """Return addressing mode for per-species constants.
-
-    Modes:
-      CONST_SHARED_SPECIES: shared [S]
-      CONST_FAMILY_SPECIES: family-indexed [G, S] addressed through family_idx[C]
-    """
-    if family_indexed:
-        if family_idx is None:
-            raise ValueError("family-indexed constants require family_idx")
-        if const_tensor.ndim != 2:
-            raise ValueError("family-indexed constants require [G, S] tensors")
-        return CONST_FAMILY_SPECIES
-    if const_tensor.ndim == 2:
-        raise ValueError("row-expanded forward constants are not part of the lean path")
-    return CONST_SHARED_SPECIES
-
-
-def _const_addressing_strides(const_tensor, const_layout: int) -> tuple[int, int]:
-    """Return row/species strides matching the selected const layout."""
-    if const_layout != CONST_FAMILY_SPECIES:
-        return 0, 1
-    row_stride = 0 if int(const_tensor.shape[0]) == 1 else int(const_tensor.stride(0))
-    species_stride = int(const_tensor.stride(1)) if const_tensor.ndim == 2 else 1
-    return row_stride, species_stride
-
-
-def _prepare_wave_launch(
-    S: int,
-    const_tensor,
-    family_idx,
-    family_indexed_consts: bool,
-) -> _WaveLaunchConfig:
-    """Normalize launch-time constants shared by wave-step kernels."""
-    const_layout = _const_addressing_mode(
-        const_tensor,
-        family_idx,
-        family_indexed_consts,
-    )
-    const_row_stride, const_species_stride = _const_addressing_strides(
-        const_tensor,
-        const_layout,
-    )
-    return _WaveLaunchConfig(
-        block_s=_species_block_size(S),
-        num_warps=_wave_num_warps(),
-        const_layout=const_layout,
-        const_row_stride=const_row_stride,
-        const_species_stride=const_species_stride,
-    )
-
-
-# --- Wave-step kernel ---
-# One program per clade row. Two passes:
-#   Pass 1: online max+sum over Pi row (for Pibar stats)
-#   Pass 2: compute Pibar inline, DTS_L terms, logsumexp, convergence diff
 
 @triton.jit
 def _wave_step_kernel(
-    # Global Pi tensor [C, S] — read from rows [ws : ws+W]
     Pi_ptr,
-    ws,                  # wave start (clade offset)
-    pi_ws,               # input wave start; may be zero for local [W, S] input
-    # Constants: [S] each
+    ws,
+    pi_ws,
     max_transfer_ptr,
     DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
-    # Species child indices: [S] long each
     sp_child1_ptr, sp_child2_ptr,
-    # Species parent index: [S] long, -1 for root
     sp_parent_ptr,
-    # Per-wave arrays: [W, S]
-    leaf_term_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
     family_idx_ptr,
     DTS_reduced_ptr,
     has_splits: tl.constexpr,
-    # Outputs
-    Pi_new_ptr,          # [W, S]
-    Pibar_out_ptr,       # [C, S] — write Pibar to rows [ws : ws+W]
-    max_diff_ptr,        # [W] — per-row max |Pi_new - Pi_old| for convergence
-    pibar_row_max_ptr,   # optional [C] — final row max for backward Pibar VJP
-    # Dimensions
+    Pi_new_ptr,
+    Pibar_out_ptr,
+    pibar_row_max_ptr,
     S: tl.constexpr,
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
-    CONST_SPECIES_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
-    COMPUTE_DIFF: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
-    HAS_LEAF_TERM: tl.constexpr,
-    LEAF_LOGP_MODE: tl.constexpr,
-    STORE_PIBAR: tl.constexpr,
-    STORE_PIBAR_ROW_MAX: tl.constexpr,
     STORE_FINAL_PIBAR: tl.constexpr,
-    STORE_FINAL_PIBAR_ROW_MAX: tl.constexpr,
-    OUTPUT_GLOBAL: tl.constexpr,
-    INITIAL_STATE: tl.constexpr,
-    FP64: tl.constexpr,
-    TOPOLOGY_INT32: tl.constexpr,
-    CONST_LAYOUT: tl.constexpr = 0,
 ):
-    """Fused kernel: Pibar + DTS_L + logsumexp + convergence diff.
-
-    Each program handles one full clade row, processing S elements in tiles.
-    Pass 1 uses the online max+sum trick (single scan) for row statistics.
-    Pass 2 computes Pibar inline and all DTS_L terms in one scan.
-
-    CONST_LAYOUT:
-      CONST_SHARED_SPECIES = shared [S] constants
-      CONST_FAMILY_SPECIES = per-family [G, S] constants addressed by family_idx[ws + w]
-    """
-    DTYPE = tl.float64 if FP64 else tl.float32
-    NEG_LARGE = -1e300 if FP64 else -1e30
+    NEG_LARGE = -1e30
 
     w = tl.program_id(0)
-    pi_base = (pi_ws + w) * stride   # offset into Pi input
-    global_base = (ws + w) * stride  # offset into global Pi/Pibar outputs
-    if OUTPUT_GLOBAL:
-        out_base = global_base        # offset into global output rows
-    else:
-        out_base = w * stride         # offset into [W, S] outputs
-    const_base = 0
-    if CONST_LAYOUT == _TL_CONST_FAMILY_SPECIES:
-        family_const = tl.load(family_idx_ptr + ws + w)
-        const_base = family_const * CONST_ROW_STRIDE
+    pi_base = (pi_ws + w) * stride
+    global_base = (ws + w) * stride
+    out_base = w * stride
+    family_const = tl.load(family_idx_ptr + ws + w)
+    const_base = family_const * CONST_ROW_STRIDE
 
-    # === Pass 1: Online max + sum over the Pi row ===
-    row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
-    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
-
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        if INITIAL_STATE:
-            if USE_LEAF_INDEX:
-                leaf_species = tl.load(leaf_species_ptr + ws + w)
-                pi_val = tl.where(
-                    mask & (leaf_species == s_offs),
-                    tl.zeros([BLOCK_S], dtype=DTYPE),
-                    tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
-                )
-            else:
-                pi_val = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
-        else:
-            pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        tile_max = tl.max(pi_val, axis=0)
-        new_max = tl.maximum(row_max, tile_max)
-        # Rescale running sum to new max, add this tile's contribution
-        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
-        row_max = new_max
-
-    if STORE_PIBAR_ROW_MAX:
-        tl.store(pibar_row_max_ptr + ws + w, tl.max(row_max, axis=0))
-
-    # === Pass 2: Pibar + DTS_L terms + logsumexp ===
-    if COMPUTE_DIFF:
-        local_max_diff = tl.full([1], value=0.0, dtype=DTYPE)
-    M_SAFE_THRESH = -1e299 if FP64 else -1e29
+    row_max, row_sum = _row_logsumexp(Pi_ptr, pi_base, S, BLOCK_S)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
 
-        # Load Pi[w, s]
-        if INITIAL_STATE:
-            if USE_LEAF_INDEX:
-                leaf_species = tl.load(leaf_species_ptr + ws + w)
-                leaf_hit_initial = mask & (leaf_species == s_offs)
-                pi_w = tl.where(
-                    leaf_hit_initial,
-                    tl.zeros([BLOCK_S], dtype=DTYPE),
-                    tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
-                )
-            else:
-                leaf_species = tl.full((), -1, dtype=tl.int64)
-                pi_w = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
-        else:
-            leaf_species = tl.full((), -1, dtype=tl.int64)
-            pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
 
-        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
-        # Pibar: log2(row_sum - ancestor_sum) + max + max_transfer. Walk the
-        # species parent chain starting at s and sum exp2(Pi[ancestor] - max).
-        if TOPOLOGY_INT32:
-            cur = s_offs
-        else:
-            cur = s_offs.to(tl.int64)
-        for _ in range(0, MAX_ANCESTOR_DEPTH):
-            cur_valid = mask & (cur >= 0) & (cur < S)
-            if INITIAL_STATE:
-                if USE_LEAF_INDEX:
-                    pi_anc = tl.where(
-                        cur_valid & (cur == leaf_species),
-                        tl.zeros([BLOCK_S], dtype=DTYPE),
-                        tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
-                    )
-                else:
-                    pi_anc = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
-            else:
-                pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cur_valid, other=NEG_LARGE)
-            ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
-            cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
-
-        const_offsets = const_base + s_offs * CONST_SPECIES_STRIDE
+        const_offsets = const_base + s_offs
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-        denom = row_sum - ancestor_sum
-        pibar_w = tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer, NEG_LARGE)
-
-        # Store Pibar to global tensor when this invocation is producing the
-        # final Pibar rows. Fixed-iteration ping-pong uses Pibar as Pi scratch
-        # and recomputes/stores final Pibar after the last iteration.
-        if STORE_PIBAR:
-            tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
+        pibar_w = _pibar_tile(
+            Pi_ptr, pi_base, s_offs, mask, row_max, row_sum,
+            max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH,
+        )
 
         dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
         ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
@@ -272,31 +101,13 @@ def _wave_step_kernel(
         sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
         sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
-        # Gather species children
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
         c1_valid = c1 < S
         c2_valid = c2 < S
-        if INITIAL_STATE:
-            if USE_LEAF_INDEX:
-                pi_s1 = tl.where(
-                    mask & c1_valid & (c1 == leaf_species),
-                    tl.zeros([BLOCK_S], dtype=DTYPE),
-                    tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
-                )
-                pi_s2 = tl.where(
-                    mask & c2_valid & (c2 == leaf_species),
-                    tl.zeros([BLOCK_S], dtype=DTYPE),
-                    tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
-                )
-            else:
-                pi_s1 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
-                pi_s2 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
-        else:
-            pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
-            pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
+        pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
+        pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
 
-        # 6 DTS_L terms
         t0 = dl_const + pi_w
         t1 = pi_w + ebar
         t2 = pibar_w + e_val
@@ -305,33 +116,21 @@ def _wave_step_kernel(
         if USE_LEAF_INDEX:
             leaf_species = tl.load(leaf_species_ptr + ws + w)
             leaf_hit = mask & (leaf_species == s_offs)
-            if LEAF_LOGP_MODE == _TL_LEAF_LOGP_BY_FAMILY_SPECIES:
-                family = tl.load(family_idx_ptr + ws + w)
-                leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG_LARGE)
-                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-            elif LEAF_LOGP_MODE == _TL_LEAF_LOGP_BY_FAMILY:
-                family = tl.load(family_idx_ptr + ws + w)
-                leaf_logp = tl.load(leaf_logp_ptr + family)
-                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-            else:
-                leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=NEG_LARGE)
-                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-        elif HAS_LEAF_TERM:
-            t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
+            leaf_logp = tl.load(leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE)
+            t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
-            t5 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
+            t5 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=tl.float32)
 
         m = tl.maximum(t0, t1)
         m = tl.maximum(m, t2)
         m = tl.maximum(m, t3)
         m = tl.maximum(m, t4)
         m = tl.maximum(m, t5)
-
         if has_splits:
             dts_r = tl.load(DTS_reduced_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
             m = tl.maximum(m, dts_r)
 
-        m_safe = tl.where(m > M_SAFE_THRESH, m, tl.zeros_like(m))
+        m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
         s = tl.exp2(t0 - m_safe) + tl.exp2(t1 - m_safe) + tl.exp2(t2 - m_safe)
         s += tl.exp2(t3 - m_safe) + tl.exp2(t4 - m_safe) + tl.exp2(t5 - m_safe)
         if has_splits:
@@ -340,47 +139,19 @@ def _wave_step_kernel(
         result = tl.log2(s) + m
         tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
 
-        if COMPUTE_DIFF:
-            significant = result > -100.0
-            diff = tl.where(significant & mask, tl.abs(result - pi_w), tl.zeros_like(result))
-            local_max_diff = tl.maximum(local_max_diff, tl.max(diff, axis=0))
-
-    if COMPUTE_DIFF:
-        tl.store(max_diff_ptr + w, tl.max(local_max_diff, axis=0))
-
     if STORE_FINAL_PIBAR:
-        final_row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
-        final_row_sum = tl.full([1], value=0.0, dtype=DTYPE)
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            mask = s_offs < S
-            pi_val = tl.load(Pi_new_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
-            tile_max = tl.max(pi_val, axis=0)
-            new_max = tl.maximum(final_row_max, tile_max)
-            final_row_sum = final_row_sum * tl.exp2(final_row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
-            final_row_max = new_max
-
-        if STORE_FINAL_PIBAR_ROW_MAX:
-            tl.store(pibar_row_max_ptr + ws + w, tl.max(final_row_max, axis=0))
+        final_row_max, final_row_sum = _row_logsumexp(Pi_new_ptr, out_base, S, BLOCK_S)
+        tl.store(pibar_row_max_ptr + ws + w, tl.max(final_row_max, axis=0))
 
         for s_start in range(0, S, BLOCK_S):
             s_offs = s_start + tl.arange(0, BLOCK_S)
             mask = s_offs < S
-            if TOPOLOGY_INT32:
-                cur = s_offs
-            else:
-                cur = s_offs.to(tl.int64)
-            ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
-            for _ in range(0, MAX_ANCESTOR_DEPTH):
-                cur_valid = mask & (cur >= 0) & (cur < S)
-                pi_anc = tl.load(Pi_new_ptr + out_base + cur, mask=cur_valid, other=NEG_LARGE)
-                ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - final_row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
-                cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
-
-            const_offsets = const_base + s_offs * CONST_SPECIES_STRIDE
+            const_offsets = const_base + s_offs
             max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-            denom = final_row_sum - ancestor_sum
-            pibar_w = tl.where(denom > 0.0, tl.log2(denom) + final_row_max + max_transfer, NEG_LARGE)
+            pibar_w = _pibar_tile(
+                Pi_new_ptr, out_base, s_offs, mask, final_row_max, final_row_sum,
+                max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH,
+            )
             tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
 
 
@@ -404,14 +175,9 @@ def _leaf_initial_wave_step_kernel(
     S: tl.constexpr,
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
-    CONST_SPECIES_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    LEAF_LOGP_MODE: tl.constexpr,
-    FP64: tl.constexpr,
-    CONST_LAYOUT: tl.constexpr = 0,
 ):
-    DTYPE = tl.float64 if FP64 else tl.float32
-    NEG_LARGE = -1e300 if FP64 else -1e30
+    NEG_LARGE = -1e30
 
     w = tl.program_id(0)
     s_start = tl.program_id(1) * BLOCK_S
@@ -419,29 +185,17 @@ def _leaf_initial_wave_step_kernel(
     mask = s_offs < S
     out_base = w * stride
 
-    family = tl.full((), 0, dtype=tl.int64)
-    const_base = 0
-    if CONST_LAYOUT == _TL_CONST_FAMILY_SPECIES:
-        family = tl.load(family_idx_ptr + ws + w)
-        const_base = family * CONST_ROW_STRIDE
+    family = tl.load(family_idx_ptr + ws + w)
+    const_base = family * CONST_ROW_STRIDE
 
     leaf_species = tl.load(leaf_species_ptr + ws + w)
-    leaf_valid = (leaf_species >= 0) & (leaf_species < S)
-    leaf_start = tl.load(
-        sp_subtree_start_ptr + leaf_species,
-        mask=leaf_valid,
-        other=0,
-    )
-    leaf_end = tl.load(
-        sp_subtree_end_ptr + leaf_species,
-        mask=leaf_valid,
-        other=0,
-    )
+    leaf_start = tl.load(sp_subtree_start_ptr + leaf_species)
+    leaf_end = tl.load(sp_subtree_end_ptr + leaf_species)
     species_start = tl.load(sp_subtree_start_ptr + s_offs, mask=mask, other=-1)
-    descendant = leaf_valid & (species_start >= leaf_start) & (species_start < leaf_end)
-    leaf_hit = mask & leaf_valid & (s_offs == leaf_species)
+    descendant = (species_start >= leaf_start) & (species_start < leaf_end)
+    leaf_hit = mask & (s_offs == leaf_species)
 
-    const_offsets = const_base + s_offs * CONST_SPECIES_STRIDE
+    const_offsets = const_base + s_offs
     max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
     dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
     ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
@@ -449,39 +203,28 @@ def _leaf_initial_wave_step_kernel(
     sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
     sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
-    pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=DTYPE), NEG_LARGE)
-    pibar_w = tl.where(leaf_valid & ~descendant, max_transfer, NEG_LARGE)
+    pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=tl.float32), NEG_LARGE)
+    pibar_w = tl.where(~descendant, max_transfer, NEG_LARGE)
 
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
     c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
-    pi_s1 = tl.where(mask & leaf_valid & (c1 == leaf_species), 0.0, NEG_LARGE)
-    pi_s2 = tl.where(mask & leaf_valid & (c2 == leaf_species), 0.0, NEG_LARGE)
+    pi_s1 = tl.where(mask & (c1 == leaf_species), 0.0, NEG_LARGE)
+    pi_s2 = tl.where(mask & (c2 == leaf_species), 0.0, NEG_LARGE)
 
     t0 = dl_const + pi_w
     t1 = pi_w + ebar
     t2 = pibar_w + e_val
     t3 = sl1_const + pi_s1
     t4 = sl2_const + pi_s2
-    if LEAF_LOGP_MODE == _TL_LEAF_LOGP_BY_FAMILY_SPECIES:
-        leaf_logp = tl.load(
-            leaf_logp_ptr + family * S + s_offs,
-            mask=mask,
-            other=NEG_LARGE,
-        )
-        t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-    elif LEAF_LOGP_MODE == _TL_LEAF_LOGP_BY_FAMILY:
-        leaf_logp = tl.load(leaf_logp_ptr + family)
-        t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-    else:
-        leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=NEG_LARGE)
-        t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+    leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG_LARGE)
+    t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
 
     m = tl.maximum(t0, t1)
     m = tl.maximum(m, t2)
     m = tl.maximum(m, t3)
     m = tl.maximum(m, t4)
     m = tl.maximum(m, t5)
-    m_safe = tl.where(m > (-1e299 if FP64 else -1e29), m, tl.zeros_like(m))
+    m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
     total = (
         tl.exp2(t0 - m_safe)
         + tl.exp2(t1 - m_safe)
@@ -511,24 +254,10 @@ def compute_leaf_initial_wave_step(
     sp_subtree_end,
     leaf_species_idx,
     leaf_logp,
-    family_idx=None,
-    family_indexed_consts=False,
+    family_idx,
 ):
-    """Launch the specialized first leaf-state update for Pi iteration.
-
-    ``Pi_out`` is a global ``[C, S]`` tensor. This wrapper writes only the wave
-    rows ``[ws:ws+W]`` and passes that narrowed view to the Triton kernel.
-    """
-    fp64 = Pi_out.dtype == torch.float64
-    launch = _prepare_wave_launch(
-        S,
-        DL_const,
-        family_idx,
-        family_indexed_consts,
-    )
-    family_idx_arg = family_idx if family_idx is not None else sp_child1
-    leaf_logp_mode = _leaf_logp_addressing_mode(True, leaf_logp, family_idx, S)
-    grid = (W, triton.cdiv(S, launch.block_s))
+    block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
+    grid = (W, triton.cdiv(S, block_s))
     Pi_out_rows = Pi_out.narrow(0, int(ws), int(W))
     _leaf_initial_wave_step_kernel[grid](
         Pi_out_rows,
@@ -545,72 +274,31 @@ def compute_leaf_initial_wave_step(
         sp_subtree_end,
         leaf_species_idx,
         leaf_logp,
-        family_idx_arg,
+        family_idx,
         S,
         stride=S,
-        CONST_ROW_STRIDE=launch.const_row_stride,
-        CONST_SPECIES_STRIDE=launch.const_species_stride,
-        BLOCK_S=launch.block_s,
-        LEAF_LOGP_MODE=leaf_logp_mode,
-        FP64=fp64,
-        CONST_LAYOUT=launch.const_layout,
-        num_warps=launch.num_warps,
+        CONST_ROW_STRIDE=const_row_stride,
+        BLOCK_S=block_s,
+        num_warps=8,
     )
-
 
 def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
                      max_transfer_mat, DL_const, Ebar, E, SL1_const, SL2_const,
                      sp_child1, sp_child2, sp_parent, max_ancestor_depth,
-                     leaf_term_wt, DTS_reduced=None,
-                     leaf_species_idx=None, leaf_logp=None,
-                     family_idx=None,
-                     family_indexed_consts=False,
+                     DTS_reduced=None,
+                     *,
+                     leaf_species_idx, leaf_logp,
+                     family_idx,
+                     pibar_row_max,
                      store_final_pibar=False,
-                     final_pibar_row_max=None,
-                     compute_diff=False,
-                     max_diff_out=None,
                      has_leaf_term=True,
-                     initial_state=False,
                      input_ws=None):
-    """Launch the fused wave-step kernel.
-
-    ``Pi_in`` is normally global ``[C, S]`` and read from ``ws``. If
-    ``input_ws`` is set, it selects the input row offset; ``input_ws=0`` is used
-    for local ``[W, S]`` input. ``Pi_out`` is global but this wrapper narrows it
-    to the wave rows before launch. ``Pibar`` stores final global Pibar rows
-    when ``store_final_pibar=True``; otherwise callers may use it as ping-pong
-    scratch.
-    """
-    fp64 = Pi_in.dtype == torch.float64
     has_splits = DTS_reduced is not None
-    launch = _prepare_wave_launch(
-        S,
-        DL_const,
-        family_idx,
-        family_indexed_consts,
-    )
-    requested_has_leaf_term = bool(has_leaf_term)
-    use_leaf_index = (
-        requested_has_leaf_term
-        and leaf_species_idx is not None
-        and leaf_logp is not None
-    )
-    leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
-    has_leaf_term = bool(requested_has_leaf_term and (use_leaf_index or leaf_term_wt is not None))
-    leaf_term_arg = leaf_term_wt if leaf_term_wt is not None else Pi_in
-    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_arg
-    leaf_logp_mode = _leaf_logp_addressing_mode(use_leaf_index, leaf_logp, family_idx, S)
-    family_idx_arg = family_idx if family_idx is not None else sp_parent
-    if compute_diff:
-        if max_diff_out is None:
-            raise ValueError("max_diff_out is required when compute_diff=True")
-        max_diff_buf = max_diff_out
-    else:
-        max_diff_buf = Pi_out
+    block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
+    use_leaf_index = bool(has_leaf_term)
 
     grid = (W,)
     Pi_out_rows = Pi_out.narrow(0, int(ws), int(W))
-    row_max_arg = final_pibar_row_max if final_pibar_row_max is not None else Pibar
 
     _wave_step_kernel[grid](
         Pi_in, ws, ws if input_ws is None else int(input_ws),
@@ -618,133 +306,18 @@ def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
         DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2,
         sp_parent,
-        leaf_term_arg,
-        leaf_species_arg,
-        leaf_logp_arg,
-        family_idx_arg,
-        DTS_reduced if has_splits else leaf_term_wt,
-        has_splits,
-        Pi_out_rows, Pibar, max_diff_buf, row_max_arg,
-        S,
-        stride=S,
-        CONST_ROW_STRIDE=launch.const_row_stride,
-        CONST_SPECIES_STRIDE=launch.const_species_stride,
-        BLOCK_S=launch.block_s,
-        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
-        COMPUTE_DIFF=bool(compute_diff),
-        USE_LEAF_INDEX=use_leaf_index,
-        HAS_LEAF_TERM=has_leaf_term,
-        LEAF_LOGP_MODE=leaf_logp_mode,
-        STORE_PIBAR=False,
-        STORE_PIBAR_ROW_MAX=False,
-        STORE_FINAL_PIBAR=bool(store_final_pibar),
-        STORE_FINAL_PIBAR_ROW_MAX=bool(final_pibar_row_max is not None),
-        OUTPUT_GLOBAL=False,
-        INITIAL_STATE=bool(initial_state),
-        FP64=fp64,
-        TOPOLOGY_INT32=sp_parent.dtype == torch.int32,
-        CONST_LAYOUT=launch.const_layout,
-        num_warps=launch.num_warps,
-    )
-
-
-@triton.jit
-def _pibar_kernel(
-    Pi_ptr,
-    ws,
-    max_transfer_ptr,
-    sp_parent_ptr,
-    family_idx_ptr,
-    Pibar_out_ptr,
-    row_max_out_ptr,
-    S: tl.constexpr,
-    stride: tl.constexpr,
-    CONST_ROW_STRIDE: tl.constexpr,
-    CONST_SPECIES_STRIDE: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
-    STORE_ROW_MAX: tl.constexpr,
-    FP64: tl.constexpr,
-    TOPOLOGY_INT32: tl.constexpr,
-    CONST_LAYOUT: tl.constexpr = 0,
-):
-    DTYPE = tl.float64 if FP64 else tl.float32
-    NEG_LARGE = -1e300 if FP64 else -1e30
-
-    w = tl.program_id(0)
-    pi_base = (ws + w) * stride
-    const_base = 0
-    if CONST_LAYOUT == _TL_CONST_FAMILY_SPECIES:
-        family_const = tl.load(family_idx_ptr + ws + w)
-        const_base = family_const * CONST_ROW_STRIDE
-
-    row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
-    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        tile_max = tl.max(pi_val, axis=0)
-        new_max = tl.maximum(row_max, tile_max)
-        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
-        row_max = new_max
-
-    if STORE_ROW_MAX:
-        tl.store(row_max_out_ptr + ws + w, tl.max(row_max, axis=0))
-
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-
-        if TOPOLOGY_INT32:
-            cur = s_offs
-        else:
-            cur = s_offs.to(tl.int64)
-        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
-        for _ in range(0, MAX_ANCESTOR_DEPTH):
-            cur_valid = mask & (cur >= 0) & (cur < S)
-            pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cur_valid, other=NEG_LARGE)
-            ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
-            cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
-
-        max_transfer = tl.load(max_transfer_ptr + const_base + s_offs * CONST_SPECIES_STRIDE, mask=mask, other=0.0)
-        denom = row_sum - ancestor_sum
-        pibar_w = tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer, NEG_LARGE)
-        tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
-
-
-def compute_pibar(Pi, Pibar, ws, W, S,
-                 max_transfer_mat, sp_parent, max_ancestor_depth,
-                 row_max_out=None, family_idx=None,
-                 family_indexed_consts=False):
-    """Launch Pibar recomputation for wave rows."""
-    fp64 = Pi.dtype == torch.float64
-    launch = _prepare_wave_launch(
-        S,
-        max_transfer_mat,
+        leaf_species_idx,
+        leaf_logp,
         family_idx,
-        family_indexed_consts,
-    )
-    family_idx_arg = family_idx if family_idx is not None else sp_parent
-    grid = (W,)
-
-    _pibar_kernel[grid](
-        Pi,
-        ws,
-        max_transfer_mat,
-        sp_parent,
-        family_idx_arg,
-        Pibar,
-        row_max_out if row_max_out is not None else Pibar,
+        DTS_reduced if has_splits else Pi_in,
+        has_splits,
+        Pi_out_rows, Pibar, pibar_row_max,
         S,
         stride=S,
-        CONST_ROW_STRIDE=launch.const_row_stride,
-        CONST_SPECIES_STRIDE=launch.const_species_stride,
-        BLOCK_S=launch.block_s,
+        CONST_ROW_STRIDE=const_row_stride,
+        BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
-        STORE_ROW_MAX=bool(row_max_out is not None),
-        FP64=fp64,
-        TOPOLOGY_INT32=sp_parent.dtype == torch.int32,
-        CONST_LAYOUT=launch.const_layout,
-        num_warps=launch.num_warps,
+        USE_LEAF_INDEX=use_leaf_index,
+        STORE_FINAL_PIBAR=bool(store_final_pibar),
+        num_warps=8,
     )

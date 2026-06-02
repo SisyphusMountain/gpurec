@@ -4,16 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
-
-[features]
-python-extension = ["numpy", "pyo3"]
+crate-type = ["cdylib"]
 
 [dependencies]
-numpy = { version = "0.22", optional = true }
-pyo3 = { version = "0.22", features = ["abi3-py310", "extension-module"], optional = true }
-rayon = "1"
+pyo3 = { version = "0.22", features = ["abi3-py310", "extension-module"] }
 rustree = { git = "https://github.com/SisyphusMountain/rustree.git", rev = "e3a58478f0e57c80af04c730acade639d8e9015e" }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "1"

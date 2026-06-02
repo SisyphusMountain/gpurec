@@ -1,0 +1,409 @@
+import torch
+import triton
+import triton.language as tl
+
+from gpurec.core.parameters.extract_parameters import as_family_species
+
+
+@triton.jit
+def _e_step_forward_2d_kernel(
+    E_ptr,
+    E_new_ptr,
+    E_s1_out_ptr,
+    E_s2_out_ptr,
+    Ebar_out_ptr,
+    max_diff_out_ptr,
+    log_pS_ptr,
+    log_pD_ptr,
+    log_pL_ptr,
+    max_transfer_ptr,
+    sp_parent_ptr,
+    sp_child1_ptr,
+    sp_child2_ptr,
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
+):
+    g = tl.program_id(0)
+    base = g * S
+    offs = tl.arange(0, BLOCK_S)
+    mask = offs < S
+    neg_inf = -float("inf")
+    zero = tl.zeros([BLOCK_S], dtype=tl.float32)
+
+    E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
+    row_max = tl.max(E, axis=0)
+    row_sum = tl.sum(tl.exp2(E - row_max), axis=0)
+
+    cur = offs
+    ancestor_sum = zero
+    for _ in range(0, MAX_ANCESTOR_DEPTH):
+        cur_valid = mask & (cur >= 0) & (cur < S)
+        E_anc = tl.load(E_ptr + base + cur, mask=cur_valid, other=neg_inf)
+        ancestor_sum += tl.where(cur_valid, tl.exp2(E_anc - row_max), zero)
+        cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int32)
+
+    c1 = tl.load(sp_child1_ptr + offs, mask=mask, other=-1)
+    c2 = tl.load(sp_child2_ptr + offs, mask=mask, other=-1)
+    c1_valid = mask & (c1 >= 0) & (c1 < S)
+    c2_valid = mask & (c2 >= 0) & (c2 < S)
+    E_s1 = tl.load(E_ptr + base + c1, mask=c1_valid, other=neg_inf)
+    E_s2 = tl.load(E_ptr + base + c2, mask=c2_valid, other=neg_inf)
+
+    max_transfer_val = tl.load(max_transfer_ptr + base + offs, mask=mask, other=0.0)
+    denom = row_sum - ancestor_sum
+    Ebar = tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer_val, neg_inf)
+
+    pS = tl.load(log_pS_ptr + base + offs, mask=mask, other=neg_inf)
+    pD = tl.load(log_pD_ptr + base + offs, mask=mask, other=neg_inf)
+    pL = tl.load(log_pL_ptr + base + offs, mask=mask, other=neg_inf)
+
+    t0 = pS + E_s1 + E_s2
+    t1 = pD + 2.0 * E
+    t2 = E + Ebar
+    t3 = pL
+    m = tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3))
+    m_safe = tl.where(m == neg_inf, zero, m)
+    total = (
+        tl.exp2(t0 - m_safe)
+        + tl.exp2(t1 - m_safe)
+        + tl.exp2(t2 - m_safe)
+        + tl.exp2(t3 - m_safe)
+    )
+    E_new = tl.log2(total) + m
+
+    tl.store(E_new_ptr + base + offs, E_new, mask=mask)
+    tl.store(E_s1_out_ptr + base + offs, E_s1, mask=mask)
+    tl.store(E_s2_out_ptr + base + offs, E_s2, mask=mask)
+    tl.store(Ebar_out_ptr + base + offs, Ebar, mask=mask)
+    if COMPUTE_DIFF:
+        diff = tl.where(mask, tl.abs(E_new - E), zero)
+        tl.store(max_diff_out_ptr + g, tl.max(diff, axis=0))
+
+
+@triton.jit
+def _e_step_backward_prepare_2d_kernel(
+    E_ptr,
+    E_new_ptr,
+    E_s1_ptr,
+    E_s2_ptr,
+    Ebar_ptr,
+    log_pS_ptr,
+    log_pD_ptr,
+    log_pL_ptr,
+    sp_parent_ptr,
+    sp_child1_ptr,
+    sp_child2_ptr,
+    grad_E_new_ptr,
+    grad_E_s1_out_ptr,
+    grad_E_s2_out_ptr,
+    grad_Ebar_out_ptr,
+    grad_E_ptr,
+    grad_log_pS_ptr,
+    grad_log_pD_ptr,
+    grad_log_pL_ptr,
+    grad_max_transfer_ptr,
+    r_ptr,
+    excluded_u_ptr,
+    total_u_ptr,
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+):
+    g = tl.program_id(0)
+    base = g * S
+    offs = tl.arange(0, BLOCK_S)
+    mask = offs < S
+    neg_inf = -float("inf")
+    zero = tl.zeros([BLOCK_S], dtype=tl.float32)
+
+    E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
+    E_new = tl.load(E_new_ptr + base + offs, mask=mask, other=neg_inf)
+    E_s1 = tl.load(E_s1_ptr + base + offs, mask=mask, other=neg_inf)
+    E_s2 = tl.load(E_s2_ptr + base + offs, mask=mask, other=neg_inf)
+    Ebar = tl.load(Ebar_ptr + base + offs, mask=mask, other=neg_inf)
+    pS = tl.load(log_pS_ptr + base + offs, mask=mask, other=neg_inf)
+    pD = tl.load(log_pD_ptr + base + offs, mask=mask, other=neg_inf)
+    pL = tl.load(log_pL_ptr + base + offs, mask=mask, other=neg_inf)
+
+    row_max = tl.max(E, axis=0)
+    r = tl.exp2(E - row_max)
+    r = tl.where(mask, r, zero)
+    row_sum = tl.sum(r, axis=0)
+    tl.store(r_ptr + base + offs, r, mask=mask)
+    tl.store(excluded_u_ptr + base + offs, zero, mask=mask)
+
+    g_new = tl.load(grad_E_new_ptr + base + offs, mask=mask, other=0.0)
+    g_s1_out = tl.load(grad_E_s1_out_ptr + base + offs, mask=mask, other=0.0)
+    g_s2_out = tl.load(grad_E_s2_out_ptr + base + offs, mask=mask, other=0.0)
+    g_ebar_out = tl.load(grad_Ebar_out_ptr + base + offs, mask=mask, other=0.0)
+
+    t0 = pS + E_s1 + E_s2
+    t1 = pD + 2.0 * E
+    t2 = E + Ebar
+    t3 = pL
+    q0 = tl.where(mask, g_new * tl.exp2(t0 - E_new), zero)
+    q1 = tl.where(mask, g_new * tl.exp2(t1 - E_new), zero)
+    q2 = tl.where(mask, g_new * tl.exp2(t2 - E_new), zero)
+    q3 = tl.where(mask, g_new * tl.exp2(t3 - E_new), zero)
+
+    wbar = q2 + g_ebar_out
+    tl.store(grad_log_pS_ptr + base + offs, q0, mask=mask)
+    tl.store(grad_log_pD_ptr + base + offs, q1, mask=mask)
+    tl.store(grad_log_pL_ptr + base + offs, q3, mask=mask)
+    tl.store(grad_max_transfer_ptr + base + offs, wbar, mask=mask)
+
+    tl.store(grad_E_ptr + base + offs, 2.0 * q1 + q2, mask=mask)
+
+    c1 = tl.load(sp_child1_ptr + offs, mask=mask, other=-1)
+    c2 = tl.load(sp_child2_ptr + offs, mask=mask, other=-1)
+    c1_valid = mask & (c1 >= 0) & (c1 < S)
+    c2_valid = mask & (c2 >= 0) & (c2 < S)
+    tl.atomic_add(grad_E_ptr + base + c1, q0 + g_s1_out, sem="relaxed", mask=c1_valid)
+    tl.atomic_add(grad_E_ptr + base + c2, q0 + g_s2_out, sem="relaxed", mask=c2_valid)
+
+    cur = offs
+    ancestor_sum = tl.zeros([BLOCK_S], dtype=tl.float32)
+    for _ in range(0, MAX_ANCESTOR_DEPTH):
+        valid = mask & (cur >= 0) & (cur < S)
+        E_anc = tl.load(E_ptr + base + cur, mask=valid, other=neg_inf)
+        ancestor_sum += tl.where(valid, tl.exp2(E_anc - row_max), zero)
+        cur = tl.load(sp_parent_ptr + cur, mask=valid, other=-1).to(tl.int32)
+
+    denom = row_sum - ancestor_sum
+    u = tl.where(mask & (denom > 0.0), wbar / denom, zero)
+    tl.store(total_u_ptr + g, tl.sum(u, axis=0))
+
+    cur = offs
+    for _ in range(0, MAX_ANCESTOR_DEPTH):
+        valid = mask & (cur >= 0) & (cur < S)
+        tl.atomic_add(excluded_u_ptr + base + cur, u, sem="relaxed", mask=valid)
+        cur = tl.load(sp_parent_ptr + cur, mask=valid, other=-1).to(tl.int32)
+
+
+@triton.jit
+def _e_step_backward_finalize_2d_kernel(
+    grad_E_ptr,
+    r_ptr,
+    excluded_u_ptr,
+    total_u_ptr,
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+):
+    g = tl.program_id(0)
+    base = g * S
+    offs = tl.arange(0, BLOCK_S)
+    mask = offs < S
+    r = tl.load(r_ptr + base + offs, mask=mask, other=0.0)
+    excluded = tl.load(excluded_u_ptr + base + offs, mask=mask, other=0.0)
+    total = tl.load(total_u_ptr + g)
+    current = tl.load(grad_E_ptr + base + offs, mask=mask, other=0.0)
+    tl.store(grad_E_ptr + base + offs, current + r * (total - excluded), mask=mask)
+
+
+def _launch_e_step_forward_2d(
+    E: torch.Tensor,
+    log_pS_mat: torch.Tensor,
+    log_pD_mat: torch.Tensor,
+    log_pL_mat: torch.Tensor,
+    max_transfer_mat: torch.Tensor,
+    sp_parent: torch.Tensor,
+    sp_child1: torch.Tensor,
+    sp_child2: torch.Tensor,
+    max_ancestor_depth: int,
+    *,
+    max_diff_out: torch.Tensor | None = None,
+    out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+):
+    G = int(E.shape[0])
+    S = int(E.shape[1])
+    block_s = int(triton.next_power_of_2(S))
+    E_new, E_s1, E_s2, Ebar = (torch.empty_like(E) for _ in range(4)) if out is None else out
+    _e_step_forward_2d_kernel[(G,)](
+        E,
+        E_new,
+        E_s1,
+        E_s2,
+        Ebar,
+        E_new if max_diff_out is None else max_diff_out,
+        log_pS_mat,
+        log_pD_mat,
+        log_pL_mat,
+        max_transfer_mat,
+        sp_parent,
+        sp_child1,
+        sp_child2,
+        S,
+        BLOCK_S=block_s,
+        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        COMPUTE_DIFF=max_diff_out is not None,
+        num_warps=8,
+    )
+    return E_new, E_s1, E_s2, Ebar
+
+
+class _TritonEStep2D(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        E,
+        log_pS_mat,
+        log_pD_mat,
+        log_pL_mat,
+        max_transfer_mat,
+        sp_parent,
+        sp_child1,
+        sp_child2,
+        max_ancestor_depth: int,
+    ):
+        return _launch_e_step_forward_2d(
+            E,
+            log_pS_mat,
+            log_pD_mat,
+            log_pL_mat,
+            max_transfer_mat,
+            sp_parent,
+            sp_child1,
+            sp_child2,
+            int(max_ancestor_depth),
+        )
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(inputs[0], *output, *inputs[1:4], *inputs[5:8])
+        ctx.max_ancestor_depth = int(inputs[8])
+
+    @staticmethod
+    def backward(ctx, grad_E_new, grad_E_s1_out, grad_E_s2_out, grad_Ebar_out):
+        E, E_new, E_s1, E_s2, Ebar, log_pS_mat, log_pD_mat, log_pL_mat, sp_parent, sp_child1, sp_child2 = ctx.saved_tensors
+        G = int(E.shape[0])
+        S = int(E.shape[1])
+        block_s = int(triton.next_power_of_2(S))
+        grad_E_new, grad_E_s1_out, grad_E_s2_out, grad_Ebar_out = (
+            torch.zeros_like(E) if grad is None else grad.contiguous()
+            for grad in (grad_E_new, grad_E_s1_out, grad_E_s2_out, grad_Ebar_out)
+        )
+        grad_E, grad_log_pS, grad_log_pD, grad_log_pL, grad_max_transfer, r, excluded_u = (
+            torch.empty_like(E) for _ in range(7)
+        )
+        total_u = torch.empty((G,), dtype=E.dtype, device=E.device)
+
+        _e_step_backward_prepare_2d_kernel[(G,)](
+            E,
+            E_new,
+            E_s1,
+            E_s2,
+            Ebar,
+            log_pS_mat,
+            log_pD_mat,
+            log_pL_mat,
+            sp_parent,
+            sp_child1,
+            sp_child2,
+            grad_E_new,
+            grad_E_s1_out,
+            grad_E_s2_out,
+            grad_Ebar_out,
+            grad_E,
+            grad_log_pS,
+            grad_log_pD,
+            grad_log_pL,
+            grad_max_transfer,
+            r,
+            excluded_u,
+            total_u,
+            S,
+            BLOCK_S=block_s,
+            MAX_ANCESTOR_DEPTH=int(ctx.max_ancestor_depth),
+            num_warps=8,
+        )
+        _e_step_backward_finalize_2d_kernel[(G,)](
+            grad_E,
+            r,
+            excluded_u,
+            total_u,
+            S,
+            BLOCK_S=block_s,
+            num_warps=8,
+        )
+        return (
+            grad_E,
+            grad_log_pS,
+            grad_log_pD,
+            grad_log_pL,
+            grad_max_transfer,
+            None,
+            None,
+            None,
+            None,
+        )
+
+
+def e_step_triton_autograd(
+    E: torch.Tensor,
+    log_pS: torch.Tensor,
+    log_pD: torch.Tensor,
+    log_pL: torch.Tensor,
+    max_transfer: torch.Tensor,
+    sp_parent: torch.Tensor,
+    sp_child1: torch.Tensor,
+    sp_child2: torch.Tensor,
+    max_ancestor_depth: int,
+):
+    E_arg = E.contiguous()
+    return _TritonEStep2D.apply(
+        E_arg,
+        *(as_family_species(param, int(E_arg.shape[1]), int(E_arg.shape[0])) for param in (log_pS, log_pD, log_pL, max_transfer)),
+        sp_parent,
+        sp_child1,
+        sp_child2,
+        int(max_ancestor_depth),
+    )
+
+
+def e_fixed_point_triton(
+    E0: torch.Tensor,
+    log_pS: torch.Tensor,
+    log_pD: torch.Tensor,
+    log_pL: torch.Tensor,
+    max_transfer: torch.Tensor,
+    sp_parent: torch.Tensor,
+    sp_child1: torch.Tensor,
+    sp_child2: torch.Tensor,
+    max_ancestor_depth: int,
+):
+    E_a = E0.contiguous().clone()
+    G = int(E_a.shape[0])
+    log_pS_mat, log_pD_mat, log_pL_mat, max_transfer_mat = (
+        as_family_species(param, int(E_a.shape[1]), int(E_a.shape[0]))
+        for param in (log_pS, log_pD, log_pL, max_transfer)
+    )
+    forward_args = (
+        log_pS_mat,
+        log_pD_mat,
+        log_pL_mat,
+        max_transfer_mat,
+        sp_parent,
+        sp_child1,
+        sp_child2,
+        int(max_ancestor_depth),
+    )
+
+    E_b, E_s1, E_s2, Ebar = (torch.empty_like(E_a) for _ in range(4))
+    max_diff_out = torch.empty((G,), dtype=E_a.dtype, device=E_a.device)
+
+    for _ in range(2000):
+        _launch_e_step_forward_2d(
+            E_a,
+            *forward_args,
+            max_diff_out=max_diff_out,
+            out=(E_b, E_s1, E_s2, Ebar),
+        )
+        E_a, E_b = E_b, E_a
+        max_diff = float(max_diff_out.max().item())
+        if max_diff < 1e-8:
+            break
+
+    _, E_s1, E_s2, Ebar = _launch_e_step_forward_2d(E_a, *forward_args)
+
+    return E_a, E_s1, E_s2, Ebar
