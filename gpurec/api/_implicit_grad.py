@@ -1,5 +1,6 @@
 import torch
 
+from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
 from gpurec.core.kernels.dts_fused import compute_dts_forward
 from gpurec.core.kernels.wave_backward import (
     active_mask_from_rhs_absmax_fused,
@@ -15,19 +16,6 @@ from gpurec.core.parameters.extract_parameters import (
 from gpurec.core.kernels.e_step import e_step_triton_autograd
 
 _NEG_INF = float("-inf")
-
-
-def _safe_log2(x: torch.Tensor) -> torch.Tensor:
-    positive = x > 0
-    return torch.where(positive, torch.log2(torch.where(positive, x, torch.ones_like(x))), x.new_full(x.shape, _NEG_INF))
-
-
-def _logsumexp2(x: torch.Tensor, dim: int, keepdim: bool = False) -> torch.Tensor:
-    row_max = x.max(dim=dim, keepdim=True).values
-    row_max_safe = torch.where(row_max == _NEG_INF, torch.zeros_like(row_max), row_max)
-    total = torch.exp2(x - row_max_safe).sum(dim=dim, keepdim=True)
-    result = _safe_log2(total) + row_max
-    return result if keepdim else result.squeeze(dim)
 
 
 def _safe_exp2_ratio(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -353,7 +341,8 @@ def _e_adjoint_and_theta_vjp(
             max_transfer_mat,
             *topology_args,
         )
-        denom = torch.log2(1 - torch.exp2(E_req).mean(dim=-1))
+        survival = (1 - torch.exp2(E_req).mean(dim=-1)).clamp_min(torch.finfo(E_req.dtype).tiny)
+        denom = torch.log2(survival)
         direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
         (aux_to_e,) = torch.autograd.grad(
             (direct_obj, E_s1_from_E, E_s2_from_E, Ebar_from_E),

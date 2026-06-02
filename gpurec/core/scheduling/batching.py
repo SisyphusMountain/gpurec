@@ -1,13 +1,13 @@
 import json
-import importlib.util
-import sys
 from bisect import bisect_right
-from functools import lru_cache
-from pathlib import Path
 
 import torch
 
-_NATIVE_LIBRARY_PATH = Path(__file__).resolve().parents[3] / "crates/gpurec-preprocess/target/release/libgpurec_preprocess.so"
+from gpurec.core.native import load_native_module
+
+_NATIVE_MODULE = "gpurec_preprocess"
+_NATIVE_LIBRARY = "libgpurec_preprocess.so"
+_EXPECTED_SCHEMA_VERSION = 1
 
 
 def _normalize_batch_packing(batch_packing: str, clade_budget: int | None) -> str:
@@ -16,13 +16,17 @@ def _normalize_batch_packing(batch_packing: str, clade_budget: int | None) -> st
     return batch_packing
 
 
-@lru_cache(maxsize=1)
 def _load_native_module():
-    spec = importlib.util.spec_from_file_location("gpurec_preprocess", str(_NATIVE_LIBRARY_PATH))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["gpurec_preprocess"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_native_module(_NATIVE_MODULE, _NATIVE_LIBRARY)
+
+
+def _validate_schema_version(raw: dict, *, payload_name: str) -> None:
+    version = raw.get("schema_version")
+    if version != _EXPECTED_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported {payload_name} schema_version {version!r}; "
+            f"expected {_EXPECTED_SCHEMA_VERSION}"
+        )
 
 
 def preprocess_dataset(
@@ -45,6 +49,7 @@ def preprocess_dataset(
             max_wave_size,
         )
     )
+    _validate_schema_version(raw, payload_name="preprocess_dataset")
     species = raw["species"]
     species["unnorm_row_max"] = torch.tensor(species["unnorm_row_max"], dtype=torch.float32)
     for key in (
@@ -139,6 +144,7 @@ def plan_batch_wave_layouts(
             max_wave_size,
         )
     )
+    _validate_schema_version(raw, payload_name="plan_batch_layouts")
     raw["batches"] = [[int(index) for index in batch] for batch in raw["batches"]]
     return raw
 

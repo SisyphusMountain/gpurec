@@ -7,7 +7,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 pub mod batch_planning;
@@ -15,21 +15,36 @@ pub mod layout;
 pub mod scheduler;
 
 const BITS_PER_WORD: usize = 64;
+const JSON_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Debug)]
 pub enum PreprocessError {
+    Io(String),
     InvalidInput(String),
+    Parse(String),
 }
 
 impl fmt::Display for PreprocessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            PreprocessError::Io(message) => write!(f, "{message}"),
             PreprocessError::InvalidInput(message) => write!(f, "invalid input: {message}"),
+            PreprocessError::Parse(message) => write!(f, "failed to parse Newick: {message}"),
         }
     }
 }
 
 impl std::error::Error for PreprocessError {}
+
+impl From<PreprocessError> for PyErr {
+    fn from(err: PreprocessError) -> Self {
+        match err {
+            PreprocessError::Io(message) => PyOSError::new_err(message),
+            PreprocessError::InvalidInput(message) => PyValueError::new_err(message),
+            PreprocessError::Parse(message) => PyValueError::new_err(message),
+        }
+    }
+}
 
 fn species_subtree_intervals(root: usize, child1: &[i32], child2: &[i32]) -> (Vec<i32>, Vec<i32>) {
     let s = child1.len();
@@ -66,11 +81,12 @@ fn preprocess_dataset(
     max_wave_size: usize,
 ) -> PyResult<String> {
     let output = py.allow_threads(|| {
-        let species_tree = parse_one_newick_file(Path::new(&species_path));
+        let species_tree = parse_one_newick_file(Path::new(&species_path))?;
         let (species, species_name_to_index) = build_species_output(&species_tree);
-        let family_outputs: Result<Vec<Value>, String> = families
+        let family_outputs: Result<Vec<Value>, PreprocessError> = families
             .par_iter()
             .map(|gene_path| preprocess_one_family(Path::new(gene_path), &species_name_to_index))
+            .map(|result| result.map_err(PreprocessError::InvalidInput))
             .collect();
         family_outputs.and_then(|families| {
             let (batches, batch_wave_layouts) = plan_batches_and_layouts(
@@ -79,8 +95,10 @@ fn preprocess_dataset(
                 clade_budget,
                 batch_packing.as_deref().unwrap_or("depth_first_fit"),
                 max_wave_size,
-            )?;
+            )
+            .map_err(PreprocessError::InvalidInput)?;
             Ok(json!({
+                "schema_version": JSON_SCHEMA_VERSION,
                 "species": species,
                 "families": families,
                 "batches": batches,
@@ -88,9 +106,7 @@ fn preprocess_dataset(
             }))
         })
     });
-    output
-        .map(|value| value.to_string())
-        .map_err(PyRuntimeError::new_err)
+    output.map(|value| value.to_string()).map_err(PyErr::from)
 }
 
 #[pymodule]
@@ -120,16 +136,23 @@ fn plan_batch_layouts(
     )
     .map_err(PyRuntimeError::new_err)?;
     Ok(json!({
+        "schema_version": JSON_SCHEMA_VERSION,
         "batches": batches,
         "batch_wave_layouts": batch_wave_layouts,
     })
     .to_string())
 }
 
-fn parse_one_newick_file(path: &Path) -> FlatTree {
-    let text = fs::read_to_string(path).unwrap();
-    let mut roots = parse_newick(text.trim()).unwrap();
-    roots.remove(0).to_flat_tree()
+fn parse_one_newick_file(path: &Path) -> Result<FlatTree, PreprocessError> {
+    let text = fs::read_to_string(path)
+        .map_err(|err| PreprocessError::Io(format!("{}: {err}", path.display())))?;
+    let mut roots = parse_newick(text.trim())
+        .map_err(|err| PreprocessError::Parse(format!("{}: {err}", path.display())))?;
+    let root = roots
+        .drain(..)
+        .next()
+        .ok_or_else(|| PreprocessError::Parse(format!("{}: no tree found", path.display())))?;
+    Ok(root.to_flat_tree())
 }
 
 #[derive(Clone, Debug)]
@@ -324,8 +347,16 @@ fn binarize_gene_node(tree: &mut GeneTree, node: usize, path: &Path) -> Result<(
         ));
     }
     while tree.nodes[node].children.len() > 2 {
-        let right = tree.nodes[node].children.pop().unwrap();
-        let left = tree.nodes[node].children.pop().unwrap();
+        let right = tree.nodes[node].children.pop().ok_or_else(|| {
+            format!(
+                "{}: missing right child during binarization",
+                path.display()
+            )
+        })?;
+        let left = tree.nodes[node]
+            .children
+            .pop()
+            .ok_or_else(|| format!("{}: missing left child during binarization", path.display()))?;
         let internal = tree.nodes.len();
         tree.nodes.push(GeneNode {
             name: String::new(),

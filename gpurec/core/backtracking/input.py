@@ -1,22 +1,14 @@
-from functools import lru_cache
-import importlib.util
-import sys
-from pathlib import Path
-
 import torch
 
-from gpurec.api.model import solve_resident_e_pi
+from gpurec.core.inference.solver import solve_resident_e_pi
+from gpurec.core.native import load_native_module
 
-_NATIVE_LIBRARY_PATH = Path(__file__).resolve().parents[3] / "crates/gpurec-backtrack/target/release/libgpurec_backtrack.so"
+_NATIVE_MODULE = "gpurec_backtrack"
+_NATIVE_LIBRARY = "libgpurec_backtrack.so"
 
 
-@lru_cache(maxsize=1)
 def _load_native_module():
-    spec = importlib.util.spec_from_file_location("gpurec_backtrack", str(_NATIVE_LIBRARY_PATH))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["gpurec_backtrack"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_native_module(_NATIVE_MODULE, _NATIVE_LIBRARY)
 
 
 def _numpy(value, dtype: torch.dtype) -> object:

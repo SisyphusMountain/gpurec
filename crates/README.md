@@ -14,3 +14,18 @@ through PyO3.
 
 Each crate keeps its own `Cargo.toml`, `Cargo.lock`, and `src/` tree so the
 native modules can be built or iterated independently.
+
+Source installs of the Python package build both crates through
+`setuptools-rust`:
+
+```bash
+python -m pip install .
+```
+
+Direct Cargo builds remain useful for local development and are used as a
+source-checkout fallback by the Python loaders:
+
+```bash
+cargo build --release --manifest-path crates/gpurec-preprocess/Cargo.toml
+cargo build --release --manifest-path crates/gpurec-backtrack/Cargo.toml
+```

@@ -2,9 +2,41 @@ use rand::distributions::Uniform;
 use rand::prelude::*;
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use std::fmt;
 
 const NEG_INF: f64 = f64::NEG_INFINITY;
+
+#[derive(Debug)]
+enum BacktrackError {
+    InvalidInput(String),
+    Sampling(String),
+}
+
+impl fmt::Display for BacktrackError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BacktrackError::InvalidInput(message) => {
+                write!(f, "invalid backtracking input: {message}")
+            }
+            BacktrackError::Sampling(message) => {
+                write!(f, "backtracking sampling failed: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BacktrackError {}
+
+impl From<BacktrackError> for PyErr {
+    fn from(err: BacktrackError) -> Self {
+        match err {
+            BacktrackError::InvalidInput(message) => PyValueError::new_err(message),
+            BacktrackError::Sampling(message) => PyRuntimeError::new_err(message),
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct BacktrackInputView<'a> {
@@ -77,30 +109,31 @@ struct Sampler<'a> {
 }
 
 impl<'a> Sampler<'a> {
-    fn sample(&mut self) -> Vec<SampleNode> {
-        let root_species = self.sample_root_species();
+    fn sample(&mut self) -> Result<Vec<SampleNode>, BacktrackError> {
+        let root_species = self.sample_root_species()?;
         let root = self.add_node("speciation", root_species);
         let root_clade = self.input.root_clade;
         let mut stack = vec![(root, root_clade, root_species)];
 
         while let Some((node_idx, clade, species)) = stack.pop() {
-            let term = self.sample_term(clade, species);
-            self.apply_term(node_idx, clade, species, term, &mut stack);
+            let term = self.sample_term(clade, species)?;
+            self.apply_term(node_idx, clade, species, term, &mut stack)?;
         }
 
-        std::mem::take(&mut self.nodes)
+        Ok(std::mem::take(&mut self.nodes))
     }
 
-    fn sample_root_species(&mut self) -> usize {
+    fn sample_root_species(&mut self) -> Result<usize, BacktrackError> {
         let input = self.input;
         let root_clade = input.root_clade;
         sample_index(
             (0..input.cols).map(|species| (species, input.pi(root_clade, species))),
             &mut self.rng,
+            "root species",
         )
     }
 
-    fn sample_term(&mut self, clade: usize, species: usize) -> Term {
+    fn sample_term(&mut self, clade: usize, species: usize) -> Result<Term, BacktrackError> {
         let input = self.input;
         let mut candidates = Vec::with_capacity(11);
         let pi_cs = input.pi(clade, species);
@@ -157,7 +190,8 @@ impl<'a> Sampler<'a> {
             }
         }
 
-        sample_index(candidates.iter().copied(), &mut self.rng)
+        let context = format!("event term for clade {clade} and species {species}");
+        sample_index(candidates.iter().copied(), &mut self.rng, &context)
     }
 
     fn apply_term(
@@ -167,7 +201,7 @@ impl<'a> Sampler<'a> {
         species: usize,
         term: Term,
         stack: &mut Vec<(usize, usize, usize)>,
-    ) {
+    ) -> Result<(), BacktrackError> {
         match term {
             Leaf => {
                 self.nodes[node_idx].0 = "leaf";
@@ -176,7 +210,7 @@ impl<'a> Sampler<'a> {
                 stack.push((node_idx, clade, species));
             }
             TransferLossDonor => {
-                let recipient = self.sample_pibar_recipient(clade, species);
+                let recipient = self.sample_pibar_recipient(clade, species)?;
                 self.nodes[node_idx].0 = "transfer";
                 let loss = self.add_node("loss", species);
                 let cont = self.add_node("leaf", recipient);
@@ -184,7 +218,11 @@ impl<'a> Sampler<'a> {
                 stack.push((cont, clade, recipient));
             }
             HiddenSpeciation(swapped) => {
-                let (c1, c2) = self.species.children(species).unwrap();
+                let (c1, c2) = self.species.children(species).ok_or_else(|| {
+                    BacktrackError::Sampling(format!(
+                        "hidden speciation selected for leaf species {species}"
+                    ))
+                })?;
                 let (cont_species, loss_species) = if swapped { (c2, c1) } else { (c1, c2) };
                 self.nodes[node_idx].0 = "speciation";
                 let cont = self.add_node("leaf", cont_species);
@@ -210,7 +248,7 @@ impl<'a> Sampler<'a> {
                 } else {
                     left_clade
                 };
-                let recipient = self.sample_pibar_recipient(recipient_clade, species);
+                let recipient = self.sample_pibar_recipient(recipient_clade, species)?;
                 self.nodes[node_idx].0 = "transfer";
                 let donor_child = self.add_node("leaf", species);
                 let recipient_child = self.add_node("leaf", recipient);
@@ -226,7 +264,11 @@ impl<'a> Sampler<'a> {
             SplitSpeciation(split_idx, swapped) => {
                 let left_clade = self.input.split_left(split_idx);
                 let right_clade = self.input.split_right(split_idx);
-                let (c1, c2) = self.species.children(species).unwrap();
+                let (c1, c2) = self.species.children(species).ok_or_else(|| {
+                    BacktrackError::Sampling(format!(
+                        "split speciation selected for leaf species {species}"
+                    ))
+                })?;
                 self.nodes[node_idx].0 = "speciation";
                 let left_node = self.add_node("leaf", c1);
                 let right_node = self.add_node("leaf", c2);
@@ -240,16 +282,23 @@ impl<'a> Sampler<'a> {
                 stack.push((left_node, left_clade, c1));
             }
         }
+        Ok(())
     }
 
-    fn sample_pibar_recipient(&mut self, clade: usize, donor: usize) -> usize {
+    fn sample_pibar_recipient(
+        &mut self,
+        clade: usize,
+        donor: usize,
+    ) -> Result<usize, BacktrackError> {
         let input = self.input;
         let topology = &self.species;
+        let context = format!("transfer recipient for clade {clade} and donor species {donor}");
         sample_index(
             (0..input.cols)
                 .filter(|recipient| !topology.is_ancestor(*recipient, donor))
                 .map(|recipient| (recipient, input.pi(clade, recipient))),
             &mut self.rng,
+            &context,
         )
     }
 
@@ -278,7 +327,7 @@ impl SpeciesTopology<'_> {
     }
 }
 
-fn sample_index<T, I>(weighted: I, rng: &mut StdRng) -> T
+fn sample_index<T, I>(weighted: I, rng: &mut StdRng, context: &str) -> Result<T, BacktrackError>
 where
     T: Copy,
     I: Iterator<Item = (T, f64)> + Clone,
@@ -290,7 +339,9 @@ where
         .filter(|weight| selectable(*weight))
         .fold(NEG_INF, f64::max);
     if max == NEG_INF {
-        panic!("all candidate backtracking weights are zero");
+        return Err(BacktrackError::Sampling(format!(
+            "all candidate weights are invalid for {context}"
+        )));
     }
     let total = weighted
         .clone()
@@ -304,14 +355,111 @@ where
         }
         draw -= 2.0_f64.powf(log_w - max);
         if draw <= 0.0 {
-            return item;
+            return Ok(item);
         }
     }
-    panic!("all candidate backtracking weights are zero")
+    Err(BacktrackError::Sampling(format!(
+        "failed to draw from candidate weights for {context}"
+    )))
 }
 
-fn slice_from_numpy<'a, T: numpy::Element>(values: &'a PyReadonlyArray1<'_, T>) -> &'a [T] {
-    values.as_slice().unwrap()
+fn slice_from_numpy<'a, T: numpy::Element>(
+    name: &str,
+    values: &'a PyReadonlyArray1<'_, T>,
+) -> Result<&'a [T], BacktrackError> {
+    values.as_slice().map_err(|_| {
+        BacktrackError::InvalidInput(format!(
+            "{name} must be a contiguous one-dimensional NumPy array"
+        ))
+    })
+}
+
+fn matrix_slice_from_numpy<'a>(
+    name: &str,
+    values: &'a PyReadonlyArray2<'_, f64>,
+) -> Result<&'a [f64], BacktrackError> {
+    values.as_slice().map_err(|_| {
+        BacktrackError::InvalidInput(format!(
+            "{name} must be a contiguous two-dimensional NumPy array"
+        ))
+    })
+}
+
+fn require_len<T>(name: &str, values: &[T], expected: usize) -> Result<(), BacktrackError> {
+    if values.len() == expected {
+        Ok(())
+    } else {
+        Err(BacktrackError::InvalidInput(format!(
+            "{name} has length {} but expected {expected}",
+            values.len()
+        )))
+    }
+}
+
+fn require_nonempty(name: &str, len: usize) -> Result<(), BacktrackError> {
+    if len > 0 {
+        Ok(())
+    } else {
+        Err(BacktrackError::InvalidInput(format!(
+            "{name} must not be empty"
+        )))
+    }
+}
+
+fn validate_clade_indices(
+    name: &str,
+    values: &[i64],
+    clade_count: usize,
+) -> Result<(), BacktrackError> {
+    for (idx, value) in values.iter().copied().enumerate() {
+        if value < 0 || value as usize >= clade_count {
+            return Err(BacktrackError::InvalidInput(format!(
+                "{name}[{idx}]={value} is outside clade range 0..{clade_count}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_leaf_species(values: &[i64], species_count: usize) -> Result<(), BacktrackError> {
+    for (idx, value) in values.iter().copied().enumerate() {
+        if value != -1 && (value < 0 || value as usize >= species_count) {
+            return Err(BacktrackError::InvalidInput(format!(
+                "leaf_species[{idx}]={value} is neither -1 nor in species range 0..{species_count}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_species_topology(
+    child1: &[i64],
+    child2: &[i64],
+    subtree_start: &[i64],
+    subtree_end: &[i64],
+) -> Result<(), BacktrackError> {
+    let species_count = child1.len();
+    require_len("sp_child2", child2, species_count)?;
+    require_len("sp_subtree_start", subtree_start, species_count)?;
+    require_len("sp_subtree_end", subtree_end, species_count)?;
+    for idx in 0..species_count {
+        let c1_valid = 0 <= child1[idx] && (child1[idx] as usize) < species_count;
+        let c2_valid = 0 <= child2[idx] && (child2[idx] as usize) < species_count;
+        if c1_valid != c2_valid {
+            return Err(BacktrackError::InvalidInput(format!(
+                "species node {idx} has only one valid child: sp_child1={}, sp_child2={}",
+                child1[idx], child2[idx]
+            )));
+        }
+        let start = subtree_start[idx];
+        let end = subtree_end[idx];
+        if start < 0 || end <= start || end as usize > species_count {
+            return Err(BacktrackError::InvalidInput(format!(
+                "invalid subtree interval for species node {idx}: [{start}, {end}) with S={species_count}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[pyfunction]
@@ -334,26 +482,80 @@ fn sample_reconciliations_torch(
     sp_subtree_start: PyReadonlyArray1<'_, i64>,
     sp_subtree_end: PyReadonlyArray1<'_, i64>,
     seed: u64,
-) -> PyObject {
+) -> PyResult<PyObject> {
+    let pi_shape = pi.shape();
+    let pibar_shape = pibar.shape();
+    let clade_count = pi_shape[0];
+    let species_count = pi_shape[1];
+    require_nonempty("pi rows", clade_count).map_err(PyErr::from)?;
+    require_nonempty("pi columns", species_count).map_err(PyErr::from)?;
+    if pibar_shape != pi_shape {
+        return Err(PyValueError::new_err(format!(
+            "pibar shape {:?} does not match pi shape {:?}",
+            pibar_shape, pi_shape
+        )));
+    }
+    if root_clade > usize::MAX as u64 || root_clade as usize >= clade_count {
+        return Err(PyValueError::new_err(format!(
+            "root_clade {root_clade} is outside clade range 0..{clade_count}"
+        )));
+    }
+
+    let leaf_species = slice_from_numpy("leaf_species", &leaf_species).map_err(PyErr::from)?;
+    let split_parents = slice_from_numpy("split_parents", &split_parents).map_err(PyErr::from)?;
+    let split_leftrights =
+        slice_from_numpy("split_leftrights", &split_leftrights).map_err(PyErr::from)?;
+    let log_split_probs =
+        slice_from_numpy("log_split_probs", &log_split_probs).map_err(PyErr::from)?;
+    let pi_values = matrix_slice_from_numpy("pi", &pi).map_err(PyErr::from)?;
+    let pibar_values = matrix_slice_from_numpy("pibar", &pibar).map_err(PyErr::from)?;
+    let e = slice_from_numpy("e", &e).map_err(PyErr::from)?;
+    let ebar = slice_from_numpy("ebar", &ebar).map_err(PyErr::from)?;
+    let log_p_s = slice_from_numpy("log_p_s", &log_p_s).map_err(PyErr::from)?;
+    let log_p_d = slice_from_numpy("log_p_d", &log_p_d).map_err(PyErr::from)?;
+    let child1 = slice_from_numpy("sp_child1", &sp_child1).map_err(PyErr::from)?;
+    let child2 = slice_from_numpy("sp_child2", &sp_child2).map_err(PyErr::from)?;
+    let subtree_start =
+        slice_from_numpy("sp_subtree_start", &sp_subtree_start).map_err(PyErr::from)?;
+    let subtree_end = slice_from_numpy("sp_subtree_end", &sp_subtree_end).map_err(PyErr::from)?;
+
+    require_len("leaf_species", leaf_species, clade_count).map_err(PyErr::from)?;
+    require_len("split_parents", split_parents, log_split_probs.len()).map_err(PyErr::from)?;
+    require_len(
+        "split_leftrights",
+        split_leftrights,
+        2 * log_split_probs.len(),
+    )
+    .map_err(PyErr::from)?;
+    require_len("e", e, species_count).map_err(PyErr::from)?;
+    require_len("ebar", ebar, species_count).map_err(PyErr::from)?;
+    require_len("log_p_s", log_p_s, species_count).map_err(PyErr::from)?;
+    require_len("log_p_d", log_p_d, species_count).map_err(PyErr::from)?;
+    validate_clade_indices("split_parents", split_parents, clade_count).map_err(PyErr::from)?;
+    validate_clade_indices("split_leftrights", split_leftrights, clade_count)
+        .map_err(PyErr::from)?;
+    validate_leaf_species(leaf_species, species_count).map_err(PyErr::from)?;
+    validate_species_topology(child1, child2, subtree_start, subtree_end).map_err(PyErr::from)?;
+
     let input_view = BacktrackInputView {
-        cols: pi.shape()[1],
+        cols: species_count,
         root_clade: root_clade as usize,
-        leaf_species: slice_from_numpy(&leaf_species),
-        split_parents: slice_from_numpy(&split_parents),
-        split_leftrights: slice_from_numpy(&split_leftrights),
-        log_split_probs: slice_from_numpy(&log_split_probs),
-        pi: pi.as_slice().unwrap(),
-        pibar: pibar.as_slice().unwrap(),
-        e: slice_from_numpy(&e),
-        ebar: slice_from_numpy(&ebar),
-        log_p_s: slice_from_numpy(&log_p_s),
-        log_p_d: slice_from_numpy(&log_p_d),
+        leaf_species,
+        split_parents,
+        split_leftrights,
+        log_split_probs,
+        pi: pi_values,
+        pibar: pibar_values,
+        e,
+        ebar,
+        log_p_s,
+        log_p_d,
     };
     let species = SpeciesTopology {
-        child1: slice_from_numpy(&sp_child1),
-        child2: slice_from_numpy(&sp_child2),
-        subtree_start: slice_from_numpy(&sp_subtree_start),
-        subtree_end: slice_from_numpy(&sp_subtree_end),
+        child1,
+        child2,
+        subtree_start,
+        subtree_end,
     };
     let sample_nodes = py.allow_threads(move || {
         Sampler {
@@ -364,7 +566,9 @@ fn sample_reconciliations_torch(
         }
         .sample()
     });
-    sample_nodes.into_py(py)
+    sample_nodes
+        .map(|nodes| nodes.into_py(py))
+        .map_err(PyErr::from)
 }
 
 #[pymodule]

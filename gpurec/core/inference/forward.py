@@ -5,15 +5,15 @@ from ..kernels.wave_step import compute_leaf_initial_wave_step, compute_wave_ste
 from ..parameters.extract_parameters import as_family_param, as_family_species
 
 
-def Pi_wave_forward(
+def pi_wave_forward(
     wave_layout,
     species_helpers,
-    E,
-    Ebar,
-    E_s1,
-    E_s2,
-    log_pS,
-    log_pD,
+    e,
+    e_bar,
+    e_s1,
+    e_s2,
+    log_p_s,
+    log_p_d,
     max_transfer_mat,
     *,
     family_idx: torch.Tensor,
@@ -25,22 +25,22 @@ def Pi_wave_forward(
 
     C = int(wave_layout["leaf_species_index"].numel())
     S = int(species_helpers["S"])
-    device = E.device
-    dtype = E.dtype
+    device = e.device
+    dtype = e.dtype
 
-    Pi = torch.empty((C, S), dtype=dtype, device=device)
-    Pibar = torch.empty((C, S), dtype=dtype, device=device)
+    pi = torch.empty((C, S), dtype=dtype, device=device)
+    pibar = torch.empty((C, S), dtype=dtype, device=device)
 
-    family_rows = int(E.shape[0])
-    E_family = as_family_species(E, S, family_rows)
-    Ebar_family = as_family_species(Ebar, S, family_rows)
-    E_s1_family = as_family_species(E_s1, S, family_rows)
-    E_s2_family = as_family_species(E_s2, S, family_rows)
+    family_rows = int(e.shape[0])
+    e_family = as_family_species(e, S, family_rows)
+    e_bar_family = as_family_species(e_bar, S, family_rows)
+    e_s1_family = as_family_species(e_s1, S, family_rows)
+    e_s2_family = as_family_species(e_s2, S, family_rows)
     max_transfer_family = as_family_species(max_transfer_mat.squeeze(-1), S, family_rows)
-    log_pD_param = as_family_param(log_pD, family_rows, S)
-    log_pS_param = as_family_param(log_pS, family_rows, S)
-    log_pD_family = as_family_species(log_pD, S, family_rows)
-    log_pS_family = as_family_species(log_pS, S, family_rows)
+    log_p_d_param = as_family_param(log_p_d, family_rows, S)
+    log_p_s_param = as_family_param(log_p_s, family_rows, S)
+    log_p_d_family = as_family_species(log_p_d, S, family_rows)
+    log_p_s_family = as_family_species(log_p_s, S, family_rows)
 
     uniform_pibar_row_max = torch.empty((C,), dtype=dtype, device=device)
 
@@ -51,17 +51,17 @@ def Pi_wave_forward(
     sp_subtree_end = species_helpers["sp_subtree_end"]
     max_ancestor_depth = int(species_helpers["max_ancestor_depth"])
 
-    DL_const = 1.0 + log_pD_family + E_family
-    SL1_const = log_pS_family + E_s2_family
-    SL2_const = log_pS_family + E_s1_family
+    dl_const = 1.0 + log_p_d_family + e_family
+    sl1_const = log_p_s_family + e_s2_family
+    sl2_const = log_p_s_family + e_s1_family
 
     for meta in wave_layout["wave_metas"]:
         ws = meta["start"]
         W = meta["W"]
         dts_r = (
             compute_dts_forward(
-                Pi, Pibar, meta["sl"], meta["sr"], sp_child1, sp_child2,
-                W, meta["reduce_idx"], log_pD_param, log_pS_param,
+                pi, pibar, meta["sl"], meta["sr"], sp_child1, sp_child2,
+                W, meta["reduce_idx"], log_p_d_param, log_p_s_param,
                 family_idx=family_idx,
                 log_split_probs=meta.get("log_split_probs"),
                 n_eq1=meta.get("n_eq1"),
@@ -76,28 +76,28 @@ def Pi_wave_forward(
         )
         has_leaf_term = "sl" not in meta
         for local_iter in range(pi_iters):
-            pi_in = Pi if (local_iter % 2 == 0) else Pibar
-            pi_out = Pibar if (local_iter % 2 == 0) else Pi
+            pi_in = pi if (local_iter % 2 == 0) else pibar
+            pi_out = pibar if (local_iter % 2 == 0) else pi
             if local_iter == 0 and not has_leaf_term:
                 continue
             elif local_iter == 0:
                 compute_leaf_initial_wave_step(
                     pi_out, ws, W, S,
-                    max_transfer_family, DL_const, Ebar_family, E_family, SL1_const, SL2_const,
+                    max_transfer_family, dl_const, e_bar_family, e_family, sl1_const, sl2_const,
                     sp_child1, sp_child2, sp_subtree_start, sp_subtree_end,
                     wave_layout["leaf_species_index"],
-                    log_pS_family,
+                    log_p_s_family,
                     family_idx=family_idx,
                 )
             else:
                 step_input_ws = 0 if local_iter == 1 and not has_leaf_term else None
                 compute_wave_step(
-                    dts_r if step_input_ws == 0 else pi_in, pi_out, Pibar, ws, W, S,
-                    max_transfer_family, DL_const, Ebar_family, E_family, SL1_const, SL2_const,
+                    dts_r if step_input_ws == 0 else pi_in, pi_out, pibar, ws, W, S,
+                    max_transfer_family, dl_const, e_bar_family, e_family, sl1_const, sl2_const,
                     sp_child1, sp_child2, sp_parent, max_ancestor_depth,
                     dts_r,
                     leaf_species_idx=wave_layout["leaf_species_index"],
-                    leaf_logp=log_pS_family,
+                    leaf_logp=log_p_s_family,
                     family_idx=family_idx,
                     pibar_row_max=uniform_pibar_row_max,
                     store_final_pibar=local_iter == pi_iters - 1,
@@ -105,4 +105,7 @@ def Pi_wave_forward(
                     input_ws=step_input_ws,
                 )
 
-    return Pi[wave_layout["root_clade_ids"]], Pi, Pibar, uniform_pibar_row_max
+    return pi[wave_layout["root_clade_ids"]], pi, pibar, uniform_pibar_row_max
+
+
+Pi_wave_forward = pi_wave_forward

@@ -490,17 +490,17 @@ fn split_root_wave(
     families: &[FamilySchedule],
     root_cap: Option<usize>,
 ) -> Vec<Vec<LocalClade>> {
-    if root_cap.is_none() || batch.len() <= root_cap.unwrap_or(usize::MAX) {
+    let Some(root_cap) = root_cap else {
+        return vec![batch.to_vec()];
+    };
+    if batch.len() <= root_cap {
         return vec![batch.to_vec()];
     }
     if batch
         .iter()
         .all(|(fi, clade)| *clade == families[*fi].root_id)
     {
-        return batch
-            .chunks(root_cap.expect("checked is_some"))
-            .map(|chunk| chunk.to_vec())
-            .collect();
+        return batch.chunks(root_cap).map(|chunk| chunk.to_vec()).collect();
     }
     vec![batch.to_vec()]
 }
@@ -602,7 +602,9 @@ fn schedule_forward_nonleaf_waves(
         let mut batch_max_tiles = 0usize;
         let mut deferred = Vec::new();
         while !ready.is_empty() && batch.len() < wave_cap {
-            let entry = ready.pop().expect("ready not empty").0;
+            let Some(Reverse(entry)) = ready.pop() else {
+                break;
+            };
             let (_neg_priority, fi, clade) = entry;
             if scheduled[fi][clade] {
                 continue;
@@ -719,7 +721,9 @@ fn schedule_reverse_compacted_nonleaf_waves(
         let mut batch_max_tiles = 0usize;
         let mut deferred = Vec::new();
         while !ready.is_empty() && batch.len() < wave_cap {
-            let entry = ready.pop().expect("ready not empty").0;
+            let Some(Reverse(entry)) = ready.pop() else {
+                break;
+            };
             let (_priority, _neg_fanout, fi, clade) = entry;
             if scheduled[fi][clade] || successors_remaining[fi][clade] != 0 {
                 continue;
@@ -904,7 +908,9 @@ fn schedule_deadline_nonleaf_waves(
         let mut deferred = Vec::new();
 
         while !ready.is_empty() && batch.len() < wave_cap {
-            let entry = ready.pop().expect("ready not empty").0;
+            let Some(Reverse(entry)) = ready.pop() else {
+                break;
+            };
             let (neg_earliest, _neg_priority, _neg_fanout, fi, clade) = entry;
             if scheduled[fi][clade] || successors_remaining[fi][clade] != 0 {
                 continue;

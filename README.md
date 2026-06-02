@@ -136,8 +136,22 @@ The most important controls are:
 ## Requirements
 
 The Python package requires Python 3.10-3.12, PyTorch, Triton, and NumPy.  The
-main likelihood path expects a CUDA-capable PyTorch/Triton installation.  The
-Rust crates are built separately when their native helpers are needed.
+main likelihood path expects a CUDA-capable PyTorch/Triton installation.  A
+Rust toolchain is also required when installing from source because the
+`gpurec-preprocess` and `gpurec-backtrack` PyO3 extensions are built as part of
+the Python package:
+
+```bash
+python -m pip install .
+```
+
+For local crate iteration, the Python loaders still support a source-checkout
+fallback after building the crates directly:
+
+```bash
+cargo build --release --manifest-path crates/gpurec-preprocess/Cargo.toml
+cargo build --release --manifest-path crates/gpurec-backtrack/Cargo.toml
+```
 
 ## Development Notes
 

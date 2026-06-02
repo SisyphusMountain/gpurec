@@ -177,11 +177,8 @@ fn plan_family_batches_impl(
         )?),
         None => None,
     };
-    let selected_groups = selected_groups_by_leaf_count(
-        &selected,
-        small_family_leaf_counts,
-        small_family_max_leaves,
-    );
+    let selected_groups =
+        selected_groups_by_leaf_count(&selected, small_family_leaf_counts, small_family_max_leaves);
 
     let mut plans = Vec::new();
     for group in selected_groups {
@@ -216,7 +213,11 @@ fn plan_family_batches_for_selected(
 ) -> Result<Vec<FamilyBatchPlanOutput>, PreprocessError> {
     match packing {
         "clade_first_fit" => {
-            let budget = clade_budget.expect("clade_first_fit budget validated");
+            let budget = clade_budget.ok_or_else(|| {
+                PreprocessError::InvalidInput(
+                    "batch_packing='clade_first_fit' requires clade_budget".to_string(),
+                )
+            })?;
             plan_clade_first_fit(
                 selected,
                 clade_counts,
@@ -226,11 +227,34 @@ fn plan_family_batches_for_selected(
             )
         }
         "depth_first_fit" => {
-            let budget = clade_budget.expect("depth_first_fit budget validated");
-            let leaves = leaf_counts.expect("depth_first_fit leaf_counts validated");
-            let nonleaves = nonleaf_counts.expect("depth_first_fit nonleaf_counts validated");
-            let depths = schedule_depths.expect("depth_first_fit schedule_depths validated");
-            let wave_cap = max_wave_size.expect("depth_first_fit max_wave_size validated");
+            let budget = clade_budget.ok_or_else(|| {
+                PreprocessError::InvalidInput(
+                    "batch_packing='depth_first_fit' requires clade_budget".to_string(),
+                )
+            })?;
+            let leaves = require_indexed_stats(
+                "batch_packing='depth_first_fit'",
+                "leaf_counts",
+                leaf_counts,
+                selected,
+            )?;
+            let nonleaves = require_indexed_stats(
+                "batch_packing='depth_first_fit'",
+                "nonleaf_counts",
+                nonleaf_counts,
+                selected,
+            )?;
+            let depths = require_indexed_stats(
+                "batch_packing='depth_first_fit'",
+                "schedule_depths",
+                schedule_depths,
+                selected,
+            )?;
+            let wave_cap = max_wave_size.ok_or_else(|| {
+                PreprocessError::InvalidInput(
+                    "batch_packing='depth_first_fit' requires max_wave_size".to_string(),
+                )
+            })?;
             plan_depth_first_fit(
                 selected,
                 clade_counts,
@@ -250,7 +274,7 @@ fn plan_family_batches_for_selected(
             family_chunk_size,
             clade_budget,
         ),
-        _ => unreachable!("normalize_batch_packing returns only known values"),
+        _ => invalid(format!("unknown batch_packing {packing:?}")),
     }
 }
 
@@ -265,7 +289,9 @@ fn selected_groups_by_leaf_count(
     if max_leaves == 0 {
         return vec![selected.to_vec()];
     }
-    let leaves = leaf_counts.expect("small_family_max_leaves leaf_counts validated");
+    let Some(leaves) = leaf_counts else {
+        return vec![selected.to_vec()];
+    };
     let mut boundaries = vec![max_leaves];
     let mut next = max_leaves;
     while next < 256 {
