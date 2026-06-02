@@ -5,6 +5,10 @@ import triton.language as tl
 from gpurec.core.parameters.extract_parameters import as_family_species
 
 
+def _tl_float_dtype(dtype):
+    return tl.float64 if dtype == torch.float64 else tl.float32
+
+
 @triton.jit
 def _e_step_forward_2d_kernel(
     E_ptr,
@@ -24,13 +28,14 @@ def _e_step_forward_2d_kernel(
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
     g = tl.program_id(0)
     base = g * S
     offs = tl.arange(0, BLOCK_S)
     mask = offs < S
     neg_inf = -float("inf")
-    zero = tl.zeros([BLOCK_S], dtype=tl.float32)
+    zero = tl.zeros([BLOCK_S], dtype=DTYPE)
 
     E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
     row_max = tl.max(E, axis=0)
@@ -110,13 +115,14 @@ def _e_step_backward_prepare_2d_kernel(
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
     g = tl.program_id(0)
     base = g * S
     offs = tl.arange(0, BLOCK_S)
     mask = offs < S
     neg_inf = -float("inf")
-    zero = tl.zeros([BLOCK_S], dtype=tl.float32)
+    zero = tl.zeros([BLOCK_S], dtype=DTYPE)
 
     E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
     E_new = tl.load(E_new_ptr + base + offs, mask=mask, other=neg_inf)
@@ -164,7 +170,7 @@ def _e_step_backward_prepare_2d_kernel(
     tl.atomic_add(grad_E_ptr + base + c2, q0 + g_s2_out, sem="relaxed", mask=c2_valid)
 
     cur = offs
-    ancestor_sum = tl.zeros([BLOCK_S], dtype=tl.float32)
+    ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
     for _ in range(0, MAX_ANCESTOR_DEPTH):
         valid = mask & (cur >= 0) & (cur < S)
         E_anc = tl.load(E_ptr + base + cur, mask=valid, other=neg_inf)
@@ -238,6 +244,7 @@ def _launch_e_step_forward_2d(
         BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         COMPUTE_DIFF=max_diff_out is not None,
+        DTYPE=_tl_float_dtype(E.dtype),
         num_warps=8,
     )
     return E_new, E_s1, E_s2, Ebar
@@ -315,6 +322,7 @@ class _TritonEStep2D(torch.autograd.Function):
             S,
             BLOCK_S=block_s,
             MAX_ANCESTOR_DEPTH=int(ctx.max_ancestor_depth),
+            DTYPE=_tl_float_dtype(E.dtype),
             num_warps=8,
         )
         _e_step_backward_finalize_2d_kernel[(G,)](
@@ -371,7 +379,17 @@ def e_fixed_point_triton(
     sp_child1: torch.Tensor,
     sp_child2: torch.Tensor,
     max_ancestor_depth: int,
+    *,
+    max_iter: int = 2000,
+    tol: float = 1e-8,
 ):
+    max_iter = int(max_iter)
+    tol = float(tol)
+    if max_iter < 1:
+        raise ValueError("max_iter must be at least 1")
+    if tol <= 0.0:
+        raise ValueError("tol must be positive")
+
     E_a = E0.contiguous().clone()
     G = int(E_a.shape[0])
     log_pS_mat, log_pD_mat, log_pL_mat, max_transfer_mat = (
@@ -392,7 +410,7 @@ def e_fixed_point_triton(
     E_b, E_s1, E_s2, Ebar = (torch.empty_like(E_a) for _ in range(4))
     max_diff_out = torch.empty((G,), dtype=E_a.dtype, device=E_a.device)
 
-    for _ in range(2000):
+    for _ in range(max_iter):
         _launch_e_step_forward_2d(
             E_a,
             *forward_args,
@@ -401,7 +419,7 @@ def e_fixed_point_triton(
         )
         E_a, E_b = E_b, E_a
         max_diff = float(max_diff_out.max().item())
-        if max_diff < 1e-8:
+        if max_diff < tol:
             break
 
     _, E_s1, E_s2, Ebar = _launch_e_step_forward_2d(E_a, *forward_args)

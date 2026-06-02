@@ -1,5 +1,10 @@
+import torch
 import triton
 import triton.language as tl
+
+
+def _tl_float_dtype(dtype):
+    return tl.float64 if dtype == torch.float64 else tl.float32
 
 
 def _prepare_wave_launch(S: int, const_tensor) -> tuple[int, int]:
@@ -8,15 +13,23 @@ def _prepare_wave_launch(S: int, const_tensor) -> tuple[int, int]:
 
 
 @triton.jit
-def _row_logsumexp(Pi_ptr, base, S: tl.constexpr, BLOCK_S: tl.constexpr):
-    row_max = tl.full([1], value=-1e30, dtype=tl.float32)
-    row_sum = tl.full([1], value=0.0, dtype=tl.float32)
+def _row_logsumexp(Pi_ptr, base, S: tl.constexpr, BLOCK_S: tl.constexpr, DTYPE: tl.constexpr):
+    NEG_INF: tl.constexpr = -float("inf")
+    row_max = tl.full([1], value=NEG_INF, dtype=DTYPE)
+    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
-        pi_val = tl.load(Pi_ptr + base + s_offs, mask=mask, other=-1e30)
+        pi_val = tl.load(Pi_ptr + base + s_offs, mask=mask, other=NEG_INF)
         new_max = tl.maximum(row_max, tl.max(pi_val, axis=0))
-        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+        new_max_safe = tl.where(new_max != NEG_INF, new_max, tl.zeros_like(new_max))
+        previous = tl.where(
+            row_max != NEG_INF,
+            row_sum * tl.exp2(row_max - new_max_safe),
+            tl.zeros_like(row_sum),
+        )
+        current = tl.sum(tl.exp2(pi_val - new_max_safe), axis=0)
+        row_sum = previous + current
         row_max = new_max
     return row_max, row_sum
 
@@ -34,16 +47,19 @@ def _pibar_tile(
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
-    ancestor_sum = tl.zeros([BLOCK_S], dtype=tl.float32)
+    NEG_INF: tl.constexpr = -float("inf")
+    ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+    row_max_safe = tl.where(row_max != NEG_INF, row_max, tl.zeros_like(row_max))
     cur = s_offs.to(tl.int64)
     for _ in range(0, MAX_ANCESTOR_DEPTH):
         cur_valid = mask & (cur >= 0) & (cur < S)
-        pi_anc = tl.load(Pi_ptr + base + cur, mask=cur_valid, other=-1e30)
-        ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=tl.float32))
+        pi_anc = tl.load(Pi_ptr + base + cur, mask=cur_valid, other=NEG_INF)
+        ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max_safe), tl.zeros([BLOCK_S], dtype=DTYPE))
         cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int64)
     denom = row_sum - ancestor_sum
-    return tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer, -1e30)
+    return tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer, NEG_INF)
 
 
 @triton.jit
@@ -70,8 +86,9 @@ def _wave_step_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_FINAL_PIBAR: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
-    NEG_LARGE = -1e30
+    NEG_LARGE = -float("inf")
 
     w = tl.program_id(0)
     pi_base = (pi_ws + w) * stride
@@ -80,7 +97,7 @@ def _wave_step_kernel(
     family_const = tl.load(family_idx_ptr + ws + w)
     const_base = family_const * CONST_ROW_STRIDE
 
-    row_max, row_sum = _row_logsumexp(Pi_ptr, pi_base, S, BLOCK_S)
+    row_max, row_sum = _row_logsumexp(Pi_ptr, pi_base, S, BLOCK_S, DTYPE)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -92,7 +109,7 @@ def _wave_step_kernel(
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
         pibar_w = _pibar_tile(
             Pi_ptr, pi_base, s_offs, mask, row_max, row_sum,
-            max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH,
+            max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH, DTYPE,
         )
 
         dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
@@ -119,7 +136,7 @@ def _wave_step_kernel(
             leaf_logp = tl.load(leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE)
             t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
-            t5 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=tl.float32)
+            t5 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
 
         m = tl.maximum(t0, t1)
         m = tl.maximum(m, t2)
@@ -130,7 +147,7 @@ def _wave_step_kernel(
             dts_r = tl.load(DTS_reduced_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
             m = tl.maximum(m, dts_r)
 
-        m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
+        m_safe = tl.where(m != NEG_LARGE, m, tl.zeros_like(m))
         s = tl.exp2(t0 - m_safe) + tl.exp2(t1 - m_safe) + tl.exp2(t2 - m_safe)
         s += tl.exp2(t3 - m_safe) + tl.exp2(t4 - m_safe) + tl.exp2(t5 - m_safe)
         if has_splits:
@@ -140,7 +157,7 @@ def _wave_step_kernel(
         tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
 
     if STORE_FINAL_PIBAR:
-        final_row_max, final_row_sum = _row_logsumexp(Pi_new_ptr, out_base, S, BLOCK_S)
+        final_row_max, final_row_sum = _row_logsumexp(Pi_new_ptr, out_base, S, BLOCK_S, DTYPE)
         tl.store(pibar_row_max_ptr + ws + w, tl.max(final_row_max, axis=0))
 
         for s_start in range(0, S, BLOCK_S):
@@ -150,7 +167,7 @@ def _wave_step_kernel(
             max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
             pibar_w = _pibar_tile(
                 Pi_new_ptr, out_base, s_offs, mask, final_row_max, final_row_sum,
-                max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH,
+                max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH, DTYPE,
             )
             tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
 
@@ -176,8 +193,9 @@ def _leaf_initial_wave_step_kernel(
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
-    NEG_LARGE = -1e30
+    NEG_LARGE = -float("inf")
 
     w = tl.program_id(0)
     s_start = tl.program_id(1) * BLOCK_S
@@ -203,7 +221,7 @@ def _leaf_initial_wave_step_kernel(
     sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
     sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
-    pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=tl.float32), NEG_LARGE)
+    pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=DTYPE), NEG_LARGE)
     pibar_w = tl.where(~descendant, max_transfer, NEG_LARGE)
 
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
@@ -224,7 +242,7 @@ def _leaf_initial_wave_step_kernel(
     m = tl.maximum(m, t3)
     m = tl.maximum(m, t4)
     m = tl.maximum(m, t5)
-    m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
+    m_safe = tl.where(m != NEG_LARGE, m, tl.zeros_like(m))
     total = (
         tl.exp2(t0 - m_safe)
         + tl.exp2(t1 - m_safe)
@@ -279,6 +297,7 @@ def compute_leaf_initial_wave_step(
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
+        DTYPE=_tl_float_dtype(Pi_out.dtype),
         num_warps=8,
     )
 
@@ -319,5 +338,6 @@ def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=use_leaf_index,
         STORE_FINAL_PIBAR=bool(store_final_pibar),
+        DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=8,
     )

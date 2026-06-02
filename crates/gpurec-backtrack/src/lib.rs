@@ -4,13 +4,16 @@ use rand::prelude::*;
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
-const NEG_INF: f64 = -1.0e300;
+const NEG_INF: f64 = f64::NEG_INFINITY;
 
 #[derive(Clone, Copy)]
 struct BacktrackInputView<'a> {
     cols: usize,
+    root_clade: usize,
     leaf_species: &'a [i64],
+    split_parents: &'a [i64],
     split_leftrights: &'a [i64],
+    log_split_probs: &'a [f64],
     pi: &'a [f64],
     pibar: &'a [f64],
     e: &'a [f64],
@@ -36,11 +39,12 @@ impl BacktrackInputView<'_> {
         self.split_leftrights[self.split_leftrights.len() / 2 + idx] as usize
     }
 
-    fn split_index(&self, parent: usize) -> usize {
-        self.leaf_species[..parent]
+    fn splits_for_parent(&self, parent: usize) -> impl Iterator<Item = usize> + '_ {
+        self.split_parents
             .iter()
-            .filter(|&&leaf| leaf < 0)
-            .count()
+            .enumerate()
+            .filter(move |(_, &split_parent)| split_parent == parent as i64)
+            .map(|(idx, _)| idx)
     }
 }
 
@@ -76,7 +80,7 @@ impl<'a> Sampler<'a> {
     fn sample(&mut self) -> Vec<SampleNode> {
         let root_species = self.sample_root_species();
         let root = self.add_node("speciation", root_species);
-        let root_clade = self.input.leaf_species.len() - 1;
+        let root_clade = self.input.root_clade;
         let mut stack = vec![(root, root_clade, root_species)];
 
         while let Some((node_idx, clade, species)) = stack.pop() {
@@ -89,7 +93,7 @@ impl<'a> Sampler<'a> {
 
     fn sample_root_species(&mut self) -> usize {
         let input = self.input;
-        let root_clade = input.leaf_species.len() - 1;
+        let root_clade = input.root_clade;
         sample_index(
             (0..input.cols).map(|species| (species, input.pi(root_clade, species))),
             &mut self.rng,
@@ -125,30 +129,30 @@ impl<'a> Sampler<'a> {
             add(Leaf, p_s);
         }
 
-        if input.leaf_species[clade] < 0 {
-            let split_idx = input.split_index(clade);
+        for split_idx in input.splits_for_parent(clade) {
             let left = input.split_left(split_idx);
             let right = input.split_right(split_idx);
+            let lsp = input.log_split_probs[split_idx];
             add(
                 SplitDup(split_idx),
-                p_d + input.pi(left, species) + input.pi(right, species),
+                lsp + p_d + input.pi(left, species) + input.pi(right, species),
             );
             add(
                 SplitTransfer(split_idx, true),
-                input.pi(left, species) + input.pibar(right, species),
+                lsp + input.pi(left, species) + input.pibar(right, species),
             );
             add(
                 SplitTransfer(split_idx, false),
-                input.pi(right, species) + input.pibar(left, species),
+                lsp + input.pi(right, species) + input.pibar(left, species),
             );
             if let Some((c1, c2)) = children {
                 add(
                     SplitSpeciation(split_idx, false),
-                    p_s + input.pi(left, c1) + input.pi(right, c2),
+                    lsp + p_s + input.pi(left, c1) + input.pi(right, c2),
                 );
                 add(
                     SplitSpeciation(split_idx, true),
-                    p_s + input.pi(right, c1) + input.pi(left, c2),
+                    lsp + p_s + input.pi(right, c1) + input.pi(left, c2),
                 );
             }
         }
@@ -279,13 +283,13 @@ where
     T: Copy,
     I: Iterator<Item = (T, f64)> + Clone,
 {
-    let selectable = |weight: f64| weight.is_finite() && weight > NEG_INF / 2.0;
+    let selectable = |weight: f64| weight.is_finite();
     let max = weighted
         .clone()
         .map(|(_, weight)| weight)
         .filter(|weight| selectable(*weight))
         .fold(NEG_INF, f64::max);
-    if max <= NEG_INF / 2.0 {
+    if max == NEG_INF {
         panic!("all candidate backtracking weights are zero");
     }
     let total = weighted
@@ -314,8 +318,11 @@ fn slice_from_numpy<'a, T: numpy::Element>(values: &'a PyReadonlyArray1<'_, T>) 
 #[allow(clippy::too_many_arguments)]
 fn sample_reconciliations_torch(
     py: Python<'_>,
+    root_clade: u64,
     leaf_species: PyReadonlyArray1<'_, i64>,
+    split_parents: PyReadonlyArray1<'_, i64>,
     split_leftrights: PyReadonlyArray1<'_, i64>,
+    log_split_probs: PyReadonlyArray1<'_, f64>,
     pi: PyReadonlyArray2<'_, f64>,
     pibar: PyReadonlyArray2<'_, f64>,
     e: PyReadonlyArray1<'_, f64>,
@@ -330,8 +337,11 @@ fn sample_reconciliations_torch(
 ) -> PyObject {
     let input_view = BacktrackInputView {
         cols: pi.shape()[1],
+        root_clade: root_clade as usize,
         leaf_species: slice_from_numpy(&leaf_species),
+        split_parents: slice_from_numpy(&split_parents),
         split_leftrights: slice_from_numpy(&split_leftrights),
+        log_split_probs: slice_from_numpy(&log_split_probs),
         pi: pi.as_slice().unwrap(),
         pibar: pibar.as_slice().unwrap(),
         e: slice_from_numpy(&e),

@@ -20,8 +20,11 @@ uv.lock
 
 crates/*/target/
 
+tests/data/
+
 *.ipynb
 !notebooks/lean_basic_workflow.ipynb
+!notebooks/optimize_hogenom_likelihood_end_to_end.ipynb
 
 AleRax.zip
 AleRax_fixed/

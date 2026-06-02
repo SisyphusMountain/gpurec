@@ -2,127 +2,230 @@ import torch
 import triton
 import triton.language as tl
 
+
+def _tl_float_dtype(dtype):
+    return tl.float64 if dtype == torch.float64 else tl.float32
+
+
 @triton.jit
-def _single_split_dts_parent_rows_kernel(
-    Pi_ptr,
-    Pibar_ptr,
-    lefts_ptr,
-    rights_ptr,
-    sp_child1_ptr,
-    sp_child2_ptr,
-    log_pD_ptr,
-    log_pS_ptr,
-    parent_ids_ptr,
-    active_parent_rows_ptr,
-    out_ptr,
-    family_idx_ptr,
-    family_offset,
-    S: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    ROW_STRIDE: tl.constexpr = 0,
-    USE_ACTIVE_PARENT_ROWS: tl.constexpr = False,
+def _load_rate(param, family, s_offs, mask, S: tl.constexpr, ROW_STRIDE: tl.constexpr, BY_SPECIES: tl.constexpr, BLOCK_S: tl.constexpr, DTYPE: tl.constexpr):
+    NEG_INF: tl.constexpr = -float("inf")
+    if BY_SPECIES:
+        return tl.load(param + family * ROW_STRIDE + s_offs, mask=mask, other=NEG_INF)
+    return tl.load(param + family * ROW_STRIDE) + tl.zeros([BLOCK_S], dtype=DTYPE)
+
+
+@triton.jit
+def _dts_eq1_kernel(
+    Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD, log_pS,
+    log_split_probs, eq1_reduce_idx, active_rows, out, family_idx,
+    family_offset, S: tl.constexpr, BLOCK_S: tl.constexpr,
+    ROW_STRIDE: tl.constexpr, BY_SPECIES: tl.constexpr, USE_ACTIVE: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
+    NEG_INF: tl.constexpr = -float("inf")
     n = tl.program_id(0)
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
-
-    parent_w = tl.load(parent_ids_ptr + n).to(tl.int64)
-    out_base = parent_w * S
-    family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
-    if USE_ACTIVE_PARENT_ROWS:
-        parent_active = tl.load(active_parent_rows_ptr + parent_w)
-        if parent_active == 0:
-            tl.store(out_ptr + out_base + s_offs, tl.full([BLOCK_S], value=-1e30, dtype=tl.float32), mask=mask)
+    parent_w = tl.load(eq1_reduce_idx + n).to(tl.int64)
+    if USE_ACTIVE:
+        if tl.load(active_rows + parent_w) == 0:
+            tl.store(out + parent_w * S + s_offs, tl.full([BLOCK_S], NEG_INF, dtype=DTYPE), mask=mask)
             return
 
-    left_idx = tl.load(lefts_ptr + n).to(tl.int64)
-    right_idx = tl.load(rights_ptr + n).to(tl.int64)
-    base_l = left_idx * S
-    base_r = right_idx * S
-
-    pi_l = tl.load(Pi_ptr + base_l + s_offs, mask=mask, other=-1e30)
-    pi_r = tl.load(Pi_ptr + base_r + s_offs, mask=mask, other=-1e30)
-    pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
-    pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
-
-    log_pD_s = tl.load(log_pD_ptr + family * ROW_STRIDE)
-    log_pS_s = tl.load(log_pS_ptr + family * ROW_STRIDE)
-
-    c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
+    family = tl.load(family_idx + family_offset + parent_w).to(tl.int64)
+    left = tl.load(lefts + n).to(tl.int64)
+    right = tl.load(rights + n).to(tl.int64)
+    base_l = left * S
+    base_r = right * S
+    pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG_INF)
+    pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG_INF)
+    pibar_l = tl.load(Pibar + base_l + s_offs, mask=mask, other=NEG_INF)
+    pibar_r = tl.load(Pibar + base_r + s_offs, mask=mask, other=NEG_INF)
+    log_d = _load_rate(log_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
+    log_s = _load_rate(log_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
+    c1 = tl.load(sp_child1 + s_offs, mask=mask, other=S)
+    c2 = tl.load(sp_child2 + s_offs, mask=mask, other=S)
     c1_valid = c1 < S
     c2_valid = c2 < S
+    lsp = tl.load(log_split_probs + n)
 
-    t0 = log_pD_s + pi_l + pi_r
-    t1 = pi_l + pibar_r
-    t2 = pi_r + pibar_l
-    t3 = (
-        log_pS_s
-        + tl.load(Pi_ptr + base_l + c1, mask=mask & c1_valid, other=-1e30)
-        + tl.load(Pi_ptr + base_r + c2, mask=mask & c2_valid, other=-1e30)
-    )
-    t4 = (
-        log_pS_s
-        + tl.load(Pi_ptr + base_r + c1, mask=mask & c1_valid, other=-1e30)
-        + tl.load(Pi_ptr + base_l + c2, mask=mask & c2_valid, other=-1e30)
-    )
+    t0 = lsp + log_d + pi_l + pi_r
+    t1 = lsp + pi_l + pibar_r
+    t2 = lsp + pi_r + pibar_l
+    t3 = lsp + log_s + tl.load(Pi + base_l + c1, mask=mask & c1_valid, other=NEG_INF) + tl.load(Pi + base_r + c2, mask=mask & c2_valid, other=NEG_INF)
+    t4 = lsp + log_s + tl.load(Pi + base_r + c1, mask=mask & c1_valid, other=NEG_INF) + tl.load(Pi + base_l + c2, mask=mask & c2_valid, other=NEG_INF)
+    m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), t4)
+    m_safe = tl.where(m != NEG_INF, m, tl.zeros_like(m))
+    acc = tl.exp2(t0 - m_safe) + tl.exp2(t1 - m_safe) + tl.exp2(t2 - m_safe) + tl.exp2(t3 - m_safe) + tl.exp2(t4 - m_safe)
+    tl.store(out + parent_w * S + s_offs, tl.log2(acc) + m, mask=mask)
 
-    m = tl.maximum(t0, t1)
-    m = tl.maximum(m, t2)
-    m = tl.maximum(m, t3)
-    m = tl.maximum(m, t4)
-    m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
-    s = (
-        tl.exp2(t0 - m_safe)
-        + tl.exp2(t1 - m_safe)
-        + tl.exp2(t2 - m_safe)
-        + tl.exp2(t3 - m_safe)
-        + tl.exp2(t4 - m_safe)
-    )
-    result = tl.log2(s) + m
-    tl.store(out_ptr + out_base + s_offs, result, mask=mask)
+
+@triton.jit
+def _dts_ge2_stage1_kernel(
+    Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD, log_pS,
+    log_split_probs, ge2_ptr, ge2_parent_ids, active_rows, partial_max,
+    partial_sum, family_idx, family_offset, split_offset, MAX_TILES: tl.constexpr,
+    S: tl.constexpr, TILE_SPLITS: tl.constexpr, BLOCK_S: tl.constexpr,
+    ROW_STRIDE: tl.constexpr, BY_SPECIES: tl.constexpr, USE_ACTIVE: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    NEG_INF: tl.constexpr = -float("inf")
+    group = tl.program_id(0)
+    tile_id = tl.program_id(1)
+    s_block = tl.program_id(2)
+    s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
+    mask = s_offs < S
+    parent_w = tl.load(ge2_parent_ids + group).to(tl.int64)
+    if USE_ACTIVE:
+        if tl.load(active_rows + parent_w) == 0:
+            return
+
+    family = tl.load(family_idx + family_offset + parent_w).to(tl.int64)
+    start = tl.load(ge2_ptr + group)
+    end = tl.load(ge2_ptr + group + 1)
+    tile_start = start + tile_id * TILE_SPLITS
+    if tile_start >= end:
+        return
+    tile_end = tl.minimum(tile_start + TILE_SPLITS, end)
+
+    m = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
+    acc = tl.zeros([BLOCK_S], dtype=DTYPE)
+    split_rel = tile_start
+    while split_rel < tile_end:
+        split_i = split_offset + split_rel
+        left = tl.load(lefts + split_i).to(tl.int64)
+        right = tl.load(rights + split_i).to(tl.int64)
+        base_l = left * S
+        base_r = right * S
+        pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG_INF)
+        pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG_INF)
+        pibar_l = tl.load(Pibar + base_l + s_offs, mask=mask, other=NEG_INF)
+        pibar_r = tl.load(Pibar + base_r + s_offs, mask=mask, other=NEG_INF)
+        log_d = _load_rate(log_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
+        log_s = _load_rate(log_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
+        c1 = tl.load(sp_child1 + s_offs, mask=mask, other=S)
+        c2 = tl.load(sp_child2 + s_offs, mask=mask, other=S)
+        c1_valid = c1 < S
+        c2_valid = c2 < S
+        lsp = tl.load(log_split_probs + split_i)
+
+        v0 = lsp + log_d + pi_l + pi_r
+        v1 = lsp + pi_l + pibar_r
+        v2 = lsp + pi_r + pibar_l
+        v3 = lsp + log_s + tl.load(Pi + base_l + c1, mask=mask & c1_valid, other=NEG_INF) + tl.load(Pi + base_r + c2, mask=mask & c2_valid, other=NEG_INF)
+        v4 = lsp + log_s + tl.load(Pi + base_r + c1, mask=mask & c1_valid, other=NEG_INF) + tl.load(Pi + base_l + c2, mask=mask & c2_valid, other=NEG_INF)
+        split_m = tl.maximum(tl.maximum(tl.maximum(v0, v1), tl.maximum(v2, v3)), v4)
+        split_m_safe = tl.where(split_m != NEG_INF, split_m, tl.zeros_like(split_m))
+        split_sum = tl.exp2(v0 - split_m_safe) + tl.exp2(v1 - split_m_safe) + tl.exp2(v2 - split_m_safe) + tl.exp2(v3 - split_m_safe) + tl.exp2(v4 - split_m_safe)
+
+        new_m = tl.maximum(m, split_m)
+        new_m_safe = tl.where(new_m != NEG_INF, new_m, tl.zeros_like(new_m))
+        acc = tl.where(m != NEG_INF, acc * tl.exp2(m - new_m_safe), tl.zeros_like(acc)) + split_sum * tl.exp2(split_m_safe - new_m_safe)
+        m = new_m
+        split_rel += 1
+
+    partial_row = group * MAX_TILES + tile_id
+    tl.store(partial_max + partial_row * S + s_offs, m, mask=mask)
+    tl.store(partial_sum + partial_row * S + s_offs, acc, mask=mask)
+
+
+@triton.jit
+def _dts_ge2_stage2_kernel(
+    ge2_ptr, ge2_parent_ids, active_rows, partial_max, partial_sum, out,
+    MAX_TILES: tl.constexpr, S: tl.constexpr, TILE_SPLITS: tl.constexpr,
+    BLOCK_S: tl.constexpr, USE_ACTIVE: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    NEG_INF: tl.constexpr = -float("inf")
+    group = tl.program_id(0)
+    s_block = tl.program_id(1)
+    s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
+    mask = s_offs < S
+    parent_w = tl.load(ge2_parent_ids + group).to(tl.int64)
+    if USE_ACTIVE:
+        if tl.load(active_rows + parent_w) == 0:
+            tl.store(out + parent_w * S + s_offs, tl.full([BLOCK_S], NEG_INF, dtype=DTYPE), mask=mask)
+            return
+
+    start = tl.load(ge2_ptr + group)
+    end = tl.load(ge2_ptr + group + 1)
+    n_tiles = tl.cdiv(end - start, TILE_SPLITS)
+    m = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
+    acc = tl.zeros([BLOCK_S], dtype=DTYPE)
+    tile_id = 0
+    while tile_id < n_tiles:
+        partial_row = group * MAX_TILES + tile_id
+        pm = tl.load(partial_max + partial_row * S + s_offs, mask=mask, other=NEG_INF)
+        ps = tl.load(partial_sum + partial_row * S + s_offs, mask=mask, other=0.0)
+        new_m = tl.maximum(m, pm)
+        new_m_safe = tl.where(new_m != NEG_INF, new_m, tl.zeros_like(new_m))
+        acc = tl.where(m != NEG_INF, acc * tl.exp2(m - new_m_safe), tl.zeros_like(acc)) + tl.where(pm != NEG_INF, ps * tl.exp2(pm - new_m_safe), tl.zeros_like(acc))
+        m = new_m
+        tile_id += 1
+
+    tl.store(out + parent_w * S + s_offs, tl.log2(acc) + m, mask=mask)
 
 
 def compute_dts_forward(
-    Pi,
-    Pibar,
-    lefts,
-    rights,
-    sp_child1,
-    sp_child2,
-    W,
-    reduce_idx,
-    log_pD_vec,
-    log_pS_vec,
-    family_idx,
-    active_parent_rows=None,
-    family_offset=0,
+    Pi, Pibar, lefts, rights, sp_child1, sp_child2, W, reduce_idx,
+    log_pD_vec, log_pS_vec, family_idx, *, log_split_probs=None,
+    n_eq1=None, eq1_reduce_idx=None, ge2_ptr=None, ge2_parent_ids=None,
+    ge2_max_fanout=None, active_parent_rows=None, family_offset=0,
 ):
-    N = lefts.shape[0]
-    S = Pi.shape[1]
-    needs_fill = int(N) != int(W)
-    out = torch.full((W, S), float("-inf"), device=Pi.device, dtype=Pi.dtype) if needs_fill else torch.empty((W, S), device=Pi.device, dtype=Pi.dtype)
+    N = int(lefts.shape[0])
+    S = int(Pi.shape[1])
+    out = torch.full((W, S), float("-inf"), device=Pi.device, dtype=Pi.dtype)
+    if N == 0:
+        return out
+    if log_split_probs is None:
+        log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
+    else:
+        log_split_probs = log_split_probs.reshape(N).contiguous()
+    if n_eq1 is None:
+        n_eq1 = N
+        eq1_reduce_idx = reduce_idx
+        ge2_parent_ids = reduce_idx[:0]
+        ge2_ptr = reduce_idx.new_zeros((1,), dtype=torch.long)
+        ge2_max_fanout = 0
 
+    by_species = log_pD_vec.ndim == 2 and int(log_pD_vec.shape[1]) != 1
     row_stride = 0 if int(log_pD_vec.shape[0]) == 1 else int(log_pD_vec.stride(0))
     block_s = min(512, triton.next_power_of_2(S))
-    _single_split_dts_parent_rows_kernel[(N, triton.cdiv(S, block_s))](
-        Pi,
-        Pibar,
-        lefts,
-        rights,
-        sp_child1,
-        sp_child2,
-        log_pD_vec,
-        log_pS_vec,
-        reduce_idx,
-        active_parent_rows if active_parent_rows is not None else reduce_idx,
-        out,
-        family_idx,
-        int(family_offset),
-        S,
-        BLOCK_S=block_s,
-        ROW_STRIDE=row_stride,
-        USE_ACTIVE_PARENT_ROWS=bool(active_parent_rows is not None),
+    active = active_parent_rows if active_parent_rows is not None else reduce_idx
+
+    if int(n_eq1) > 0:
+        _dts_eq1_kernel[(int(n_eq1), triton.cdiv(S, block_s))](
+            Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD_vec, log_pS_vec,
+            log_split_probs, eq1_reduce_idx, active, out, family_idx, int(family_offset),
+            S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_SPECIES=bool(by_species),
+            USE_ACTIVE=bool(active_parent_rows is not None),
+            DTYPE=_tl_float_dtype(Pi.dtype),
+        )
+
+    if ge2_parent_ids is None or int(ge2_parent_ids.numel()) == 0:
+        return out
+    tile_splits = 64
+    if ge2_max_fanout is None:
+        ge2_max_fanout = int((ge2_ptr[1:] - ge2_ptr[:-1]).max().item())
+    max_tiles = max(1, triton.cdiv(int(ge2_max_fanout), tile_splits))
+    n_groups = int(ge2_parent_ids.numel())
+    partial_shape = (n_groups * max_tiles, S)
+    partial_max = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
+    partial_sum = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
+    _dts_ge2_stage1_kernel[(n_groups, max_tiles, triton.cdiv(S, block_s))](
+        Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD_vec, log_pS_vec,
+        log_split_probs, ge2_ptr, ge2_parent_ids, active, partial_max, partial_sum,
+        family_idx, int(family_offset), split_offset=int(n_eq1), MAX_TILES=max_tiles,
+        S=S, TILE_SPLITS=tile_splits, BLOCK_S=block_s, ROW_STRIDE=row_stride,
+        BY_SPECIES=bool(by_species), USE_ACTIVE=bool(active_parent_rows is not None),
+        DTYPE=_tl_float_dtype(Pi.dtype),
+    )
+    _dts_ge2_stage2_kernel[(n_groups, triton.cdiv(S, block_s))](
+        ge2_ptr, ge2_parent_ids, active, partial_max, partial_sum, out,
+        MAX_TILES=max_tiles, S=S, TILE_SPLITS=tile_splits, BLOCK_S=block_s,
+        USE_ACTIVE=bool(active_parent_rows is not None),
+        DTYPE=_tl_float_dtype(Pi.dtype),
     )
     return out
