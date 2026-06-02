@@ -385,10 +385,11 @@ class GeneReconModel(torch.nn.Module):
         self.warm_E = self.batch_statics[0].warm_E
         return self.family_batches
 
-    def forward(self) -> torch.Tensor:
+    def forward(self, theta: torch.Tensor | None = None) -> torch.Tensor:
+        theta = self.theta if theta is None else theta
         if len(self.batch_statics) == 1:
-            return _GeneReconFunction.apply(self.theta, self.batch_statics[0])
-        if torch.is_grad_enabled() and self.theta.requires_grad:
-            return _GeneReconFullLossFunction.apply(self.theta, self)
-        loss, _ = self._stream_batches(self.theta, need_grad=False)
+            return _GeneReconFunction.apply(theta, self.batch_statics[0])
+        if torch.is_grad_enabled() and theta.requires_grad:
+            return _GeneReconFullLossFunction.apply(theta, self)
+        loss, _ = self._stream_batches(theta, need_grad=False)
         return loss
