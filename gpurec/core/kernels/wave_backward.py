@@ -210,6 +210,7 @@ def _wave_backward_uniform_2d_precompute_kernel(
     rhs_ptr,
     active_mask_ptr,
     mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    receiver_log_probs_ptr,
     sp_child1_ptr, sp_child2_ptr, sp_parent_ptr,
     leaf_term_ptr,
     leaf_species_ptr,
@@ -236,6 +237,7 @@ def _wave_backward_uniform_2d_precompute_kernel(
     CONST_LAYOUT: tl.constexpr,
     DTYPE: tl.constexpr,
     USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
 ):
     """Precompute self-loop J^T coefficients for a block of rows and all species."""
     NEG_LARGE: tl.constexpr = -float("inf")
@@ -264,7 +266,11 @@ def _wave_backward_uniform_2d_precompute_kernel(
     pi_w = tl.load(Pi_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
     pibar_w = tl.load(Pibar_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
     row_max_safe = tl.where(row_max != NEG_LARGE, row_max, tl.zeros_like(row_max))
-    p_prime = tl.exp2(pi_w - row_max_safe[None, :])
+    if USE_RECEIVER_WEIGHTS:
+        receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
+        p_prime = tl.exp2(receiver_logp[:, None] + pi_w - row_max_safe[None, :])
+    else:
+        p_prime = tl.exp2(pi_w - row_max_safe[None, :])
     row_sum = tl.sum(tl.where(mask, p_prime, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)), axis=0)
 
     family = tl.full([BLOCK_W], value=0, dtype=tl.int64)
@@ -366,11 +372,23 @@ def _wave_backward_uniform_2d_precompute_kernel(
             mask=cur_valid[:, None] & row_mask[None, :],
             other=NEG_LARGE,
         ).to(DTYPE)
-        ancestor_sum += tl.where(
-            cur_valid[:, None] & row_mask[None, :],
-            tl.exp2(pi_anc - row_max_safe[None, :]),
-            tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
-        )
+        if USE_RECEIVER_WEIGHTS:
+            receiver_logp_anc = tl.load(
+                receiver_log_probs_ptr + cur,
+                mask=cur_valid,
+                other=NEG_LARGE,
+            ).to(DTYPE)
+            ancestor_sum += tl.where(
+                cur_valid[:, None] & row_mask[None, :],
+                tl.exp2(receiver_logp_anc[:, None] + pi_anc - row_max_safe[None, :]),
+                tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
+            )
+        else:
+            ancestor_sum += tl.where(
+                cur_valid[:, None] & row_mask[None, :],
+                tl.exp2(pi_anc - row_max_safe[None, :]),
+                tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
+            )
         cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
     denom = row_sum[None, :] - ancestor_sum
     inv_denom = tl.where(denom > 0.0, 1.0 / denom, tl.zeros_like(denom))
@@ -546,6 +564,97 @@ def _wave_backward_uniform_2d_jt_kernel(
     else:
         v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
         tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
+
+
+@triton.jit
+def _receiver_grad_from_pibar_self_loop_kernel(
+    v_k_ptr,
+    active_mask_ptr,
+    pibar_coeff_ptr,
+    p_prime_ptr,
+    compact_level_ptr,
+    compact_level_parent_ptr,
+    compact_level_child1_ptr,
+    compact_level_child2_ptr,
+    pibar_corr_ptr,
+    grad_receiver_log_probs_ptr,
+    W,
+    S: tl.constexpr,
+    BLOCK_W: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    BLOCK_NODES: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    block = tl.program_id(0)
+    rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
+    s_offs = tl.arange(0, BLOCK_S)
+    row_valid = rows < W
+    species_valid = s_offs < S
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    else:
+        row_active = row_valid
+    row_mask = row_valid & row_active
+    mask = species_valid[:, None] & row_mask[None, :]
+    store_mask = species_valid[:, None] & row_valid[None, :]
+    offsets = rows[None, :] * S + s_offs[:, None]
+
+    term_val = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    pibar_u_coeff = tl.load(pibar_coeff_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    u_d = term_val * pibar_u_coeff
+    zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
+    A = tl.sum(tl.where(mask, u_d, zero), axis=0)
+    tl.store(pibar_corr_ptr + offsets, tl.where(mask, u_d, zero), mask=store_mask)
+
+    tl.debug_barrier()
+
+    for level in range(0, N_LEVELS):
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=0)
+            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            reduce_mask = node_mask[:, None] & row_mask[None, :]
+            row_base = rows[None, :] * S
+            parent_val = tl.load(
+                pibar_corr_ptr + row_base + parent[:, None],
+                mask=reduce_mask,
+                other=0.0,
+            ).to(DTYPE)
+            c1_val = tl.load(
+                pibar_corr_ptr + row_base + c1[:, None],
+                mask=reduce_mask & (c1 < S)[:, None],
+                other=0.0,
+            ).to(DTYPE)
+            c2_val = tl.load(
+                pibar_corr_ptr + row_base + c2[:, None],
+                mask=reduce_mask & (c2 < S)[:, None],
+                other=0.0,
+            ).to(DTYPE)
+            tl.store(
+                pibar_corr_ptr + row_base + parent[:, None],
+                parent_val + c1_val + c2_val,
+                mask=reduce_mask,
+            )
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
+    corr = tl.load(pibar_corr_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    p_prime = tl.load(p_prime_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    contrib = p_prime * (A[None, :] - corr)
+    species_contrib = tl.sum(tl.where(mask, contrib, zero), axis=1)
+    tl.atomic_add(
+        grad_receiver_log_probs_ptr + s_offs,
+        species_contrib,
+        sem="relaxed",
+        mask=species_valid,
+    )
 
 
 @triton.jit
@@ -775,6 +884,7 @@ def _wave_backward_uniform_2d(
     dts_r,
     rhs,
     mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+    receiver_log_probs,
     sp_child1, sp_child2, leaf_term_wt,
     *,
     neumann_terms,
@@ -793,6 +903,8 @@ def _wave_backward_uniform_2d(
     compact_level_parents,
     compact_level_child1,
     compact_level_child2,
+    grad_receiver_log_probs=None,
+    use_receiver_weights=True,
     self_loop_grad_targets=None,
     initial_v=None,
 ):
@@ -822,6 +934,7 @@ def _wave_backward_uniform_2d(
 
     device = Pi_star.device
     dtype = Pi_star.dtype
+    receiver_log_probs = receiver_log_probs.to(device=device, dtype=dtype).contiguous()
     if sp_parent is None:
         raise ValueError("sp_parent is required for the retained 2D self-loop path")
     sp_parent = sp_parent.to(device=device, dtype=torch.int32).contiguous()
@@ -896,6 +1009,7 @@ def _wave_backward_uniform_2d(
         E,
         SL1_const,
         SL2_const,
+        receiver_log_probs,
         sp_child1,
         sp_child2,
         sp_parent,
@@ -924,6 +1038,7 @@ def _wave_backward_uniform_2d(
         CONST_LAYOUT=int(const_layout),
         DTYPE=_tl_float_dtype(dtype),
         USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         **launch_options,
     )
 
@@ -1028,6 +1143,29 @@ def _wave_backward_uniform_2d(
         param_grad_vector = False
         aw345_ptr = aw345
 
+    if grad_receiver_log_probs is not None:
+        _receiver_grad_from_pibar_self_loop_kernel[(n_row_blocks,)](
+            v_k,
+            active_mask if active_mask is not None else rhs,
+            aw1,
+            aw2,
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+            pibar_corr,
+            grad_receiver_log_probs,
+            W,
+            S,
+            block_w,
+            block_s,
+            block_nodes,
+            compact_level_ptr.numel() - 1,
+            USE_ACTIVE_MASK=bool(active_mask is not None),
+            DTYPE=_tl_float_dtype(dtype),
+            **jt_options,
+        )
+
     _wave_backward_uniform_param_store_kernel[(n_row_blocks,)](
         Pi_star,
         Pibar_star,
@@ -1087,6 +1225,7 @@ def wave_backward_uniform_fused(
     dts_r,
     rhs,
     mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+    receiver_log_probs,
     sp_child1, sp_child2, leaf_term_wt,
     neumann_terms=3,
     leaf_species_idx=None,
@@ -1102,6 +1241,8 @@ def wave_backward_uniform_fused(
     compact_level_parents=None,
     compact_level_child1=None,
     compact_level_child2=None,
+    grad_receiver_log_probs=None,
+    use_receiver_weights=True,
     self_loop_grad_targets=None,
     initial_v=None,
 ):
@@ -1175,6 +1316,7 @@ def wave_backward_uniform_fused(
         E,
         SL1_const,
         SL2_const,
+        receiver_log_probs,
         sp_child1,
         sp_child2,
         leaf_term_wt,
@@ -1194,6 +1336,8 @@ def wave_backward_uniform_fused(
         compact_level_parents=compact_level_parents,
         compact_level_child1=compact_level_child1,
         compact_level_child2=compact_level_child2,
+        grad_receiver_log_probs=grad_receiver_log_probs,
+        use_receiver_weights=use_receiver_weights,
         self_loop_grad_targets=self_loop_grad_targets,
         initial_v=initial_v,
     )
@@ -1906,6 +2050,7 @@ def _pibar_ud_side_active_kernel(
 @triton.jit
 def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
     Pi_star_ptr,          # [C, S]
+    receiver_log_probs_ptr, # [S]
     pibar_ud_ptr,         # [2 * n_ws, S], initial subtree values u_d
     pibar_A_ptr,          # [2 * n_ws], sum_s u_d[s] per split side
     side_active_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
@@ -1919,6 +2064,7 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
     compact_level_child1_ptr, # [total internal nodes across levels]
     compact_level_child2_ptr, # [total internal nodes across levels]
     accumulated_rhs_ptr,  # [C, S], updated atomically
+    grad_receiver_log_probs_ptr, # optional [S], updated atomically
     n_ws: tl.constexpr,
     S: tl.constexpr,
     stride_C: tl.constexpr,
@@ -1926,6 +2072,8 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
     N_LEVELS: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     USE_SIDE_ACTIVE: tl.constexpr,
+    ACCUM_RECEIVER_GRAD: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Uniform Pibar from-u_d tree correction using compact per-level nodes."""
@@ -1983,14 +2131,26 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
         valid_mask = s_offs < S
         mask = valid_mask & row_active
         pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        p_prime = tl.exp2(pi_val - row_max_safe)
+        if USE_RECEIVER_WEIGHTS:
+            receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=valid_mask, other=NEG_LARGE)
+            p_prime = tl.exp2(receiver_logp + pi_val - row_max_safe)
+        else:
+            p_prime = tl.exp2(pi_val - row_max_safe)
         subtree_sum = tl.load(pibar_ud_ptr + row_base + s_offs, mask=mask, other=0.0)
         contrib = p_prime * (A - subtree_sum)
         tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
+        if ACCUM_RECEIVER_GRAD:
+            tl.atomic_add(
+                grad_receiver_log_probs_ptr + s_offs,
+                contrib,
+                sem="relaxed",
+                mask=mask,
+            )
 
 
 def uniform_cross_pibar_vjp_tree_from_ud_fused(
     Pi_star,
+    receiver_log_probs,
     pibar_ud,
     pibar_A,
     sl,
@@ -2006,6 +2166,8 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     compact_level_parents=None,
     compact_level_child1=None,
     compact_level_child2=None,
+    grad_receiver_log_probs=None,
+    use_receiver_weights=True,
     side_active_threshold=0.0,
 ):
     """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
@@ -2067,8 +2229,15 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     compact_level_parents = compact_level_parents.contiguous()
     compact_level_child1 = compact_level_child1.contiguous()
     compact_level_child2 = compact_level_child2.contiguous()
+    receiver_log_probs = receiver_log_probs.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
+    receiver_grad_arg = (
+        grad_receiver_log_probs
+        if grad_receiver_log_probs is not None
+        else pibar_A
+    )
     _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel[(2 * n_ws,)](
         Pi_star,
+        receiver_log_probs,
         pibar_ud,
         pibar_A,
         side_active if side_active is not None else pibar_A,
@@ -2082,6 +2251,7 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         compact_level_child1,
         compact_level_child2,
         accumulated_rhs,
+        receiver_grad_arg,
         n_ws,
         S,
         stride_C,
@@ -2089,6 +2259,8 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         N_LEVELS=compact_level_ptr.numel() - 1,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_SIDE_ACTIVE=bool(side_active is not None),
+        ACCUM_RECEIVER_GRAD=bool(grad_receiver_log_probs is not None),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         **launch_options,
     )

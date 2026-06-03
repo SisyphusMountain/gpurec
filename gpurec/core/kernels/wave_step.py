@@ -13,7 +13,15 @@ def _prepare_wave_launch(S: int, const_tensor) -> tuple[int, int]:
 
 
 @triton.jit
-def _row_logsumexp(Pi_ptr, base, S: tl.constexpr, BLOCK_S: tl.constexpr, DTYPE: tl.constexpr):
+def _row_logsumexp(
+    Pi_ptr,
+    receiver_log_probs_ptr,
+    base,
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
     NEG_INF: tl.constexpr = -float("inf")
     row_max = tl.full([1], value=NEG_INF, dtype=DTYPE)
     row_sum = tl.full([1], value=0.0, dtype=DTYPE)
@@ -21,14 +29,19 @@ def _row_logsumexp(Pi_ptr, base, S: tl.constexpr, BLOCK_S: tl.constexpr, DTYPE: 
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
         pi_val = tl.load(Pi_ptr + base + s_offs, mask=mask, other=NEG_INF)
-        new_max = tl.maximum(row_max, tl.max(pi_val, axis=0))
+        if USE_RECEIVER_WEIGHTS:
+            receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=mask, other=NEG_INF)
+            weighted_pi = receiver_logp + pi_val
+        else:
+            weighted_pi = pi_val
+        new_max = tl.maximum(row_max, tl.max(weighted_pi, axis=0))
         new_max_safe = tl.where(new_max != NEG_INF, new_max, tl.zeros_like(new_max))
         previous = tl.where(
             row_max != NEG_INF,
             row_sum * tl.exp2(row_max - new_max_safe),
             tl.zeros_like(row_sum),
         )
-        current = tl.sum(tl.exp2(pi_val - new_max_safe), axis=0)
+        current = tl.sum(tl.exp2(weighted_pi - new_max_safe), axis=0)
         row_sum = previous + current
         row_max = new_max
     return row_max, row_sum
@@ -37,6 +50,7 @@ def _row_logsumexp(Pi_ptr, base, S: tl.constexpr, BLOCK_S: tl.constexpr, DTYPE: 
 @triton.jit
 def _pibar_tile(
     Pi_ptr,
+    receiver_log_probs_ptr,
     base,
     s_offs,
     mask,
@@ -47,6 +61,7 @@ def _pibar_tile(
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
@@ -56,7 +71,19 @@ def _pibar_tile(
     for _ in range(0, MAX_ANCESTOR_DEPTH):
         cur_valid = mask & (cur >= 0) & (cur < S)
         pi_anc = tl.load(Pi_ptr + base + cur, mask=cur_valid, other=NEG_INF)
-        ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max_safe), tl.zeros([BLOCK_S], dtype=DTYPE))
+        if USE_RECEIVER_WEIGHTS:
+            receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=cur_valid, other=NEG_INF)
+            ancestor_sum += tl.where(
+                cur_valid,
+                tl.exp2(receiver_logp_anc + pi_anc - row_max_safe),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
+        else:
+            ancestor_sum += tl.where(
+                cur_valid,
+                tl.exp2(pi_anc - row_max_safe),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
         cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int64)
     denom = row_sum - ancestor_sum
     return tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer, NEG_INF)
@@ -69,6 +96,7 @@ def _wave_step_kernel(
     pi_ws,
     max_transfer_ptr,
     DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    receiver_log_probs_ptr,
     sp_child1_ptr, sp_child2_ptr,
     sp_parent_ptr,
     leaf_species_ptr,
@@ -86,6 +114,7 @@ def _wave_step_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_FINAL_PIBAR: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     NEG_LARGE = -float("inf")
@@ -97,7 +126,9 @@ def _wave_step_kernel(
     family_const = tl.load(family_idx_ptr + ws + w)
     const_base = family_const * CONST_ROW_STRIDE
 
-    row_max, row_sum = _row_logsumexp(Pi_ptr, pi_base, S, BLOCK_S, DTYPE)
+    row_max, row_sum = _row_logsumexp(
+        Pi_ptr, receiver_log_probs_ptr, pi_base, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE
+    )
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -108,8 +139,8 @@ def _wave_step_kernel(
         const_offsets = const_base + s_offs
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
         pibar_w = _pibar_tile(
-            Pi_ptr, pi_base, s_offs, mask, row_max, row_sum,
-            max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH, DTYPE,
+            Pi_ptr, receiver_log_probs_ptr, pi_base, s_offs, mask, row_max, row_sum,
+            max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH, USE_RECEIVER_WEIGHTS, DTYPE,
         )
 
         dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
@@ -157,7 +188,9 @@ def _wave_step_kernel(
         tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
 
     if STORE_FINAL_PIBAR:
-        final_row_max, final_row_sum = _row_logsumexp(Pi_new_ptr, out_base, S, BLOCK_S, DTYPE)
+        final_row_max, final_row_sum = _row_logsumexp(
+            Pi_new_ptr, receiver_log_probs_ptr, out_base, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE
+        )
         tl.store(pibar_row_max_ptr + ws + w, tl.max(final_row_max, axis=0))
 
         for s_start in range(0, S, BLOCK_S):
@@ -166,8 +199,8 @@ def _wave_step_kernel(
             const_offsets = const_base + s_offs
             max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
             pibar_w = _pibar_tile(
-                Pi_new_ptr, out_base, s_offs, mask, final_row_max, final_row_sum,
-                max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH, DTYPE,
+                Pi_new_ptr, receiver_log_probs_ptr, out_base, s_offs, mask, final_row_max, final_row_sum,
+                max_transfer, sp_parent_ptr, S, BLOCK_S, MAX_ANCESTOR_DEPTH, USE_RECEIVER_WEIGHTS, DTYPE,
             )
             tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
 
@@ -182,6 +215,7 @@ def _leaf_initial_wave_step_kernel(
     E_ptr,
     SL1_const_ptr,
     SL2_const_ptr,
+    receiver_log_probs_ptr,
     sp_child1_ptr,
     sp_child2_ptr,
     sp_subtree_start_ptr,
@@ -193,6 +227,7 @@ def _leaf_initial_wave_step_kernel(
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     NEG_LARGE = -float("inf")
@@ -215,6 +250,10 @@ def _leaf_initial_wave_step_kernel(
 
     const_offsets = const_base + s_offs
     max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
+    if USE_RECEIVER_WEIGHTS:
+        leaf_receiver_logp = tl.load(receiver_log_probs_ptr + leaf_species).to(DTYPE)
+    else:
+        leaf_receiver_logp = tl.zeros((), dtype=DTYPE)
     dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
     ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
     e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG_LARGE)
@@ -222,7 +261,7 @@ def _leaf_initial_wave_step_kernel(
     sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
     pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=DTYPE), NEG_LARGE)
-    pibar_w = tl.where(~descendant, max_transfer, NEG_LARGE)
+    pibar_w = tl.where(~descendant, max_transfer + leaf_receiver_logp, NEG_LARGE)
 
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
     c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
@@ -266,6 +305,7 @@ def compute_leaf_initial_wave_step(
     E,
     SL1_const,
     SL2_const,
+    receiver_log_probs,
     sp_child1,
     sp_child2,
     sp_subtree_start,
@@ -273,6 +313,7 @@ def compute_leaf_initial_wave_step(
     leaf_species_idx,
     leaf_logp,
     family_idx,
+    use_receiver_weights=True,
 ):
     block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
     grid = (W, triton.cdiv(S, block_s))
@@ -286,6 +327,7 @@ def compute_leaf_initial_wave_step(
         E,
         SL1_const,
         SL2_const,
+        receiver_log_probs,
         sp_child1,
         sp_child2,
         sp_subtree_start,
@@ -297,12 +339,14 @@ def compute_leaf_initial_wave_step(
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_out.dtype),
         num_warps=8,
     )
 
 def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
                      max_transfer_mat, DL_const, Ebar, E, SL1_const, SL2_const,
+                     receiver_log_probs,
                      sp_child1, sp_child2, sp_parent, max_ancestor_depth,
                      DTS_reduced=None,
                      *,
@@ -311,7 +355,8 @@ def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
                      pibar_row_max,
                      store_final_pibar=False,
                      has_leaf_term=True,
-                     input_ws=None):
+                     input_ws=None,
+                     use_receiver_weights=True):
     has_splits = DTS_reduced is not None
     block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
     use_leaf_index = bool(has_leaf_term)
@@ -323,6 +368,7 @@ def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
         Pi_in, ws, ws if input_ws is None else int(input_ws),
         max_transfer_mat,
         DL_const, Ebar, E, SL1_const, SL2_const,
+        receiver_log_probs,
         sp_child1, sp_child2,
         sp_parent,
         leaf_species_idx,
@@ -338,6 +384,7 @@ def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=use_leaf_index,
         STORE_FINAL_PIBAR=bool(store_final_pibar),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=8,
     )

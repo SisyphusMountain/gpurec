@@ -52,6 +52,7 @@ struct BacktrackInputView<'a> {
     ebar: &'a [f64],
     log_p_s: &'a [f64],
     log_p_d: &'a [f64],
+    receiver_log_probs: &'a [f64],
 }
 
 impl BacktrackInputView<'_> {
@@ -296,7 +297,12 @@ impl<'a> Sampler<'a> {
         sample_index(
             (0..input.cols)
                 .filter(|recipient| !topology.is_ancestor(*recipient, donor))
-                .map(|recipient| (recipient, input.pi(clade, recipient))),
+                .map(|recipient| {
+                    (
+                        recipient,
+                        input.receiver_log_probs[recipient] + input.pi(clade, recipient),
+                    )
+                }),
             &mut self.rng,
             &context,
         )
@@ -477,6 +483,7 @@ fn sample_reconciliations_torch(
     ebar: PyReadonlyArray1<'_, f64>,
     log_p_s: PyReadonlyArray1<'_, f64>,
     log_p_d: PyReadonlyArray1<'_, f64>,
+    receiver_log_probs: PyReadonlyArray1<'_, f64>,
     sp_child1: PyReadonlyArray1<'_, i64>,
     sp_child2: PyReadonlyArray1<'_, i64>,
     sp_subtree_start: PyReadonlyArray1<'_, i64>,
@@ -513,6 +520,8 @@ fn sample_reconciliations_torch(
     let ebar = slice_from_numpy("ebar", &ebar).map_err(PyErr::from)?;
     let log_p_s = slice_from_numpy("log_p_s", &log_p_s).map_err(PyErr::from)?;
     let log_p_d = slice_from_numpy("log_p_d", &log_p_d).map_err(PyErr::from)?;
+    let receiver_log_probs =
+        slice_from_numpy("receiver_log_probs", &receiver_log_probs).map_err(PyErr::from)?;
     let child1 = slice_from_numpy("sp_child1", &sp_child1).map_err(PyErr::from)?;
     let child2 = slice_from_numpy("sp_child2", &sp_child2).map_err(PyErr::from)?;
     let subtree_start =
@@ -531,6 +540,7 @@ fn sample_reconciliations_torch(
     require_len("ebar", ebar, species_count).map_err(PyErr::from)?;
     require_len("log_p_s", log_p_s, species_count).map_err(PyErr::from)?;
     require_len("log_p_d", log_p_d, species_count).map_err(PyErr::from)?;
+    require_len("receiver_log_probs", receiver_log_probs, species_count).map_err(PyErr::from)?;
     validate_clade_indices("split_parents", split_parents, clade_count).map_err(PyErr::from)?;
     validate_clade_indices("split_leftrights", split_leftrights, clade_count)
         .map_err(PyErr::from)?;
@@ -550,6 +560,7 @@ fn sample_reconciliations_torch(
         ebar,
         log_p_s,
         log_p_d,
+        receiver_log_probs,
     };
     let species = SpeciesTopology {
         child1,

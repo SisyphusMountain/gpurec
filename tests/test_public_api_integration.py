@@ -5,6 +5,11 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions, sample_reconciliations
 from gpurec.core.backtracking import input as backtracking_input
+from gpurec.core.inference.logspace import logsumexp2
+from gpurec.core.parameters.extract_parameters import (
+    extract_parameters_uniform,
+    extract_parameters_weighted_receivers,
+)
 from gpurec.core.scheduling import batching
 from gpurec.core.scheduling.batching import build_wave_layout, build_wave_layout_from_plan, preprocess_dataset
 
@@ -143,6 +148,8 @@ def test_gene_recon_model_constructs_for_public_modes(
 
     assert model.mode == mode
     assert tuple(model.theta.shape) == theta_shape
+    assert tuple(model.receiver_weights.shape) == (3,)
+    assert torch.equal(model.receiver_weights.detach(), torch.zeros_like(model.receiver_weights))
     assert len(model.families) == 1
     assert model.family_batches == [[0]]
     assert model.species_helpers["sp_child1"].device.type == "cpu"
@@ -174,6 +181,116 @@ def test_gene_recon_model_forward_and_backward_on_tiny_example(tmp_path: Path) -
     assert model.theta.grad is not None
     assert model.theta.grad.shape == model.theta.shape
     assert torch.isfinite(model.theta.grad).all().item()
+    assert model.receiver_weights.grad is not None
+    assert model.receiver_weights.grad.shape == model.receiver_weights.shape
+    assert torch.isfinite(model.receiver_weights.grad).all().item()
+
+
+def test_zero_receiver_logits_match_uniform_receiver_formula(tmp_path: Path) -> None:
+    _require_preprocess_native()
+    species_tree = tmp_path / "species.nwk"
+    gene_tree = tmp_path / "family_0.nwk"
+    species_tree.write_text("((A:1,B:1)AB:1,(C:1,D:1)CD:1)Root:1;\n", encoding="utf-8")
+    gene_tree.write_text("((A_1:1,B_1:1)GAB:1,(C_1:1,D_1:1)GCD:1)GeneRoot:1;\n", encoding="utf-8")
+    model = GeneReconModel(
+        species_tree,
+        [gene_tree],
+        device="cpu",
+        family_chunk_size=1,
+        clade_budget=None,
+        batch_packing="sequential",
+        max_wave_size=4,
+        solver_options=_solver_options(),
+    )
+    theta = model.theta.detach()
+    S = int(model.species_helpers["S"])
+    E = torch.linspace(-0.7, -0.1, S)
+
+    *_, uniform_max_transfer = extract_parameters_uniform(
+        theta,
+        model.species_helpers["unnorm_row_max"],
+    )
+    *_, weighted_max_transfer, receiver_log_probs = extract_parameters_weighted_receivers(
+        theta,
+        model.receiver_weights.detach(),
+        model.species_helpers,
+    )
+
+    for donor in range(S):
+        ancestors = set()
+        cur = donor
+        while cur >= 0:
+            ancestors.add(cur)
+            cur = int(model.species_helpers["sp_parent"][cur])
+        valid = torch.tensor([idx not in ancestors for idx in range(S)])
+        old_pibar = uniform_max_transfer[donor] + logsumexp2(E[valid], dim=0)
+        new_pibar = weighted_max_transfer[donor] + logsumexp2(receiver_log_probs[valid] + E[valid], dim=0)
+        assert torch.allclose(new_pibar, old_pibar, atol=1e-6)
+
+
+def test_non_uniform_receiver_logits_change_likelihood(tmp_path: Path) -> None:
+    _require_preprocess_native()
+    device = _require_cuda_triton()
+    species_tree, gene_trees = _write_tiny_example(tmp_path)
+    model = GeneReconModel(
+        species_tree,
+        gene_trees,
+        device=device,
+        family_chunk_size=1,
+        clade_budget=None,
+        batch_packing="sequential",
+        max_wave_size=4,
+        solver_options=_solver_options(),
+    )
+    with torch.no_grad():
+        model.theta.copy_(torch.tensor([0.0, 0.0, 5.0], device=device))
+
+    uniform_loss = model().detach()
+    model.clear_warm_starts()
+    biased = torch.tensor([4.0, -4.0, 0.0], device=device)
+    biased_loss = model(receiver_weights=biased).detach()
+
+    assert torch.isfinite(biased_loss).item()
+    assert not torch.allclose(uniform_loss, biased_loss, atol=1e-6, rtol=1e-6)
+
+
+def test_receiver_gradients_accumulate_across_batches(tmp_path: Path) -> None:
+    _require_preprocess_native()
+    device = _require_cuda_triton()
+    species_tree, one_tree = _write_tiny_example(tmp_path)
+    gene_trees = [one_tree[0], one_tree[0]]
+    model = GeneReconModel(
+        species_tree,
+        gene_trees,
+        device=device,
+        family_chunk_size=1,
+        clade_budget=None,
+        batch_packing="sequential",
+        max_wave_size=4,
+        solver_options=_solver_options(),
+    )
+    assert len(model.batch_statics) == 2
+    single = GeneReconModel(
+        species_tree,
+        [one_tree[0]],
+        device=device,
+        family_chunk_size=1,
+        clade_budget=None,
+        batch_packing="sequential",
+        max_wave_size=4,
+        solver_options=_solver_options(),
+    )
+    with torch.no_grad():
+        single.theta.copy_(model.theta)
+        single.receiver_weights.copy_(model.receiver_weights)
+
+    model().backward()
+    single().backward()
+
+    assert model.receiver_weights.grad is not None
+    assert single.receiver_weights.grad is not None
+    assert torch.isfinite(model.receiver_weights.grad).all().item()
+    assert torch.allclose(model.receiver_weights.grad, 2.0 * single.receiver_weights.grad, atol=1e-6, rtol=1e-5)
 
 
 def test_sample_reconciliations_on_tiny_example(tmp_path: Path) -> None:

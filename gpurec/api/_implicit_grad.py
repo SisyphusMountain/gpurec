@@ -11,7 +11,7 @@ from gpurec.core.kernels.wave_backward import (
 from gpurec.core.parameters.extract_parameters import (
     as_family_param,
     as_family_species,
-    extract_parameters_uniform,
+    extract_parameters_weighted_receivers,
 )
 from gpurec.core.kernels.e_step import e_step_triton_autograd
 
@@ -100,7 +100,9 @@ def implicit_grad_loglik_vjp_wave(
     Pibar_star_wave: torch.Tensor, E_star: torch.Tensor, E_s1: torch.Tensor,
     E_s2: torch.Tensor, Ebar: torch.Tensor, log_pS: torch.Tensor,
     log_pD: torch.Tensor, log_pL: torch.Tensor, max_transfer_mat: torch.Tensor,
-    theta: torch.Tensor, uniform_pibar_row_max: torch.Tensor,
+    receiver_log_probs: torch.Tensor,
+    use_receiver_weights: bool,
+    theta: torch.Tensor, receiver_weights: torch.Tensor, uniform_pibar_row_max: torch.Tensor,
     family_idx: torch.Tensor,
     specieswise: bool = False,
     genewise: bool = False,
@@ -134,10 +136,10 @@ def implicit_grad_loglik_vjp_wave(
     DL_family = 1.0 + log_pD_family + E_family
     SL1_family = log_pS_family + as_family_species(E_s2, S, family_rows)
     SL2_family = log_pS_family + as_family_species(E_s1, S, family_rows)
-
     accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
     grad_log_pD, grad_log_pS = (torch.zeros_like(x) for x in (log_pD_param, log_pS_param))
     grad_max_transfer_mat = torch.zeros_like(max_transfer_family)
+    grad_receiver_log_probs = torch.zeros((S,), device=device, dtype=dtype)
     grad_E_acc, grad_Ebar_acc, grad_E_s1_acc, grad_E_s2_acc = (
         torch.zeros_like(x) for x in (E_star, Ebar, E_star, E_star)
     )
@@ -222,6 +224,7 @@ def implicit_grad_loglik_vjp_wave(
             E_family,
             SL1_family,
             SL2_family,
+            receiver_log_probs,
             sp_child1,
             sp_child2,
             None,
@@ -239,6 +242,8 @@ def implicit_grad_loglik_vjp_wave(
             compact_level_parents=compact_level_parents,
             compact_level_child1=compact_level_child1,
             compact_level_child2=compact_level_child2,
+            grad_receiver_log_probs=grad_receiver_log_probs,
+            use_receiver_weights=use_receiver_weights,
         )
         family_rows_for_wave = family_idx[ws : ws + W]
         _scatter_accum(grad_log_pD, family_rows_for_wave, aw0)
@@ -285,6 +290,7 @@ def implicit_grad_loglik_vjp_wave(
             )
             uniform_cross_pibar_vjp_tree_from_ud_fused(
                 Pi_star_wave,
+                receiver_log_probs,
                 grad_Pibar_l,
                 grad_Pibar_r,
                 sl,
@@ -300,13 +306,17 @@ def implicit_grad_loglik_vjp_wave(
                 compact_level_parents=compact_level_parents,
                 compact_level_child1=compact_level_child1,
                 compact_level_child2=compact_level_child2,
+                grad_receiver_log_probs=grad_receiver_log_probs,
+                use_receiver_weights=use_receiver_weights,
                 side_active_threshold=pibar_side_threshold,
             )
     return _e_adjoint_and_theta_vjp(
         E_star, log_pS, log_pD, log_pL, max_transfer_mat,
+        receiver_log_probs,
+        use_receiver_weights,
         grad_E_acc, grad_Ebar_acc, grad_E_s1_acc, grad_E_s2_acc,
-        grad_log_pD, grad_log_pS, grad_max_transfer_mat,
-        int(root_ids.numel()), theta, species_helpers,
+        grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
+        int(root_ids.numel()), theta, receiver_weights, species_helpers,
         specieswise=specieswise,
         genewise=genewise,
         bicgstab_max_iter=bicgstab_max_iter,
@@ -316,10 +326,10 @@ def implicit_grad_loglik_vjp_wave(
 
 
 def _e_adjoint_and_theta_vjp(
-    E_star, log_pS, log_pD, log_pL, max_transfer_mat,
+    E_star, log_pS, log_pD, log_pL, max_transfer_mat, receiver_log_probs, use_receiver_weights,
     grad_E, grad_Ebar, grad_E_s1, grad_E_s2,
-    grad_log_pD, grad_log_pS, grad_max_transfer_mat,
-    n_fam, theta, species_helpers, *, specieswise, genewise,
+    grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
+    n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
     bicgstab_max_iter: int = 500,
     bicgstab_tol: float = 1e-7,
     bicgstab_breakdown_tol: float = 1e-30,
@@ -339,7 +349,9 @@ def _e_adjoint_and_theta_vjp(
             log_pD,
             log_pL,
             max_transfer_mat,
+            receiver_log_probs,
             *topology_args,
+            use_receiver_weights=use_receiver_weights,
         )
         survival = (1 - torch.exp2(E_req).mean(dim=-1)).clamp_min(torch.finfo(E_req.dtype).tiny)
         denom = torch.log2(survival)
@@ -380,11 +392,15 @@ def _e_adjoint_and_theta_vjp(
     ).view(E_shape)
 
     theta_req = theta.detach().requires_grad_(True)
+    receiver_req = receiver_weights.detach().requires_grad_(True)
     with torch.enable_grad():
-        log_pS_r, log_pD_r, log_pL_r, mt_r = extract_parameters_uniform(
-            theta_req, species_helpers["unnorm_row_max"],
+        log_pS_r, log_pD_r, log_pL_r, mt_r, receiver_log_probs_r = extract_parameters_weighted_receivers(
+            theta_req,
+            receiver_req,
+            species_helpers,
             specieswise=specieswise,
             genewise=genewise,
+            uniform_fast=not use_receiver_weights,
         )
         S = int(species_helpers["S"])
         family_rows = int(E_star.shape[0])
@@ -393,19 +409,22 @@ def _e_adjoint_and_theta_vjp(
         param_loss = (
             (log_pS_param * grad_log_pS).sum()
             + (log_pD_param * grad_log_pD).sum()
-            + (mt_r * (grad_max_transfer_mat + grad_Ebar)).sum()
+            + (mt_r * grad_max_transfer_mat).sum()
+            + (receiver_log_probs_r * grad_receiver_log_probs).sum()
         )
-        E_from_theta = e_step_triton_autograd(
+        E_from_params, _, _, Ebar_from_params = e_step_triton_autograd(
             E_star.detach(),
             log_pS_r,
             log_pD_r,
             log_pL_r,
             mt_r,
+            receiver_log_probs_r,
             *topology_args,
-        )[0]
-        grad_theta = torch.autograd.grad(
-            (param_loss, E_from_theta),
-            theta_req,
-            grad_outputs=(torch.ones_like(param_loss), wE),
-        )[0]
-    return grad_theta
+            use_receiver_weights=use_receiver_weights,
+        )
+        grad_theta, grad_receiver = torch.autograd.grad(
+            (param_loss, Ebar_from_params, E_from_params),
+            (theta_req, receiver_req),
+            grad_outputs=(torch.ones_like(param_loss), grad_Ebar, wE),
+        )
+    return grad_theta, grad_receiver

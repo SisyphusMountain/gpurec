@@ -1,3 +1,5 @@
+import math
+
 import torch
 
 _LN2 = 0.6931471805599453
@@ -30,3 +32,62 @@ def extract_parameters_uniform(theta, unnorm_row_max, *, specieswise=False, gene
     else:
         max_transfer = log_pT.unsqueeze(-1) + unnorm_row_max
     return result[..., 0], result[..., 1], result[..., 2], max_transfer
+
+
+def receiver_log_probs_from_weights(receiver_weights: torch.Tensor) -> torch.Tensor:
+    return torch.log_softmax(receiver_weights, dim=-1) / _LN2
+
+
+def receiver_valid_log_normalizer(
+    receiver_log_probs: torch.Tensor,
+    sp_parent: torch.Tensor,
+    max_ancestor_depth: int,
+) -> torch.Tensor:
+    S = int(receiver_log_probs.numel())
+    receiver_probs = torch.exp2(receiver_log_probs)
+    parent = sp_parent.to(device=receiver_log_probs.device, dtype=torch.long)
+    cur = torch.arange(S, device=receiver_log_probs.device, dtype=torch.long)
+    ancestor_mass = torch.zeros((S,), device=receiver_log_probs.device, dtype=receiver_log_probs.dtype)
+    zero = torch.zeros((), device=receiver_log_probs.device, dtype=receiver_log_probs.dtype)
+
+    for _ in range(max(1, int(max_ancestor_depth))):
+        valid = (cur >= 0) & (cur < S)
+        safe_cur = cur.clamp(0, max(S - 1, 0))
+        ancestor_mass = ancestor_mass + torch.where(valid, receiver_probs.index_select(0, safe_cur), zero)
+        next_cur = parent.index_select(0, safe_cur)
+        cur = torch.where(valid, next_cur, torch.full_like(cur, -1))
+
+    valid_mass = 1.0 - ancestor_mass
+    return torch.where(
+        valid_mass > 0.0,
+        -torch.log2(valid_mass.clamp_min(torch.finfo(receiver_log_probs.dtype).tiny)),
+        receiver_log_probs.new_full((S,), float("-inf")),
+    )
+
+
+def extract_parameters_weighted_receivers(
+    theta,
+    receiver_weights,
+    species_helpers,
+    *,
+    specieswise=False,
+    genewise=False,
+    uniform_fast=False,
+):
+    zeros = theta.new_zeros((*theta.shape[:-1], 1))
+    logits = torch.cat((zeros, theta), dim=-1)
+    result = torch.log_softmax(logits * _LN2, dim=-1) / _LN2
+    log_pT = result[..., 3]
+    receiver_log_probs = receiver_log_probs_from_weights(receiver_weights.to(device=theta.device, dtype=theta.dtype))
+    receiver_norm = receiver_valid_log_normalizer(
+        receiver_log_probs,
+        species_helpers["sp_parent"],
+        int(species_helpers["max_ancestor_depth"]),
+    )
+    if specieswise and not genewise:
+        max_transfer = log_pT + receiver_norm
+    else:
+        max_transfer = log_pT.unsqueeze(-1) + receiver_norm
+    if uniform_fast:
+        max_transfer = max_transfer - math.log2(int(species_helpers["S"]))
+    return result[..., 0], result[..., 1], result[..., 2], max_transfer, receiver_log_probs

@@ -45,7 +45,11 @@ def sample_reconciliations(model, *, family_index: int = 0, seed: int = 0):
             break
     offset = sum(int(model.families[idx]["C"]) for idx in batch_static.family_indices[:local_family_index])
     theta = model._theta_for_static(batch_static, model.theta)
-    E, _, _, Ebar, _, pi_wave, pibar_wave, _, log_p_s, log_p_d, *_ = solve_resident_e_pi(batch_static, theta)
+    E, _, _, Ebar, _, pi_wave, pibar_wave, _, log_p_s, log_p_d, *_, receiver_log_probs = solve_resident_e_pi(
+        batch_static,
+        theta,
+        model.receiver_weights,
+    )
     perm = batch_static.wave_layout["perm"]
     pi = pi_wave.index_select(0, perm)
     pibar = pibar_wave.index_select(0, perm)
@@ -68,6 +72,7 @@ def sample_reconciliations(model, *, family_index: int = 0, seed: int = 0):
         _numpy(_family_param(Ebar, local_family_index), torch.float64),
         _numpy(_species_param(log_p_s, model, local_family_index, S), torch.float64),
         _numpy(_species_param(log_p_d, model, local_family_index, S), torch.float64),
+        _numpy(receiver_log_probs, torch.float64),
         _numpy(species_helpers["sp_child1"], torch.int64),
         _numpy(species_helpers["sp_child2"], torch.int64),
         _numpy(species_helpers["sp_subtree_start"], torch.int64),

@@ -64,6 +64,9 @@ class GeneReconModel(torch.nn.Module):
         self.theta = torch.nn.Parameter(
             torch.full(theta_shape, math.log2(1e-10), dtype=torch.float32, device=device)
         )
+        self.receiver_weights = torch.nn.Parameter(
+            torch.zeros((int(species_helpers["S"]),), dtype=torch.float32, device=device)
+        )
         self.species_helpers = species_helpers
         self.mode = mode
         self.genewise = genewise
@@ -130,8 +133,14 @@ class GeneReconModel(torch.nn.Module):
     def _theta_for_static(self, static: _BatchStatic, theta: torch.Tensor) -> torch.Tensor:
         return theta_for_static(static, theta, genewise=self.genewise)
 
-    def _stream_batches(self, theta: torch.Tensor, *, need_grad: bool):
-        return stream_batches(self.batch_statics, theta, genewise=self.genewise, need_grad=need_grad)
+    def _stream_batches(self, theta: torch.Tensor, receiver_weights: torch.Tensor, *, need_grad: bool):
+        return stream_batches(
+            self.batch_statics,
+            theta,
+            receiver_weights,
+            genewise=self.genewise,
+            need_grad=need_grad,
+        )
 
     def replan_batches(
         self,
@@ -163,11 +172,16 @@ class GeneReconModel(torch.nn.Module):
         self.warm_E = self.batch_statics[0].warm_E
         return self.family_batches
 
-    def forward(self, theta: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        theta: torch.Tensor | None = None,
+        receiver_weights: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         theta = self.theta if theta is None else theta
+        receiver_weights = self.receiver_weights if receiver_weights is None else receiver_weights
         if len(self.batch_statics) == 1:
-            return _GeneReconFunction.apply(theta, self.batch_statics[0])
-        if torch.is_grad_enabled() and theta.requires_grad:
-            return _GeneReconFullLossFunction.apply(theta, self)
-        loss, _ = self._stream_batches(theta, need_grad=False)
+            return _GeneReconFunction.apply(theta, receiver_weights, self.batch_statics[0])
+        if torch.is_grad_enabled() and (theta.requires_grad or receiver_weights.requires_grad):
+            return _GeneReconFullLossFunction.apply(theta, receiver_weights, self)
+        loss, _, _ = self._stream_batches(theta, receiver_weights, need_grad=False)
         return loss
