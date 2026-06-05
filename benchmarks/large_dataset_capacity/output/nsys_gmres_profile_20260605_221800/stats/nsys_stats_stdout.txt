@@ -1,0 +1,13 @@
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/gmres_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/nvtx_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/stats/gmres_family2461_max10_backward_only_nvtx_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/gmres_family2461_max10_backward_only.sqlite does not contain NV Tools Extension (NVTX) data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/gmres_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/cuda_gpu_kern_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/stats/gmres_family2461_max10_backward_only_cuda_gpu_kern_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/gmres_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/cuda_gpu_mem_time_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/stats/gmres_family2461_max10_backward_only_cuda_gpu_mem_time_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/gmres_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/cuda_gpu_mem_size_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/stats/gmres_family2461_max10_backward_only_cuda_gpu_mem_size_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/gmres_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/cuda_api_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/stats/gmres_family2461_max10_backward_only_cuda_api_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/gmres_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/osrt_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_profile_20260605_221800/stats/gmres_family2461_max10_backward_only_osrt_sum.csv]... PROCESSED

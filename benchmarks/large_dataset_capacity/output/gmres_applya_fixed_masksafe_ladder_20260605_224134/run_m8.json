@@ -1,0 +1,24 @@
+{
+  "family_index": 2461,
+  "family_name": "CLU_000680_20_4_C",
+  "family_tree": "/home/enzo/Documents/git/gpurec/gpurec/benchmarks/large_dataset_capacity/datasets/alerax_hogenom_core/hogenom/families/CLU_000680_20_4_C/gene_trees/ufboot1000.MFP.geneTree.newick",
+  "checkpoint": "/home/enzo/Documents/git/gpurec/gpurec/benchmarks/large_dataset_capacity/output/full_hogenom_genewise_end2end_20260605_scheduled_golden_v6_lr/runs/full_hogenom_genewise_end2end_golden_float64_hsgd_schedule_fixed256/checkpoints/latest.pt",
+  "gmres_iters": 8,
+  "gmres_tol": 1e-10,
+  "self_loop_solver": "gmres_fixed",
+  "warmup": 1,
+  "elapsed_s": 0.1755734619218856,
+  "peak_gb": 0.16510295867919922,
+  "gradient": [
+    -4.918818868507111,
+    -2.385869165818823,
+    0.8571061833414882
+  ],
+  "receiver_grad_norm": 2.9181032729209613,
+  "wave_count": 68,
+  "total_backward_iterations": 544,
+  "mean_wave_iterations": 8.0,
+  "max_wave_iterations": 8,
+  "max_rel_res": 0.0007262363981834407,
+  "loss": 396.549216920813
+}
