@@ -888,6 +888,50 @@ GPU-resident residual computation is the right direction. The remaining gap is
 now small enough that the next decision should be driven by end-to-end
 optimization experiments and/or replacing the final per-wave coefficient solve.
 
+## Triton QR/Backsolve Update
+
+Commit `8f5f50c` extends the small-Hessenberg Triton kernel to compute the final
+GMRES coefficients for CUDA solves with `m <= 16`. This removes the last
+per-wave `torch.linalg.lstsq` from the hot path while keeping the CPU and
+larger-`m` fallback.
+
+Hard-family result on `CLU_000680_20_4_C`, max/fixed `m=10`:
+
+```text
+adaptive CGS2 I3 + Triton QR:
+  619 J^T applications
+  299 residual checks
+  0.162774 s backward-only
+  6.589550e-06 relative L2 gradient error vs Neumann=512
+
+fixed CGS2 M10 + Triton QR:
+  680 J^T applications
+  68 residual checks
+  0.151533 s backward-only
+  6.588901e-06 relative L2 gradient error vs Neumann=512
+```
+
+Nsys:
+
+```text
+GPU kernels:       old adaptive 206.592 ms / 30,093 launches
+                   adaptive I3  122.871 ms / 10,847 launches
+                   fixed M10    129.190 ms / 12,368 launches
+
+QR/lstsq kernels:  old adaptive 26.721 ms / 2,324 launches
+                   adaptive I3   0.000 ms / 0 launches
+                   fixed M10     5.457 ms / 272 launches
+
+Triton Hessenberg kernel:
+                   adaptive I3   2.865 ms / 367 launches
+```
+
+The mathematical-work metric now favors adaptive GMRES (`619` vs `680` VJPs),
+and the profiler kernel total favors adaptive as well. The backward-only wall
+clock is still slightly better for fixed M10 on this single family, so the next
+required proof is the user-facing one: end-to-end time to convergence on the
+HOGENOM benchmark.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

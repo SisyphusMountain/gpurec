@@ -594,3 +594,46 @@ This is the first point where adaptive GMRES both uses fewer VJPs than fixed
 backward-only wall time is still close to fixed CGS2 rather than decisively
 lower, so the next step is to remove the remaining per-wave final `lstsq` or
 start testing whether this VJP reduction changes end-to-end optimizer time.
+
+### Triton QR/Backsolve For Final Coefficients
+
+Implementation commit:
+
+```text
+8f5f50c Solve small GMRES Hessenberg systems in Triton
+```
+
+The small-Hessenberg Triton kernel now also performs the final QR/backsolve for
+`m <= 16`, removing the last per-wave `torch.linalg.lstsq` from the hot CUDA
+path. Larger `m` and CPU execution still fall back to `torch.linalg.lstsq`.
+
+Backward-only timing on `CLU_000680_20_4_C`, max/fixed `m=10`:
+
+| Solver | Total Backward Iterations | Total GMRES Checks | Elapsed | Relative L2 Error vs N=512 |
+|---|---:|---:|---:|---:|
+| adaptive CGS2 I3 + Triton QR | `619` | `299` | `0.162774 s` | `6.589550e-06` |
+| fixed CGS2 M10 + Triton QR | `680` | `68` | `0.151533 s` | `6.588901e-06` |
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_adaptive_cgs2_tritonqr_i3_20260606_233022/
+benchmarks/large_dataset_capacity/output/gmres_fixed_cgs2_tritonqr_m10_20260606_233057/
+benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_tritonqr_i3_profile_20260606_233120/
+```
+
+Nsys comparison:
+
+| Category | Old Adaptive MGS | Adaptive CGS2 I3 Triton QR | Previous Fixed CGS2 M10 |
+|---|---:|---:|---:|
+| summed GPU kernels | `206.592 ms`, `30,093` launches | `122.871 ms`, `10,847` launches | `129.190 ms`, `12,368` launches |
+| CUDA API time | `142.419 ms`, `69,317` calls | `87.574 ms`, `24,671` calls | `87.620 ms`, `26,723` calls |
+| `_wave_backward_uniform_2d_jt_kernel` | `8.134 ms`, `598` calls | `8.326 ms`, `619` calls | `9.104 ms`, `680` calls |
+| `_gmres_hessenberg_residual_kernel` | none | `2.865 ms`, `367` calls | none |
+| QR/lstsq kernels | `26.721 ms`, `2,324` launches | `0.000 ms`, `0` launches | `5.457 ms`, `272` launches |
+
+This establishes the intended low-overhead adaptive behavior on the hard
+family: fewer VJPs than fixed `m=10`, no checkpoint or final cuSOLVER solves,
+and lower summed GPU kernel time than the previous fixed CGS2 profile. The
+remaining validation is end-to-end: whether lower VJP count wins over the
+remaining adaptive-check overhead during optimization.
