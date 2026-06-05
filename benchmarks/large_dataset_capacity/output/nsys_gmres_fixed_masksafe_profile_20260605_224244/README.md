@@ -8,6 +8,11 @@ Repository commit:
 5d63743f0be5e718d4fd515d57e7fb3d97f16bb1
 ```
 
+The worktree had the GMRES Apply-A/fixed-m/mask-safety edits when this profile
+was recorded. Those edits were later committed as `94b2be8` (`Add mask-safe
+fixed GMRES self-loop mode`). Public `SolverOptions` plumbing was committed as
+`e424419`.
+
 Command:
 
 ```bash

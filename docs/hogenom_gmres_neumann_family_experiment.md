@@ -393,6 +393,13 @@ benchmarks/large_dataset_capacity/output/gmres_applya_fixed_masksafe_ladder_2026
 benchmarks/large_dataset_capacity/output/nsys_gmres_fixed_masksafe_profile_20260605_224244/
 ```
 
+Implementation commits:
+
+```text
+94b2be8 Add mask-safe fixed GMRES self-loop mode
+e424419 Expose GMRES self-loop solver options
+```
+
 Backward-only timing on `CLU_000680_20_4_C`:
 
 | Solver | Max/fixed m | Total backward iterations | Elapsed | Relative L2 error vs N=512 | Relative inf error |

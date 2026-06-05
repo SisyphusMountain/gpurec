@@ -9,7 +9,9 @@ Repository commit:
 ```
 
 The worktree had local GMRES experiment edits in
-`gpurec/core/kernels/wave_backward.py` when this profile was recorded.
+`gpurec/core/kernels/wave_backward.py` when this profile was recorded. Those
+edits were later committed as `94b2be8` (`Add mask-safe fixed GMRES self-loop
+mode`). Public `SolverOptions` plumbing was committed as `e424419`.
 
 Command:
 
