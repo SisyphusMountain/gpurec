@@ -571,6 +571,102 @@ def _wave_backward_uniform_2d_jt_kernel(
         tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
 
 
+@triton.jit
+def _gmres_hessenberg_residual_kernel(
+    hessenberg_ptr,
+    beta_ptr,
+    residual_ptr,
+    MAX_M: tl.constexpr,
+    ITERS: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    rows = tl.arange(0, BLOCK_R)
+    cols = tl.arange(0, BLOCK_C)
+    row_grid = rows[:, None]
+    col_grid = cols[None, :]
+    mask = (row_grid < ITERS + 1) & (col_grid < ITERS)
+    h = tl.load(
+        hessenberg_ptr + row_grid * MAX_M + col_grid,
+        mask=mask,
+        other=0.0,
+    ).to(DTYPE)
+    beta = tl.load(beta_ptr).to(DTYPE)
+    g = tl.where(rows == 0, beta, tl.zeros([BLOCK_R], dtype=DTYPE))
+
+    for k in tl.static_range(0, MAX_M):
+        active = k < ITERS
+        row_k_mask = rows == k
+        row_k1_mask = rows == k + 1
+        col_active = cols >= k
+        row_k = tl.sum(tl.where(row_k_mask[:, None], h, 0.0), axis=0)
+        row_k1 = tl.sum(tl.where(row_k1_mask[:, None], h, 0.0), axis=0)
+        a = tl.sum(tl.where(cols == k, row_k, 0.0), axis=0)
+        b = tl.sum(tl.where(cols == k, row_k1, 0.0), axis=0)
+        r = tl.sqrt(a * a + b * b)
+        has_r = r > 0.0
+        c = tl.where(has_r, a / r, 1.0)
+        s = tl.where(has_r, b / r, 0.0)
+        new_row_k = c * row_k + s * row_k1
+        new_row_k1 = -s * row_k + c * row_k1
+        h = tl.where(
+            active & row_k_mask[:, None] & col_active[None, :],
+            new_row_k[None, :],
+            h,
+        )
+        h = tl.where(
+            active & row_k1_mask[:, None] & col_active[None, :],
+            new_row_k1[None, :],
+            h,
+        )
+
+        gk = tl.sum(tl.where(row_k_mask, g, 0.0), axis=0)
+        gk1 = tl.sum(tl.where(row_k1_mask, g, 0.0), axis=0)
+        new_gk = c * gk + s * gk1
+        new_gk1 = -s * gk + c * gk1
+        g = tl.where(active & row_k_mask, new_gk, g)
+        g = tl.where(active & row_k1_mask, new_gk1, g)
+
+    tail = tl.abs(tl.sum(tl.where(rows == ITERS, g, 0.0), axis=0))
+    denom = tl.maximum(tl.abs(beta), 1.0e-30)
+    tl.store(residual_ptr, tail / denom)
+
+
+def _gmres_hessenberg_rel_res(
+    hessenberg: torch.Tensor,
+    beta: torch.Tensor,
+    *,
+    iters: int,
+    b_norm: float,
+    residual_buf: torch.Tensor | None,
+) -> float:
+    if hessenberg.device.type != "cuda" or int(hessenberg.shape[1]) > 32:
+        h_sub = hessenberg[: iters + 1, :iters]
+        rhs_sub = torch.zeros((iters + 1,), dtype=hessenberg.dtype, device=hessenberg.device)
+        rhs_sub[0] = beta
+        y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+        return float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
+
+    if residual_buf is None:
+        raise ValueError("residual_buf is required for CUDA GMRES residual checks")
+    max_m = int(hessenberg.shape[1])
+    block_r = triton.next_power_of_2(max_m + 1)
+    block_c = triton.next_power_of_2(max_m)
+    _gmres_hessenberg_residual_kernel[(1,)](
+        hessenberg,
+        beta,
+        residual_buf,
+        max_m,
+        int(iters),
+        block_r,
+        block_c,
+        DTYPE=_tl_float_dtype(hessenberg.dtype),
+        num_warps=1,
+    )
+    return float(residual_buf.detach().cpu())
+
+
 @torch.no_grad()
 def _gmres_solve_wave_self_loop(
     apply_a,
@@ -643,10 +739,14 @@ def _gmres_solve_wave_self_loop_cgs2(
     coeff2_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     work = torch.empty_like(rhs).reshape(-1)
     work2 = torch.empty_like(rhs).reshape(-1)
-    y = None
     last_j = 0
     rel_res = 1.0
     check_count = 0
+    residual_buf = (
+        torch.empty((), dtype=rhs.dtype, device=rhs.device)
+        if rhs.device.type == "cuda" and not fixed_iterations
+        else None
+    )
 
     for j in range(max_iter):
         w = apply_a(basis[j]).reshape(-1)
@@ -668,10 +768,13 @@ def _gmres_solve_wave_self_loop_cgs2(
             should_check = j == 0 or (j + 1) % check_interval == 0 or j + 1 >= max_iter
             if should_check:
                 check_count += 1
-                h_sub = hessenberg[: j + 2, : j + 1]
-                rhs_sub = e1[: j + 2]
-                y = torch.linalg.lstsq(h_sub, rhs_sub).solution
-                rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
+                rel_res = _gmres_hessenberg_rel_res(
+                    hessenberg,
+                    b_norm_t,
+                    iters=j + 1,
+                    b_norm=b_norm,
+                    residual_buf=residual_buf,
+                )
                 if rel_res <= tol:
                     break
                 next_norm = float(next_norm_t.detach().cpu())
@@ -682,11 +785,11 @@ def _gmres_solve_wave_self_loop_cgs2(
             torch.div(work2, denom, out=basis_2d[j + 1])
 
     iters = int(last_j + 1)
-    if y is None:
+    if fixed_iterations:
         check_count += 1
-        h_sub = hessenberg[: iters + 1, :iters]
-        rhs_sub = e1[: iters + 1]
-        y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+    h_sub = hessenberg[: iters + 1, :iters]
+    rhs_sub = e1[: iters + 1]
+    y = torch.linalg.lstsq(h_sub, rhs_sub).solution
     rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
     if _GMRES_SELF_LOOP_STATS is not None:
         _GMRES_SELF_LOOP_STATS.append(

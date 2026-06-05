@@ -161,6 +161,42 @@ def test_gmres_self_loop_check_interval_counts_checks_cpu():
     assert stats[0]["rel_res"] < 1e-12
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_gmres_hessenberg_residual_kernel_matches_lstsq_cuda(dtype):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES residual kernel")
+
+    device = torch.device("cuda")
+    generator = torch.Generator(device="cpu").manual_seed(123)
+    max_m = 16
+    hessenberg_cpu = torch.randn((max_m + 1, max_m), generator=generator, dtype=torch.float64)
+    rows = torch.arange(max_m + 1)[:, None]
+    cols = torch.arange(max_m)[None, :]
+    hessenberg_cpu = torch.where(rows <= cols + 1, hessenberg_cpu, torch.zeros_like(hessenberg_cpu))
+    hessenberg_cpu[5, 4] = 1e-12
+    hessenberg = hessenberg_cpu.to(device=device, dtype=dtype)
+    beta = torch.tensor(2.5, dtype=dtype, device=device)
+    residual_buf = torch.empty((), dtype=dtype, device=device)
+
+    for iters in (1, 4, 10, 16):
+        got = wave_backward._gmres_hessenberg_rel_res(
+            hessenberg,
+            beta,
+            iters=iters,
+            b_norm=float(beta.detach().cpu()),
+            residual_buf=residual_buf,
+        )
+        h_sub = hessenberg[: iters + 1, :iters]
+        rhs_sub = torch.zeros((iters + 1,), dtype=dtype, device=device)
+        rhs_sub[0] = beta
+        y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+        expected = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / float(beta.cpu())
+
+        abs_tol = 2e-5 if dtype == torch.float32 else 1e-7
+        rel_tol = 5e-5 if dtype == torch.float32 else 1e-10
+        assert got == pytest.approx(expected, rel=rel_tol, abs=abs_tol)
+
+
 def test_triton_apply_a_zeroes_inactive_rows_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for the Triton self-loop kernel")
