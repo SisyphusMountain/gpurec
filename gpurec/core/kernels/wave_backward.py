@@ -15,6 +15,7 @@ from gpurec.core.memory_policy import proposal0_memory_gate
 
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 _GMRES_SELF_LOOP_STATS = None
+_GMRES_TRITON_HESSENBERG_MAX_M = 16
 
 
 def _tl_float_dtype(dtype):
@@ -576,11 +577,13 @@ def _gmres_hessenberg_residual_kernel(
     hessenberg_ptr,
     beta_ptr,
     residual_ptr,
+    y_ptr,
     MAX_M: tl.constexpr,
     ITERS: tl.constexpr,
     BLOCK_R: tl.constexpr,
     BLOCK_C: tl.constexpr,
     DTYPE: tl.constexpr,
+    STORE_Y: tl.constexpr,
 ):
     rows = tl.arange(0, BLOCK_R)
     cols = tl.arange(0, BLOCK_C)
@@ -632,6 +635,20 @@ def _gmres_hessenberg_residual_kernel(
     denom = tl.maximum(tl.abs(beta), 1.0e-30)
     tl.store(residual_ptr, tail / denom)
 
+    if STORE_Y:
+        y = tl.zeros([BLOCK_C], dtype=DTYPE)
+        for rev in tl.static_range(0, MAX_M):
+            k = MAX_M - 1 - rev
+            active = k < ITERS
+            row_k_mask = rows == k
+            row_k = tl.sum(tl.where(row_k_mask[:, None], h, 0.0), axis=0)
+            diag = tl.sum(tl.where(cols == k, row_k, 0.0), axis=0)
+            rhs_k = tl.sum(tl.where(row_k_mask, g, 0.0), axis=0)
+            upper_sum = tl.sum(tl.where(cols > k, row_k * y, 0.0), axis=0)
+            y_k = tl.where(diag != 0.0, (rhs_k - upper_sum) / diag, 0.0)
+            y = tl.where(active & (cols == k), y_k, y)
+        tl.store(y_ptr + cols, y, mask=cols < ITERS)
+
 
 def _gmres_hessenberg_rel_res(
     hessenberg: torch.Tensor,
@@ -641,7 +658,7 @@ def _gmres_hessenberg_rel_res(
     b_norm: float,
     residual_buf: torch.Tensor | None,
 ) -> float:
-    if hessenberg.device.type != "cuda" or int(hessenberg.shape[1]) > 32:
+    if hessenberg.device.type != "cuda" or int(hessenberg.shape[1]) > _GMRES_TRITON_HESSENBERG_MAX_M:
         h_sub = hessenberg[: iters + 1, :iters]
         rhs_sub = torch.zeros((iters + 1,), dtype=hessenberg.dtype, device=hessenberg.device)
         rhs_sub[0] = beta
@@ -657,14 +674,54 @@ def _gmres_hessenberg_rel_res(
         hessenberg,
         beta,
         residual_buf,
+        residual_buf,
         max_m,
         int(iters),
         block_r,
         block_c,
         DTYPE=_tl_float_dtype(hessenberg.dtype),
+        STORE_Y=False,
         num_warps=1,
     )
     return float(residual_buf.detach().cpu())
+
+
+def _gmres_hessenberg_solve(
+    hessenberg: torch.Tensor,
+    beta: torch.Tensor,
+    *,
+    iters: int,
+    b_norm: float,
+    residual_buf: torch.Tensor | None,
+) -> tuple[torch.Tensor, float]:
+    h_sub = hessenberg[: iters + 1, :iters]
+    rhs_sub = torch.zeros((iters + 1,), dtype=hessenberg.dtype, device=hessenberg.device)
+    rhs_sub[0] = beta
+    if hessenberg.device.type != "cuda" or int(hessenberg.shape[1]) > _GMRES_TRITON_HESSENBERG_MAX_M:
+        y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+        rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
+        return y, rel_res
+
+    if residual_buf is None:
+        residual_buf = torch.empty((), dtype=hessenberg.dtype, device=hessenberg.device)
+    max_m = int(hessenberg.shape[1])
+    block_r = triton.next_power_of_2(max_m + 1)
+    block_c = triton.next_power_of_2(max_m)
+    y = torch.empty((max_m,), dtype=hessenberg.dtype, device=hessenberg.device)
+    _gmres_hessenberg_residual_kernel[(1,)](
+        hessenberg,
+        beta,
+        residual_buf,
+        y,
+        max_m,
+        int(iters),
+        block_r,
+        block_c,
+        DTYPE=_tl_float_dtype(hessenberg.dtype),
+        STORE_Y=True,
+        num_warps=1,
+    )
+    return y[:iters], float(residual_buf.detach().cpu())
 
 
 @torch.no_grad()
@@ -787,10 +844,13 @@ def _gmres_solve_wave_self_loop_cgs2(
     iters = int(last_j + 1)
     if fixed_iterations:
         check_count += 1
-    h_sub = hessenberg[: iters + 1, :iters]
-    rhs_sub = e1[: iters + 1]
-    y = torch.linalg.lstsq(h_sub, rhs_sub).solution
-    rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
+    y, rel_res = _gmres_hessenberg_solve(
+        hessenberg,
+        b_norm_t,
+        iters=iters,
+        b_norm=b_norm,
+        residual_buf=residual_buf,
+    )
     if _GMRES_SELF_LOOP_STATS is not None:
         _GMRES_SELF_LOOP_STATS.append(
             {

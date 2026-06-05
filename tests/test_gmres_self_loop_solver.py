@@ -197,6 +197,39 @@ def test_gmres_hessenberg_residual_kernel_matches_lstsq_cuda(dtype):
         assert got == pytest.approx(expected, rel=rel_tol, abs=abs_tol)
 
 
+def test_gmres_self_loop_matches_dense_solve_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    device = torch.device("cuda")
+    dtype = torch.float64
+    matrix = torch.tensor(
+        [
+            [1.40, -0.20, 0.05, 0.00],
+            [0.10, 1.15, -0.10, 0.03],
+            [0.00, 0.20, 1.30, -0.07],
+            [-0.04, 0.00, 0.08, 1.10],
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    rhs = torch.tensor([[0.7, -1.2], [2.0, 0.3]], dtype=dtype, device=device)
+
+    def apply_a(vec):
+        return (matrix @ vec.reshape(-1)).reshape_as(vec)
+
+    got = wave_backward._gmres_solve_wave_self_loop(
+        apply_a,
+        rhs,
+        max_iter=4,
+        tol=1e-13,
+        check_interval=2,
+    )
+    expected = torch.linalg.solve(matrix, rhs.reshape(-1)).reshape_as(rhs)
+
+    torch.testing.assert_close(got, expected, rtol=1e-11, atol=1e-11)
+
+
 def test_triton_apply_a_zeroes_inactive_rows_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for the Triton self-loop kernel")
