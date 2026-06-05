@@ -551,3 +551,46 @@ but it still does not beat fixed CGS2 wall time because the remaining residual
 checks are expensive. The next implementation step should replace checkpoint
 `torch.linalg.lstsq` residual checks with a low-overhead GPU-resident Givens or
 small-Hessenberg update.
+
+### Triton Hessenberg Residual Checker
+
+Implementation commit:
+
+```text
+198fa4b Use Triton residual checks for adaptive GMRES
+```
+
+Adaptive checkpoint residuals now use a tiny Triton Givens QR kernel over the
+small Hessenberg matrix. This keeps CGS2 Arnoldi and the final per-wave
+`torch.linalg.lstsq` solve for the GMRES coefficients, but removes repeated
+checkpoint cuSOLVER least-squares solves.
+
+Selected backward-only result on `CLU_000680_20_4_C`, max `m=10`, interval `3`:
+
+| Solver | Total Backward Iterations | Total GMRES Checks | Elapsed | Relative L2 Error vs N=512 |
+|---|---:|---:|---:|---:|
+| adaptive CGS2 I3, Triton residual | `619` | `299` | `0.168223 s` | `6.589550e-06` |
+| fixed CGS2 M10 | `680` | `68` | `0.160145 s` | `6.588901e-06` |
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_adaptive_cgs2_tritonres_guard_i3_20260606_232528/
+benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_tritonres_guard_i3_profile_20260606_232600/
+```
+
+Nsys comparison:
+
+| Category | Old Adaptive MGS | Adaptive CGS2 I3 Triton Residual | Fixed CGS2 M10 |
+|---|---:|---:|---:|
+| summed GPU kernels | `206.592 ms`, `30,093` launches | `127.934 ms`, `11,935` launches | `129.190 ms`, `12,368` launches |
+| CUDA API time | `142.419 ms`, `69,317` calls | `91.472 ms`, `27,119` calls | `87.620 ms`, `26,723` calls |
+| `_wave_backward_uniform_2d_jt_kernel` | `8.134 ms`, `598` calls | `8.318 ms`, `619` calls | `9.104 ms`, `680` calls |
+| `_gmres_hessenberg_residual_kernel` | none | `1.863 ms`, `299` calls | none |
+| QR/lstsq kernels | `26.721 ms`, `2,324` launches | `5.030 ms`, `272` launches | `5.457 ms`, `272` launches |
+
+This is the first point where adaptive GMRES both uses fewer VJPs than fixed
+`m=10` and has lower summed GPU kernel time in the profiler. The measured
+backward-only wall time is still close to fixed CGS2 rather than decisively
+lower, so the next step is to remove the remaining per-wave final `lstsq` or
+start testing whether this VJP reduction changes end-to-end optimizer time.

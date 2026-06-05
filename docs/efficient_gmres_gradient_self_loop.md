@@ -843,6 +843,51 @@ checks remain expensive. The next meaningful step is a GPU-resident
 small-Hessenberg residual update, likely via Givens rotations, without the
 scalar-heavy Python/GPU interaction that made the earlier prototype slow.
 
+## Triton Hessenberg Residual Update
+
+Commit `198fa4b` adds a residual-only Triton Givens QR checker for adaptive
+GMRES. It is deliberately narrower than full incremental GMRES:
+
+- CGS2 Arnoldi is unchanged.
+- checkpoint residual checks use the Triton kernel for `m <= 32`;
+- CPU and larger-`m` cases fall back to `torch.linalg.lstsq`;
+- the final solve for GMRES coefficients still uses one `torch.linalg.lstsq`
+  per wave.
+
+Hard-family result on `CLU_000680_20_4_C`, max `m=10`, check interval `3`:
+
+```text
+adaptive CGS2 I3 with Triton residual:
+  619 J^T applications
+  299 residual checks
+  0.168223 s backward-only
+  6.589550e-06 relative L2 gradient error vs Neumann=512
+
+fixed CGS2 M10:
+  680 J^T applications
+  0.160145 s backward-only
+  6.588901e-06 relative L2 gradient error vs Neumann=512
+```
+
+Nsys:
+
+```text
+GPU kernels:     old adaptive 206.592 ms / 30,093 launches
+                 adaptive I3  127.934 ms / 11,935 launches
+                 fixed M10    129.190 ms / 12,368 launches
+
+QR/lstsq kernels: old adaptive 26.721 ms / 2,324 launches
+                  adaptive I3   5.030 ms / 272 launches
+                  fixed M10     5.457 ms / 272 launches
+
+Triton residual kernel: adaptive I3 1.863 ms / 299 launches
+```
+
+This confirms that replacing checkpoint `lstsq` residual checks with a tiny
+GPU-resident residual computation is the right direction. The remaining gap is
+now small enough that the next decision should be driven by end-to-end
+optimization experiments and/or replacing the final per-wave coefficient solve.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
