@@ -500,3 +500,54 @@ collapsing many tiny PyTorch reductions and updates into fewer dense vector
 operations. This validates the next production direction in
 `docs/efficient_gmres_gradient_self_loop.md`: continue moving Arnoldi vector
 algebra and residual tracking into lower-overhead GPU-resident kernels.
+
+### Adaptive CGS2 With Coarse Residual Checks
+
+Implementation commit:
+
+```text
+1e71da7 Use CGS2 Arnoldi for adaptive GMRES
+```
+
+Adaptive `gmres` now uses the same batched CGS2 Arnoldi vector algebra as
+`gmres_fixed`. It also exposes `gmres_check_interval`, which always checks
+after the first Krylov step and then checks every configured interval. This
+keeps early convergence safe on near-breakdown waves while reducing repeated
+least-squares residual checks.
+
+Backward-only timing on `CLU_000680_20_4_C`, max `m=10`:
+
+| Solver | Check Interval | Total Backward Iterations | Total GMRES Checks | Elapsed | Relative L2 Error vs N=512 |
+|---|---:|---:|---:|---:|---:|
+| old adaptive MGS | 1 | `598` | `598` | `0.263807 s` | `6.589763e-06` |
+| adaptive CGS2 | 1 | `598` | `598` | `0.232383 s` | `6.589763e-06` |
+| adaptive CGS2 | 4 | `638` | `251` | `0.187266 s` | `6.588813e-06` |
+| adaptive CGS2 | 5 | `670` | `202` | `0.179272 s` | `6.588437e-06` |
+| fixed CGS2 | fixed | `680` | `68` | `0.160145 s` | `6.588901e-06` |
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_adaptive_cgs2_i1_20260606_231216/
+benchmarks/large_dataset_capacity/output/gmres_adaptive_cgs2_i4_20260606_231244/
+benchmarks/large_dataset_capacity/output/gmres_adaptive_cgs2_i5_20260606_231304/
+benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/
+```
+
+Nsys for interval `4` confirms that the overhead moved in the intended
+direction:
+
+| Category | Old Adaptive MGS | Adaptive CGS2 I4 | Fixed CGS2 M10 |
+|---|---:|---:|---:|
+| summed GPU kernels | `206.592 ms`, `30,093` launches | `137.375 ms`, `15,362` launches | `129.190 ms`, `12,368` launches |
+| CUDA API time | `142.419 ms`, `69,317` calls | `101.383 ms`, `34,754` calls | `87.620 ms`, `26,723` calls |
+| PyTorch sum reductions | `50.868 ms`, `4,102` launches | `5.064 ms`, `740` launches | `4.618 ms`, `557` launches |
+| QR/lstsq kernels | `26.721 ms`, `2,324` launches | `11.928 ms`, `1,004` launches | `5.457 ms`, `272` launches |
+| `_wave_backward_uniform_2d_jt_kernel` | `8.134 ms`, `598` calls | `8.596 ms`, `638` calls | `9.104 ms`, `680` calls |
+
+This is now a real VJP/overhead tradeoff knob. Interval `4` uses fewer VJPs
+than fixed `m=10` (`638` vs `680`) and is much faster than old adaptive GMRES,
+but it still does not beat fixed CGS2 wall time because the remaining residual
+checks are expensive. The next implementation step should replace checkpoint
+`torch.linalg.lstsq` residual checks with a low-overhead GPU-resident Givens or
+small-Hessenberg update.

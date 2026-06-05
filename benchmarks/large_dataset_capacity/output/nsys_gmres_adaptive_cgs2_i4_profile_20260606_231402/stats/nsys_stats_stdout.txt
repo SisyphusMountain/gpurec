@@ -1,0 +1,70 @@
+Generating SQLite file benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite from benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.nsys-rep
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/nvtx_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_nvtx_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain NV Tools Extension (NVTX) data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/osrt_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_osrt_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/cuda_api_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_cuda_api_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/cuda_gpu_kern_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_cuda_gpu_kern_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/cuda_gpu_mem_time_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_cuda_gpu_mem_time_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/cuda_gpu_mem_size_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_cuda_gpu_mem_size_sum.csv]... PROCESSED
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/openmp_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_openmp_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain OpenMP event data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/opengl_khr_range_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_opengl_khr_range_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain KHR Extension (KHR_DEBUG) data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/opengl_khr_gpu_range_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_opengl_khr_gpu_range_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain GPU KHR Extension (KHR_DEBUG) data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/vulkan_marker_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_vulkan_marker_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain Vulkan Debug Extension (Vulkan Debug Util) data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/vulkan_gpu_marker_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_vulkan_gpu_marker_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain GPU Vulkan Debug Extension (GPU Vulkan Debug markers) data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/dx11_pix_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_dx11_pix_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain DX11 CPU debug markers.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/dx12_gpu_marker_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_dx12_gpu_marker_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain DX12 GPU debug markers.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/dx12_pix_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_dx12_pix_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain DX12 CPU debug markers.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/wddm_queue_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_wddm_queue_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain WDDM context data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/um_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_um_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain CUDA Unified Memory CPU page faults data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/um_total_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_um_total_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain CUDA Unified Memory CPU page faults data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/um_cpu_page_faults_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_um_cpu_page_faults_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain CUDA Unified Memory CPU page faults data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/openacc_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_openacc_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain OpenACC event data.
+
+Processing [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite] with [/opt/nvidia/nsight-systems/2025.5.1/host-linux-x64/reports/syscall_sum.py] to [benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/stats/nsys_stats_syscall_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: benchmarks/large_dataset_capacity/output/nsys_gmres_adaptive_cgs2_i4_profile_20260606_231402/gmres_adaptive_cgs2_i4_family2461_max10_backward_only.sqlite does not contain syscall data.

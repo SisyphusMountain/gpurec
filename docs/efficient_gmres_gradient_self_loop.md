@@ -806,6 +806,43 @@ move the batched CGS/Givens residual update into custom kernels or another
 lower-overhead path, and then reintroduce adaptive stopping without returning
 to per-iteration host synchronization.
 
+## Adaptive CGS2 Update
+
+Commit `1e71da7` applies the batched CGS2 Arnoldi path to adaptive `gmres` and
+adds `gmres_check_interval`. The solver always checks after the first Krylov
+step, then every configured interval, and always at `max_iter`. This avoids the
+near-breakdown failure mode observed on a tiny public CUDA smoke test while
+allowing fewer least-squares residual checks on hard waves.
+
+Hard-family results on `CLU_000680_20_4_C`, max `m=10`:
+
+```text
+old adaptive MGS: 598 J^T applications, 598 checks, 0.263807 s
+adaptive CGS2 i1: 598 J^T applications, 598 checks, 0.232383 s
+adaptive CGS2 i4: 638 J^T applications, 251 checks, 0.187266 s
+adaptive CGS2 i5: 670 J^T applications, 202 checks, 0.179272 s
+fixed CGS2 m10:   680 J^T applications,  68 checks, 0.160145 s
+```
+
+All these max-10 GMRES variants have approximately the same relative L2
+gradient error versus Neumann=512 on this family: about `6.59e-06`.
+
+Nsys for adaptive CGS2 interval `4`:
+
+```text
+GPU kernels:            206.592 ms / 30,093 launches -> 137.375 ms / 15,362 launches
+CUDA API:               142.419 ms / 69,317 calls    -> 101.383 ms / 34,754 calls
+PyTorch sum reductions:  50.868 ms / 4,102 launches  ->   5.064 ms / 740 launches
+QR/lstsq kernels:        26.721 ms / 2,324 launches  ->  11.928 ms / 1,004 launches
+J^T matvec:               8.134 ms / 598 launches    ->   8.596 ms / 638 launches
+```
+
+The result is useful but not final. Coarse-check adaptive GMRES can reduce VJP
+count versus fixed `m=10`, but fixed CGS2 is still faster because residual
+checks remain expensive. The next meaningful step is a GPU-resident
+small-Hessenberg residual update, likely via Givens rotations, without the
+scalar-heavy Python/GPU interaction that made the earlier prototype slow.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
