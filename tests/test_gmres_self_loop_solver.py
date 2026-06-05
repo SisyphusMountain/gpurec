@@ -1,7 +1,35 @@
 import torch
 import pytest
 
+from gpurec import SolverOptions
 from gpurec.core.kernels import wave_backward
+
+
+def test_solver_options_accept_gmres_fixed():
+    options = SolverOptions(
+        neumann_terms=10,
+        self_loop_solver=" GMRES_FIXED ",
+        gmres_tol=1e-8,
+    )
+
+    options.validate()
+
+    assert options.self_loop_solver == "gmres_fixed"
+    assert options.gmres_tol == 1e-8
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"self_loop_solver": "bad"},
+        {"gmres_tol": 0.0},
+    ],
+)
+def test_solver_options_reject_invalid_gmres_options(kwargs):
+    options = SolverOptions(**kwargs)
+
+    with pytest.raises(ValueError):
+        options.validate()
 
 
 def test_gmres_self_loop_matches_dense_solve_cpu():
