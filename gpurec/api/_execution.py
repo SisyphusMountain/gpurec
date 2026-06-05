@@ -63,6 +63,7 @@ def evaluate_static_loss_grad(
             neumann_terms=static.solver_options.neumann_terms,
             self_loop_solver=static.solver_options.self_loop_solver,
             gmres_tol=static.solver_options.gmres_tol,
+            gmres_check_interval=static.solver_options.gmres_check_interval,
             bicgstab_max_iter=static.solver_options.bicgstab_max_iter,
             bicgstab_tol=static.solver_options.bicgstab_tol,
             bicgstab_breakdown_tol=static.solver_options.bicgstab_breakdown_tol,

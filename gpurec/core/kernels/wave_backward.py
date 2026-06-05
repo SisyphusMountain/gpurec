@@ -579,16 +579,20 @@ def _gmres_solve_wave_self_loop(
     max_iter: int,
     tol: float,
     fixed_iterations: bool = False,
+    check_interval: int = 1,
 ) -> torch.Tensor:
     """Solve ``A v = rhs`` for one wave with unrestarted GMRES."""
     max_iter = int(max_iter)
     tol = float(tol)
+    check_interval = int(check_interval)
     if max_iter < 1:
         if _GMRES_SELF_LOOP_STATS is not None:
             _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 1.0})
         return torch.zeros_like(rhs)
     if tol <= 0.0:
         raise ValueError("gmres_tol must be positive")
+    if check_interval < 1:
+        raise ValueError("gmres_check_interval must be at least 1")
 
     b_norm_t = torch.linalg.vector_norm(rhs)
     b_norm = float(b_norm_t.detach().cpu())
@@ -597,86 +601,30 @@ def _gmres_solve_wave_self_loop(
             _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 0.0})
         return torch.zeros_like(rhs)
 
-    if fixed_iterations:
-        return _gmres_solve_wave_self_loop_fixed_cgs2(
-            apply_a,
-            rhs,
-            max_iter=max_iter,
-            b_norm_t=b_norm_t,
-            b_norm=b_norm,
-        )
-
-    basis = torch.empty(
-        (max_iter + 1, *rhs.shape),
-        dtype=rhs.dtype,
-        device=rhs.device,
+    return _gmres_solve_wave_self_loop_cgs2(
+        apply_a,
+        rhs,
+        max_iter=max_iter,
+        tol=tol,
+        fixed_iterations=bool(fixed_iterations),
+        check_interval=check_interval,
+        b_norm_t=b_norm_t,
+        b_norm=b_norm,
     )
-    torch.div(rhs, b_norm_t, out=basis[0])
-    hessenberg = torch.zeros(
-        (max_iter + 1, max_iter),
-        dtype=rhs.dtype,
-        device=rhs.device,
-    )
-    e1 = torch.zeros((max_iter + 1,), dtype=rhs.dtype, device=rhs.device)
-    e1[0] = b_norm_t
-    y = None
-    last_j = 0
-    rel_res = 1.0
-
-    for j in range(max_iter):
-        w = apply_a(basis[j])
-        for i in range(j + 1):
-            q_i = basis[i]
-            coeff = torch.sum(q_i * w)
-            hessenberg[i, j] = coeff
-            w = w - coeff * q_i
-
-        next_norm_t = torch.linalg.vector_norm(w)
-        hessenberg[j + 1, j] = next_norm_t
-        last_j = j
-
-        if not fixed_iterations:
-            h_sub = hessenberg[: j + 2, : j + 1]
-            rhs_sub = e1[: j + 2]
-            y = torch.linalg.lstsq(h_sub, rhs_sub).solution
-            rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
-            if rel_res <= tol:
-                break
-
-            next_norm = float(next_norm_t.detach().cpu())
-            if next_norm == 0.0:
-                break
-            torch.div(w, next_norm_t, out=basis[j + 1])
-            continue
-
-        if j + 1 >= max_iter:
-            continue
-        next_norm_t = torch.clamp(next_norm_t, min=torch.finfo(rhs.dtype).tiny)
-        torch.div(w, next_norm_t, out=basis[j + 1])
-
-    iters = int(last_j + 1)
-    if y is None:
-        h_sub = hessenberg[: iters + 1, :iters]
-        rhs_sub = e1[: iters + 1]
-        y = torch.linalg.lstsq(h_sub, rhs_sub).solution
-        rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
-    if _GMRES_SELF_LOOP_STATS is not None:
-        _GMRES_SELF_LOOP_STATS.append(
-            {"iterations": iters, "rel_res": float(rel_res)}
-        )
-    y_shape = (iters,) + (1,) * rhs.ndim
-    return torch.sum(basis[:iters] * y.reshape(y_shape), dim=0)
 
 
-def _gmres_solve_wave_self_loop_fixed_cgs2(
+def _gmres_solve_wave_self_loop_cgs2(
     apply_a,
     rhs: torch.Tensor,
     *,
     max_iter: int,
+    tol: float,
+    fixed_iterations: bool,
+    check_interval: int,
     b_norm_t: torch.Tensor,
     b_norm: float,
 ) -> torch.Tensor:
-    """Fixed-m GMRES Arnoldi using batched CGS with one reorthogonalization."""
+    """GMRES Arnoldi using batched CGS with one reorthogonalization pass."""
     basis = torch.empty(
         (max_iter + 1, *rhs.shape),
         dtype=rhs.dtype,
@@ -695,6 +643,10 @@ def _gmres_solve_wave_self_loop_fixed_cgs2(
     coeff2_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     work = torch.empty_like(rhs).reshape(-1)
     work2 = torch.empty_like(rhs).reshape(-1)
+    y = None
+    last_j = 0
+    rel_res = 1.0
+    check_count = 0
 
     for j in range(max_iter):
         w = apply_a(basis[j]).reshape(-1)
@@ -711,20 +663,41 @@ def _gmres_solve_wave_self_loop_fixed_cgs2(
 
         next_norm_t = torch.linalg.vector_norm(work2)
         hessenberg[j + 1, j] = next_norm_t
+        last_j = j
+        if not fixed_iterations:
+            should_check = j == 0 or (j + 1) % check_interval == 0 or j + 1 >= max_iter
+            if should_check:
+                check_count += 1
+                h_sub = hessenberg[: j + 2, : j + 1]
+                rhs_sub = e1[: j + 2]
+                y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+                rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
+                if rel_res <= tol:
+                    break
+                next_norm = float(next_norm_t.detach().cpu())
+                if next_norm == 0.0:
+                    break
         if j + 1 < max_iter:
             denom = torch.clamp(next_norm_t, min=torch.finfo(rhs.dtype).tiny)
             torch.div(work2, denom, out=basis_2d[j + 1])
 
-    h_sub = hessenberg[: max_iter + 1, :max_iter]
-    rhs_sub = e1[: max_iter + 1]
-    y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+    iters = int(last_j + 1)
+    if y is None:
+        check_count += 1
+        h_sub = hessenberg[: iters + 1, :iters]
+        rhs_sub = e1[: iters + 1]
+        y = torch.linalg.lstsq(h_sub, rhs_sub).solution
     rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
     if _GMRES_SELF_LOOP_STATS is not None:
         _GMRES_SELF_LOOP_STATS.append(
-            {"iterations": int(max_iter), "rel_res": float(rel_res)}
+            {
+                "iterations": iters,
+                "rel_res": float(rel_res),
+                "check_count": int(check_count),
+            }
         )
     out = torch.empty_like(rhs)
-    torch.mv(basis_2d[:max_iter].t(), y, out=out.reshape(-1))
+    torch.mv(basis_2d[:iters].t(), y, out=out.reshape(-1))
     return out
 
 
@@ -1071,6 +1044,7 @@ def _wave_backward_uniform_2d(
     initial_v=None,
     self_loop_solver="neumann",
     gmres_tol=1e-10,
+    gmres_check_interval=1,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -1262,6 +1236,7 @@ def _wave_backward_uniform_2d(
                 max_iter=int(neumann_terms),
                 tol=float(gmres_tol),
                 fixed_iterations=self_loop_solver == "gmres_fixed",
+                check_interval=int(gmres_check_interval),
             )
         )
     elif self_loop_solver == "neumann" and initial_v is not None:
@@ -1474,6 +1449,7 @@ def wave_backward_uniform_fused(
     initial_v=None,
     self_loop_solver="neumann",
     gmres_tol=1e-10,
+    gmres_check_interval=1,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1571,6 +1547,7 @@ def wave_backward_uniform_fused(
         initial_v=initial_v,
         self_loop_solver=self_loop_solver,
         gmres_tol=gmres_tol,
+        gmres_check_interval=gmres_check_interval,
     )
 
 

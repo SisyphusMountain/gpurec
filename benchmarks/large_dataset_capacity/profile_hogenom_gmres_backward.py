@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-neumann", type=int, default=512)
     parser.add_argument("--gmres-iters", type=int, default=10)
     parser.add_argument("--gmres-tol", type=float, default=1e-10)
+    parser.add_argument("--gmres-check-interval", type=int, default=1)
     parser.add_argument(
         "--self-loop-solver",
         choices=("gmres", "gmres_fixed"),
@@ -101,6 +102,7 @@ def _run_gmres_backward_from_state(
     *,
     gmres_iters: int,
     gmres_tol: float,
+    gmres_check_interval: int,
     self_loop_solver: str,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
     static = state["static"]
@@ -135,6 +137,7 @@ def _run_gmres_backward_from_state(
             neumann_terms=int(gmres_iters),
             self_loop_solver=self_loop_solver,
             gmres_tol=gmres_tol,
+            gmres_check_interval=gmres_check_interval,
             bicgstab_max_iter=static.solver_options.bicgstab_max_iter,
             bicgstab_tol=static.solver_options.bicgstab_tol,
             bicgstab_breakdown_tol=static.solver_options.bicgstab_breakdown_tol,
@@ -146,11 +149,15 @@ def _run_gmres_backward_from_state(
         wave_backward_module._GMRES_SELF_LOOP_STATS = original_gmres_stats
 
     per_wave_iterations = [int(row["iterations"]) for row in gmres_stats]
+    per_wave_checks = [int(row.get("check_count", 0)) for row in gmres_stats]
     stats = {
         "wave_count": len(gmres_stats),
         "total_backward_iterations": int(sum(per_wave_iterations)),
+        "total_gmres_checks": int(sum(per_wave_checks)),
         "mean_wave_iterations": float(sum(per_wave_iterations) / max(1, len(per_wave_iterations))),
+        "mean_gmres_checks": float(sum(per_wave_checks) / max(1, len(per_wave_checks))),
         "max_wave_iterations": max(per_wave_iterations, default=0),
+        "max_gmres_checks": max(per_wave_checks, default=0),
         "max_rel_res": max((float(row["rel_res"]) for row in gmres_stats), default=0.0),
         "loss": float(state["loss"].detach().cpu()),
     }
@@ -164,6 +171,7 @@ def _run_gmres_backward(
     *,
     gmres_iters: int,
     gmres_tol: float,
+    gmres_check_interval: int,
     self_loop_solver: str,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
     model.configure_solver(neumann_terms=int(gmres_iters))
@@ -174,6 +182,7 @@ def _run_gmres_backward(
         receiver_weights,
         gmres_iters=gmres_iters,
         gmres_tol=gmres_tol,
+        gmres_check_interval=gmres_check_interval,
         self_loop_solver=self_loop_solver,
     )
 
@@ -209,6 +218,7 @@ def main() -> None:
             receiver_weights,
             gmres_iters=args.gmres_iters,
             gmres_tol=args.gmres_tol,
+            gmres_check_interval=args.gmres_check_interval,
             self_loop_solver=args.self_loop_solver,
         )
     if theta.device.type == "cuda":
@@ -226,6 +236,7 @@ def main() -> None:
         receiver_weights,
         gmres_iters=args.gmres_iters,
         gmres_tol=args.gmres_tol,
+        gmres_check_interval=args.gmres_check_interval,
         self_loop_solver=args.self_loop_solver,
     )
     _cuda_profiler_stop()
@@ -243,6 +254,7 @@ def main() -> None:
         "checkpoint": str(args.checkpoint),
         "gmres_iters": int(args.gmres_iters),
         "gmres_tol": float(args.gmres_tol),
+        "gmres_check_interval": int(args.gmres_check_interval),
         "self_loop_solver": args.self_loop_solver,
         "warmup": int(args.warmup),
         "elapsed_s": elapsed_s,

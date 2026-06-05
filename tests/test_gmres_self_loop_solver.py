@@ -10,12 +10,14 @@ def test_solver_options_accept_gmres_fixed():
         neumann_terms=10,
         self_loop_solver=" GMRES_FIXED ",
         gmres_tol=1e-8,
+        gmres_check_interval=2,
     )
 
     options.validate()
 
     assert options.self_loop_solver == "gmres_fixed"
     assert options.gmres_tol == 1e-8
+    assert options.gmres_check_interval == 2
 
 
 @pytest.mark.parametrize(
@@ -23,6 +25,7 @@ def test_solver_options_accept_gmres_fixed():
     [
         {"self_loop_solver": "bad"},
         {"gmres_tol": 0.0},
+        {"gmres_check_interval": 0},
     ],
 )
 def test_solver_options_reject_invalid_gmres_options(kwargs):
@@ -104,7 +107,7 @@ def test_gmres_self_loop_records_stats_and_stops_early_cpu():
         wave_backward._GMRES_SELF_LOOP_STATS = old_stats
 
     torch.testing.assert_close(got, rhs, rtol=1e-12, atol=1e-12)
-    assert stats == [{"iterations": 1, "rel_res": 0.0}]
+    assert stats == [{"iterations": 1, "rel_res": 0.0, "check_count": 1}]
 
 
 def test_gmres_self_loop_handles_zero_rhs_cpu():
@@ -125,6 +128,37 @@ def test_gmres_self_loop_handles_zero_rhs_cpu():
 
     torch.testing.assert_close(got, rhs)
     assert stats == [{"iterations": 0, "rel_res": 0.0}]
+
+
+def test_gmres_self_loop_check_interval_counts_checks_cpu():
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    calls = 0
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        matrix = torch.diag(torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64))
+        rhs = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+
+        def apply_a(vec):
+            nonlocal calls
+            calls += 1
+            return matrix @ vec
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=5,
+            tol=1e-12,
+            check_interval=3,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, torch.linalg.solve(matrix, rhs), rtol=1e-12, atol=1e-12)
+    assert calls == 3
+    assert stats[0]["iterations"] == 3
+    assert stats[0]["check_count"] == 2
+    assert stats[0]["rel_res"] < 1e-12
 
 
 def test_triton_apply_a_zeroes_inactive_rows_cuda():

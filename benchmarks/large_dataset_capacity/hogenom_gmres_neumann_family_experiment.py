@@ -57,6 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--neumann-terms", type=_csv_ints, default=_csv_ints("8,16,32,64"))
     parser.add_argument("--gmres-iters", type=_csv_ints, default=_csv_ints("2,4,8,16,32"))
     parser.add_argument("--gmres-tol", type=float, default=1e-10)
+    parser.add_argument("--gmres-check-interval", type=int, default=1)
     parser.add_argument(
         "--gmres-solver",
         choices=("gmres", "gmres_fixed"),
@@ -126,11 +127,13 @@ def run_gradient(
     solver: str,
     iterations: int,
     gmres_tol: float,
+    gmres_check_interval: int,
 ) -> dict[str, Any]:
     model.configure_solver(
         neumann_terms=iterations,
         self_loop_solver=solver,
         gmres_tol=gmres_tol,
+        gmres_check_interval=gmres_check_interval,
     )
     model.clear_warm_starts()
     if theta.device.type == "cuda":
@@ -171,6 +174,7 @@ def run_gradient(
     else:
         per_wave_iterations = [int(item["iterations"]) for item in gmres_stats]
         total_backward_iterations = int(sum(per_wave_iterations))
+        per_wave_checks = [int(item.get("check_count", 0)) for item in gmres_stats]
 
     return {
         "solver": solver,
@@ -178,6 +182,14 @@ def run_gradient(
         "wave_count": wave_count,
         "total_backward_iterations": total_backward_iterations,
         "per_wave_iterations": per_wave_iterations,
+        "total_gmres_checks": None if gmres_stats is None else int(sum(per_wave_checks)),
+        "per_wave_gmres_checks": None if gmres_stats is None else per_wave_checks,
+        "max_gmres_checks": None if gmres_stats is None else max(per_wave_checks, default=0),
+        "mean_gmres_checks": (
+            None
+            if gmres_stats is None
+            else sum(per_wave_checks) / max(1, len(per_wave_checks))
+        ),
         "max_wave_iterations": None if per_wave_iterations is None else max(per_wave_iterations, default=0),
         "mean_wave_iterations": (
             None
@@ -224,6 +236,7 @@ def main() -> None:
         solver="neumann",
         iterations=args.reference_neumann,
         gmres_tol=args.gmres_tol,
+        gmres_check_interval=args.gmres_check_interval,
     )
     reference_gradient = torch.tensor(reference["gradient"], dtype=torch.float64)
 
@@ -238,6 +251,7 @@ def main() -> None:
                     solver="neumann",
                     iterations=iterations,
                     gmres_tol=args.gmres_tol,
+                    gmres_check_interval=args.gmres_check_interval,
                 ),
                 reference_gradient,
             )
@@ -252,6 +266,7 @@ def main() -> None:
                     solver=args.gmres_solver,
                     iterations=iterations,
                     gmres_tol=args.gmres_tol,
+                    gmres_check_interval=args.gmres_check_interval,
                 ),
                 reference_gradient,
             )
@@ -291,6 +306,7 @@ def main() -> None:
     )
     print(
         "solver\titerations\ttotal_backward_iterations\tmean_wave_iterations\t"
+        "total_gmres_checks\tmean_gmres_checks\t"
         "rel_l2_error\trel_inf_error\tgradient\telapsed_s\tpeak_gb"
     )
     for row in rows:
@@ -300,9 +316,12 @@ def main() -> None:
             if row["mean_wave_iterations"] is None
             else f"{row['mean_wave_iterations']:.3f}"
         )
+        total_gmres_checks = "" if row["total_gmres_checks"] is None else str(row["total_gmres_checks"])
+        mean_gmres_checks = "" if row["mean_gmres_checks"] is None else f"{row['mean_gmres_checks']:.3f}"
         print(
             f"{row['solver']}\t{row['iterations']}\t{row['total_backward_iterations']}\t"
-            f"{mean_wave_iterations}\t{row['rel_l2_error']:.6e}\t"
+            f"{mean_wave_iterations}\t{total_gmres_checks}\t{mean_gmres_checks}\t"
+            f"{row['rel_l2_error']:.6e}\t"
             f"{row['rel_inf_error']:.6e}\t{row['gradient']}\t"
             f"{row['elapsed_s']:.3f}\t{peak}"
         )
