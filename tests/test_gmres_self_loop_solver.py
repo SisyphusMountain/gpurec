@@ -59,6 +59,34 @@ def test_gmres_self_loop_matches_dense_solve_cpu():
     torch.testing.assert_close(got, expected, rtol=1e-11, atol=1e-11)
 
 
+def test_gmres_fixed_self_loop_matches_dense_solve_cpu():
+    dtype = torch.float64
+    matrix = torch.tensor(
+        [
+            [1.40, -0.20, 0.05, 0.00],
+            [0.10, 1.15, -0.10, 0.03],
+            [0.00, 0.20, 1.30, -0.07],
+            [-0.04, 0.00, 0.08, 1.10],
+        ],
+        dtype=dtype,
+    )
+    rhs = torch.tensor([[0.7, -1.2], [2.0, 0.3]], dtype=dtype)
+
+    def apply_a(vec):
+        return (matrix @ vec.reshape(-1)).reshape_as(vec)
+
+    got = wave_backward._gmres_solve_wave_self_loop(
+        apply_a,
+        rhs,
+        max_iter=4,
+        tol=1e-13,
+        fixed_iterations=True,
+    )
+    expected = torch.linalg.solve(matrix, rhs.reshape(-1)).reshape_as(rhs)
+
+    torch.testing.assert_close(got, expected, rtol=1e-11, atol=1e-11)
+
+
 def test_gmres_self_loop_records_stats_and_stops_early_cpu():
     old_stats = wave_backward._GMRES_SELF_LOOP_STATS
     stats = []

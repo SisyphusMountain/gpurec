@@ -13,7 +13,6 @@ from typing import Any
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.api import _implicit_grad as implicit_grad_module
 from gpurec.api._execution import evaluate_static_loss_grad
 from gpurec.core.kernels import wave_backward as wave_backward_module
 
@@ -128,26 +127,23 @@ def run_gradient(
     iterations: int,
     gmres_tol: float,
 ) -> dict[str, Any]:
-    model.configure_solver(neumann_terms=iterations)
+    model.configure_solver(
+        neumann_terms=iterations,
+        self_loop_solver=solver,
+        gmres_tol=gmres_tol,
+    )
     model.clear_warm_starts()
     if theta.device.type == "cuda":
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(theta.device)
 
     wave_count = len(model.batch_statics[0].wave_layout["wave_metas"])
-    original_wave_backward = implicit_grad_module.wave_backward_uniform_fused
     original_gmres_stats = wave_backward_module._GMRES_SELF_LOOP_STATS
     gmres_stats: list[dict[str, float | int]] | None = None
-
-    def gmres_wave_backward(*args, **kwargs):
-        kwargs["self_loop_solver"] = solver
-        kwargs["gmres_tol"] = gmres_tol
-        return original_wave_backward(*args, **kwargs)
 
     if solver in ("gmres", "gmres_fixed"):
         gmres_stats = []
         wave_backward_module._GMRES_SELF_LOOP_STATS = gmres_stats
-        implicit_grad_module.wave_backward_uniform_fused = gmres_wave_backward
     elif solver != "neumann":
         raise ValueError(f"unsupported solver {solver!r}")
 
@@ -163,7 +159,6 @@ def run_gradient(
             torch.cuda.synchronize(theta.device)
         elapsed = time.perf_counter() - start
     finally:
-        implicit_grad_module.wave_backward_uniform_fused = original_wave_backward
         wave_backward_module._GMRES_SELF_LOOP_STATS = original_gmres_stats
 
     peak_gb = None

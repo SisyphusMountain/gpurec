@@ -597,6 +597,15 @@ def _gmres_solve_wave_self_loop(
             _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 0.0})
         return torch.zeros_like(rhs)
 
+    if fixed_iterations:
+        return _gmres_solve_wave_self_loop_fixed_cgs2(
+            apply_a,
+            rhs,
+            max_iter=max_iter,
+            b_norm_t=b_norm_t,
+            b_norm=b_norm,
+        )
+
     basis = torch.empty(
         (max_iter + 1, *rhs.shape),
         dtype=rhs.dtype,
@@ -657,6 +666,66 @@ def _gmres_solve_wave_self_loop(
         )
     y_shape = (iters,) + (1,) * rhs.ndim
     return torch.sum(basis[:iters] * y.reshape(y_shape), dim=0)
+
+
+def _gmres_solve_wave_self_loop_fixed_cgs2(
+    apply_a,
+    rhs: torch.Tensor,
+    *,
+    max_iter: int,
+    b_norm_t: torch.Tensor,
+    b_norm: float,
+) -> torch.Tensor:
+    """Fixed-m GMRES Arnoldi using batched CGS with one reorthogonalization."""
+    basis = torch.empty(
+        (max_iter + 1, *rhs.shape),
+        dtype=rhs.dtype,
+        device=rhs.device,
+    )
+    basis_2d = basis.reshape(max_iter + 1, -1)
+    basis_2d[0].copy_(rhs.reshape(-1) / b_norm_t)
+    hessenberg = torch.zeros(
+        (max_iter + 1, max_iter),
+        dtype=rhs.dtype,
+        device=rhs.device,
+    )
+    e1 = torch.zeros((max_iter + 1,), dtype=rhs.dtype, device=rhs.device)
+    e1[0] = b_norm_t
+    coeff_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
+    coeff2_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
+    work = torch.empty_like(rhs).reshape(-1)
+    work2 = torch.empty_like(rhs).reshape(-1)
+
+    for j in range(max_iter):
+        w = apply_a(basis[j]).reshape(-1)
+        q = basis_2d[: j + 1]
+        coeff = coeff_buf[: j + 1]
+        torch.mv(q, w, out=coeff)
+        hessenberg[: j + 1, j].copy_(coeff)
+        torch.addmv(w, q.t(), coeff, beta=1.0, alpha=-1.0, out=work)
+
+        coeff2 = coeff2_buf[: j + 1]
+        torch.mv(q, work, out=coeff2)
+        hessenberg[: j + 1, j].add_(coeff2)
+        torch.addmv(work, q.t(), coeff2, beta=1.0, alpha=-1.0, out=work2)
+
+        next_norm_t = torch.linalg.vector_norm(work2)
+        hessenberg[j + 1, j] = next_norm_t
+        if j + 1 < max_iter:
+            denom = torch.clamp(next_norm_t, min=torch.finfo(rhs.dtype).tiny)
+            torch.div(work2, denom, out=basis_2d[j + 1])
+
+    h_sub = hessenberg[: max_iter + 1, :max_iter]
+    rhs_sub = e1[: max_iter + 1]
+    y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+    rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
+    if _GMRES_SELF_LOOP_STATS is not None:
+        _GMRES_SELF_LOOP_STATS.append(
+            {"iterations": int(max_iter), "rel_res": float(rel_res)}
+        )
+    out = torch.empty_like(rhs)
+    torch.mv(basis_2d[:max_iter].t(), y, out=out.reshape(-1))
+    return out
 
 
 @triton.jit

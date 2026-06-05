@@ -106,16 +106,9 @@ def _run_gmres_backward_from_state(
     static = state["static"]
     static.solver_options.neumann_terms = int(gmres_iters)
 
-    original_wave_backward = implicit_grad_module.wave_backward_uniform_fused
     original_gmres_stats = wave_backward_module._GMRES_SELF_LOOP_STATS
     gmres_stats: list[dict[str, float | int]] = []
 
-    def gmres_wave_backward(*args, **kwargs):
-        kwargs["self_loop_solver"] = self_loop_solver
-        kwargs["gmres_tol"] = gmres_tol
-        return original_wave_backward(*args, **kwargs)
-
-    implicit_grad_module.wave_backward_uniform_fused = gmres_wave_backward
     wave_backward_module._GMRES_SELF_LOOP_STATS = gmres_stats
     try:
         grad_theta, grad_receiver = implicit_grad_module.implicit_grad_loglik_vjp_wave(
@@ -140,6 +133,8 @@ def _run_gmres_backward_from_state(
             specieswise=static.specieswise,
             genewise=static.genewise,
             neumann_terms=int(gmres_iters),
+            self_loop_solver=self_loop_solver,
+            gmres_tol=gmres_tol,
             bicgstab_max_iter=static.solver_options.bicgstab_max_iter,
             bicgstab_tol=static.solver_options.bicgstab_tol,
             bicgstab_breakdown_tol=static.solver_options.bicgstab_breakdown_tol,
@@ -148,7 +143,6 @@ def _run_gmres_backward_from_state(
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
         )
     finally:
-        implicit_grad_module.wave_backward_uniform_fused = original_wave_backward
         wave_backward_module._GMRES_SELF_LOOP_STATS = original_gmres_stats
 
     per_wave_iterations = [int(row["iterations"]) for row in gmres_stats]
