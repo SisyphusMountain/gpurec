@@ -433,3 +433,70 @@ Fresh Nsys fixed-m profile for `m=10`:
 This confirms the fixed-m tradeoff: the actual retained `J^T` work increases,
 but small QR solves, syncs, kernel launches, and API calls decrease enough to
 win wall time on this family.
+
+### Fixed-M CGS2 Arnoldi Update
+
+Implementation commit:
+
+```text
+01a0faa Reduce fixed GMRES Arnoldi launch overhead
+```
+
+The first low-overhead follow-up keeps the same fixed-m GMRES mathematics and
+the same `A x = x - J^T x` Apply-A kernel, but changes the Arnoldi
+orthogonalization path for `gmres_fixed`. Instead of launching one PyTorch dot
+reduction and one elementwise update per existing basis vector, each Arnoldi
+step now uses two batched classical Gram-Schmidt passes:
+
+```text
+coeff  = Q_j w
+w      = w - Q_j^T coeff
+coeff2 = Q_j w
+w      = w - Q_j^T coeff2
+```
+
+This is not the final Triton/Givens implementation, but it removes a large
+fraction of the launch overhead for the real HOGENOM wave sizes, where a
+single-block Triton MGS kernel would not cover the largest waves
+(`162 x 1331 = 215,622` entries).
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_fixed_cgs2_20260606_225944/
+benchmarks/large_dataset_capacity/output/gmres_fixed_cgs2_ladder_20260606_230014/
+benchmarks/large_dataset_capacity/output/nsys_gmres_fixed_cgs2_profile_20260606_230112/
+```
+
+Backward-only timing for `gmres_fixed, m=10`:
+
+| Implementation | Total Backward Iterations | Elapsed | Gradient |
+|---|---:|---:|---|
+| previous fixed MGS | `680` | `0.208197 s` | `[-4.928546349462736, -2.377755721941266, 0.8579805384960248]` |
+| batched CGS2 | `680` | `0.160145 s` | `[-4.928546349462685, -2.377755721941347, 0.85798053849603]` |
+
+Reference-error ladder against Neumann=512:
+
+| Solver | Iterations | Total Backward Iterations | Relative L2 Error |
+|---|---:|---:|---:|
+| Neumann | 32 | `2176` | `3.459027e-05` |
+| GMRES fixed CGS2 | 8 | `544` | `2.285849e-03` |
+| GMRES fixed CGS2 | 10 | `680` | `6.588901e-06` |
+| GMRES fixed CGS2 | 12 | `816` | `1.074765e-07` |
+
+Fresh Nsys comparison for fixed `m=10`:
+
+| Category | Previous Fixed MGS | Fixed CGS2 |
+|---|---:|---:|
+| summed GPU kernels | `187.624 ms`, `22,024` launches | `129.190 ms`, `12,368` launches |
+| CUDA API time under tracing | `111.976 ms`, `48,501` calls | `87.620 ms`, `26,723` calls |
+| PyTorch sum reductions | `58.178 ms`, `4,365` launches | `4.618 ms`, `557` launches |
+| cuBLAS GEMV/dot/update kernels | `0.105 ms`, `64` launches | `11.268 ms`, `4,212` launches |
+| elementwise kernels | `23.063 ms`, `14,923` launches | `7.277 ms`, `4,927` launches |
+| `_wave_backward_uniform_2d_jt_kernel` | `9.112 ms`, `680` calls | `9.104 ms`, `680` calls |
+
+The self-loop matvec cost is unchanged, as expected. The improvement comes from
+collapsing many tiny PyTorch reductions and updates into fewer dense vector
+operations. This validates the next production direction in
+`docs/efficient_gmres_gradient_self_loop.md`: continue moving Arnoldi vector
+algebra and residual tracking into lower-overhead GPU-resident kernels.

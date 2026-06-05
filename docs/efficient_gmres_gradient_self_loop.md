@@ -774,6 +774,38 @@ Python/PyTorch GMRES loop overhead: preallocate buffers, fuse or batch dot/norm
 work where practical, and replace repeated `torch.linalg.lstsq` calls with
 incremental GPU-resident QR/Givens updates.
 
+## CGS2 Fixed-M Update
+
+Commit `01a0faa` implements the first lower-overhead Arnoldi increment for
+`gmres_fixed`. It keeps the existing Apply-A Triton matvec and final
+`torch.linalg.lstsq`, but replaces the per-basis-vector modified
+Gram-Schmidt loop with two batched classical Gram-Schmidt passes using dense
+matrix-vector operations. This targets the profiler-dominant dot/update launch
+overhead without changing the number of `J^T` applications.
+
+Hard-family result on `CLU_000680_20_4_C`, `m=10`:
+
+```text
+previous fixed MGS: 680 J^T applications, 0.208197 s
+batched CGS2:       680 J^T applications, 0.160145 s
+relative L2 error vs Neumann=512: 6.588901e-06
+```
+
+Nsys confirms the expected movement:
+
+```text
+GPU kernels:            187.624 ms / 22,024 launches -> 129.190 ms / 12,368 launches
+PyTorch sum reductions:  58.178 ms / 4,365 launches  ->   4.618 ms / 557 launches
+elementwise kernels:     23.063 ms / 14,923 launches ->   7.277 ms / 4,927 launches
+cuBLAS GEMV/update:       0.105 ms / 64 launches     ->  11.268 ms / 4,212 launches
+J^T matvec:               9.112 ms / 680 launches    ->   9.104 ms / 680 launches
+```
+
+This is still not the final GPU-resident GMRES design. The remaining work is to
+move the batched CGS/Givens residual update into custom kernels or another
+lower-overhead path, and then reintroduce adaptive stopping without returning
+to per-iteration host synchronization.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
