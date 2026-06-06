@@ -2249,6 +2249,65 @@ and further launch/copy cleanup around the adaptive path. A larger Triton or
 Gluon rewrite should target a fused GMRES step, not the already tiny standalone
 Hessenberg residual kernel.
 
+#### Triton Solution Write And Hessenberg Allocation Cleanup
+
+A follow-up largest-10 profile showed repeated cuBLAS GEMV-style launches from
+the final GMRES solution materialization:
+
+```text
+v = Q y
+```
+
+I replaced this CUDA/no-preconditioner write with a small Triton kernel that
+combines the Krylov basis and the already-computed `y` directly into the output
+wave buffer. CPU and preconditioned solves still use the existing PyTorch path.
+In the same patch, the small Hessenberg buffers were changed from `zeros` to
+`empty`, because every entry read by the residual/solve kernels is overwritten
+before use, and the CGS2 path now writes each Hessenberg column once after the
+reorthogonalization pass instead of copying then adding.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_solution_write_20260606_091818/
+benchmarks/large_dataset_capacity/output/nsys_largest10_gmres_triton_solution_write_short_20260606_091959/
+benchmarks/large_dataset_capacity/output/nsys_largest10_gmres_solution_write_empty_h_short_20260606_092159/
+```
+
+Largest-10 first-step gradient check against Neumann512, with one schedule
+warmup before the measured GMRES row:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `1.104497e-07` | `1.851861e-07` | `2.092161e-07` |
+| GMRES10 I1 tol `7e-6`, Triton solution write | `140` | `87` | `1.694483e-06` | `3.333350e-06` | `3.335222e-06` |
+
+Largest-10 warmed 20-step timing:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16, current rerun | `27840` | n/a | `2.572` | `3.724` | `0.0994` | `166606.4375` |
+| GMRES after memory-budget cache | `2800` | `1793` | `2.645` | `3.837` | `0.1019` | `166606.4375` |
+| GMRES with Triton solution write + empty H | `2800` | `1793` | `2.626` | `3.799` | `0.1000` | `166606.4375` |
+
+The short `nsys` refresh confirms the intended movement:
+
+| Kernel Bucket | Before Triton Write | After Triton Write |
+|---|---:|---:|
+| `_gmres_write_solution_kernel` | n/a | `261` launches, `1.29 ms` |
+| cuBLAS `gemmk1_kernel` bucket | `492` launches, `10.69 ms` | `354` launches, `9.16 ms` |
+| cuBLAS `gemv2N_kernel` bucket | `387` launches, `5.72 ms` | `264` launches, `4.46 ms` |
+
+The aggregate `cudaMemsetAsync` count did not move cleanly in the short
+profile because other parts of the workload also issue memsets. The
+Hessenberg allocation cleanup is therefore retained because tests and the
+full-batch gradient gate pass, but its standalone timing contribution should
+be treated as small.
+
+This is still not the final target. GMRES remains about `0.054 s` slower than
+the current Neumann16 rerun over 20 warmed steps, but it is now very close in
+step time while using `9.9x` fewer retained self-loop backward applications.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

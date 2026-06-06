@@ -762,6 +762,52 @@ def _gmres_hessenberg_solve(
     return y[:iters], rel_res
 
 
+@triton.jit(do_not_specialize=["N", "ITERS"])
+def _gmres_write_solution_kernel(
+    basis_ptr,
+    y_ptr,
+    solution_base_ptr,
+    out_ptr,
+    N,
+    ITERS,
+    BLOCK_N: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    HAS_BASE: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_M)
+    n_mask = n < N
+    k_mask = k < ITERS
+    basis = tl.load(
+        basis_ptr + k[:, None] * N + n[None, :],
+        mask=k_mask[:, None] & n_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    y = tl.load(y_ptr + k, mask=k_mask, other=0.0).to(DTYPE)
+    value = tl.sum(basis * y[:, None], axis=0)
+    if HAS_BASE:
+        value += tl.load(solution_base_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    tl.store(out_ptr + n, value, mask=n_mask)
+
+
+def _gmres_can_use_triton_solution_write(
+    basis_2d: torch.Tensor,
+    y: torch.Tensor,
+    rhs: torch.Tensor,
+    *,
+    right_preconditioner,
+) -> bool:
+    return (
+        right_preconditioner is None
+        and basis_2d.device.type == "cuda"
+        and rhs.device.type == "cuda"
+        and y.device.type == "cuda"
+        and rhs.dtype in (torch.float32, torch.float64)
+        and int(y.numel()) <= _GMRES_TRITON_HESSENBERG_MAX_M
+    )
+
+
 @triton.jit(do_not_specialize=["N", "J"])
 def _gmres_arnoldi_dot_partials_kernel(
     basis_ptr,
@@ -1107,6 +1153,31 @@ def _gmres_write_solution(
     solution_base: torch.Tensor | None = None,
     out: torch.Tensor | None,
 ) -> torch.Tensor:
+    if _gmres_can_use_triton_solution_write(
+        basis_2d,
+        y,
+        rhs,
+        right_preconditioner=right_preconditioner,
+    ):
+        result = torch.empty_like(rhs) if out is None else out
+        n = int(rhs.numel())
+        block_n = _GMRES_TRITON_ARNOLDI_BLOCK_N
+        block_m = triton.next_power_of_2(max(1, int(y.numel())))
+        _gmres_write_solution_kernel[(triton.cdiv(n, block_n),)](
+            basis_2d,
+            y,
+            solution_base if solution_base is not None else result,
+            result,
+            n,
+            int(y.numel()),
+            BLOCK_N=int(block_n),
+            BLOCK_M=int(block_m),
+            HAS_BASE=bool(solution_base is not None),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=4,
+        )
+        return result
+
     if right_preconditioner is None:
         result = torch.empty_like(rhs) if out is None else out
         torch.mv(basis_2d[: y.numel()].t(), y, out=result.reshape(-1))
@@ -1158,7 +1229,7 @@ def _gmres_solve_wave_self_loop_triton_split(
     basis = torch.empty((max_iter + 1, *rhs.shape), dtype=rhs.dtype, device=rhs.device)
     basis_2d = basis.reshape(max_iter + 1, -1)
     torch.div(rhs.reshape(-1), safe_b_norm_t, out=basis_2d[0])
-    hessenberg = torch.zeros((max_iter + 1, max_iter), dtype=rhs.dtype, device=rhs.device)
+    hessenberg = torch.empty((max_iter + 1, max_iter), dtype=rhs.dtype, device=rhs.device)
     partials = torch.empty((num_tiles, max_iter), dtype=rhs.dtype, device=rhs.device)
     norm_partials = torch.empty((num_tiles,), dtype=rhs.dtype, device=rhs.device)
     work = torch.empty((n,), dtype=rhs.dtype, device=rhs.device)
@@ -1315,7 +1386,7 @@ def _gmres_solve_wave_self_loop_cgs2(
     )
     basis_2d = basis.reshape(max_iter + 1, -1)
     torch.div(rhs.reshape(-1), safe_b_norm_t, out=basis_2d[0])
-    hessenberg = torch.zeros(
+    hessenberg = torch.empty(
         (max_iter + 1, max_iter),
         dtype=rhs.dtype,
         device=rhs.device,
@@ -1346,12 +1417,11 @@ def _gmres_solve_wave_self_loop_cgs2(
         q = basis_2d[: j + 1]
         coeff = coeff_buf[: j + 1]
         torch.mv(q, w, out=coeff)
-        hessenberg[: j + 1, j].copy_(coeff)
         torch.addmv(w, q.t(), coeff, beta=1.0, alpha=-1.0, out=work)
 
         coeff2 = coeff2_buf[: j + 1]
         torch.mv(q, work, out=coeff2)
-        hessenberg[: j + 1, j].add_(coeff2)
+        torch.add(coeff, coeff2, out=hessenberg[: j + 1, j])
         torch.addmv(work, q.t(), coeff2, beta=1.0, alpha=-1.0, out=work2)
 
         next_norm_t = torch.linalg.vector_norm(work2)
