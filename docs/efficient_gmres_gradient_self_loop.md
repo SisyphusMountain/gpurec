@@ -2528,6 +2528,110 @@ wave-local GMRES loop, especially the `J^T` application plus Arnoldi
 bookkeeping, or address the large-wave `torch_cgs2` fallback without increasing
 register pressure enough to hurt correctness/timing.
 
+#### First-Step CGS2 Fallback Projection
+
+Implementation commit: `e82c8eb8`.
+
+The largest-10 batch still has `59` `torch_cgs2` fallback waves per backward
+pass because the current Triton split-Arnoldi kernel is capped at:
+
+```text
+max(64, next_power_of_2(ceil((W*S) / 512))) <= 512
+```
+
+With `S=1331`, that means waves with `W <= 196` use `triton_split`; waves with
+`W >= 197` fall back to `torch_cgs2`. The current largest-10 layout has `87`
+waves total: `28` eligible for Triton and `59` over the cap. The largest wave
+has `W=6617`, so broadening the current Triton kernel by simply increasing the
+cap is not safe. Earlier cap/width experiments already changed full-batch
+gradient behavior.
+
+I made one narrow fallback optimization instead. For the first Arnoldi
+iteration, `j=0`, CGS2 has only one basis vector. The previous fallback still
+used the general `torch.mv`/`torch.addmv` path. The new path computes the same
+two CGS dot products with `torch.dot` and applies the projections with
+elementwise multiply/subtract operations. Later iterations still use the
+existing general CGS2 path, because a microbenchmark showed dot-loop
+implementations for `j=1` and `j=2` were slower than the current cuBLAS path.
+
+Validation:
+
+```text
+pytest -q
+python -m compileall gpurec/core/kernels/wave_backward.py \
+  benchmarks/large_dataset_capacity/hogenom_batch_gmres_gradient_check.py \
+  benchmarks/large_dataset_capacity/run_gpurec_benchmark.py
+```
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cgs2_j0_dot_warm_20260606_095536/
+benchmarks/large_dataset_capacity/output/gmres_cgs2_j0_dot_warm2_20260606_095606/
+benchmarks/large_dataset_capacity/output/gmres_cgs2_j0_dot_gradient_check_20260606_095640/
+benchmarks/large_dataset_capacity/output/nsys_gmres_cgs2_j0_dot_20260606_095713/
+```
+
+Largest-10 gradient check against Neumann512:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `6.065575e-08` | `1.234564e-07` | `1.713223e-07` | `167456.03125` |
+| GMRES10 I1 tol `7e-6`, schedule, CGS2 `j=0` dot | `142` | `87` | `1.829626e-06` | `3.580235e-06` | `3.584410e-06` | `167456.03125` |
+
+The measured GMRES error remains below the previous `~1e-5` gradient gate. The
+slightly different first-step application count (`142` in this gradient-check
+driver versus `140` in the optimizer timing driver) comes from the specific
+gradient-check ordering/warmup path; the 20-step optimizer accounting below
+matches the previous production comparison.
+
+Largest-10 20-step timing, warmed after the one-time initialization cost:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16, current rerun | `27840` | n/a | `2.572` | `3.724` | `0.0994` | `166606.4375` |
+| GMRES with Triton solution write + empty H | `2800` | `1793` | `2.626` | `3.799` | `0.1000` | `166606.4375` |
+| GMRES with fused Triton norm/check | `2800` | `1793` | `2.690` | `3.845` | `0.1005` | `166606.4375` |
+| GMRES with CGS2 `j=0` dot fallback | `2800` | `1793` | `2.595` | `3.731` | `0.0988` | `166606.4375` |
+
+This is the best largest-10 GMRES timing so far. It still has a slightly higher
+20-step train time than the Neumann16 rerun because step 1 is heavier, but
+steps 2-20 are now slightly faster while using `9.9x` fewer self-loop backward
+applications.
+
+Short largest-10 `nsys` after the fallback change:
+
+| Step | Step Seconds | Self-Loop Backward Applications | GMRES Checks | Backend Counts |
+|---:|---:|---:|---:|---|
+| `1` | `0.8565` | `140` | `140` | `torch_cgs2: 59`, `triton_split: 28` |
+| `2` | `0.1184` | `140` | `87` | `torch_cgs2: 59`, `triton_split: 28` |
+| `3` | `0.1162` | `140` | `87` | `torch_cgs2: 59`, `triton_split: 28` |
+
+The intended kernel movement is visible in the same mixed profile:
+
+| Kernel Bucket | Fused-Check Profile | CGS2 `j=0` Dot Profile |
+|---|---:|---:|
+| cuBLAS `gemmk1_kernel` bucket | `354` launches, `9.174 ms` | `0` launches |
+| cuBLAS `gemv2N_kernel` bucket | `264` launches, `4.458 ms` | `264` launches, `4.452 ms` |
+| `_gmres_hessenberg_residual_kernel` | `221` launches, `0.884 ms` | `221` launches, `0.881 ms` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `93` launches, `0.390 ms` | `93` launches, `0.387 ms` |
+
+The patch removes the first-iteration fallback `gemmk1` work. The remaining
+`gemv2N` launches come from later CGS2 iterations. `ncu --set basic` sampled
+that remaining GEMV bucket at `6510-7342` blocks x `128` threads,
+`13.66-15.10 us`, `72.6%` achieved occupancy, `32-34%` SM throughput, and
+`73-76%` DRAM throughput. It is memory-heavy but not underfilled like the tiny
+residual kernels. This supports the next structural recommendation: do not
+replace later GEMVs with dot loops; implement a separate hierarchical large-wave
+Triton Arnoldi backend if we want to remove the `torch_cgs2` fallback.
+
+The subagent review reached the same boundary: scheduler-level splitting could
+force all waves under the current Triton cap at `max_wave_size <= 196`, but it
+would grow this benchmark from `87` waves to roughly `272` waves and likely add
+more precompute/launch overhead. The safer next implementation target is a new
+large-wave backend with bounded per-kernel tile reductions, not increasing
+`_GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES` or `_GMRES_TRITON_ARNOLDI_BLOCK_N`.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
