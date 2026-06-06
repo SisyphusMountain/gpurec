@@ -2,7 +2,7 @@ import torch
 
 from gpurec.api._batch_state import (
     _BatchStatic,
-    gmres_check_schedule_for_static,
+    gmres_check_schedule_state_for_static,
     gmres_solution_cache_for_static,
 )
 from gpurec.api._implicit_grad import implicit_grad_loglik_vjp_wave
@@ -43,6 +43,7 @@ def evaluate_static_loss_grad(
         if not need_grad:
             return loss, None, None
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
+        gmres_check_schedule_state = gmres_check_schedule_state_for_static(static)
         grad_theta, grad_receiver = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -68,8 +69,10 @@ def evaluate_static_loss_grad(
             self_loop_solver=static.solver_options.self_loop_solver,
             gmres_tol=static.solver_options.gmres_tol,
             gmres_check_interval=static.solver_options.gmres_check_interval,
-            gmres_check_schedule=gmres_check_schedule_for_static(static),
+            gmres_check_schedule=gmres_check_schedule_state[0],
+            gmres_validate_check_schedule=gmres_check_schedule_state[1],
             gmres_trust_check_schedule=static.solver_options.gmres_trust_check_schedule,
+            gmres_trusted_schedule_safety_margin=static.solver_options.gmres_trusted_schedule_safety_margin,
             gmres_solution_cache=gmres_solution_cache_for_static(static),
             gmres_solution_cache_min_iterations=static.solver_options.gmres_solution_cache_min_iterations,
             gmres_preconditioner=static.solver_options.gmres_preconditioner,

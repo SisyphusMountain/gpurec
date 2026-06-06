@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gmres-check-interval", type=int, default=4)
     parser.add_argument("--gmres-reuse-check-schedule", action="store_true")
     parser.add_argument("--gmres-trust-check-schedule", action="store_true")
+    parser.add_argument("--gmres-trusted-schedule-validation-interval", type=int, default=20)
+    parser.add_argument("--gmres-trusted-schedule-safety-margin", type=int, default=0)
     parser.add_argument("--gmres-reuse-solution", action="store_true")
     parser.add_argument("--gmres-solution-cache-min-iterations", type=int, default=2)
     parser.add_argument("--gmres-preconditioner", choices=("none", "diagonal"), default="none")
@@ -120,6 +122,8 @@ def _solver_options(args: argparse.Namespace, *, solver: str, iterations: int, g
         gmres_check_interval=int(args.gmres_check_interval),
         gmres_reuse_check_schedule=bool(args.gmres_reuse_check_schedule),
         gmres_trust_check_schedule=bool(args.gmres_trust_check_schedule),
+        gmres_trusted_schedule_validation_interval=int(args.gmres_trusted_schedule_validation_interval),
+        gmres_trusted_schedule_safety_margin=int(args.gmres_trusted_schedule_safety_margin),
         gmres_reuse_solution=bool(args.gmres_reuse_solution),
         gmres_solution_cache_min_iterations=int(args.gmres_solution_cache_min_iterations),
         gmres_preconditioner=str(args.gmres_preconditioner),

@@ -19,6 +19,7 @@ class _BatchStatic:
     warm_E: torch.Tensor | None = None
     gmres_check_schedule: list[int] | None = None
     gmres_check_schedule_key: tuple | None = None
+    gmres_check_schedule_pass_count: int = 0
     gmres_solution_cache: list[torch.Tensor | None] | None = None
     gmres_solution_cache_key: tuple | None = None
 
@@ -39,6 +40,8 @@ def _gmres_adaptive_cache_key(static: _BatchStatic) -> tuple:
         float(options.gmres_tol),
         int(options.gmres_check_interval),
         bool(options.gmres_trust_check_schedule),
+        int(options.gmres_trusted_schedule_validation_interval),
+        int(options.gmres_trusted_schedule_safety_margin),
         str(options.gmres_preconditioner).strip().lower(),
         float(options.gmres_diagonal_preconditioner_floor),
         bool(options.use_adjoint_pruning),
@@ -61,15 +64,34 @@ def gmres_check_schedule_for_static(static: _BatchStatic) -> list[int] | None:
     ):
         static.gmres_check_schedule = None
         static.gmres_check_schedule_key = None
+        static.gmres_check_schedule_pass_count = 0
         return None
 
     key = _gmres_adaptive_cache_key(static)
     if static.gmres_check_schedule_key != key:
         static.gmres_check_schedule = []
         static.gmres_check_schedule_key = key
+        static.gmres_check_schedule_pass_count = 0
     if static.gmres_check_schedule is None:
         static.gmres_check_schedule = []
     return static.gmres_check_schedule
+
+
+def gmres_check_schedule_state_for_static(static: _BatchStatic) -> tuple[list[int] | None, bool]:
+    schedule = gmres_check_schedule_for_static(static)
+    if schedule is None:
+        return None, True
+
+    options = static.solver_options
+    has_valid_schedule = len(schedule) == len(static.wave_layout["wave_metas"])
+    interval = int(options.gmres_trusted_schedule_validation_interval)
+    validation_due = (
+        not bool(options.gmres_trust_check_schedule)
+        or not has_valid_schedule
+        or (interval > 0 and static.gmres_check_schedule_pass_count % interval == 0)
+    )
+    static.gmres_check_schedule_pass_count += 1
+    return schedule, validation_due
 
 
 def gmres_solution_cache_for_static(static: _BatchStatic) -> list[torch.Tensor | None] | None:

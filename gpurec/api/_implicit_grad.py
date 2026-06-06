@@ -112,7 +112,9 @@ def implicit_grad_loglik_vjp_wave(
     gmres_tol: float = 1e-10,
     gmres_check_interval: int = 1,
     gmres_check_schedule: list[int] | None = None,
+    gmres_validate_check_schedule: bool = True,
     gmres_trust_check_schedule: bool = False,
+    gmres_trusted_schedule_safety_margin: int = 0,
     gmres_solution_cache: list[torch.Tensor | None] | None = None,
     gmres_solution_cache_min_iterations: int = 2,
     gmres_preconditioner: str = "none",
@@ -210,6 +212,7 @@ def implicit_grad_loglik_vjp_wave(
     next_gmres_check_schedule: list[int] | None = [] if use_gmres_check_schedule else None
     use_trusted_gmres_check_schedule = (
         bool(gmres_trust_check_schedule)
+        and not bool(gmres_validate_check_schedule)
         and previous_gmres_check_schedule is not None
         and gmres_solution_cache is None
     )
@@ -267,10 +270,10 @@ def implicit_grad_loglik_vjp_wave(
         gmres_wave_stats: dict[str, float | int | str] | None = None
         if use_gmres_check_schedule or use_gmres_solution_cache:
             if previous_gmres_check_schedule is not None:
-                gmres_min_check_iter = max(
-                    1,
-                    min(int(previous_gmres_check_schedule[wave_rev_index]), neumann_terms),
-                )
+                scheduled_iterations = int(previous_gmres_check_schedule[wave_rev_index])
+                if use_trusted_gmres_check_schedule:
+                    scheduled_iterations += int(gmres_trusted_schedule_safety_margin)
+                gmres_min_check_iter = max(1, min(scheduled_iterations, neumann_terms))
             gmres_wave_stats = {}
         initial_v = None
         if previous_gmres_solution_cache is not None:
@@ -329,11 +332,14 @@ def implicit_grad_loglik_vjp_wave(
             memory_budget_bytes=wave_memory_budget_bytes,
         )
         if next_gmres_check_schedule is not None:
-            observed_iterations = (
-                int(gmres_wave_stats["iterations"])
-                if gmres_wave_stats is not None and "iterations" in gmres_wave_stats
-                else 1
-            )
+            if use_trusted_gmres_check_schedule and previous_gmres_check_schedule is not None:
+                observed_iterations = int(previous_gmres_check_schedule[wave_rev_index])
+            else:
+                observed_iterations = (
+                    int(gmres_wave_stats["iterations"])
+                    if gmres_wave_stats is not None and "iterations" in gmres_wave_stats
+                    else 1
+                )
             next_gmres_check_schedule.append(max(1, min(observed_iterations, neumann_terms)))
         if next_gmres_solution_cache is not None:
             observed_iterations = (

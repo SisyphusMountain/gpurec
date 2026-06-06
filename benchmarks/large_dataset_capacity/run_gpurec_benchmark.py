@@ -78,6 +78,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "scheduled iteration count and skip the residual scalar readback."
         ),
     )
+    parser.add_argument("--gmres-trusted-schedule-validation-interval", type=int, default=20)
+    parser.add_argument("--gmres-trusted-schedule-safety-margin", type=int, default=0)
     parser.add_argument(
         "--gmres-reuse-solution",
         action="store_true",
@@ -115,6 +117,8 @@ def solver_options_from_args(args: argparse.Namespace) -> SolverOptions:
         gmres_check_interval=args.gmres_check_interval,
         gmres_reuse_check_schedule=args.gmres_reuse_check_schedule,
         gmres_trust_check_schedule=args.gmres_trust_check_schedule,
+        gmres_trusted_schedule_validation_interval=args.gmres_trusted_schedule_validation_interval,
+        gmres_trusted_schedule_safety_margin=args.gmres_trusted_schedule_safety_margin,
         gmres_reuse_solution=args.gmres_reuse_solution,
         gmres_solution_cache_min_iterations=args.gmres_solution_cache_min_iterations,
         gmres_preconditioner=args.gmres_preconditioner,

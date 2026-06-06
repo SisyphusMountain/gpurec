@@ -45,6 +45,10 @@ def test_run_gpurec_benchmark_wires_gmres_solver_options(tmp_path: Path):
             "3",
             "--gmres-reuse-check-schedule",
             "--gmres-trust-check-schedule",
+            "--gmres-trusted-schedule-validation-interval",
+            "9",
+            "--gmres-trusted-schedule-safety-margin",
+            "1",
             "--gmres-reuse-solution",
             "--gmres-solution-cache-min-iterations",
             "4",
@@ -63,6 +67,8 @@ def test_run_gpurec_benchmark_wires_gmres_solver_options(tmp_path: Path):
     assert options.gmres_check_interval == 3
     assert options.gmres_reuse_check_schedule is True
     assert options.gmres_trust_check_schedule is True
+    assert options.gmres_trusted_schedule_validation_interval == 9
+    assert options.gmres_trusted_schedule_safety_margin == 1
     assert options.gmres_reuse_solution is True
     assert options.gmres_solution_cache_min_iterations == 4
     assert options.gmres_preconditioner == "diagonal"

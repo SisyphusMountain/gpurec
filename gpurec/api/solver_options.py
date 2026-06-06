@@ -15,6 +15,8 @@ class SolverOptions:
     gmres_check_interval: int = 1
     gmres_reuse_check_schedule: bool = False
     gmres_trust_check_schedule: bool = False
+    gmres_trusted_schedule_validation_interval: int = 20
+    gmres_trusted_schedule_safety_margin: int = 0
     gmres_reuse_solution: bool = False
     gmres_solution_cache_min_iterations: int = 2
     gmres_preconditioner: str = "none"
@@ -45,6 +47,10 @@ class SolverOptions:
             raise ValueError("gmres_check_interval must be at least 1")
         self.gmres_reuse_check_schedule = bool(self.gmres_reuse_check_schedule)
         self.gmres_trust_check_schedule = bool(self.gmres_trust_check_schedule)
+        if int(self.gmres_trusted_schedule_validation_interval) < 0:
+            raise ValueError("gmres_trusted_schedule_validation_interval must be non-negative")
+        if int(self.gmres_trusted_schedule_safety_margin) < 0:
+            raise ValueError("gmres_trusted_schedule_safety_margin must be non-negative")
         self.gmres_reuse_solution = bool(self.gmres_reuse_solution)
         if int(self.gmres_solution_cache_min_iterations) < 1:
             raise ValueError("gmres_solution_cache_min_iterations must be at least 1")

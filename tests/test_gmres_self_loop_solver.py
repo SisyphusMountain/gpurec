@@ -4,7 +4,11 @@ import torch
 import pytest
 
 from gpurec import SolverOptions
-from gpurec.api._batch_state import gmres_check_schedule_for_static, gmres_solution_cache_for_static
+from gpurec.api._batch_state import (
+    gmres_check_schedule_for_static,
+    gmres_check_schedule_state_for_static,
+    gmres_solution_cache_for_static,
+)
 from gpurec.core.kernels import wave_backward
 
 
@@ -16,6 +20,8 @@ def test_solver_options_accept_gmres_fixed():
         gmres_check_interval=2,
         gmres_reuse_check_schedule=True,
         gmres_trust_check_schedule=True,
+        gmres_trusted_schedule_validation_interval=7,
+        gmres_trusted_schedule_safety_margin=1,
         gmres_reuse_solution=True,
         gmres_solution_cache_min_iterations=3,
         gmres_preconditioner=" Diagonal ",
@@ -29,6 +35,8 @@ def test_solver_options_accept_gmres_fixed():
     assert options.gmres_check_interval == 2
     assert options.gmres_reuse_check_schedule is True
     assert options.gmres_trust_check_schedule is True
+    assert options.gmres_trusted_schedule_validation_interval == 7
+    assert options.gmres_trusted_schedule_safety_margin == 1
     assert options.gmres_reuse_solution is True
     assert options.gmres_solution_cache_min_iterations == 3
     assert options.gmres_preconditioner == "diagonal"
@@ -42,6 +50,8 @@ def test_solver_options_accept_gmres_fixed():
         {"gmres_tol": 0.0},
         {"gmres_check_interval": 0},
         {"gmres_solution_cache_min_iterations": 0},
+        {"gmres_trusted_schedule_validation_interval": -1},
+        {"gmres_trusted_schedule_safety_margin": -1},
         {"gmres_preconditioner": "bad"},
         {"gmres_diagonal_preconditioner_floor": 0.0},
     ],
@@ -64,6 +74,7 @@ def _static_for_gmres_cache(options: SolverOptions) -> SimpleNamespace:
         solver_options=options,
         gmres_check_schedule=None,
         gmres_check_schedule_key=None,
+        gmres_check_schedule_pass_count=0,
         gmres_solution_cache=None,
         gmres_solution_cache_key=None,
     )
@@ -96,10 +107,65 @@ def test_gmres_check_schedule_cache_is_opt_in_and_keyed():
     assert gmres_check_schedule_for_static(static) == []
     assert static.gmres_check_schedule is not schedule
 
+    schedule = gmres_check_schedule_for_static(static)
+    schedule.extend([2, 1])
+    static.solver_options.gmres_trusted_schedule_validation_interval = 3
+    assert gmres_check_schedule_for_static(static) == []
+    assert static.gmres_check_schedule is not schedule
+
+    schedule = gmres_check_schedule_for_static(static)
+    schedule.extend([2, 1])
+    static.solver_options.gmres_trusted_schedule_safety_margin = 1
+    assert gmres_check_schedule_for_static(static) == []
+    assert static.gmres_check_schedule is not schedule
+
     static.solver_options.gmres_reuse_check_schedule = False
     assert gmres_check_schedule_for_static(static) is None
     assert static.gmres_check_schedule is None
     assert static.gmres_check_schedule_key is None
+    assert static.gmres_check_schedule_pass_count == 0
+
+
+def test_gmres_check_schedule_state_tracks_validation_cadence():
+    static = _static_for_gmres_cache(
+        SolverOptions(
+            neumann_terms=10,
+            self_loop_solver="gmres",
+            gmres_reuse_check_schedule=True,
+            gmres_trust_check_schedule=True,
+            gmres_trusted_schedule_validation_interval=2,
+        )
+    )
+
+    schedule, validate = gmres_check_schedule_state_for_static(static)
+    assert schedule == []
+    assert validate is True
+    assert static.gmres_check_schedule_pass_count == 1
+
+    schedule[:] = [2, 1]
+    assert gmres_check_schedule_state_for_static(static) == (schedule, False)
+    assert static.gmres_check_schedule_pass_count == 2
+    assert gmres_check_schedule_state_for_static(static) == (schedule, True)
+    assert static.gmres_check_schedule_pass_count == 3
+    assert gmres_check_schedule_state_for_static(static) == (schedule, False)
+
+
+def test_gmres_check_schedule_state_can_disable_periodic_validation():
+    static = _static_for_gmres_cache(
+        SolverOptions(
+            neumann_terms=10,
+            self_loop_solver="gmres",
+            gmres_reuse_check_schedule=True,
+            gmres_trust_check_schedule=True,
+            gmres_trusted_schedule_validation_interval=0,
+        )
+    )
+
+    schedule, validate = gmres_check_schedule_state_for_static(static)
+    assert validate is True
+    schedule[:] = [2, 1]
+    assert gmres_check_schedule_state_for_static(static) == (schedule, False)
+    assert gmres_check_schedule_state_for_static(static) == (schedule, False)
 
 
 def test_gmres_solution_cache_is_opt_in_and_keyed():
