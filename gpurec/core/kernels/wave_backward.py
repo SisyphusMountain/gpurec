@@ -1621,6 +1621,19 @@ def _gmres_use_triton_large_direct_norm_normalize() -> bool:
     )
 
 
+def _gmres_use_triton_large_fused_reduce_project() -> bool:
+    return os.environ.get("GPUREC_GMRES_TRITON_LARGE_FUSED_REDUCE_PROJECT", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _gmres_triton_large_fused_reduce_project_max_tiles() -> int:
+    return _env_int("GPUREC_GMRES_TRITON_LARGE_FUSED_REDUCE_PROJECT_MAX_TILES", 768)
+
+
 def _gmres_use_triton_trusted_finalize_write() -> bool:
     return os.environ.get("GPUREC_GMRES_TRITON_TRUSTED_FINALIZE_WRITE", "1").lower() in (
         "1",
@@ -2375,6 +2388,11 @@ def _gmres_solve_wave_self_loop_triton_large(
     )
     use_direct_norm_normalize = use_direct_sum and _gmres_use_triton_large_direct_norm_normalize()
     direct_sum_block_tiles = triton.next_power_of_2(num_tiles) if use_direct_sum else None
+    use_fused_reduce_project = (
+        use_direct_sum
+        and _gmres_use_triton_large_fused_reduce_project()
+        and num_tiles <= _gmres_triton_large_fused_reduce_project_max_tiles()
+    )
     fused_first_dot_tiles = int(first_dot_partial_tiles or 0)
     use_fused_first_dot = (
         apply_a_first_dot is not None
@@ -2382,6 +2400,11 @@ def _gmres_solve_wave_self_loop_triton_large(
         and triton.cdiv(fused_first_dot_tiles, group_tiles)
         <= _GMRES_TRITON_LARGE_ARNOLDI_MAX_GROUPS
     )
+    if use_fused_reduce_project:
+        # The fused reduction/project kernels expect the dot partials to be
+        # aligned with the vector tiling. The experimental self-loop first-dot
+        # path writes one row partial per wave row instead.
+        use_fused_first_dot = False
     first_dot_tiles = fused_first_dot_tiles if use_fused_first_dot else num_tiles
     first_use_direct_sum = _gmres_can_use_triton_large_direct_sum(first_dot_tiles)
     first_direct_sum_block_tiles = (
@@ -2424,10 +2447,12 @@ def _gmres_solve_wave_self_loop_triton_large(
     direct_norm_check_count = 0
     direct_norm_store_count = 0
     normalize_from_hessenberg_count = 0
+    fused_reduce_project_count = 0
     trusted_finalize_write_used = False
     trusted_finalize_result = None
 
     for j in range(max_iter):
+        iter_block_k = triton.next_power_of_2(j + 1) if use_fused_reduce_project else block_k
         basis_j = basis[j]
         if use_fused_first_dot:
             w = apply_a_first_dot(
@@ -2448,11 +2473,29 @@ def _gmres_solve_wave_self_loop_triton_large(
                 J=int(j),
                 MAX_ITER=int(max_iter),
                 BLOCK_N=int(block_n),
-                BLOCK_K=int(block_k),
+                BLOCK_K=int(iter_block_k),
                 DTYPE=_tl_float_dtype(rhs.dtype),
                 num_warps=4,
             )
-        if first_use_direct_sum:
+        if use_fused_reduce_project:
+            _gmres_arnoldi_reduce_project_dot_kernel[grid](
+                basis_2d,
+                w,
+                partials,
+                hessenberg,
+                work,
+                n,
+                NUM_TILES=int(num_tiles),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_N=int(block_n),
+                BLOCK_K=int(iter_block_k),
+                BLOCK_TILES=int(direct_sum_block_tiles),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
+            fused_reduce_project_count += 1
+        elif first_use_direct_sum:
             _gmres_arnoldi_sum_partials_direct_kernel[(1,)](
                 partials,
                 coeff_buf,
@@ -2491,21 +2534,40 @@ def _gmres_solve_wave_self_loop_triton_large(
                 DTYPE=_tl_float_dtype(rhs.dtype),
                 num_warps=1,
             )
-        _gmres_arnoldi_project_from_coeff_kernel[grid](
-            basis_2d,
-            w,
-            coeff_buf,
-            partials,
-            work,
-            n,
-            J=int(j),
-            MAX_ITER=int(max_iter),
-            BLOCK_N=int(block_n),
-            BLOCK_K=int(block_k),
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=4,
-        )
-        if use_direct_sum:
+        if not use_fused_reduce_project:
+            _gmres_arnoldi_project_from_coeff_kernel[grid](
+                basis_2d,
+                w,
+                coeff_buf,
+                partials,
+                work,
+                n,
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_N=int(block_n),
+                BLOCK_K=int(block_k),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=4,
+            )
+        if use_fused_reduce_project:
+            _gmres_arnoldi_reduce_project_norm_kernel[grid](
+                basis_2d,
+                partials,
+                hessenberg,
+                work,
+                norm_partials,
+                n,
+                NUM_TILES=int(num_tiles),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_N=int(block_n),
+                BLOCK_K=int(iter_block_k),
+                BLOCK_TILES=int(direct_sum_block_tiles),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
+            fused_reduce_project_count += 1
+        elif use_direct_sum:
             _gmres_arnoldi_sum_partials_direct_kernel[(1,)](
                 partials,
                 coeff_buf,
@@ -2544,19 +2606,20 @@ def _gmres_solve_wave_self_loop_triton_large(
                 DTYPE=_tl_float_dtype(rhs.dtype),
                 num_warps=1,
             )
-        _gmres_arnoldi_project_norm_from_coeff_kernel[grid](
-            basis_2d,
-            coeff_buf,
-            work,
-            norm_partials,
-            n,
-            J=int(j),
-            MAX_ITER=int(max_iter),
-            BLOCK_N=int(block_n),
-            BLOCK_K=int(block_k),
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=4,
-        )
+        if not use_fused_reduce_project:
+            _gmres_arnoldi_project_norm_from_coeff_kernel[grid](
+                basis_2d,
+                coeff_buf,
+                work,
+                norm_partials,
+                n,
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_N=int(block_n),
+                BLOCK_K=int(block_k),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=4,
+            )
         group_norm_ready = False
         if not use_direct_sum:
             _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
@@ -2760,6 +2823,8 @@ def _gmres_solve_wave_self_loop_triton_large(
             "large_direct_sum": bool(use_direct_sum),
             "large_direct_sum_max_tiles": int(direct_sum_max_tiles),
             "large_direct_norm_normalize": bool(use_direct_norm_normalize),
+            "large_fused_reduce_project": bool(use_fused_reduce_project),
+            "large_fused_reduce_project_passes": int(fused_reduce_project_count),
             "fused_self_loop_first_dot": bool(use_fused_first_dot),
             "first_dot_partial_tiles": int(first_dot_tiles),
             "large_direct_norm_checks": int(direct_norm_check_count),

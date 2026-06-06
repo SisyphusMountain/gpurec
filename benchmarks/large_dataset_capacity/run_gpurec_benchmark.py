@@ -247,6 +247,12 @@ class SelfLoopBackwardRecorder:
                 for row in gmres_stats
                 if "large_direct_sum_max_tiles" in row
             ]
+            large_fused_reduce_project_used = sum(
+                1 for row in gmres_stats if bool(row.get("large_fused_reduce_project", False))
+            )
+            large_fused_reduce_project_passes = sum(
+                int(row.get("large_fused_reduce_project_passes", 0)) for row in gmres_stats
+            )
             fused_first_dot_used = sum(
                 1 for row in gmres_stats if bool(row.get("fused_self_loop_first_dot", False))
             )
@@ -301,6 +307,8 @@ class SelfLoopBackwardRecorder:
                     large_direct_sum_caps,
                     default=None,
                 ),
+                "gmres_large_fused_reduce_project_used": int(large_fused_reduce_project_used),
+                "gmres_large_fused_reduce_project_passes": int(large_fused_reduce_project_passes),
                 "gmres_fused_self_loop_first_dot_used": int(fused_first_dot_used),
                 "gmres_fused_first_dot_max_partial_tiles": max(
                     fused_first_dot_tiles,
@@ -341,6 +349,8 @@ class SelfLoopBackwardRecorder:
             "gmres_trusted_finalize_write_used": None,
             "gmres_large_direct_sum_used": None,
             "gmres_large_direct_sum_max_tiles": None,
+            "gmres_large_fused_reduce_project_used": None,
+            "gmres_large_fused_reduce_project_passes": None,
             "gmres_fused_self_loop_first_dot_used": None,
             "gmres_fused_first_dot_max_partial_tiles": None,
             "gmres_large_direct_norm_checks": None,

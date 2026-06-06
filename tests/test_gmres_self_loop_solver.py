@@ -871,6 +871,149 @@ def test_gmres_large_direct_sum_matches_staged_reduction_cuda(num_tiles, j, add_
     torch.testing.assert_close(h_direct[: j + 1, j], h_staged[: j + 1, j], rtol=1e-5, atol=2e-5)
 
 
+def test_gmres_large_fused_reduce_project_matches_staged_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES fused reduce/project kernels")
+
+    device = torch.device("cuda")
+    dtype = torch.float32
+    generator = torch.Generator(device="cpu").manual_seed(2301)
+    block_n = wave_backward._GMRES_TRITON_ARNOLDI_BLOCK_N
+    num_tiles = 600
+    n = block_n * num_tiles - 17
+    max_iter = 10
+    j = 2
+    block_k = wave_backward.triton.next_power_of_2(j + 1)
+    block_tiles = wave_backward.triton.next_power_of_2(num_tiles)
+    grid = (num_tiles,)
+
+    basis = torch.randn((max_iter + 1, n), generator=generator, dtype=dtype).to(device)
+    basis[: j + 1] /= torch.linalg.vector_norm(basis[: j + 1], dim=1, keepdim=True)
+    work_in = torch.randn((n,), generator=generator, dtype=dtype).to(device)
+    partials_staged = torch.empty((num_tiles, max_iter), dtype=dtype, device=device)
+    partials_fused = torch.empty_like(partials_staged)
+    h_staged = torch.zeros((max_iter + 1, max_iter), dtype=dtype, device=device)
+    h_fused = torch.zeros_like(h_staged)
+    coeff = torch.empty((max_iter,), dtype=dtype, device=device)
+    work_staged = torch.empty((n,), dtype=dtype, device=device)
+    work_fused = torch.empty_like(work_staged)
+    norm_staged = torch.empty((num_tiles,), dtype=dtype, device=device)
+    norm_fused = torch.empty_like(norm_staged)
+
+    wave_backward._gmres_arnoldi_dot_partials_kernel[grid](
+        basis,
+        work_in,
+        partials_staged,
+        n,
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_N=int(block_n),
+        BLOCK_K=int(block_k),
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=4,
+    )
+    partials_fused.copy_(partials_staged)
+    wave_backward._gmres_arnoldi_sum_partials_direct_kernel[(1,)](
+        partials_staged,
+        coeff,
+        h_staged,
+        NUM_TILES=int(num_tiles),
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_TILES=int(block_tiles),
+        BLOCK_K=int(block_k),
+        ADD_TO_H=False,
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=8,
+    )
+    wave_backward._gmres_arnoldi_project_from_coeff_kernel[grid](
+        basis,
+        work_in,
+        coeff,
+        partials_staged,
+        work_staged,
+        n,
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_N=int(block_n),
+        BLOCK_K=int(block_k),
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=4,
+    )
+    wave_backward._gmres_arnoldi_reduce_project_dot_kernel[grid](
+        basis,
+        work_in,
+        partials_fused,
+        h_fused,
+        work_fused,
+        n,
+        NUM_TILES=int(num_tiles),
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_N=int(block_n),
+        BLOCK_K=int(block_k),
+        BLOCK_TILES=int(block_tiles),
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=8,
+    )
+
+    torch.testing.assert_close(h_fused[: j + 1, j], h_staged[: j + 1, j], rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(work_fused, work_staged, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(
+        partials_fused[:, : j + 1],
+        partials_staged[:, : j + 1],
+        rtol=2e-5,
+        atol=4e-2,
+    )
+
+    wave_backward._gmres_arnoldi_sum_partials_direct_kernel[(1,)](
+        partials_staged,
+        coeff,
+        h_staged,
+        NUM_TILES=int(num_tiles),
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_TILES=int(block_tiles),
+        BLOCK_K=int(block_k),
+        ADD_TO_H=True,
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=8,
+    )
+    wave_backward._gmres_arnoldi_project_norm_from_coeff_kernel[grid](
+        basis,
+        coeff,
+        work_staged,
+        norm_staged,
+        n,
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_N=int(block_n),
+        BLOCK_K=int(block_k),
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=4,
+    )
+    wave_backward._gmres_arnoldi_reduce_project_norm_kernel[grid](
+        basis,
+        partials_fused,
+        h_fused,
+        work_fused,
+        norm_fused,
+        n,
+        NUM_TILES=int(num_tiles),
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_N=int(block_n),
+        BLOCK_K=int(block_k),
+        BLOCK_TILES=int(block_tiles),
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=8,
+    )
+
+    torch.testing.assert_close(h_fused[: j + 1, j], h_staged[: j + 1, j], rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(work_fused, work_staged, rtol=2e-5, atol=1e-3)
+    torch.testing.assert_close(norm_fused, norm_staged, rtol=2e-5, atol=1e-3)
+
+
 @pytest.mark.parametrize("num_tiles", [513, 729, 1024, 1536, 2048, 3072, 4096])
 @pytest.mark.parametrize("iters", [1, 4, 10])
 def test_gmres_large_direct_norm_check_matches_staged_reduction_cuda(num_tiles, iters):
@@ -1214,6 +1357,51 @@ def test_gmres_self_loop_triton_large_handles_above_cap_cuda_float32(monkeypatch
     assert stats[0]["large_direct_norm_checks"] == 2
     assert stats[0]["large_direct_norm_stores"] == 0
     assert stats[0]["large_group_norm_reductions"] == 0
+    assert stats[0]["large_normalize_from_hessenberg"] == 1
+    assert stats[0]["iterations"] == 2
+
+
+def test_gmres_self_loop_triton_large_fused_reduce_project_cuda_float32(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_ARNOLDI", "1")
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_LARGE_ARNOLDI", "1")
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_LARGE_FUSED_REDUCE_PROJECT", "1")
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        device = torch.device("cuda")
+        block_n = wave_backward._GMRES_TRITON_ARNOLDI_BLOCK_N
+        max_tiles = wave_backward._GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES
+        n = block_n * max_tiles + 17
+        idx = torch.arange(n, device=device)
+        diagonal = torch.where(
+            idx % 2 == 0,
+            torch.tensor(1.25, dtype=torch.float32, device=device),
+            torch.tensor(0.85, dtype=torch.float32, device=device),
+        )
+        rhs = torch.linspace(-1.0, 1.0, n, dtype=torch.float32, device=device)
+
+        def apply_a(vec):
+            return (diagonal * vec.reshape(-1)).reshape_as(vec)
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=4,
+            tol=1e-5,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, rhs / diagonal, rtol=3e-5, atol=3e-5)
+    assert stats and stats[0]["arnoldi_backend"] == "triton_large"
+    assert stats[0]["large_direct_sum"] is True
+    assert stats[0]["large_fused_reduce_project"] is True
+    assert stats[0]["large_fused_reduce_project_passes"] == 4
+    assert stats[0]["large_direct_norm_checks"] == 2
     assert stats[0]["large_normalize_from_hessenberg"] == 1
     assert stats[0]["iterations"] == 2
 

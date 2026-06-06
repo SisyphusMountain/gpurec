@@ -3791,6 +3791,150 @@ Conclusion: keep this gated default-on patch. It is another launch-boundary
 cleanup, not the root GMRES fix. The root fix is still the fused wave-local
 backend described in the root-boundary section below.
 
+## Fused Large Reduce/Project Experiment
+
+I then tested an actual fused-kernel change in the large-wave GMRES Arnoldi
+path, rather than another bookkeeping cleanup. The new path is opt-in:
+
+```bash
+GPUREC_GMRES_TRITON_LARGE_FUSED_REDUCE_PROJECT=1
+GPUREC_GMRES_TRITON_LARGE_FUSED_REDUCE_PROJECT_MAX_TILES=768
+```
+
+The old large direct-sum sequence after each `A(q_j)` was:
+
+```text
+dot partials
+sum direct partials for first CGS pass
+project from coefficients
+sum direct partials for second CGS pass
+project/norm from coefficients
+residual check / normalize / finalize
+```
+
+For eligible direct-sum waves, the new path replaces the first
+`sum + project` pair with `_gmres_arnoldi_reduce_project_dot_kernel`, and the
+second `sum + project/norm` pair with
+`_gmres_arnoldi_reduce_project_norm_kernel`. This removes two launches per
+eligible GMRES iteration. The self-loop `A(q_j)` launch is still separate; this
+experiment attacks the reduction/projection launches around it.
+
+The first version was rejected. It reused the max Krylov block width
+(`BLOCK_K=max_iter`) for every iteration. On a large direct-sum kernel this
+made the fused program unnecessarily wide, for example a `1024 x 16` reduction
+tile even when only three Krylov columns were active. A synthetic diagonal
+solve looked acceptable, but the largest-10 HOGENOM gradient gate failed:
+
+| Variant | Self-Loop Applications | Relative L2 Error | Relative Inf Error | Result |
+|---|---:|---:|---:|---|
+| fused reduce/project, fixed `BLOCK_K=max_iter` | `142` | `3.269100e-03` | `5.316446e-03` | rejected |
+
+The corrected implementation specializes the fused kernels per iteration with:
+
+```text
+BLOCK_K = next_power_of_2(j + 1)
+```
+
+That keeps the reduction and projection exactly as wide as the active Arnoldi
+subspace. I added a low-level CUDA regression test with `600` vector tiles,
+`max_iter=10`, and `j=2`; this is above the split cap and compares the fused
+large kernels against the staged direct-sum path.
+
+Validation artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_fused_reduce_project_gradient_check_fixed_20260606_134451/gradient_check.json
+benchmarks/large_dataset_capacity/output/fused_reduce_project_fixed_20260606_134512/benchmark_current.json
+benchmarks/large_dataset_capacity/output/fused_reduce_project_fixed_baseline_20260606_134641/benchmark_current.json
+benchmarks/large_dataset_capacity/output/nsys_fused_reduce_project_baseline_checked_20260606_133814/gmres_checked_baseline_nsys.sqlite
+benchmarks/large_dataset_capacity/output/nsys_fused_reduce_project_fixed_checked_20260606_134538/gmres_checked_fused_reduce_project_fixed_nsys.sqlite
+benchmarks/large_dataset_capacity/output/ncu_fused_reduce_project_fixed_20260606_134620/ncu_reduce_project_dot.txt
+```
+
+Code validation:
+
+```text
+python -m compileall gpurec/core/kernels/wave_backward.py benchmarks/large_dataset_capacity/run_gpurec_benchmark.py tests/test_gmres_self_loop_solver.py
+GPUREC_GMRES_TRITON_ARNOLDI=1 GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1 pytest -q tests/test_gmres_self_loop_solver.py -k "fused_reduce_project or triton_large or direct_sum or direct_norm"
+GPUREC_GMRES_TRITON_ARNOLDI=1 GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1 pytest -q
+git diff --check -- gpurec/core/kernels/wave_backward.py benchmarks/large_dataset_capacity/run_gpurec_benchmark.py tests/test_gmres_self_loop_solver.py docs/efficient_gmres_gradient_self_loop.md
+```
+
+Results:
+
+```text
+compileall passed
+79 passed, 40 deselected
+139 passed
+diff check passed
+```
+
+Largest-10 gradient check against `Neumann512`, with the corrected fused path:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `9.207934e-08` | `1.851861e-07` | `2.092162e-07` | `167456.031250` |
+| GMRES10 reuse+trust, fused reduce/project | `140` | `87` | `1.877452e-06` | `3.765450e-06` | `3.768404e-06` | `167456.031250` |
+
+Non-profiled largest-10 A/B:
+
+| Mode | Fused Reduce/Project | Mean Backward | Median Backward | Backward Applications | Fused Waves | Fused Passes |
+|---|---:|---:|---:|---:|---:|---:|
+| GMRES10 checked | off | `63.727 ms` | `63.791 ms` | `140` | `0` | `0` |
+| GMRES10 checked | on | `62.388 ms` | `62.320 ms` | `140` | `9` | `32` |
+| GMRES10 reuse+trust | off | `52.908 ms` | `52.869 ms` | `140` | `0` | `0` |
+| GMRES10 reuse+trust | on | `52.620 ms` | `52.576 ms` | `140` | `6` | `26` |
+
+The non-profiled timing moved in the right direction, but only by about
+`1.34 ms` for checked GMRES and `0.29 ms` for reuse+trust in this run. This is
+useful, but it is not the expected breakthrough from fully eliminating launch
+overhead.
+
+The checked-GMRES `nsys` comparison over three profiled backward passes shows
+the exact launch movement:
+
+| Profile | Mean Backward Under nsys | Kernel Launches | Kernel Time Sum | Runtime API Total |
+|---|---:|---:|---:|---:|
+| baseline | `76.745 ms` | `16488` | `229.286 ms` | `82.763 ms` |
+| fused reduce/project | `76.725 ms` | `16392` | `229.453 ms` | `84.535 ms` |
+
+Relevant GMRES kernel buckets:
+
+| Kernel Bucket | Baseline Launches | Baseline Time | Fused Launches | Fused Time |
+|---|---:|---:|---:|---:|
+| `_gmres_arnoldi_sum_partials_direct_kernel` | `546` | `1.194 ms` | `450` | `1.025 ms` |
+| `_gmres_arnoldi_project_from_coeff_kernel` | `309` | `4.944 ms` | `261` | `4.700 ms` |
+| `_gmres_arnoldi_project_norm_from_coeff_kernel` | `309` | `3.407 ms` | `261` | `3.248 ms` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `111` | `0.647 ms` | `159` | `0.835 ms` |
+| `_gmres_arnoldi_reduce_project_norm_kernel` | `111` | `0.407 ms` | `159` | `0.595 ms` |
+
+The fused path removes `96` total kernel launches over the three checked
+backward passes. Kernel time is essentially flat, and runtime API time is not
+better in this particular profiled run. The launch count moved exactly as
+intended, but the per-kernel work is too small for this local fusion to dominate
+end-to-end timing.
+
+`ncu --set basic` on the corrected fused
+`_gmres_arnoldi_reduce_project_dot_kernel` shows the kernel itself is not a
+register-pressure failure like the rejected fused first-dot attempt:
+
+| Grid | Duration | Registers/Thread | Achieved Occupancy | DRAM Throughput | Compute Throughput |
+|---:|---:|---:|---:|---:|---:|
+| `624 x 256` | `6.37 us` | `22` | `67.64%` | `41.33%` | `19.92%` |
+| `713 x 256` | `7.07 us` | `22` | `76.04%` | `42.79%` | n/a |
+| `728 x 256` | `7.20 us` | `22` | `80.10%` | `42.82%` | n/a |
+| `614 x 256` | `6.30 us` | `22` | `66.53%` | `41.30%` | n/a |
+
+Conclusion: keep this implementation gated off by default for now. It proves
+that large-wave reduction/project launch boundaries can be fused correctly, and
+it gives a measurable launch-count reduction. It does not yet eliminate enough
+launch overhead to close the GMRES/Neumann wall-time gap. The next radical
+step should be wave-level GMRES execution with far fewer host-launched kernels,
+for example CUDA graph capture of the fixed GMRES schedule or a more invasive
+device-resident scheduler. A single Triton/Gluon kernel cannot safely contain
+the whole GMRES step unless we also solve the cross-block synchronization
+problem; unsafe inter-block spin barriers are not an acceptable route.
+
 ## Root-Boundary Optimization Plan
 
 I also folded in the separate root-fix note. The important conclusion is
