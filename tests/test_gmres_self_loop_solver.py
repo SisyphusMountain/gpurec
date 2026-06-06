@@ -788,6 +788,33 @@ def test_gmres_self_loop_triton_large_dispatch_boundary_cuda_float32(monkeypatch
     assert [row["arnoldi_backend"] for row in stats[-2:]] == ["triton_split", "triton_large"]
 
 
+def test_gmres_self_loop_triton_large_can_be_disabled_cuda_float32(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_ARNOLDI", "1")
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_LARGE_ARNOLDI", "0")
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        device = torch.device("cuda")
+        block_n = wave_backward._GMRES_TRITON_ARNOLDI_BLOCK_N
+        max_tiles = wave_backward._GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES
+        rhs = torch.linspace(-1.0, 1.0, block_n * max_tiles + 1, dtype=torch.float32, device=device)
+        got = wave_backward._gmres_solve_wave_self_loop(
+            lambda vec: vec,
+            rhs,
+            max_iter=2,
+            tol=1e-5,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, rhs, rtol=3e-5, atol=3e-5)
+    assert stats and stats[0]["arnoldi_backend"] == "torch_cgs2"
+
+
 def test_triton_apply_a_zeroes_inactive_rows_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for the Triton self-loop kernel")

@@ -1195,7 +1195,7 @@ def _gmres_can_use_triton_large_arnoldi(
 ) -> bool:
     if os.environ.get("GPUREC_GMRES_TRITON_ARNOLDI", "0").lower() not in ("1", "true", "yes", "on"):
         return False
-    if os.environ.get("GPUREC_GMRES_TRITON_LARGE_ARNOLDI", "0").lower() not in ("1", "true", "yes", "on"):
+    if os.environ.get("GPUREC_GMRES_TRITON_LARGE_ARNOLDI", "1").lower() not in ("1", "true", "yes", "on"):
         return False
     if right_preconditioner is not None:
         return False
