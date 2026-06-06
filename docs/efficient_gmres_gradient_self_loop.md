@@ -2899,26 +2899,36 @@ prototype is not retained. The next larger optimization should instead batch or
 elide scheduled residual-check host synchronization, or fuse a broader section
 of the large-wave Arnoldi chain.
 
-#### Trusted Scheduled-Check Mode
+#### Trusted Scheduled-Check Mode With Periodic Validation
 
-Implementation commit: `bd26119e`.
+Implementation commits: `bd26119e` added trusted scheduled checks, `e8c07f1f`
+added periodic validation, and `a44a5c0c` hardened the bookkeeping after review.
 
-I added an explicit `gmres_trust_check_schedule` option. This does not change
-the default adaptive schedule behavior. With both:
+The mode is enabled with:
 
 ```bash
 --gmres-reuse-check-schedule
 --gmres-trust-check-schedule
+--gmres-trusted-schedule-validation-interval 20
+--gmres-trusted-schedule-safety-margin 0
 ```
 
-the first backward pass still runs adaptive GMRES and populates the per-wave
-iteration schedule. Later backward passes run each wave to its scheduled
+The first backward pass runs adaptive GMRES and records the observed per-wave
+iteration schedule. Later passes usually run each wave to its scheduled
 iteration count, execute the Triton check kernel to compute the final `y`, and
-then break without reading the residual scalar back to Python. This keeps the
-same self-loop application count as scheduled adaptive GMRES when the schedule
-is stable, but removes the per-wave residual CPU readback. The shortcut is
-disabled when GMRES solution-cache warm starts are active, because those require
-a true residual probe.
+skip the residual scalar readback. Every `20` backward passes by default, the
+schedule is validated by reading residuals again. Setting the interval to `0`
+keeps only the initial validation. The trusted shortcut remains disabled when
+GMRES solution-cache warm starts are active, because warm starts require a true
+residual probe.
+
+The hardening commit makes schedule updates depend on actual backend behavior:
+only a wave that reports `trusted_check_used=True` preserves the previous
+observed iteration count. If the run falls back to a backend that measures
+residuals, the schedule is refreshed from the observed iteration count. The
+direct internal call also now rejects a negative
+`gmres_trusted_schedule_safety_margin`, and `clear_warm_starts()` resets the
+validation pass counter.
 
 Validation:
 
@@ -2930,24 +2940,24 @@ pytest -q tests/test_gmres_self_loop_solver.py tests/test_large_dataset_capacity
 pytest -q
 ```
 
-The full test suite passed with `54` tests.
+The full test suite passed with `60` tests after `a44a5c0c`.
 
 Artifacts:
 
 ```text
-benchmarks/large_dataset_capacity/output/gmres_trusted_schedule_gradient_check_committed_20260606_104237/
-benchmarks/large_dataset_capacity/output/gmres_trusted_schedule_steps60_committed_20260606_104256/
+benchmarks/large_dataset_capacity/output/gmres_trusted_schedule_periodic_gradient_check_committed_20260606_105135/
+benchmarks/large_dataset_capacity/output/gmres_trusted_schedule_periodic_steps60_committed_20260606_105200/
 benchmarks/large_dataset_capacity/output/gmres_trusted_schedule_steps60_committed_repeat_20260606_104336/
-benchmarks/large_dataset_capacity/output/nsys_gmres_trusted_schedule_20260606_104129/
+benchmarks/large_dataset_capacity/output/nsys_ncu_gmres_trusted_periodic_20260606_105746/
 ```
 
-The committed gradient-check artifact recorded
-`bd26119ecb42d1f2d5065cdf88263bee8c4a2d3f`:
+The periodic gradient-check artifact recorded
+`e8c07f1f88ab40f024578654fc93f55008225608`:
 
-| Solver | Self-Loop Backward Applications | GMRES Checks | Residual CPU Readbacks | Trusted Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Neumann32 | `2784` | n/a | n/a | n/a | `8.367668e-08` | `1.234564e-07` | `2.090772e-07` | `167456.03125` |
-| GMRES10 I1 tol `7e-6`, trusted schedule | `142` | `87` | `0` | `87` | `1.827979e-06` | `3.580235e-06` | `3.584022e-06` | `167456.03125` |
+| Solver | Self-Loop Backward Applications | GMRES Checks | Residual CPU Readbacks | Trusted Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss | Backend Counts |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Neumann32 | `2784` | n/a | n/a | n/a | `9.096614e-08` | `1.234564e-07` | n/a | `167456.03125` | n/a |
+| GMRES10 I1 tol `7e-6`, trusted periodic | `142` | `87` | `0` | `87` | `1.822692e-06` | `3.580235e-06` | `3.583554e-06` | `167456.03125` | `triton_large: 59`, `triton_split: 28` |
 
 Largest-10 60-step timing:
 
@@ -2955,35 +2965,72 @@ Largest-10 60-step timing:
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Neumann16 | `83520` | n/a | n/a | n/a | `6.320` | `7.446` | `0.09596` | `164817.609375` |
 | GMRES default large Triton | `8400` | `5273` | per-check readbacks in old artifact | `0` | `6.381` | `7.517` | `0.09629` | `164817.640625` |
-| GMRES trusted schedule, committed run 1 | `8400` | `5273` | `140` | `5133` | `6.265` | `7.448` | `0.09428` | `164817.609375` |
-| GMRES trusted schedule, committed run 2 | `8400` | `5273` | `140` | `5133` | `6.246` | `7.419` | `0.09404` | `164817.59375` |
+| GMRES trusted schedule, no periodic audit after pass 1 | `8400` | `5273` | `140` | `5133` | `6.246` | `7.419` | `0.09404` | `164817.59375` |
+| GMRES trusted periodic, committed run | `8400` | `5273` | `314` | `4959` | `6.166` | `7.436` | `0.09275` | `164817.640625` |
 
-This is the first largest-10 result where GMRES is faster than Neumann16 in the
-in-process training timer over `60` optimizer steps while still using `9.94x`
-fewer self-loop applications. Wall time is close to the Neumann baseline in the
-first committed run and better in the repeat; the robust signal is the warm-step
-timing reduction from about `0.09596 s` to `0.0940-0.0943 s`.
+The periodic run validates at steps `1`, `21`, and `41`: `140` residual
+readbacks on the initial adaptive pass, then `87` on each later audit, for
+`314` total. All other passes in the `60`-step run used trusted device-only
+checks. This is still `9.94x` fewer self-loop applications than Neumann16, with
+the same final-loss trajectory within the observed float32 noise.
 
-The trusted `nsys` 3-step profile confirms that the optimization removed host
-traffic rather than changing GPU math:
+Fresh Nsight artifacts at `a44a5c0c3989053f3f520a2448fbef43e5856ac8`:
 
-| CUDA API Metric | Default Large Triton | Trusted Schedule |
+```text
+benchmarks/large_dataset_capacity/output/nsys_ncu_gmres_trusted_periodic_20260606_105746/
+```
+
+The folder contains `MANIFEST.md` with the commit, script, environment, and
+exact commands; `largest10_gmres_3step_trusted_periodic.nsys-rep`; the SQLite
+export; `cuda_api_sum_cuda_api_sum.csv`; `cuda_gpu_kern_sum_cuda_gpu_kern_sum.csv`;
+three `.ncu-rep` files; exported NCU details; and `profile_summary.json`.
+
+The 3-step `nsys` run reproduced the trusted schedule behavior:
+
+| Step | Step Seconds | Self-Loop Backward Applications | GMRES Checks | Residual CPU Readbacks | Trusted Checks |
+|---:|---:|---:|---:|---:|---:|
+| `1` | `0.8436` | `140` | `140` | `140` | `0` |
+| `2` | `0.1109` | `140` | `87` | `0` | `87` |
+| `3` | `0.1115` | `140` | `87` | `0` | `87` |
+
+The CUDA API summary shows that this path still has high launch orchestration
+costs:
+
+| API Metric | Calls | Total Time |
 |---|---:|---:|
-| `cudaMemcpyAsync` calls | `987` | `813` |
-| `cudaStreamSynchronize` calls | `972` | `798` |
-| `_gmres_arnoldi_reduce_norm_check_kernel` launches | `314` | `314` |
-| `_wave_backward_uniform_2d_jt_kernel` launches | `420` | `420` |
+| `cudaLaunchKernel` | `6313` | `88.584 ms` |
+| `cuLaunchKernelEx` | `11011` | `21.222 ms` |
+| `cudaMemcpyAsync` | `813` | `21.290 ms` |
+| `cudaStreamSynchronize` | `798` | `16.310 ms` |
 
-The kernel launch counts are intentionally unchanged; the check kernel is still
-needed to compute `y`. The improvement comes from skipping `174` residual
-scalar readbacks over steps `2` and `3` in the profile (`2 * 87` waves).
+The kernel summary shows total GPU kernel time was `230.305 ms`, and all GMRES
+kernels together accounted for `19.771 ms` (`8.58%`). The largest individual
+GMRES buckets were:
 
-Correctness caveat: trusted schedule is a validated-schedule mode, not
-per-pass adaptive convergence. It assumes the previous pass's per-wave Krylov
-counts remain valid for the current optimizer step. The largest-10 Adam run
-above supports that assumption for this batch and tolerance, but a broader
-production default would need periodic validation or a fallback audit if the
-schedule becomes stale.
+| Kernel | Launches | Total Time | Avg Time | Kernel Time Share |
+|---|---:|---:|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `420` | `10.793 ms` | `25.70 us` | `4.7%` |
+| `_gmres_arnoldi_project_from_coeff_kernel` | `309` | `4.960 ms` | `16.05 us` | `2.2%` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `314` | `1.301 ms` | `4.14 us` | `0.6%` |
+
+The `ncu --set basic` samples explain why skipping readbacks helped but did not
+make GMRES dramatically faster:
+
+| Kernel | Sampled Duration | Grid x Block | Registers/Thread | Achieved Occupancy | Compute Throughput | DRAM Throughput |
+|---|---:|---|---:|---:|---:|---:|
+| `_gmres_arnoldi_project_from_coeff_kernel` | `7.33-8.26 us` | `624-728 x 128` | `95` | `32.86-33.22%` | `53.29-55.71%` | `35.82-37.60%` |
+| `_wave_backward_uniform_2d_jt_kernel` | `14.69-15.58 us` | `1-13 x 64` | `168-182` | `4.10-4.24%` | `0.06-0.88%` | `0.25-0.42%` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `5.60-5.79 us` | `1 x 32` | `80` | `2.07-2.10%` | `0.04%` | `0.51%` |
+
+So the current bottleneck is not a single expensive residual-check kernel. The
+check kernel is tiny; the cost of untrusted adaptive checks is the host
+readback/synchronization around it. After trusted scheduling removes those
+readbacks, the remaining overhead is mostly many small launches plus the actual
+wave/JT self-loop applications. A Gluon rewrite was considered, but Gluon is not
+installed in this environment; Triton remains the practical path unless Gluon is
+added deliberately. Based on the profile, a useful Triton or Gluon rewrite would
+need to fuse a larger GMRES step or reduce launch count, not just rewrite the
+single residual-check kernel.
 
 ## Recommended First Experiment
 
