@@ -55,6 +55,14 @@ class SolverCase:
     preconditioner: str = "none"
 
 
+@dataclass
+class BackwardGraphReplay:
+    graph: torch.cuda.CUDAGraph
+    stream: torch.cuda.Stream
+    static_loss: torch.Tensor
+    reference_self_loop: dict[str, Any]
+
+
 def _git_commit() -> str | None:
     try:
         return subprocess.check_output(
@@ -163,6 +171,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--cuda-profiler-range", action="store_true")
     parser.add_argument(
+        "--cuda-graph-backward-replay",
+        action="store_true",
+        help=(
+            "After warmups, capture a backward-only CUDA graph and time graph.replay() "
+            "instead of launching the Python backward path for each repeat. This is "
+            "intended for launch-overhead experiments; checked adaptive GMRES may be "
+            "uncapturable because it reads residuals back to the CPU."
+        ),
+    )
+    parser.add_argument(
         "--continue-on-error",
         action="store_true",
         help="Record case failures and continue with the remaining cases.",
@@ -252,6 +270,72 @@ def _run_one_backward(model: GeneReconModel, device: torch.device, *, nvtx_name:
     }
 
 
+def _capture_backward_graph(
+    model: GeneReconModel,
+    device: torch.device,
+    *,
+    reference_self_loop: dict[str, Any],
+) -> BackwardGraphReplay:
+    if device.type != "cuda":
+        raise RuntimeError("CUDA graph replay requires a CUDA device")
+    current_stream = torch.cuda.current_stream(device)
+    capture_stream = torch.cuda.Stream(device=device)
+    capture_stream.wait_stream(current_stream)
+    if model.theta.grad is None:
+        model.theta.grad = torch.zeros_like(model.theta)
+    else:
+        model.theta.grad.zero_()
+    with torch.cuda.stream(capture_stream):
+        model.theta.grad.zero_()
+        static_loss = model()
+    capture_stream.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(
+        graph,
+        stream=capture_stream,
+        capture_error_mode="relaxed",
+    ):
+        model.theta.grad.zero_()
+        static_loss.backward(retain_graph=True)
+    _cuda_sync(device)
+    return BackwardGraphReplay(
+        graph=graph,
+        stream=capture_stream,
+        static_loss=static_loss,
+        reference_self_loop=dict(reference_self_loop),
+    )
+
+
+def _run_backward_graph_replay(
+    replay: BackwardGraphReplay,
+    device: torch.device,
+    *,
+    nvtx_name: str | None = None,
+) -> dict[str, Any]:
+    if device.type == "cuda" and nvtx_name:
+        torch.cuda.nvtx.range_push(nvtx_name)
+    start = time.perf_counter()
+    replay.graph.replay()
+    _cuda_sync(device)
+    elapsed = time.perf_counter() - start
+    if device.type == "cuda" and nvtx_name:
+        torch.cuda.nvtx.range_pop()
+
+    applications = int(replay.reference_self_loop.get("self_loop_backward_iterations") or 0)
+    return {
+        "loss": float(replay.static_loss.detach().cpu()),
+        "forward_seconds": 0.0,
+        "backward_seconds": float(elapsed),
+        "backward_ms_per_self_loop_application": (
+            1000.0 * elapsed / applications if applications else None
+        ),
+        "self_loop": dict(replay.reference_self_loop),
+        "cuda_memory": _cuda_memory(device),
+        "cuda_graph_backward_replay": True,
+    }
+
+
 def _summarize_repeats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in ("forward_seconds", "backward_seconds", "backward_ms_per_self_loop_application"):
@@ -268,6 +352,7 @@ def _summarize_repeats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if rows:
         out["last_self_loop"] = rows[-1]["self_loop"]
         out["last_loss"] = rows[-1]["loss"]
+        out["cuda_graph_backward_replay"] = bool(rows[-1].get("cuda_graph_backward_replay", False))
     return out
 
 
@@ -331,17 +416,50 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             if device.type == "cuda":
                 torch.cuda.empty_cache()
                 torch.cuda.reset_peak_memory_stats(device)
+            replay: BackwardGraphReplay | None = None
+            if args.cuda_graph_backward_replay:
+                if not warmup_rows:
+                    warmup_rows.append(
+                        _run_one_backward(
+                            model,
+                            device,
+                            nvtx_name=(
+                                f"graph_reference:{case.name}"
+                                if args.cuda_profiler_range
+                                else None
+                            ),
+                        )
+                    )
+                replay = _capture_backward_graph(
+                    model,
+                    device,
+                    reference_self_loop=warmup_rows[-1]["self_loop"],
+                )
             if args.cuda_profiler_range and device.type == "cuda":
                 torch.cuda.cudart().cudaProfilerStart()
             try:
                 for repeat_idx in range(int(args.repeat)):
-                    repeat_rows.append(
-                        _run_one_backward(
-                            model,
-                            device,
-                            nvtx_name=f"measure:{case.name}:{repeat_idx + 1}" if args.cuda_profiler_range else None,
-                        )
+                    nvtx_name = (
+                        f"measure:{case.name}:{repeat_idx + 1}"
+                        if args.cuda_profiler_range
+                        else None
                     )
+                    if replay is None:
+                        repeat_rows.append(
+                            _run_one_backward(
+                                model,
+                                device,
+                                nvtx_name=nvtx_name,
+                            )
+                        )
+                    else:
+                        repeat_rows.append(
+                            _run_backward_graph_replay(
+                                replay,
+                                device,
+                                nvtx_name=nvtx_name,
+                            )
+                        )
             finally:
                 if args.cuda_profiler_range and device.type == "cuda":
                     torch.cuda.cudart().cudaProfilerStop()
@@ -353,6 +471,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "warmups": warmup_rows,
                 "repeats": repeat_rows,
                 "summary": _summarize_repeats(repeat_rows),
+                "cuda_graph_backward_replay": bool(args.cuda_graph_backward_replay),
                 "cuda_memory_after_case": _cuda_memory(device),
             }
         except Exception as exc:

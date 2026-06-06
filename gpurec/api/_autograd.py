@@ -45,6 +45,7 @@ class _GeneReconFunction(torch.autograd.Function):
             receiver_log_probs,
         )
         ctx.static = static
+        ctx.use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         static.warm_E = E.detach()
         return loss
 
@@ -68,7 +69,7 @@ class _GeneReconFunction(torch.autograd.Function):
             receiver_log_probs,
         ) = ctx.saved_tensors
         static = ctx.static
-        use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
+        use_receiver_weights = bool(ctx.use_receiver_weights)
         gmres_check_schedule_state = gmres_check_schedule_state_for_static(static)
         grad_theta, grad_receiver_weights = implicit_grad_loglik_vjp_wave(
             static.wave_layout,

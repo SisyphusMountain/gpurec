@@ -3935,6 +3935,104 @@ device-resident scheduler. A single Triton/Gluon kernel cannot safely contain
 the whole GMRES step unless we also solve the cross-block synchronization
 problem; unsafe inter-block spin barriers are not an acceptable route.
 
+## CUDA Graph Replay Diagnostic
+
+I added an experimental benchmark mode to test the more radical launch-overhead
+hypothesis directly:
+
+```bash
+python benchmarks/large_dataset_capacity/hogenom_self_loop_overhead_benchmark.py \
+  --cases gmres:10:7e-6:reuse:trust \
+  --warmups 2 \
+  --repeat 5 \
+  --cuda-graph-backward-replay \
+  --output-json ...
+```
+
+The mode runs the usual warmups, then tries to capture a backward-only
+`torch.cuda.CUDAGraph` on a side stream and time `graph.replay()` for the
+measured repeats. The capture intentionally uses the trusted GMRES schedule,
+because checked adaptive GMRES still has residual readbacks and is not a good
+graph-capture target.
+
+This required one real code cleanup: `_GeneReconFunction.forward` now stores
+`ctx.use_receiver_weights`, so backward no longer calls
+`receiver_weights_are_uniform(...).item()`. That host scalar read was a
+backward-time synchronization and also blocked CUDA graph capture. The first
+two failed graph attempts exposed stream setup problems; constructing the
+static loss on the same side stream as the capture fixed those.
+
+The current capture then fails later in the outer E-adjoint solve:
+
+```text
+RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture
+...
+gpurec/api/_implicit_grad.py, _bicgstab:
+b_norm_value = float(torch.linalg.vector_norm(b).detach().cpu())
+```
+
+So CUDA graph replay is not yet usable for the full backward. The blocker is
+not GMRES residual checking anymore: the trusted GMRES warmup has
+`gmres_residual_cpu_readbacks = 0`. The remaining graph blocker is BiCGSTAB's
+host-side residual/breakdown checks in the E-adjoint solve. I tried replacing
+the BiCGSTAB breakdown scalar checks with device-side clamping, but rejected it:
+the nsys profile showed more elementwise kernels, more runtime API time, and no
+drop in D2H copies. A useful graph path needs a designed device-side or trusted
+fixed-schedule E-adjoint solve, not ad hoc scalar clamping.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/cuda_graph_gmres_20260606_135841/graph_trusted.json
+benchmarks/large_dataset_capacity/output/cuda_graph_gmres_baseline_20260606_135921/baseline.json
+benchmarks/large_dataset_capacity/output/nsys_cuda_graph_baseline_20260606_135952/profiled.json
+benchmarks/large_dataset_capacity/output/nsys_cuda_graph_baseline_20260606_135952/gmres_trusted_backward_nsys.nsys-rep
+benchmarks/large_dataset_capacity/output/nsys_cuda_graph_baseline_20260606_135952/gmres_trusted_backward_nsys.sqlite
+benchmarks/large_dataset_capacity/output/nsys_bicgstab_sync_reduced_20260606_140247/
+```
+
+Current largest-10 non-profiled baseline on this revision:
+
+| Solver | Mean Backward | Backward Applications | Mean ms/Application | Loss |
+|---|---:|---:|---:|---:|
+| Neumann16 | `60.551 ms` | `1392` | `0.04350` | `167456.031250` |
+| GMRES10 reuse+trust | `51.396 ms` | `140` | `0.36711` | `167456.031250` |
+
+This is still the unacceptable ratio: GMRES uses `9.94x` fewer self-loop
+applications but each application costs about `8.44x` as much as a Neumann
+application in this end-to-end backward timing.
+
+The three-repeat trusted-GMRES `nsys` profile after the graph diagnostic shows:
+
+| Metric | Value |
+|---|---:|
+| Kernel launches | `15408` |
+| Kernel time sum | `218.756 ms` |
+| CUDA runtime API total | `71.381 ms` |
+| `cudaMemcpyAsync` API | `33` calls, `20.850 ms` |
+| `cudaStreamSynchronize` API | `24` calls, `20.734 ms` |
+| Memcpy device activity | `33` copies, `0.034 ms` |
+
+The actual device copy time is tiny; the API time is host waiting around scalar
+copies. The top GMRES-related kernel buckets over the same profile were:
+
+| Kernel Bucket | Launches | Time |
+|---|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `420` | `10.703 ms` |
+| `_gmres_arnoldi_project_from_coeff_kernel` | `228` | `4.185 ms` |
+| `_gmres_arnoldi_dot_partials_kernel` | `282` | `4.104 ms` |
+| `_gmres_arnoldi_project_norm_from_coeff_kernel` | `228` | `2.960 ms` |
+| `_gmres_arnoldi_sum_partials_direct_kernel` | `384` | `0.865 ms` |
+| `_gmres_trusted_finalize_write_kernel` | `39` | `0.759 ms` |
+| `_gmres_trusted_one_step_reduce_write_direct_kernel` | `138` | `0.495 ms` |
+
+Conclusion: CUDA graph replay remains a promising way to collapse host launch
+overhead, but full-backward replay cannot be the next accepted optimization
+until the outer E-adjoint BiCGSTAB syncs are made graph-compatible. For GMRES
+itself, the next useful implementation is still the root-boundary fused
+self-loop/Arnoldi backend, or a trusted fixed-schedule multi-step backend that
+removes many launches without relying on graph capture.
+
 ## Root-Boundary Optimization Plan
 
 I also folded in the separate root-fix note. The important conclusion is
