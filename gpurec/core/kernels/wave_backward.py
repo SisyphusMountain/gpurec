@@ -23,6 +23,7 @@ _GMRES_TRITON_ARNOLDI_MIN_BLOCK_TILES = 64
 _GMRES_TRITON_ARNOLDI_BLOCK_N = 512
 _GMRES_TRITON_LARGE_ARNOLDI_GROUP_TILES = 512
 _GMRES_TRITON_LARGE_ARNOLDI_MAX_GROUPS = 512
+_GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES = 1024
 
 
 def _record_gmres_self_loop_stats(row: dict[str, float | int | str], stats_out=None) -> None:
@@ -1093,6 +1094,37 @@ def _gmres_arnoldi_sum_group_coeff_kernel(
         tl.store(h_ptr, coeff, mask=k_mask)
 
 
+@triton.jit(do_not_specialize=["NUM_TILES", "J"])
+def _gmres_arnoldi_sum_partials_direct_kernel(
+    partials_ptr,
+    coeff_ptr,
+    hessenberg_ptr,
+    NUM_TILES,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    ADD_TO_H: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tiles = tl.arange(0, BLOCK_TILES)
+    k = tl.arange(0, BLOCK_K)
+    k_mask = k < J + 1
+    vals = tl.load(
+        partials_ptr + tiles[:, None] * MAX_ITER + k[None, :],
+        mask=(tiles[:, None] < NUM_TILES) & k_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    coeff = tl.sum(vals, axis=0)
+    tl.store(coeff_ptr + k, coeff, mask=k_mask)
+    h_ptr = hessenberg_ptr + k * MAX_ITER + J
+    if ADD_TO_H:
+        prev = tl.load(h_ptr, mask=k_mask, other=0.0).to(DTYPE)
+        tl.store(h_ptr, prev + coeff, mask=k_mask)
+    else:
+        tl.store(h_ptr, coeff, mask=k_mask)
+
+
 @triton.jit(do_not_specialize=["N", "J"])
 def _gmres_arnoldi_project_from_coeff_kernel(
     basis_ptr,
@@ -1213,6 +1245,18 @@ def _gmres_can_use_triton_large_arnoldi(
         return False
     num_groups = triton.cdiv(num_tiles, _GMRES_TRITON_LARGE_ARNOLDI_GROUP_TILES)
     return num_groups <= _GMRES_TRITON_LARGE_ARNOLDI_MAX_GROUPS
+
+
+def _gmres_can_use_triton_large_direct_sum(num_tiles: int) -> bool:
+    if os.environ.get("GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM", "1").lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return False
+    block_tiles = triton.next_power_of_2(int(num_tiles))
+    return int(block_tiles) <= _GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES
 
 
 @torch.no_grad()
@@ -1698,6 +1742,8 @@ def _gmres_solve_wave_self_loop_triton_large(
     group_tiles = _GMRES_TRITON_LARGE_ARNOLDI_GROUP_TILES
     num_groups = triton.cdiv(num_tiles, group_tiles)
     block_groups = max(1, triton.next_power_of_2(num_groups))
+    use_direct_sum = _gmres_can_use_triton_large_direct_sum(num_tiles)
+    direct_sum_block_tiles = triton.next_power_of_2(num_tiles) if use_direct_sum else None
     block_k = triton.next_power_of_2(max_iter)
     grid = (num_tiles,)
     group_grid = (num_groups,)
@@ -1707,7 +1753,11 @@ def _gmres_solve_wave_self_loop_triton_large(
     torch.div(rhs.reshape(-1), safe_b_norm_t, out=basis_2d[0])
     hessenberg = torch.empty((max_iter + 1, max_iter), dtype=rhs.dtype, device=rhs.device)
     partials = torch.empty((num_tiles, max_iter), dtype=rhs.dtype, device=rhs.device)
-    group_partials = torch.empty((num_groups, max_iter), dtype=rhs.dtype, device=rhs.device)
+    group_partials = (
+        None
+        if use_direct_sum
+        else torch.empty((num_groups, max_iter), dtype=rhs.dtype, device=rhs.device)
+    )
     coeff_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     norm_partials = torch.empty((num_tiles,), dtype=rhs.dtype, device=rhs.device)
     norm_group_partials = torch.empty((num_groups,), dtype=rhs.dtype, device=rhs.device)
@@ -1734,30 +1784,45 @@ def _gmres_solve_wave_self_loop_triton_large(
             DTYPE=_tl_float_dtype(rhs.dtype),
             num_warps=4,
         )
-        _gmres_arnoldi_reduce_group_partials_kernel[group_grid](
-            partials,
-            group_partials,
-            NUM_TILES=int(num_tiles),
-            J=int(j),
-            MAX_ITER=int(max_iter),
-            GROUP_TILES=int(group_tiles),
-            BLOCK_K=int(block_k),
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=8,
-        )
-        _gmres_arnoldi_sum_group_coeff_kernel[(1,)](
-            group_partials,
-            coeff_buf,
-            hessenberg,
-            NUM_GROUPS=int(num_groups),
-            J=int(j),
-            MAX_ITER=int(max_iter),
-            BLOCK_GROUPS=int(block_groups),
-            BLOCK_K=int(block_k),
-            ADD_TO_H=False,
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=1,
-        )
+        if use_direct_sum:
+            _gmres_arnoldi_sum_partials_direct_kernel[(1,)](
+                partials,
+                coeff_buf,
+                hessenberg,
+                NUM_TILES=int(num_tiles),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_TILES=int(direct_sum_block_tiles),
+                BLOCK_K=int(block_k),
+                ADD_TO_H=False,
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
+        else:
+            _gmres_arnoldi_reduce_group_partials_kernel[group_grid](
+                partials,
+                group_partials,
+                NUM_TILES=int(num_tiles),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                GROUP_TILES=int(group_tiles),
+                BLOCK_K=int(block_k),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
+            _gmres_arnoldi_sum_group_coeff_kernel[(1,)](
+                group_partials,
+                coeff_buf,
+                hessenberg,
+                NUM_GROUPS=int(num_groups),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_GROUPS=int(block_groups),
+                BLOCK_K=int(block_k),
+                ADD_TO_H=False,
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=1,
+            )
         _gmres_arnoldi_project_from_coeff_kernel[grid](
             basis_2d,
             w,
@@ -1772,30 +1837,45 @@ def _gmres_solve_wave_self_loop_triton_large(
             DTYPE=_tl_float_dtype(rhs.dtype),
             num_warps=4,
         )
-        _gmres_arnoldi_reduce_group_partials_kernel[group_grid](
-            partials,
-            group_partials,
-            NUM_TILES=int(num_tiles),
-            J=int(j),
-            MAX_ITER=int(max_iter),
-            GROUP_TILES=int(group_tiles),
-            BLOCK_K=int(block_k),
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=8,
-        )
-        _gmres_arnoldi_sum_group_coeff_kernel[(1,)](
-            group_partials,
-            coeff_buf,
-            hessenberg,
-            NUM_GROUPS=int(num_groups),
-            J=int(j),
-            MAX_ITER=int(max_iter),
-            BLOCK_GROUPS=int(block_groups),
-            BLOCK_K=int(block_k),
-            ADD_TO_H=True,
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=1,
-        )
+        if use_direct_sum:
+            _gmres_arnoldi_sum_partials_direct_kernel[(1,)](
+                partials,
+                coeff_buf,
+                hessenberg,
+                NUM_TILES=int(num_tiles),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_TILES=int(direct_sum_block_tiles),
+                BLOCK_K=int(block_k),
+                ADD_TO_H=True,
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
+        else:
+            _gmres_arnoldi_reduce_group_partials_kernel[group_grid](
+                partials,
+                group_partials,
+                NUM_TILES=int(num_tiles),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                GROUP_TILES=int(group_tiles),
+                BLOCK_K=int(block_k),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
+            _gmres_arnoldi_sum_group_coeff_kernel[(1,)](
+                group_partials,
+                coeff_buf,
+                hessenberg,
+                NUM_GROUPS=int(num_groups),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_GROUPS=int(block_groups),
+                BLOCK_K=int(block_k),
+                ADD_TO_H=True,
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=1,
+            )
         _gmres_arnoldi_project_norm_from_coeff_kernel[grid](
             basis_2d,
             coeff_buf,
@@ -1893,6 +1973,7 @@ def _gmres_solve_wave_self_loop_triton_large(
             "rel_res": float(rel_res),
             "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "triton_large",
+            "large_direct_sum": bool(use_direct_sum),
             "min_check_iter": int(min_check_iter),
             "trusted_check_schedule": bool(trust_min_check_iter),
             "trusted_check_used": bool(trusted_check_used),
