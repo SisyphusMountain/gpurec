@@ -2409,6 +2409,125 @@ Gluon is added deliberately. Gluon would only help if it lets us fuse a larger
 piece of the GMRES step or batch work across waves; replacing one tiny kernel
 one-for-one would not address the measured bottleneck.
 
+#### Fused Triton Norm/Residual Check
+
+Implementation commit: `545f30f2`.
+
+I tested the safe fusion suggested by the Nsight refresh above: in the Triton
+split-Arnoldi path, the scheduled residual check now stores the new
+Hessenberg subdiagonal norm and computes the small GMRES residual/`y` vector in
+one kernel, `_gmres_arnoldi_reduce_norm_check_kernel`. The acceptance rule is
+unchanged: every adaptive stop still reads a true Hessenberg least-squares
+residual. The optimization only removes one launch on accepted checks and
+skips writing the unused next Arnoldi basis vector when a wave has already
+converged.
+
+Validation:
+
+```text
+pytest -q tests/test_gmres_self_loop_solver.py tests/test_large_dataset_capacity_benchmark.py
+python -m compileall gpurec/core/kernels/wave_backward.py tests/test_gmres_self_loop_solver.py
+```
+
+The GMRES test suite includes a CUDA regression comparing the fused check
+kernel against the existing residual helper on several Hessenberg sizes.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_fused_check_warm_20260606_094513/
+benchmarks/large_dataset_capacity/output/gmres_fused_check_hard_unprofiled_20260606_094638/
+benchmarks/large_dataset_capacity/output/nsys_ncu_gmres_fused_check_20260606_094604/
+```
+
+Main largest-10 command:
+
+```bash
+PYTHONPATH="$PWD" GPUREC_GMRES_TRITON_ARNOLDI=1 \
+python benchmarks/large_dataset_capacity/run_gpurec_benchmark.py \
+  --dataset-name alerax_hogenom_core_largest10_gmres_fused_check_warm \
+  --species-tree benchmarks/large_dataset_capacity/datasets/alerax_hogenom_core/hogenom/runs/MFP/true_start_ufboot1000/run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/starting_species_tree.newick \
+  --gene-tree-dir benchmarks/large_dataset_capacity/datasets/alerax_hogenom_core/hogenom/families \
+  --pattern ufboot1000.MFP.geneTree.newick --recursive --select largest --limit 10 \
+  --device cuda --optimizer adam --steps 20 --lr 0.01 \
+  --family-chunk-size 0 --clade-budget 500000 \
+  --batch-packing depth_first_fit --max-wave-size 8192 \
+  --e-max-iter 16 --e-tol 1e-8 --pi-iters 16 \
+  --neumann-terms 3 --self-loop-solver gmres \
+  --gmres-max-iter 10 --gmres-tol 7e-6 \
+  --gmres-check-interval 1 --gmres-reuse-check-schedule
+```
+
+Largest-10 timing, warmed after the new Triton kernel had compiled:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16, current rerun | `27840` | n/a | `2.572` | `3.724` | `0.0994` | `166606.4375` |
+| GMRES with Triton solution write + empty H | `2800` | `1793` | `2.626` | `3.799` | `0.1000` | `166606.4375` |
+| GMRES with fused Triton norm/check | `2800` | `1793` | `2.690` | `3.845` | `0.1005` | `166606.4375` |
+
+The first fused run in a fresh process took `12.513 s` of train time because
+step 1 spent `10.597 s` compiling the new Triton kernel. The warmed timing
+above is the comparable number. The fused check therefore did not produce a
+wall-clock speedup on largest-10; it stayed within measurement noise/slightly
+slower while preserving the same likelihood and the same `9.9x` reduction in
+self-loop backward applications versus Neumann16.
+
+Hard-family backward-only smoke run:
+
+| Metric | Value |
+|---|---:|
+| Family | `CLU_000680_20_4_C` |
+| Elapsed backward-only | `0.06177 s` |
+| Waves | `68` |
+| Self-loop backward applications | `348` |
+| GMRES checks | `348` |
+| Max relative residual | `6.769974e-6` |
+| Backend counts | `triton_split: 68` |
+
+Hard-family `nsys` after the fusion:
+
+| Kernel Bucket | Launches | Total Time |
+|---|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `348` | `3.431 ms` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `348` | `1.417 ms` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `348` | `1.339 ms` |
+| `_gmres_arnoldi_reduce_project_norm_kernel` | `348` | `0.945 ms` |
+| `_gmres_arnoldi_dot_partials_kernel` | `348` | `0.768 ms` |
+| `_gmres_arnoldi_reduce_norm_normalize_kernel` | `280` | `0.438 ms` |
+| `_gmres_hessenberg_residual_kernel` | `0` | `0.000 ms` |
+
+The old residual kernel is gone from the all-Triton hard-family path. The new
+fused check kernel is also tiny: `ncu --set basic` sampled it at a `1 x 32`
+launch, `5.60-5.63 us`, `80` registers/thread, `2.08%` achieved occupancy,
+`0.04%` SM throughput, and about `0.51-0.55%` DRAM throughput. Nsight Compute
+again flags the launch as too small to fill the GPU.
+
+Short largest-10 `nsys` with the fused check:
+
+| Step | Step Seconds | Self-Loop Backward Applications | GMRES Checks | Backend Counts |
+|---:|---:|---:|---:|---|
+| `1` | `0.8545` | `140` | `140` | `torch_cgs2: 59`, `triton_split: 28` |
+| `2` | `0.1168` | `140` | `87` | `torch_cgs2: 59`, `triton_split: 28` |
+| `3` | `0.1153` | `140` | `87` | `torch_cgs2: 59`, `triton_split: 28` |
+
+The mixed largest-10 profile still has `_gmres_hessenberg_residual_kernel`
+launches because `59` waves per step exceed the current Triton split-Arnoldi
+size cap and fall back to `torch_cgs2`:
+
+| Kernel Bucket | Launches | Total Time |
+|---|---:|---:|
+| `_gmres_hessenberg_residual_kernel` | `221` | `0.884 ms` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `93` | `0.390 ms` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `111` | `0.649 ms` |
+
+Conclusion: this fusion is correct and removes the old residual kernel from
+Triton waves, but it is too small to close the remaining end-to-end gap. The
+next useful optimization still has to fuse or batch a larger part of the
+wave-local GMRES loop, especially the `J^T` application plus Arnoldi
+bookkeeping, or address the large-wave `torch_cgs2` fallback without increasing
+register pressure enough to hurt correctness/timing.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
