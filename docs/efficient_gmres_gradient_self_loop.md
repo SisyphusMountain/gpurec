@@ -2308,6 +2308,107 @@ This is still not the final target. GMRES remains about `0.054 s` slower than
 the current Neumann16 rerun over 20 warmed steps, but it is now very close in
 step time while using `9.9x` fewer retained self-loop backward applications.
 
+#### Nsight Refresh: Current GMRES Bottleneck
+
+I refreshed `nsys` and `ncu` on commit
+`5851df4ce949f7a792a63987a1234e25e2a8cd71`.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_ncu_gmres_current_refresh_20260606_092800/
+```
+
+The isolated hard-family profile used:
+
+```text
+family: CLU_000680_20_4_C
+dtype: float32
+E/Pi iterations: 16/16
+GMRES max_iter: 10
+GMRES tol: 7e-6
+GMRES check interval: 1
+backend flag: GPUREC_GMRES_TRITON_ARNOLDI=1
+```
+
+The first attempted refresh accidentally omitted the backend flag and therefore
+used the conservative `torch_cgs2` backend for all hard-family waves. The
+recorded comparison below is the rerun with the intended Triton split-Arnoldi
+path:
+
+| Metric | Value |
+|---|---:|
+| Waves | `68` |
+| Self-loop backward applications | `348` |
+| GMRES residual checks | `348` |
+| Max iterations per wave | `10` |
+| Max relative residual | `6.769981e-6` |
+| Backend counts | `triton_split: 68` |
+
+The backward-only `nsys` CUDA API summary shows launch and scalar-check
+orchestration dominating the host-side profile:
+
+| API Or Copy Bucket | Count | Total Time |
+|---|---:|---:|
+| `cuLaunchKernelEx` | `2799` | `5.230 ms` |
+| `cudaLaunchKernel` | `2269` | `4.656 ms` |
+| `cudaMemcpyAsync` | `420` | `2.832 ms` |
+| `cudaStreamSynchronize` | `398` | `0.283 ms` |
+| device-to-host copies | `398` | `0.331 ms` |
+
+Top kernel buckets in the same backward-only range:
+
+| Kernel Bucket | Launches | Total Time |
+|---|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `348` | `3.426 ms` |
+| PyTorch sum reductions | `487` | `1.950 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `67` | `1.745 ms` |
+| `_gmres_hessenberg_residual_kernel` | `348` | `1.359 ms` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `348` | `1.344 ms` |
+| `_wave_backward_uniform_2d_precompute_kernel` | `68` | `1.281 ms` |
+| `_gmres_arnoldi_reduce_project_norm_kernel` | `348` | `0.950 ms` |
+| `_gmres_arnoldi_dot_partials_kernel` | `348` | `0.774 ms` |
+| `_gmres_arnoldi_reduce_norm_normalize_kernel` | `348` | `0.544 ms` |
+
+The short largest-10 end-to-end `nsys` refresh used the same GMRES settings
+over three optimizer steps. It reproduced the current GMRES accounting:
+
+| Step | Step Seconds | Self-Loop Backward Applications | GMRES Checks | Backend Counts |
+|---:|---:|---:|---:|---|
+| `1` | `0.8443` | `140` | `140` | `torch_cgs2: 59`, `triton_split: 28` |
+| `2` | `0.1184` | `140` | `87` | `torch_cgs2: 59`, `triton_split: 28` |
+| `3` | `0.1168` | `140` | `87` | `torch_cgs2: 59`, `triton_split: 28` |
+
+Largest-10 top kernel buckets show that the full step is still dominated by
+forward/E-Pi wave work, while the GMRES-specific kernels are individually
+small:
+
+| Kernel Bucket | Launches | Total Time |
+|---|---:|---:|
+| `_wave_step_kernel` | `3915` | `99.137 ms` |
+| `_wave_backward_uniform_2d_precompute_kernel` | `261` | `20.595 ms` |
+| `_receiver_grad_from_pibar_self_loop_kernel` | `261` | `13.835 ms` |
+| `_wave_backward_uniform_2d_jt_kernel` | `420` | `10.722 ms` |
+| `_gmres_hessenberg_residual_kernel` | `314` | `1.249 ms` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `111` | `0.649 ms` |
+
+`ncu --set basic` confirms the same diagnosis at kernel level:
+
+| Kernel | Sample Launch Shape | Duration | SM Throughput | DRAM Throughput | Achieved Occupancy |
+|---|---:|---:|---:|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `1 x 64` | `15.46-15.68 us` | `0.06-0.07%` | `0.42%` | `4.15-4.26%` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `3 x 256` | `4.03-4.10 us` | `0.80-0.82%` | `0.59-0.99%` | `16.46-16.65%` |
+| `_gmres_hessenberg_residual_kernel` | `1 x 32` | `5.28-5.38 us` | `0.04%` | `0.52-0.53%` | `2.06-2.08%` |
+
+This rules out the earlier CPU least-squares issue and also rules out a single
+saturated CUDA kernel. The remaining GMRES slowdown is many small wave-local
+launches, residual-check synchronizations, and bookkeeping around kernels that
+are too small to fill the GPU. `Gluon` is not importable in this environment,
+while Triton `3.6.0` is available, so the practical route remains Triton unless
+Gluon is added deliberately. Gluon would only help if it lets us fuse a larger
+piece of the GMRES step or batch work across waves; replacing one tiny kernel
+one-for-one would not address the measured bottleneck.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
