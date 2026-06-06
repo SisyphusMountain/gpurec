@@ -1433,6 +1433,70 @@ depends on opt-in Triton plus a warm cache. The next work should therefore
 focus on removing more residual-check/control overhead, prewarming unavoidable
 variants in a reproducible way, or eliminating the large-wave CGS2 fallback.
 
+#### Follow-Up Profiling And Rejected Knobs
+
+A subagent review recommended a mixed-backend versus all-CGS2 `nsys` comparison
+before attempting a hierarchical large-wave Triton Arnoldi implementation. I
+ran that comparison on one warmed largest-10 backward pass with GMRES10 I4.
+
+Artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_largest10_backward_mixed_vs_cgs2_i4_20260606_070108/
+```
+
+The captured range starts after the forward pass and covers only
+`loss.backward()`.
+
+| Metric | Mixed Opt-In Triton | All CGS2 |
+|---|---:|---:|
+| backend counts | `triton_split: 46`, `torch_cgs2: 41` | `torch_cgs2: 87` |
+| elapsed backward-only time | `0.109 s` | `0.114 s` |
+| self-loop backward iterations | `273` | `258` |
+| GMRES checks | `148` | `144` |
+| summed GPU kernels | `52.240 ms`, `5592` launches | `52.603 ms`, `6222` launches |
+| CUDA runtime API | `28.748 ms`, `10667` calls | `32.236 ms`, `12848` calls |
+| device-to-device copies | `1910.540 MB`, `716` copies | `2157.969 MB`, `1125` copies |
+| device-to-host copies | `154` copies | `150` copies |
+
+The mixed opt-in Triton path cuts launches, runtime calls, and D2D copies, but
+the total kernel time is essentially unchanged in this largest-10 backward
+profile. This is not enough evidence to justify a medium-high-risk
+hierarchical large-wave Arnoldi implementation yet; it suggests the current
+fallback is only one part of the remaining Neumann16 gap.
+
+I also tested coarser residual-check intervals beyond I4:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_check_sweep_largest10_steps20_20260606_070219/
+```
+
+| Solver | Train Seconds | Self-Loop Backward Iterations | GMRES Checks | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|
+| GMRES10 I4 opt-in Triton | `3.006` | `5493` | `2971` | `0.1200` | `166606.46875` |
+| GMRES10 I5 opt-in Triton | `3.145` | `6539` | `2934` | `0.1264` | `166606.765625` |
+| GMRES10 I6 opt-in Triton | `3.283` | `7608` | `2914` | `0.1335` | `166606.640625` |
+
+I4 remains the best measured residual-check schedule in this set. I5 and I6
+save few checks but add too many Krylov iterations.
+
+Finally, I tested expanding opt-in Triton coverage by increasing the Arnoldi
+tile width from `512` to `1024`. This moved largest-10 backend coverage from
+`46/87` Triton waves to `80/87`, but it did not improve the benchmark:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_block1024_i4_largest10_steps20_20260606_070354/
+```
+
+| Variant | Train Seconds | Self-Loop Backward Iterations | GMRES Checks | Mean Step 2-20 | Backend Counts | Final Loss |
+|---|---:|---:|---:|---:|---|---:|
+| `BLOCK_N=512`, GMRES10 I4 | `3.006` | `5493` | `2971` | `0.1200` | `triton_split: 920`, `torch_cgs2: 820` | `166606.46875` |
+| `BLOCK_N=1024`, GMRES10 I4 | `3.023` | `6176` | `3166` | `0.1205` | `triton_split: 1600`, `torch_cgs2: 140` | `166608.734375` |
+
+The broader Triton coverage changed the numerical/iteration trajectory enough
+to increase work and worsen the displayed final loss. I reverted it and kept
+`BLOCK_N=512`.
+
 Implication for a Triton or Gluon rewrite: rewriting only the small
 Hessenberg/residual kernel is not enough. The useful target is a larger fused
 GMRES step or a lower-compilation, lower-launch Arnoldi implementation. Gluon

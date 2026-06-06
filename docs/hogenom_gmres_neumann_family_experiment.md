@@ -1034,3 +1034,57 @@ benchmarks/large_dataset_capacity/output/gmres10_i4_correctness_hard_family_2026
 
 This confirms that the lower-check schedule did not create an obvious gradient
 accuracy regression on the known hard family.
+
+### Follow-Up Profiling And Rejected Knobs
+
+I profiled one warmed largest-10 backward pass with GMRES10 I4 to decide
+whether a hierarchical large-wave Triton Arnoldi implementation should be the
+next coding target.
+
+Artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_largest10_backward_mixed_vs_cgs2_i4_20260606_070108/
+```
+
+| Metric | Mixed Opt-In Triton | All CGS2 |
+|---|---:|---:|
+| backend counts | `triton_split: 46`, `torch_cgs2: 41` | `torch_cgs2: 87` |
+| elapsed backward-only time | `0.109 s` | `0.114 s` |
+| self-loop backward iterations | `273` | `258` |
+| GMRES checks | `148` | `144` |
+| summed GPU kernels | `52.240 ms`, `5592` launches | `52.603 ms`, `6222` launches |
+| CUDA runtime API | `28.748 ms`, `10667` calls | `32.236 ms`, `12848` calls |
+| device-to-device copies | `1910.540 MB`, `716` copies | `2157.969 MB`, `1125` copies |
+
+The mixed path cuts launches and D2D copies but does not materially reduce
+summed kernel time on this backward pass. That argues against immediately
+starting the medium-high-risk hierarchical large-wave implementation.
+
+Residual-check intervals beyond I4 were worse:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_check_sweep_largest10_steps20_20260606_070219/
+```
+
+| Solver | Train Seconds | Self-Loop Backward Iterations | GMRES Checks | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|
+| GMRES10 I4 opt-in Triton | `3.006` | `5493` | `2971` | `0.1200` | `166606.46875` |
+| GMRES10 I5 opt-in Triton | `3.145` | `6539` | `2934` | `0.1264` | `166606.765625` |
+| GMRES10 I6 opt-in Triton | `3.283` | `7608` | `2914` | `0.1335` | `166606.640625` |
+
+I also tested increasing the opt-in Arnoldi tile width from `512` to `1024`.
+It moved backend coverage from `46/87` to `80/87` Triton waves, but the
+benchmark did not improve:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_block1024_i4_largest10_steps20_20260606_070354/
+```
+
+| Variant | Train Seconds | Self-Loop Backward Iterations | GMRES Checks | Backend Counts | Final Loss |
+|---|---:|---:|---:|---|---:|
+| `BLOCK_N=512`, GMRES10 I4 | `3.006` | `5493` | `2971` | `triton_split: 920`, `torch_cgs2: 820` | `166606.46875` |
+| `BLOCK_N=1024`, GMRES10 I4 | `3.023` | `6176` | `3166` | `triton_split: 1600`, `torch_cgs2: 140` | `166608.734375` |
+
+I reverted the tile-width change. Current best measured setting remains
+GMRES10 I4 with `BLOCK_N=512`.
