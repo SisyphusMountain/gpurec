@@ -3678,6 +3678,137 @@ Conclusion: keep this gated default-on change. It is not the root GMRES fix,
 but it removes redundant staged norm work and gives a small measured improvement
 without increasing register pressure.
 
+## Root-Boundary Optimization Plan
+
+I also folded in the separate root-fix note. The important conclusion is
+consistent with the latest profiles: current GMRES is mathematically efficient,
+but its implementation still treats each step as:
+
+```text
+black-box self-loop matvec + separate dot/projection/reduction/check kernels
+```
+
+Small launch-reduction patches are worth keeping only when they are simple and
+measurable. They will not make `140` GMRES self-loop applications cost like
+`140` Neumann applications by themselves.
+
+### Rejected Split Check-Normalize Experiment
+
+I tested the same normalization-from-stored-Hessenberg idea on the smaller
+`triton_split` backend. The candidate change reused `H[j+1,j]` after
+`_gmres_arnoldi_reduce_norm_check_kernel` instead of launching
+`_gmres_arnoldi_reduce_norm_normalize_kernel` on checked-and-continuing split
+iterations.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_overhead_split_check_norm_normalize_off_20260606_144000/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_split_check_norm_normalize_on_20260606_144000/
+benchmarks/large_dataset_capacity/output/nsys_split_check_norm_normalize_off_20260606_144500/
+benchmarks/large_dataset_capacity/output/nsys_split_check_norm_normalize_on_20260606_144500/
+```
+
+The non-profiled checked-GMRES timing looked slightly better:
+
+| Mode | Split Change | Mean Backward | Mean ms/Application |
+|---|---:|---:|---:|
+| GMRES10 checked | off | `61.108 ms` | `0.43648` |
+| GMRES10 checked | on | `60.691 ms` | `0.43351` |
+
+However, the `nsys` kernel-level evidence showed that the actual split-specific
+work removed was tiny. Over three profiled backward passes, the old split
+normalize launches for the affected grids took about `0.056 ms`; the replacement
+normalize-from-H launches took about `0.039 ms`. The net split-specific saving
+was only about `0.017 ms` across the whole three-backward profile. Total kernel
+time was effectively unchanged:
+
+| Split Change | Kernel Launches | Kernel Time Sum | Runtime API Total |
+|---|---:|---:|---:|
+| off | `16488` | `223.448 ms` | `78.112 ms` |
+| on | `16488` | `223.405 ms` | `80.800 ms` |
+
+Conclusion: this patch was not retained. It is correct, but the measured gain is
+below the threshold for adding another environment flag, recorder counters, and
+tests. The large-backend direct norm-normalize change remains retained because
+it removes many more staged reductions and has clearer `nsys` support.
+
+### Current NCU Evidence
+
+I sampled the current largest-10 GMRES profile with `ncu --set basic` after the
+direct-norm work. The representative large `J^T` self-loop launch was selected
+by invocation id from the `nsys` trace:
+
+```text
+benchmarks/large_dataset_capacity/output/ncu_gmres_jt_basic_20260606_145000/
+```
+
+Representative large self-loop matvec:
+
+| Kernel | Launch Shape | Duration | Registers/Thread | Achieved Occupancy | SM Throughput | DRAM Throughput |
+|---|---:|---:|---:|---:|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `6617 x 64` | `283.62 us` | `182` | `16.16%` | `22.91%` | `81.78%` |
+
+Representative large Arnoldi dot pass:
+
+| Kernel | Launch Shape | Duration | Registers/Thread | Achieved Occupancy | SM Throughput | DRAM Throughput |
+|---|---:|---:|---:|---:|---:|---:|
+| `_gmres_arnoldi_dot_partials_kernel` | `17202 x 128` | `101.02 us` | `80` | `47.75%` | `92.84%` | `72.39%` |
+
+This explains why the earlier fused first-dot attempt was the wrong shape. The
+standalone dot pass is expensive enough to care about, but adding basis-dot
+logic directly to the already complex `J^T` kernel pushed register pressure too
+high. The first fused attempt hit about `255` registers/thread and regressed
+despite removing launches.
+
+### Next Optimization Boundary
+
+The next implementation should be a second-generation fused wave-local GMRES
+backend, not another one-kernel cleanup. The safer design is:
+
+1. Keep the current direct-sum/direct-norm/trusted-schedule code as the
+   baseline.
+2. Store Krylov vectors in scaled raw form:
+
+   ```text
+   q_i = raw_basis_i * basis_scale_i
+   ```
+
+   This removes a standalone normalize/write pass and lets later kernels apply
+   the scale on load.
+3. Fuse the post-matvec Arnoldi passes first:
+
+   ```text
+   projection + second dot
+   projection + norm + raw next-basis write
+   ```
+
+   This attacks the repeated full-vector memory passes without increasing the
+   self-loop `J^T` register footprint.
+4. Revisit matvec-plus-first-dot only after the projection fusion is stable. A
+   new attempt must have an `ncu` register/occupancy gate; a simple bolt-on to
+   `_wave_backward_uniform_2d_jt_kernel` already failed.
+5. Keep convergence state on device where possible. Trusted schedules already
+   remove most residual readbacks after the first/audit pass, so the remaining
+   target is launch count and vector-pass count.
+6. Use Gluon only if it is deliberately added and proves lower register pressure
+   or lower specialization overhead for one of these fused kernels. Rewriting a
+   tiny residual or normalization kernel one-for-one is not useful.
+
+Acceptance gates for the next fused backend:
+
+```text
+full-batch largest-10 gradient error vs Neumann512 stays below the current gate
+largest-10 self-loop application count remains about 140 per backward
+nsys shows fewer GMRES launches and lower or equal kernel time
+ncu shows no self-loop register-pressure regression similar to the failed first-dot attempt
+20-step and 60-step largest-10 timings beat Neumann16, not only Neumann32
+```
+
+The core target remains the same: make each GMRES Krylov step approach the cost
+of one retained self-loop backward application plus a small fixed amount of
+Arnoldi work.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
