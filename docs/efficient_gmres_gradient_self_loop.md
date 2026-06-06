@@ -3296,6 +3296,95 @@ costs:
   backward/adjoint path, because the remaining D2H copies are tiny but still
   show large host API wait time.
 
+## Direct One-Step GMRES Follow-Up
+
+I then changed the trusted one-step fast path to use the equivalent unnormalized
+one-dimensional formula:
+
+```text
+x = rhs * (rhs^T A rhs) / ||A rhs||^2
+```
+
+This avoids computing `||rhs||`, avoids writing the normalized `q0 = rhs /
+||rhs||`, and fuses the one-step reduce/write stage. The previous normalized
+path remains available by setting:
+
+```bash
+GPUREC_GMRES_TRUSTED_ONE_STEP_DIRECT=0
+```
+
+Current artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_overhead_trusted_direct_20260606_133000/
+```
+
+That folder contains `benchmark_current.json`,
+`gmres_trusted_direct_profiled.json`, the `nsys` report and SQLite export,
+`ncu_direct_reduce_write.ncu-rep`, and `profile_summary.json`.
+
+The non-profiled benchmark command was:
+
+```bash
+GPUREC_GMRES_TRITON_ARNOLDI=1 \
+GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1 \
+GPUREC_GMRES_TRUSTED_ONE_STEP_DIRECT=1 \
+python benchmarks/large_dataset_capacity/hogenom_self_loop_overhead_benchmark.py \
+  --limit 10 \
+  --continue-on-error \
+  --output-json benchmarks/large_dataset_capacity/output/self_loop_overhead_trusted_direct_20260606_133000/benchmark_current.json
+```
+
+The direct-path non-profiled results are:
+
+| Mode | Mean Backward | Backward Applications | Mean ms/Application | Residual CPU Readbacks | Trusted Checks | Backends |
+|---|---:|---:|---:|---:|---:|---|
+| Neumann16 | `60.540 ms` | `1392` | `0.04349` | n/a | n/a | n/a |
+| GMRES10 checked | `60.959 ms` | `140` | `0.43542` | `140` | `0` | `triton_large=59`, `triton_split=28` |
+| GMRES10 reuse+trust direct | `54.086 ms` | `140` | `0.38633` | `0` | `87` | `triton_large=50`, `triton_split=9`, `trusted_one_step_triton_direct=28` |
+
+Relative to the previous trusted one-step implementation in the same benchmark
+family (`56.136 ms`), this is another small improvement of about `2.05 ms`
+per backward pass. Relative to checked GMRES in this run, it is about `11.3%`
+faster. The mathematical work did not change: this still performs `140`
+self-loop applications over `87` waves.
+
+The backward-filtered `nsys` comparison against the previous trusted one-step
+implementation is:
+
+| Profile | NVTX Backward Total | Mean Backward Under nsys | Runtime API Total | Kernel Launches | Kernel Time Sum | Memcpy Count |
+|---|---:|---:|---:|---:|---:|---:|
+| Previous trusted one-step | `343.258 ms` | `68.652 ms` | `75.645 ms` | `19330` | `190.415 ms` | `35` |
+| Direct trusted one-step | `332.731 ms` | `66.546 ms` | `73.449 ms` | `18770` | `188.769 ms` | `35` |
+
+The direct path removes `560` kernel launches over five backward passes. That
+matches the eliminated norm/div/reduce/write launches for the `28` one-step
+waves per backward pass. The remaining large CUDA API entries are still
+`cudaMemcpyAsync_v3020` (`35` calls, `35.627 ms`), `cudaLaunchKernel_v7000`
+(`9215` calls, `17.945 ms`), and `cuLaunchKernelEx` (`9535` calls,
+`17.316 ms`).
+
+The new direct kernel appears in the profile as:
+
+| Kernel | Launches | Total Time | Avg Time |
+|---|---:|---:|---:|
+| `_gmres_trusted_one_step_partials_kernel` | `140` | `0.266 ms` | `1.897 us` |
+| `_gmres_trusted_one_step_reduce_write_direct_kernel` | `140` | `0.328 ms` | `2.345 us` |
+
+The `ncu --set basic` sample on
+`_gmres_trusted_one_step_reduce_write_direct_kernel` shows it is still a tiny
+underfilled kernel rather than a throughput bottleneck:
+
+| Sampled Grid | Duration | Registers/Thread | Achieved Occupancy | Compute Throughput | DRAM Throughput |
+|---|---:|---:|---:|---:|---:|
+| `3 x 256` | `1.95 us` | `16` | `16.75%` | `0.09%` | `0.46%` |
+| `26-47 x 256` | `2.08-2.72 us` | `16` | `16.15-17.25%` | `1.22-2.86%` | `2.79-4.03%` |
+
+Conclusion: this direct one-step path is worth keeping, but it reinforces the
+same diagnosis. The one-step subcase is now cheap; the next meaningful speedup
+has to reduce launch count in the multi-step Arnoldi path or remove the outer
+backward scalar waits.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

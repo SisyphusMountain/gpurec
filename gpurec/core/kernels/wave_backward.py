@@ -1163,6 +1163,32 @@ def _gmres_trusted_one_step_reduce_kernel(
     tl.store(y_ptr, y)
 
 
+@triton.jit(do_not_specialize=["N", "NUM_TILES"])
+def _gmres_trusted_one_step_reduce_write_direct_kernel(
+    rhs_ptr,
+    partials_ptr,
+    out_ptr,
+    N,
+    NUM_TILES,
+    BLOCK_N: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    tiles = tl.arange(0, BLOCK_TILES)
+    tile_mask = tiles < NUM_TILES
+    h_vals = tl.load(partials_ptr + tiles * 2, mask=tile_mask, other=0.0).to(DTYPE)
+    ww_vals = tl.load(partials_ptr + tiles * 2 + 1, mask=tile_mask, other=0.0).to(DTYPE)
+    h = tl.sum(h_vals, axis=0)
+    ww = tl.sum(ww_vals, axis=0)
+    scale = tl.where(ww > 1.0e-30, h / ww, 0.0)
+
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    n_mask = n < N
+    rhs = tl.load(rhs_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    tl.store(out_ptr + n, rhs * scale, mask=n_mask)
+
+
 @triton.jit(do_not_specialize=["N"])
 def _gmres_trusted_one_step_write_kernel(
     q_ptr,
@@ -1322,6 +1348,15 @@ def _gmres_can_use_triton_trusted_one_step(rhs: torch.Tensor) -> bool:
     return int(block_tiles) <= _GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES
 
 
+def _gmres_use_triton_trusted_one_step_direct() -> bool:
+    return os.environ.get("GPUREC_GMRES_TRUSTED_ONE_STEP_DIRECT", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 @torch.no_grad()
 def _gmres_solve_wave_self_loop(
     apply_a,
@@ -1423,6 +1458,24 @@ def _gmres_solve_wave_self_loop(
         if warm_start_rel_res <= 1.0:
             solve_rhs = residual
             solution_base = initial_guess
+
+    if (
+        not fixed_iterations
+        and bool(trust_min_check_iter)
+        and int(min_check_iter) == 1
+        and solution_base is None
+        and initial_residual_applications == 0
+        and right_preconditioner is None
+        and _gmres_use_triton_trusted_one_step_direct()
+        and _gmres_can_use_triton_trusted_one_step(solve_rhs)
+    ):
+        return _gmres_solve_wave_self_loop_trusted_one_step_direct(
+            apply_a,
+            solve_rhs,
+            preconditioner_name=preconditioner_name,
+            out=out,
+            stats_out=stats_out,
+        )
 
     b_norm_t = torch.linalg.vector_norm(solve_rhs)
     use_cuda_triton_hessenberg = (
@@ -1616,6 +1669,70 @@ def _gmres_solve_wave_self_loop_trusted_one_step(
             "residual_probe_a_applications": 0,
             "correction_iterations": 1,
             "trusted_one_step_fast_path": True,
+        },
+        stats_out,
+    )
+    return result
+
+
+def _gmres_solve_wave_self_loop_trusted_one_step_direct(
+    apply_a,
+    rhs: torch.Tensor,
+    *,
+    preconditioner_name: str,
+    out: torch.Tensor | None,
+    stats_out,
+) -> torch.Tensor:
+    """Closed-form one-step GMRES using the unnormalized Krylov vector."""
+    result = torch.empty_like(rhs) if out is None else out
+    n = int(rhs.numel())
+    block_n = _GMRES_TRITON_ARNOLDI_BLOCK_N
+    num_tiles = triton.cdiv(n, block_n)
+    block_tiles = triton.next_power_of_2(num_tiles)
+    w = apply_a(rhs).reshape(-1)
+    partials = torch.empty((num_tiles, 2), dtype=rhs.dtype, device=rhs.device)
+    grid = (num_tiles,)
+    _gmres_trusted_one_step_partials_kernel[grid](
+        rhs.reshape(-1),
+        w,
+        partials,
+        n,
+        BLOCK_N=int(block_n),
+        DTYPE=_tl_float_dtype(rhs.dtype),
+        num_warps=4,
+    )
+    _gmres_trusted_one_step_reduce_write_direct_kernel[grid](
+        rhs.reshape(-1),
+        partials,
+        result.reshape(-1),
+        n,
+        NUM_TILES=int(num_tiles),
+        BLOCK_N=int(block_n),
+        BLOCK_TILES=int(block_tiles),
+        DTYPE=_tl_float_dtype(rhs.dtype),
+        num_warps=8,
+    )
+
+    _record_gmres_self_loop_stats(
+        {
+            "iterations": 1,
+            "a_applications": 1,
+            "rel_res": 1.0,
+            "check_count": 1,
+            "arnoldi_backend": "trusted_one_step_triton_direct",
+            "min_check_iter": 1,
+            "trusted_check_schedule": True,
+            "trusted_check_used": True,
+            "residual_cpu_readbacks": 0,
+            "preconditioner": str(preconditioner_name),
+            "warm_start_used": False,
+            "warm_start_accepted": False,
+            "warm_start_status": "not_attempted",
+            "warm_start_rel_res": None,
+            "residual_probe_a_applications": 0,
+            "correction_iterations": 1,
+            "trusted_one_step_fast_path": True,
+            "trusted_one_step_direct": True,
         },
         stats_out,
     )

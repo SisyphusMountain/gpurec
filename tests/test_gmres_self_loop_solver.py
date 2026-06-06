@@ -63,14 +63,20 @@ def test_bicgstab_skips_initial_zero_operator_application():
     assert torch.count_nonzero(calls[0]).item() > 0
 
 
-def test_trusted_one_step_gmres_fast_path_solves_identity():
+def test_trusted_one_step_gmres_fast_path_solves_identity(monkeypatch):
     if not torch.cuda.is_available():
         pytest.skip("trusted one-step fast path is CUDA-only")
+    monkeypatch.setenv("GPUREC_GMRES_TRUSTED_ONE_STEP_DIRECT", "1")
     rhs = torch.tensor([1.0, -2.0, 0.5], device="cuda")
     stats = {}
+    calls = []
+
+    def apply_identity(value):
+        calls.append(value.detach().clone())
+        return value
 
     result = wave_backward._gmres_solve_wave_self_loop(
-        lambda value: value,
+        apply_identity,
         rhs,
         max_iter=4,
         tol=1e-12,
@@ -80,7 +86,34 @@ def test_trusted_one_step_gmres_fast_path_solves_identity():
     )
 
     assert torch.allclose(result, rhs)
-    assert stats["arnoldi_backend"] == "trusted_one_step_triton"
+    assert len(calls) == 1
+    assert torch.allclose(calls[0], rhs)
+    assert stats["arnoldi_backend"] == "trusted_one_step_triton_direct"
+    assert stats["a_applications"] == 1
+
+
+def test_trusted_one_step_gmres_direct_path_solves_one_dimensional_subspace(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("trusted one-step fast path is CUDA-only")
+    monkeypatch.setenv("GPUREC_GMRES_TRUSTED_ONE_STEP_DIRECT", "1")
+    rhs = torch.tensor([1.0, -2.0, 0.5], device="cuda")
+    diag = torch.tensor([2.0, 3.0, 5.0], device="cuda")
+    stats = {}
+
+    result = wave_backward._gmres_solve_wave_self_loop(
+        lambda value: diag * value,
+        rhs,
+        max_iter=4,
+        tol=1e-12,
+        min_check_iter=1,
+        trust_min_check_iter=True,
+        stats_out=stats,
+    )
+
+    arhs = diag * rhs
+    expected = rhs * torch.dot(rhs, arhs) / torch.dot(arhs, arhs)
+    assert torch.allclose(result, expected, rtol=1e-6, atol=1e-6)
+    assert stats["arnoldi_backend"] == "trusted_one_step_triton_direct"
     assert stats["a_applications"] == 1
 
 
