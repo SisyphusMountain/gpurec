@@ -13,7 +13,7 @@ import triton
 import triton.language as tl
 
 from gpurec.core.kernels._dts_layout_contract import dts_backward_param_layout
-from gpurec.core.memory_policy import proposal0_memory_gate
+from gpurec.core.memory_policy import proposal0_memory_gate, proposal0_wave_scratch_bytes
 
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 _GMRES_SELF_LOOP_STATS = None
@@ -990,10 +990,8 @@ def _gmres_solve_wave_self_loop(
         residual = rhs - apply_a(initial_guess)
         rhs_norm_t = torch.linalg.vector_norm(rhs)
         residual_norm_t = torch.linalg.vector_norm(residual)
-        rhs_norm = float(rhs_norm_t.detach().cpu())
-        residual_norm = float(residual_norm_t.detach().cpu())
-        denom = max(rhs_norm, torch.finfo(rhs.dtype).tiny)
-        warm_start_rel_res = residual_norm / denom
+        denom_t = torch.clamp(rhs_norm_t, min=torch.finfo(rhs.dtype).tiny)
+        warm_start_rel_res = float((residual_norm_t / denom_t).detach().cpu())
         if warm_start_rel_res <= tol:
             if out is None:
                 result = initial_guess.clone()
@@ -1019,7 +1017,7 @@ def _gmres_solve_wave_self_loop(
                 stats_out,
             )
             return result
-        if residual_norm <= denom:
+        if warm_start_rel_res <= 1.0:
             solve_rhs = residual
             solution_base = initial_guess
 
@@ -1159,7 +1157,7 @@ def _gmres_solve_wave_self_loop_triton_split(
 
     basis = torch.empty((max_iter + 1, *rhs.shape), dtype=rhs.dtype, device=rhs.device)
     basis_2d = basis.reshape(max_iter + 1, -1)
-    basis_2d[0].copy_(rhs.reshape(-1) / safe_b_norm_t)
+    torch.div(rhs.reshape(-1), safe_b_norm_t, out=basis_2d[0])
     hessenberg = torch.zeros((max_iter + 1, max_iter), dtype=rhs.dtype, device=rhs.device)
     partials = torch.empty((num_tiles, max_iter), dtype=rhs.dtype, device=rhs.device)
     norm_partials = torch.empty((num_tiles,), dtype=rhs.dtype, device=rhs.device)
@@ -1316,7 +1314,7 @@ def _gmres_solve_wave_self_loop_cgs2(
         device=rhs.device,
     )
     basis_2d = basis.reshape(max_iter + 1, -1)
-    basis_2d[0].copy_(rhs.reshape(-1) / safe_b_norm_t)
+    torch.div(rhs.reshape(-1), safe_b_norm_t, out=basis_2d[0])
     hessenberg = torch.zeros(
         (max_iter + 1, max_iter),
         dtype=rhs.dtype,
@@ -1782,6 +1780,7 @@ def _wave_backward_uniform_2d(
     gmres_stats_out=None,
     gmres_preconditioner="none",
     gmres_diagonal_preconditioner_floor=1e-4,
+    memory_budget_bytes: int | None = None,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -1790,12 +1789,17 @@ def _wave_backward_uniform_2d(
         raise RuntimeError(
             "2D self-loop fast path currently supports fp32/fp64 only",
         )
-    ok, required_bytes, budget_bytes = proposal0_memory_gate(
-        W,
-        S,
-        Pi_star.dtype,
-        device=Pi_star.device,
-    )
+    if memory_budget_bytes is None:
+        ok, required_bytes, budget_bytes = proposal0_memory_gate(
+            W,
+            S,
+            Pi_star.dtype,
+            device=Pi_star.device,
+        )
+    else:
+        required_bytes = proposal0_wave_scratch_bytes(W, S, Pi_star.dtype)
+        budget_bytes = int(memory_budget_bytes)
+        ok = required_bytes <= budget_bytes
     if not ok:
         raise RuntimeError(
             "2D self-loop fast path estimated scratch "
@@ -2228,6 +2232,7 @@ def wave_backward_uniform_fused(
     gmres_stats_out=None,
     gmres_preconditioner="none",
     gmres_diagonal_preconditioner_floor=1e-4,
+    memory_budget_bytes: int | None = None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -2330,6 +2335,7 @@ def wave_backward_uniform_fused(
         gmres_stats_out=gmres_stats_out,
         gmres_preconditioner=gmres_preconditioner,
         gmres_diagonal_preconditioner_floor=gmres_diagonal_preconditioner_floor,
+        memory_budget_bytes=memory_budget_bytes,
     )
 
 

@@ -2173,6 +2173,82 @@ same-state repeated gradients, but it should remain default-off for this
 optimizer benchmark. It needs an acceptance-rate gate, a parameter-step-size
 gate, or a better predictor before it can be useful end-to-end.
 
+#### Memory-Budget Query Cache And RHS Normalization Cleanup
+
+The current `nsys` profile also showed a smaller but avoidable overhead:
+`_wave_backward_uniform_2d` queried CUDA free memory once per retained wave via
+`torch.cuda.mem_get_info`. This memory gate is useful, but the budget does not
+need to be re-read for every wave in one retained backward pass.
+
+I changed the implicit-gradient loop to compute the CUDA memory budget once per
+backward pass and pass it to each wave solve. The wave-local code still checks
+the estimated scratch requirement against the same budget; it just avoids the
+per-wave driver query. I also changed the first GMRES basis-vector
+normalization to write directly into the basis buffer:
+
+```text
+torch.div(rhs.reshape(-1), safe_b_norm_t, out=basis_2d[0])
+```
+
+This avoids a normalized-RHS temporary and extra copy in both the Triton
+Arnoldi and CGS2 paths. Finally, the optional warm-start residual probe now
+copies one relative-residual scalar instead of copying both norms.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_gmres_memory_budget_cache_20260606_090813/
+benchmarks/large_dataset_capacity/output/gmres_memory_budget_cache_largest10_20260606_090845/
+benchmarks/large_dataset_capacity/output/gmres_fixed_smallm_probe_20260606_090558/
+```
+
+Hard-family backward-only `nsys` check on `CLU_000680_20_4_C`, same settings as
+the previous interval-1 profile:
+
+| Metric | Before | After |
+|---|---:|---:|
+| `cudaMemGetInfo` calls in captured backward range | `68` | `1` |
+| unprofiled backward-only elapsed | `0.066870 s` | `0.064553 s` |
+| self-loop applications | `348` | `348` |
+| GMRES checks | `348` | `348` |
+
+Largest-10 first-step gradient check against Neumann512, with one schedule
+warmup before the measured GMRES row:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `9.173304e-08` | `1.234574e-07` | `2.062430e-07` |
+| GMRES10 I1 tol `7e-6`, checked-y + schedule | `140` | `87` | `1.710515e-06` | `3.395078e-06` | `3.396860e-06` |
+
+Largest-10 warmed 20-step timing under the same code:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16, rerun after patch | `27840` | n/a | `2.572` | `3.724` | `0.0994` | `166606.4375` |
+| GMRES10 I1 tol `7e-6`, checked-y + schedule, before patch | `2800` | `1793` | `2.689` | `3.968` | `0.1036` | `166606.453125` |
+| GMRES10 I1 tol `7e-6`, checked-y + schedule, after patch | `2800` | `1793` | `2.645` | `3.837` | `0.1019` | `166606.4375` |
+
+This closes most of the previous warm-step gap, but not all of it. GMRES is
+still slower than the rerun Neumann16 baseline by about `0.073 s` over this
+20-step largest-10 timing, while using `9.9x` fewer self-loop backward
+applications. The remaining gap is therefore still overhead, not mathematical
+work.
+
+I also tested fixed small-dimension GMRES as a possible way to avoid adaptive
+residual-stop orchestration:
+
+| Fixed GMRES | Self-Loop Backward Applications | Result |
+|---|---:|---|
+| `m=1` | `87` | failed gradient gate: relative L2 `5.385e-01` |
+| `m=2` | n/a | E-adjoint BiCGSTAB failed with NaN residual |
+| `m=3` | n/a | E-adjoint BiCGSTAB failed with NaN residual |
+
+So the next low-risk path is not fixed small-`m` GMRES. The most plausible
+remaining low-risk work is a self-disabling gate for solution-cache warm starts
+and further launch/copy cleanup around the adaptive path. A larger Triton or
+Gluon rewrite should target a fused GMRES step, not the already tiny standalone
+Hessenberg residual kernel.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

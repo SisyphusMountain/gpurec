@@ -8,6 +8,7 @@ from gpurec.core.kernels.wave_backward import (
     uniform_cross_pibar_vjp_tree_from_ud_fused,
     wave_backward_uniform_fused,
 )
+from gpurec.core.memory_policy import cuda_memory_budget_bytes
 from gpurec.core.parameters.extract_parameters import (
     as_family_param,
     as_family_species,
@@ -221,6 +222,7 @@ def implicit_grad_loglik_vjp_wave(
     next_gmres_solution_cache: list[torch.Tensor | None] | None = (
         [] if use_gmres_solution_cache else None
     )
+    wave_memory_budget_bytes = cuda_memory_budget_bytes(device) if device.type == "cuda" else None
 
     for wave_rev_index, meta in enumerate(reversed(wave_metas)):
         ws = int(meta["start"])
@@ -317,6 +319,7 @@ def implicit_grad_loglik_vjp_wave(
             gmres_stats_out=gmres_wave_stats,
             gmres_preconditioner=gmres_preconditioner,
             gmres_diagonal_preconditioner_floor=gmres_diagonal_preconditioner_floor,
+            memory_budget_bytes=wave_memory_budget_bytes,
         )
         if next_gmres_check_schedule is not None:
             observed_iterations = (
