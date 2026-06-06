@@ -1768,6 +1768,8 @@ def _gmres_solve_wave_self_loop_triton_large(
     rel_res = 1.0
     check_count = 0
     trusted_check_used = False
+    group_norm_reduction_count = 0
+    direct_norm_check_count = 0
 
     for j in range(max_iter):
         basis_j = basis[j]
@@ -1889,14 +1891,18 @@ def _gmres_solve_wave_self_loop_triton_large(
             DTYPE=_tl_float_dtype(rhs.dtype),
             num_warps=4,
         )
-        _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
-            norm_partials,
-            norm_group_partials,
-            NUM_TILES=int(num_tiles),
-            GROUP_TILES=int(group_tiles),
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=8,
-        )
+        group_norm_ready = False
+        if not use_direct_sum:
+            _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
+                norm_partials,
+                norm_group_partials,
+                NUM_TILES=int(num_tiles),
+                GROUP_TILES=int(group_tiles),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
+            group_norm_reduction_count += 1
+            group_norm_ready = True
 
         last_j = j
         should_check = _gmres_should_check(
@@ -1906,16 +1912,21 @@ def _gmres_solve_wave_self_loop_triton_large(
             check_interval=check_interval,
         )
         if should_check:
+            norm_check_partials = norm_partials if use_direct_sum else norm_group_partials
+            norm_check_tiles = num_tiles if use_direct_sum else num_groups
+            norm_check_block_tiles = direct_sum_block_tiles if use_direct_sum else block_groups
+            if use_direct_sum:
+                direct_norm_check_count += 1
             _gmres_arnoldi_reduce_norm_check_kernel[(1,)](
                 hessenberg,
-                norm_group_partials,
+                norm_check_partials,
                 b_norm_t,
                 residual_buf,
                 y_buf,
-                NUM_TILES=int(num_groups),
+                NUM_TILES=int(norm_check_tiles),
                 J=int(j),
                 MAX_ITER=int(max_iter),
-                BLOCK_TILES=int(block_groups),
+                BLOCK_TILES=int(norm_check_block_tiles),
                 BLOCK_R=int(triton.next_power_of_2(max_iter + 1)),
                 BLOCK_C=int(block_k),
                 DTYPE=_tl_float_dtype(rhs.dtype),
@@ -1934,6 +1945,17 @@ def _gmres_solve_wave_self_loop_triton_large(
                 if rel_res <= tol:
                     break
             if j + 1 < max_iter:
+                if not group_norm_ready:
+                    _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
+                        norm_partials,
+                        norm_group_partials,
+                        NUM_TILES=int(num_tiles),
+                        GROUP_TILES=int(group_tiles),
+                        DTYPE=_tl_float_dtype(rhs.dtype),
+                        num_warps=8,
+                    )
+                    group_norm_reduction_count += 1
+                    group_norm_ready = True
                 _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
                     basis_2d,
                     hessenberg,
@@ -1949,6 +1971,17 @@ def _gmres_solve_wave_self_loop_triton_large(
                     num_warps=8,
                 )
         else:
+            if not group_norm_ready:
+                _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
+                    norm_partials,
+                    norm_group_partials,
+                    NUM_TILES=int(num_tiles),
+                    GROUP_TILES=int(group_tiles),
+                    DTYPE=_tl_float_dtype(rhs.dtype),
+                    num_warps=8,
+                )
+                group_norm_reduction_count += 1
+                group_norm_ready = True
             _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
                 basis_2d,
                 hessenberg,
@@ -1974,6 +2007,8 @@ def _gmres_solve_wave_self_loop_triton_large(
             "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "triton_large",
             "large_direct_sum": bool(use_direct_sum),
+            "large_direct_norm_checks": int(direct_norm_check_count),
+            "large_group_norm_reductions": int(group_norm_reduction_count),
             "min_check_iter": int(min_check_iter),
             "trusted_check_schedule": bool(trust_min_check_iter),
             "trusted_check_used": bool(trusted_check_used),

@@ -143,6 +143,8 @@ def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path)
             "rel_res": 1e-4,
             "arnoldi_backend": "triton_large",
             "large_direct_sum": True,
+            "large_direct_norm_checks": 2,
+            "large_group_norm_reductions": 1,
         },
         {
             "iterations": 0,
@@ -168,6 +170,8 @@ def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path)
     assert summary["gmres_warm_start_accepted"] == 1
     assert summary["gmres_trusted_check_used"] == 0
     assert summary["gmres_large_direct_sum_used"] == 1
+    assert summary["gmres_large_direct_norm_checks"] == 2
+    assert summary["gmres_large_group_norm_reductions"] == 1
     assert summary["gmres_residual_probe_a_applications"] == 1
     assert summary["gmres_total_checks"] == 3
     assert summary["gmres_residual_cpu_readbacks"] == 3
@@ -199,6 +203,8 @@ def test_self_loop_backward_recorder_ignores_trusted_check_residuals(tmp_path: P
             "trusted_check_used": True,
             "arnoldi_backend": "triton_large",
             "large_direct_sum": True,
+            "large_direct_norm_checks": 1,
+            "large_group_norm_reductions": 0,
         },
     ]
 
@@ -206,5 +212,7 @@ def test_self_loop_backward_recorder_ignores_trusted_check_residuals(tmp_path: P
 
     assert summary["gmres_trusted_check_used"] == 1
     assert summary["gmres_large_direct_sum_used"] == 1
+    assert summary["gmres_large_direct_norm_checks"] == 1
+    assert summary["gmres_large_group_norm_reductions"] == 0
     assert summary["gmres_residual_cpu_readbacks"] == 0
     assert summary["gmres_max_rel_res"] is None

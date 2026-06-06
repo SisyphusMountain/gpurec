@@ -801,6 +801,81 @@ def test_gmres_large_direct_sum_matches_staged_reduction_cuda(num_tiles, j, add_
     torch.testing.assert_close(h_direct[: j + 1, j], h_staged[: j + 1, j], rtol=1e-5, atol=2e-5)
 
 
+@pytest.mark.parametrize("num_tiles", [513, 729, 1024])
+@pytest.mark.parametrize("iters", [1, 4, 10])
+def test_gmres_large_direct_norm_check_matches_staged_reduction_cuda(num_tiles, iters):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES direct norm check")
+
+    device = torch.device("cuda")
+    dtype = torch.float32
+    generator = torch.Generator(device="cpu").manual_seed(1700 + num_tiles + 13 * iters)
+    max_iter = 16
+    group_tiles = wave_backward._GMRES_TRITON_LARGE_ARNOLDI_GROUP_TILES
+    num_groups = wave_backward.triton.cdiv(num_tiles, group_tiles)
+    block_groups = wave_backward.triton.next_power_of_2(num_groups)
+    block_tiles = wave_backward.triton.next_power_of_2(num_tiles)
+    block_k = wave_backward.triton.next_power_of_2(max_iter)
+
+    hessenberg_cpu = torch.randn((max_iter + 1, max_iter), generator=generator, dtype=dtype)
+    rows = torch.arange(max_iter + 1)[:, None]
+    cols = torch.arange(max_iter)[None, :]
+    hessenberg_cpu = torch.where(rows <= cols + 1, hessenberg_cpu, torch.zeros_like(hessenberg_cpu))
+    norm_partials = torch.rand((num_tiles,), generator=generator, dtype=dtype).to(device) * 0.01
+    norm_group_partials = torch.empty((num_groups,), dtype=dtype, device=device)
+    beta = torch.tensor(3.0, dtype=dtype, device=device)
+    h_staged = hessenberg_cpu.to(device)
+    h_direct = hessenberg_cpu.to(device)
+    residual_staged = torch.empty((), dtype=dtype, device=device)
+    residual_direct = torch.empty((), dtype=dtype, device=device)
+    y_staged = torch.empty((max_iter,), dtype=dtype, device=device)
+    y_direct = torch.empty((max_iter,), dtype=dtype, device=device)
+    j = iters - 1
+
+    wave_backward._gmres_arnoldi_reduce_group_norm_partials_kernel[(num_groups,)](
+        norm_partials,
+        norm_group_partials,
+        NUM_TILES=int(num_tiles),
+        GROUP_TILES=int(group_tiles),
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=8,
+    )
+    wave_backward._gmres_arnoldi_reduce_norm_check_kernel[(1,)](
+        h_staged,
+        norm_group_partials,
+        beta,
+        residual_staged,
+        y_staged,
+        NUM_TILES=int(num_groups),
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_TILES=int(block_groups),
+        BLOCK_R=int(wave_backward.triton.next_power_of_2(max_iter + 1)),
+        BLOCK_C=int(block_k),
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=1,
+    )
+    wave_backward._gmres_arnoldi_reduce_norm_check_kernel[(1,)](
+        h_direct,
+        norm_partials,
+        beta,
+        residual_direct,
+        y_direct,
+        NUM_TILES=int(num_tiles),
+        J=int(j),
+        MAX_ITER=int(max_iter),
+        BLOCK_TILES=int(block_tiles),
+        BLOCK_R=int(wave_backward.triton.next_power_of_2(max_iter + 1)),
+        BLOCK_C=int(block_k),
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        num_warps=1,
+    )
+
+    torch.testing.assert_close(residual_direct, residual_staged, rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(h_direct[iters, j], h_staged[iters, j], rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(y_direct[:iters], y_staged[:iters], rtol=2e-4, atol=2e-5)
+
+
 def test_gmres_self_loop_matches_dense_solve_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for the Triton GMRES solve path")
@@ -978,6 +1053,8 @@ def test_gmres_self_loop_triton_large_handles_above_cap_cuda_float32(monkeypatch
     torch.testing.assert_close(got, expected, rtol=3e-5, atol=3e-5)
     assert stats and stats[0]["arnoldi_backend"] == "triton_large"
     assert stats[0]["large_direct_sum"] is True
+    assert stats[0]["large_direct_norm_checks"] == 2
+    assert stats[0]["large_group_norm_reductions"] == 1
     assert stats[0]["iterations"] == 2
 
 
@@ -1008,6 +1085,8 @@ def test_gmres_self_loop_triton_large_direct_sum_can_be_disabled_cuda_float32(mo
     torch.testing.assert_close(got, rhs, rtol=3e-5, atol=3e-5)
     assert stats and stats[0]["arnoldi_backend"] == "triton_large"
     assert stats[0]["large_direct_sum"] is False
+    assert stats[0]["large_direct_norm_checks"] == 0
+    assert stats[0]["large_group_norm_reductions"] == 1
 
 
 def test_gmres_self_loop_triton_large_can_trust_min_check_iter_cuda_float32(monkeypatch):
@@ -1049,6 +1128,8 @@ def test_gmres_self_loop_triton_large_can_trust_min_check_iter_cuda_float32(monk
     torch.testing.assert_close(got, rhs / diagonal, rtol=3e-5, atol=3e-5)
     assert stats and stats[0]["arnoldi_backend"] == "triton_large"
     assert stats[0]["large_direct_sum"] is True
+    assert stats[0]["large_direct_norm_checks"] == 1
+    assert stats[0]["large_group_norm_reductions"] == 1
     assert stats[0]["iterations"] == 2
     assert stats[0]["trusted_check_schedule"] is True
     assert stats[0]["trusted_check_used"] is True
