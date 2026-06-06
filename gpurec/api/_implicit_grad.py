@@ -67,9 +67,12 @@ def _bicgstab(
         raise ValueError("breakdown_tol must be positive")
 
     x = torch.zeros_like(b)
-    r = b - Av(x)
-    bnorm = max(float(torch.linalg.vector_norm(b).detach().cpu()), 1.0)
-    rel_res = float(torch.linalg.vector_norm(r).detach().cpu()) / bnorm
+    # Av is linear in the adjoint vector. Avoid launching a full operator
+    # application for Av(0), which is exactly zero.
+    r = b.clone()
+    b_norm_value = float(torch.linalg.vector_norm(b).detach().cpu())
+    bnorm = max(b_norm_value, 1.0)
+    rel_res = b_norm_value / bnorm
     if rel_res <= tol:
         return x
 
@@ -520,7 +523,7 @@ def _e_adjoint_and_theta_vjp(
             (gE,) = torch.autograd.grad(
                 triton_E_from_E,
                 E_req,
-                grad_outputs=wE.clone(),
+                grad_outputs=wE,
                 retain_graph=True,
             )
         return (wE - gE).reshape(-1)

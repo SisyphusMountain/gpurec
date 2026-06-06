@@ -10,6 +10,7 @@ from gpurec.api._batch_state import (
     gmres_solution_cache_for_static,
 )
 from gpurec.api._implicit_grad import (
+    _bicgstab,
     _gmres_observed_schedule_iterations,
     implicit_grad_loglik_vjp_wave,
 )
@@ -45,6 +46,42 @@ def test_solver_options_accept_gmres_fixed():
     assert options.gmres_solution_cache_min_iterations == 3
     assert options.gmres_preconditioner == "diagonal"
     assert options.gmres_diagonal_preconditioner_floor == 1e-5
+
+
+def test_bicgstab_skips_initial_zero_operator_application():
+    b = torch.tensor([1.0, -2.0, 0.5])
+    calls = []
+
+    def Av(x):
+        calls.append(x.detach().clone())
+        return x
+
+    x = _bicgstab(Av, b, max_iter=4, tol=1e-12)
+
+    assert torch.allclose(x, b)
+    assert len(calls) == 1
+    assert torch.count_nonzero(calls[0]).item() > 0
+
+
+def test_trusted_one_step_gmres_fast_path_solves_identity():
+    if not torch.cuda.is_available():
+        pytest.skip("trusted one-step fast path is CUDA-only")
+    rhs = torch.tensor([1.0, -2.0, 0.5], device="cuda")
+    stats = {}
+
+    result = wave_backward._gmres_solve_wave_self_loop(
+        lambda value: value,
+        rhs,
+        max_iter=4,
+        tol=1e-12,
+        min_check_iter=1,
+        trust_min_check_iter=True,
+        stats_out=stats,
+    )
+
+    assert torch.allclose(result, rhs)
+    assert stats["arnoldi_backend"] == "trusted_one_step_triton"
+    assert stats["a_applications"] == 1
 
 
 @pytest.mark.parametrize(

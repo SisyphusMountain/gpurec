@@ -1125,6 +1125,61 @@ def _gmres_arnoldi_sum_partials_direct_kernel(
         tl.store(h_ptr, coeff, mask=k_mask)
 
 
+@triton.jit(do_not_specialize=["N"])
+def _gmres_trusted_one_step_partials_kernel(
+    q_ptr,
+    w_ptr,
+    partials_ptr,
+    N,
+    BLOCK_N: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = n < N
+    q = tl.load(q_ptr + n, mask=mask, other=0.0).to(DTYPE)
+    w = tl.load(w_ptr + n, mask=mask, other=0.0).to(DTYPE)
+    tl.store(partials_ptr + tile * 2, tl.sum(q * w, axis=0))
+    tl.store(partials_ptr + tile * 2 + 1, tl.sum(w * w, axis=0))
+
+
+@triton.jit(do_not_specialize=["NUM_TILES"])
+def _gmres_trusted_one_step_reduce_kernel(
+    partials_ptr,
+    beta_ptr,
+    y_ptr,
+    NUM_TILES,
+    BLOCK_TILES: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tiles = tl.arange(0, BLOCK_TILES)
+    mask = tiles < NUM_TILES
+    h00_vals = tl.load(partials_ptr + tiles * 2, mask=mask, other=0.0).to(DTYPE)
+    ww_vals = tl.load(partials_ptr + tiles * 2 + 1, mask=mask, other=0.0).to(DTYPE)
+    h00 = tl.sum(h00_vals, axis=0)
+    ww = tl.sum(ww_vals, axis=0)
+    beta = tl.load(beta_ptr).to(DTYPE)
+    y = tl.where(ww > 1.0e-30, beta * h00 / ww, 0.0)
+    tl.store(y_ptr, y)
+
+
+@triton.jit(do_not_specialize=["N"])
+def _gmres_trusted_one_step_write_kernel(
+    q_ptr,
+    y_ptr,
+    out_ptr,
+    N,
+    BLOCK_N: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = n < N
+    q = tl.load(q_ptr + n, mask=mask, other=0.0).to(DTYPE)
+    y = tl.load(y_ptr).to(DTYPE)
+    tl.store(out_ptr + n, q * y, mask=mask)
+
+
 @triton.jit(do_not_specialize=["N", "J"])
 def _gmres_arnoldi_project_from_coeff_kernel(
     basis_ptr,
@@ -1256,6 +1311,14 @@ def _gmres_can_use_triton_large_direct_sum(num_tiles: int) -> bool:
     ):
         return False
     block_tiles = triton.next_power_of_2(int(num_tiles))
+    return int(block_tiles) <= _GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES
+
+
+def _gmres_can_use_triton_trusted_one_step(rhs: torch.Tensor) -> bool:
+    if rhs.device.type != "cuda" or rhs.dtype != torch.float32:
+        return False
+    num_tiles = triton.cdiv(int(rhs.numel()), _GMRES_TRITON_ARNOLDI_BLOCK_N)
+    block_tiles = triton.next_power_of_2(num_tiles)
     return int(block_tiles) <= _GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES
 
 
@@ -1394,6 +1457,25 @@ def _gmres_solve_wave_self_loop(
             return result
         safe_b_norm_t = b_norm_t
 
+    if (
+        not fixed_iterations
+        and bool(trust_min_check_iter)
+        and int(min_check_iter) == 1
+        and solution_base is None
+        and initial_residual_applications == 0
+        and right_preconditioner is None
+        and _gmres_can_use_triton_trusted_one_step(solve_rhs)
+    ):
+        return _gmres_solve_wave_self_loop_trusted_one_step(
+            apply_a,
+            solve_rhs,
+            b_norm_t=b_norm_t,
+            safe_b_norm_t=safe_b_norm_t,
+            preconditioner_name=preconditioner_name,
+            out=out,
+            stats_out=stats_out,
+        )
+
     if _gmres_can_use_triton_arnoldi(solve_rhs, max_iter, bool(fixed_iterations)):
         return _gmres_solve_wave_self_loop_triton_split(
             apply_a,
@@ -1464,6 +1546,80 @@ def _gmres_solve_wave_self_loop(
         out=out,
         stats_out=stats_out,
     )
+
+
+def _gmres_solve_wave_self_loop_trusted_one_step(
+    apply_a,
+    rhs: torch.Tensor,
+    *,
+    b_norm_t: torch.Tensor,
+    safe_b_norm_t: torch.Tensor,
+    preconditioner_name: str,
+    out: torch.Tensor | None,
+    stats_out,
+) -> torch.Tensor:
+    """Closed-form one-dimensional GMRES for a trusted one-step schedule."""
+    result = torch.empty_like(rhs) if out is None else out
+    torch.div(rhs, safe_b_norm_t, out=result)
+    n = int(rhs.numel())
+    block_n = _GMRES_TRITON_ARNOLDI_BLOCK_N
+    num_tiles = triton.cdiv(n, block_n)
+    block_tiles = triton.next_power_of_2(num_tiles)
+    w = apply_a(result).reshape(-1)
+    partials = torch.empty((num_tiles, 2), dtype=rhs.dtype, device=rhs.device)
+    y_buf = torch.empty((), dtype=rhs.dtype, device=rhs.device)
+    grid = (num_tiles,)
+    _gmres_trusted_one_step_partials_kernel[grid](
+        result.reshape(-1),
+        w,
+        partials,
+        n,
+        BLOCK_N=int(block_n),
+        DTYPE=_tl_float_dtype(rhs.dtype),
+        num_warps=4,
+    )
+    _gmres_trusted_one_step_reduce_kernel[(1,)](
+        partials,
+        b_norm_t,
+        y_buf,
+        NUM_TILES=int(num_tiles),
+        BLOCK_TILES=int(block_tiles),
+        DTYPE=_tl_float_dtype(rhs.dtype),
+        num_warps=8,
+    )
+    _gmres_trusted_one_step_write_kernel[grid](
+        result.reshape(-1),
+        y_buf,
+        result.reshape(-1),
+        n,
+        BLOCK_N=int(block_n),
+        DTYPE=_tl_float_dtype(rhs.dtype),
+        num_warps=4,
+    )
+
+    _record_gmres_self_loop_stats(
+        {
+            "iterations": 1,
+            "a_applications": 1,
+            "rel_res": 1.0,
+            "check_count": 1,
+            "arnoldi_backend": "trusted_one_step_triton",
+            "min_check_iter": 1,
+            "trusted_check_schedule": True,
+            "trusted_check_used": True,
+            "residual_cpu_readbacks": 0,
+            "preconditioner": str(preconditioner_name),
+            "warm_start_used": False,
+            "warm_start_accepted": False,
+            "warm_start_status": "not_attempted",
+            "warm_start_rel_res": None,
+            "residual_probe_a_applications": 0,
+            "correction_iterations": 1,
+            "trusted_one_step_fast_path": True,
+        },
+        stats_out,
+    )
+    return result
 
 
 def _gmres_write_solution(

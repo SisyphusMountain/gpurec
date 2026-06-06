@@ -3122,6 +3122,180 @@ GMRES overhead is not one bad reduction kernel; it is the aggregate of many
 small launches plus the actual self-loop applications. A larger win needs to
 fuse a broader Arnoldi segment or batch more waves/checks together.
 
+## Self-Loop Overhead Benchmark And One-Step Fast Path
+
+I added a focused benchmark:
+
+```text
+benchmarks/large_dataset_capacity/hogenom_self_loop_overhead_benchmark.py
+```
+
+This benchmark builds the largest-10 HOGENOM batch, times forward and backward
+separately, and records the `SelfLoopBackwardRecorder` counters for each
+measured backward pass. Its default comparison is now:
+
+```text
+neumann:16
+gmres:10:7e-6
+gmres:10:7e-6:reuse:trust
+```
+
+The default warmup count is `2`, because the trusted GMRES schedule needs one
+warmup to observe the per-wave iteration counts and another warmup to compile
+any schedule-dependent Triton kernels before measured repeats.
+
+Current artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_overhead_triton_one_step_gated_20260606_132000/
+```
+
+That folder contains:
+
+```text
+benchmark_current.json
+gmres_trusted_profiled.json
+gmres_trusted_backward_nsys.nsys-rep
+gmres_trusted_backward_nsys.sqlite
+ncu_one_step_partials.ncu-rep
+ncu_project_from_coeff.ncu-rep
+profile_summary.json
+```
+
+`benchmark_current.json` records commit
+`d18c18e0d3563de30e1fcaa290fef62b2b9dec89` and `git_dirty: true`; the JSON also
+includes the full `git status --short` list so the run is not mistaken for a
+clean-commit result. The dirty entries are the benchmark, solver, test, and doc
+changes from this optimization pass plus pre-existing unrelated local files.
+
+The non-profiled timing command was:
+
+```bash
+GPUREC_GMRES_TRITON_ARNOLDI=1 \
+GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1 \
+python benchmarks/large_dataset_capacity/hogenom_self_loop_overhead_benchmark.py \
+  --limit 10 \
+  --continue-on-error \
+  --output-json benchmarks/large_dataset_capacity/output/self_loop_overhead_triton_one_step_gated_20260606_132000/benchmark_current.json
+```
+
+The current non-profiled results are:
+
+| Mode | Mean Backward | Backward Applications | Mean ms/Application | Waves | Max Iter/Wave | GMRES Checks | Residual CPU Readbacks | Trusted Checks | Backends |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Neumann16 | `61.878 ms` | `1392` | `0.04445` | `87` | `16` | n/a | n/a | n/a | n/a |
+| GMRES10 checked | `62.578 ms` | `140` | `0.44699` | `87` | `3` | `140` | `140` | `0` | `triton_large=59`, `triton_split=28` |
+| GMRES10 reuse+trust | `56.136 ms` | `140` | `0.40097` | `87` | `3` | `87` | `0` | `87` | `triton_large=50`, `triton_split=9`, `trusted_one_step_triton=28` |
+
+So the mathematical work is already much smaller: GMRES performs `140`
+self-loop backward applications where Neumann16 performs `1392`, a `9.94x`
+reduction. The checked GMRES wall time is still essentially the same as Neumann,
+which is exactly the implementation problem we are trying to fix. The trusted
+schedule plus one-step fast path is a real but modest improvement: it is about
+`10.3%` faster than checked GMRES in this benchmark and about `9.3%` faster than
+Neumann16, not yet close to the `9.94x` application reduction.
+
+Two source-level optimizations are in this pass:
+
+- `_bicgstab` no longer launches the linear operator on the initial zero
+  vector. The initial residual is exactly `b`.
+- Trusted one-step GMRES waves use a closed-form Triton path when the trusted
+  schedule says the wave converges after one GMRES application. The kernel path
+  computes `h00 = q0^T A q0`, `ww = ||A q0||^2`, and writes
+  `x = q0 * beta * h00 / ww`. This is the one-dimensional GMRES least-squares
+  solution; no CPU least-squares solve or residual readback is involved.
+
+The profiled trusted-GMRES command was:
+
+```bash
+GPUREC_GMRES_TRITON_ARNOLDI=1 \
+GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1 \
+nsys profile \
+  --capture-range=cudaProfilerApi \
+  --capture-range-end=stop \
+  --trace=cuda,nvtx,osrt,cublas \
+  --stats=false \
+  -f true \
+  -o benchmarks/large_dataset_capacity/output/self_loop_overhead_triton_one_step_gated_20260606_132000/gmres_trusted_backward_nsys \
+  python benchmarks/large_dataset_capacity/hogenom_self_loop_overhead_benchmark.py \
+    --limit 10 \
+    --cases gmres:10:7e-6:reuse:trust \
+    --warmups 2 \
+    --repeat 5 \
+    --cuda-profiler-range \
+    --output-json benchmarks/large_dataset_capacity/output/self_loop_overhead_triton_one_step_gated_20260606_132000/gmres_trusted_profiled.json
+```
+
+The `nsys` comparison below is filtered to CUDA events contained in the measured
+backward NVTX ranges only:
+
+| Profile | NVTX Backward Total | Mean Backward Under nsys | Runtime API Total | Kernel Launches | Kernel Time Sum | Memcpy Count |
+|---|---:|---:|---:|---:|---:|---:|
+| Trusted GMRES before one-step | `370.747 ms` | `74.149 ms` | `80.360 ms` | `19700` | `203.447 ms` | `35` |
+| Trusted GMRES with one-step | `343.258 ms` | `68.652 ms` | `75.645 ms` | `19330` | `190.415 ms` | `35` |
+| Neumann16 reference | `369.734 ms` | `73.947 ms` | `110.203 ms` | `19225` | `269.706 ms` | `35` |
+
+The latest trusted profile's top CUDA API entries were:
+
+| CUDA API | Calls | Total Time |
+|---|---:|---:|
+| `cudaMemcpyAsync_v3020` | `35` | `35.345 ms` |
+| `cudaLaunchKernel_v7000` | `9635` | `19.386 ms` |
+| `cuLaunchKernelEx` | `9675` | `17.990 ms` |
+| `cudaMemsetAsync_v3020` | `385` | `1.262 ms` |
+
+The actual device memcpy time is tiny (`0.053 ms` for `55` copies totaling
+`798730` bytes over the full profiler capture; `0.033 ms` for `35` copies
+totaling `532485` bytes inside the measured backward ranges), so the large
+`cudaMemcpyAsync` API time is host-side waiting around tiny copies, not
+bandwidth. The trusted GMRES path itself has zero residual readbacks; these
+remaining waits come from the outer backward/adjoint machinery.
+
+The current GMRES-specific kernel totals over five profiled backward passes are:
+
+| Kernel | Launches | Total Time |
+|---|---:|---:|
+| `_gmres_arnoldi_project_from_coeff_kernel` | `470` | `7.934 ms` |
+| `_gmres_arnoldi_dot_partials_kernel` | `560` | `7.674 ms` |
+| `_gmres_arnoldi_project_norm_from_coeff_kernel` | `470` | `5.482 ms` |
+| `_gmres_write_solution_kernel` | `295` | `1.944 ms` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `295` | `1.234 ms` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `90` | `0.595 ms` |
+| `_gmres_arnoldi_reduce_project_norm_kernel` | `90` | `0.370 ms` |
+| `_gmres_trusted_one_step_partials_kernel` | `140` | `0.264 ms` |
+| `_gmres_trusted_one_step_reduce_kernel` | `140` | `0.202 ms` |
+| `_gmres_trusted_one_step_write_kernel` | `140` | `0.201 ms` |
+
+The fast path removed a visible amount of ordinary Arnoldi bookkeeping:
+`dot_partials` launches fell from `700` to `560`, `project_from_coeff` from
+`515` to `470`, `write_solution` from `435` to `295`, and residual-check
+launches from `435` to `295`. The replacement one-step kernels are cheap enough
+that they are not the new bottleneck.
+
+The backward-only profile still shows that most time is not in the new one-step
+kernels. Large shared costs remain in
+`_wave_backward_uniform_2d_precompute_kernel`,
+`_dts_cross_backward_accum_kernel`, `_wave_backward_uniform_2d_jt_kernel`,
+`_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`, and
+`_receiver_grad_from_pibar_self_loop_kernel`.
+
+The `ncu --set basic` samples agree with this diagnosis:
+
+| Kernel | Sampled Duration | Grid x Block | Registers/Thread | Achieved Occupancy | Compute Throughput | DRAM Throughput |
+|---|---:|---|---:|---:|---:|---:|
+| `_gmres_trusted_one_step_partials_kernel` | `2.27-2.59 us` | `3-47 x 128` | `20` | `7.96-8.25%` | `0.12-1.69%` | `0.67-7.88%` |
+| `_gmres_arnoldi_project_from_coeff_kernel` | `7.58-9.70 us` | `624-913 x 128` | `95` | `32.30-33.40%` | `53.20-60.32%` | `34.64-39.70%` |
+
+Conclusion for this pass: the one-step fast path is worth keeping, but it only
+solves a small subcase. The next optimization should target one of two broader
+costs:
+
+- fuse the remaining multi-step Arnoldi sequence so one GMRES application pays
+  for fewer projection/reduction/write launches;
+- remove or defer the remaining host-side scalar syncs in the outer
+  backward/adjoint path, because the remaining D2H copies are tiny but still
+  show large host API wait time.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
