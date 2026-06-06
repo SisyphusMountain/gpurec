@@ -1598,6 +1598,77 @@ mostly launch/control overhead around many small wave-local kernels. A Triton
 or Gluon rewrite is only worth doing if it fuses more of each GMRES step or
 reduces launch count without broadening numerically unsafe coverage.
 
+#### Interval-1 Tolerance Tuning And Buffer Reuse
+
+After the cap-512 correction, the full-batch gradient check had enough margin
+to tune the residual tolerance and check interval. The best passing setting in
+this sweep was GMRES max `10`, tolerance `7e-6`, and check interval `1`.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cap512_tol7e-6_check_interval_sweep_largest10_20260606_073256/
+benchmarks/large_dataset_capacity/output/gmres_buffer_reuse_fixed_tol7e-6_i1_largest10_20260606_073856/
+```
+
+Largest-10 first-step gradient check against Neumann512 after the buffer-reuse
+patch:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `1.504496e-07` | `1.851861e-07` | `2.569847e-07` |
+| GMRES10 I1 tol `7e-6` | `140` | `140` | `1.778534e-06` | `3.518535e-06` | `3.520319e-06` |
+
+Corrected largest-10 20-step timing, comparing against the previous cap-512
+result and the fixed Neumann baselines:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16 | `27840` | n/a | `2.560` | `3.718` | `0.0997` | `166606.4375` |
+| Neumann32 | `55680` | n/a | `3.074` | `4.367` | `0.1251` | `166606.4375` |
+| GMRES10 I4 tol `1e-6`, cap-512 | `4380` | `2620` | `3.011` | `4.184` | `0.1196` | `166606.4375` |
+| GMRES10 I1 tol `7e-6`, cap-512 | `2800` | `2800` | `2.757` | `3.916` | `0.1065` | `166606.453125` |
+
+This is the best corrected largest-10 GMRES setting so far. It uses about
+`9.9x` fewer self-loop applications than Neumann16 and about `19.9x` fewer than
+Neumann32. It is faster than Neumann32 by `0.317 s`, but still slower than
+Neumann16 by `0.197 s` in this 20-step timing.
+
+The implementation change behind the last row is intentionally small:
+
+- the precompute kernel now zeroes inactive scratch rows for GMRES, so the
+  already-materialized `v_k` buffer is a valid masked RHS;
+- the GMRES matvec reuses `spec_buf` instead of allocating a separate
+  `gmres_a_buf`;
+- `_gmres_solve_wave_self_loop` accepts an optional output tensor, allowing the
+  final solution to be written directly back into `v_k`.
+
+This preserves the Krylov iteration decisions. The first-step GMRES count stayed
+at `140` iterations and `140` checks before and after the buffer-reuse patch.
+
+Nsight Systems profile for the patched hard-family backward-only run:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_gmres_buffer_reuse_i1_tol7e-6_hard_family_20260606_073926/
+```
+
+Compared with the pre-buffer-reuse interval-1 profile, the patched version kept
+the same `347` hard-family self-loop applications and `347` checks, while
+reducing:
+
+| Metric | Before Buffer Reuse | After Buffer Reuse |
+|---|---:|---:|
+| `cudaLaunchKernel` calls | `2609` | `2473` |
+| device-to-device copies | `226`, `30.879 MB` | `158`, `15.488 MB` |
+| `cudaMalloc` calls | `12` | `11` |
+| peak profiler memory | `0.0795 GiB` | `0.0770 GiB` |
+
+The remaining overhead is now dominated by many residual checks and their
+device-to-host scalar traffic: interval `1` used `397` D2H copies in the
+profile. The next structural optimization should therefore batch or keep more
+residual-stop decisions on device, or fuse the single-tile Arnoldi step to
+reduce launches, rather than expanding Triton coverage beyond cap-512.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

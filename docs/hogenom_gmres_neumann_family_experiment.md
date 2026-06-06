@@ -1149,3 +1149,43 @@ the small Hessenberg residual kernel took `0.800 ms` across `258` launches.
 `ncu` measured roughly `16 us` for the wave matvec kernel at about `4%`
 achieved occupancy and roughly `4 us` for the GMRES projection-dot kernel at
 about `17%` achieved occupancy.
+
+### Current Best Passing GMRES Setting
+
+I then tuned the corrected cap-512 path using the same largest-10 first-step
+gradient gate. The best passing setting in this sweep was GMRES max `10`,
+tolerance `7e-6`, and check interval `1`.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cap512_tol7e-6_check_interval_sweep_largest10_20260606_073256/
+benchmarks/large_dataset_capacity/output/gmres_buffer_reuse_fixed_tol7e-6_i1_largest10_20260606_073856/
+benchmarks/large_dataset_capacity/output/nsys_gmres_buffer_reuse_i1_tol7e-6_hard_family_20260606_073926/
+```
+
+Largest-10 first-step gradient check after the buffer-reuse patch:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error |
+|---|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `1.504496e-07` | `1.851861e-07` |
+| GMRES10 I1 tol `7e-6` | `140` | `140` | `1.778534e-06` | `3.518535e-06` |
+
+Corrected largest-10 20-step timing:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Final Loss |
+|---|---:|---:|---:|---:|
+| Neumann16 | `27840` | n/a | `2.560` | `166606.4375` |
+| Neumann32 | `55680` | n/a | `3.074` | `166606.4375` |
+| GMRES10 I4 tol `1e-6`, cap-512 | `4380` | `2620` | `3.011` | `166606.4375` |
+| GMRES10 I1 tol `7e-6`, cap-512 + buffer reuse | `2800` | `2800` | `2.757` | `166606.453125` |
+
+The buffer-reuse patch did not change the Krylov counts, but it removed some
+copy/allocation overhead by reusing the masked `v_k` RHS and writing the final
+GMRES solution directly into `v_k`. In the hard-family `nsys` profile, D2D
+copies dropped from `226` copies / `30.879 MB` to `158` copies / `15.488 MB`.
+
+This is the current best result: accurate full-batch gradients, about `9.9x`
+fewer self-loop applications than Neumann16, and faster than Neumann32. It is
+still not faster than Neumann16, so the remaining work is launch/control
+overhead rather than convergence failure.

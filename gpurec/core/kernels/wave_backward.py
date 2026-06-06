@@ -904,15 +904,25 @@ def _gmres_solve_wave_self_loop(
     tol: float,
     fixed_iterations: bool = False,
     check_interval: int = 1,
+    out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Solve ``A v = rhs`` for one wave with unrestarted GMRES."""
     max_iter = int(max_iter)
     tol = float(tol)
     check_interval = int(check_interval)
+    if out is not None and (
+        out.shape != rhs.shape or out.dtype != rhs.dtype or out.device != rhs.device
+    ):
+        raise ValueError("GMRES output tensor must match rhs shape, dtype, and device")
     if max_iter < 1:
+        if out is not None:
+            out.zero_()
+            result = out
+        else:
+            result = torch.zeros_like(rhs)
         if _GMRES_SELF_LOOP_STATS is not None:
             _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 1.0})
-        return torch.zeros_like(rhs)
+        return result
     if tol <= 0.0:
         raise ValueError("gmres_tol must be positive")
     if check_interval < 1:
@@ -929,9 +939,14 @@ def _gmres_solve_wave_self_loop(
     else:
         b_norm = float(b_norm_t.detach().cpu())
         if b_norm == 0.0:
+            if out is not None:
+                out.zero_()
+                result = out
+            else:
+                result = torch.zeros_like(rhs)
             if _GMRES_SELF_LOOP_STATS is not None:
                 _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 0.0})
-            return torch.zeros_like(rhs)
+            return result
         safe_b_norm_t = b_norm_t
 
     if _gmres_can_use_triton_arnoldi(rhs, max_iter, bool(fixed_iterations)):
@@ -943,6 +958,7 @@ def _gmres_solve_wave_self_loop(
             check_interval=check_interval,
             b_norm_t=b_norm_t,
             safe_b_norm_t=safe_b_norm_t,
+            out=out,
         )
 
     return _gmres_solve_wave_self_loop_cgs2(
@@ -955,6 +971,7 @@ def _gmres_solve_wave_self_loop(
         b_norm_t=b_norm_t,
         safe_b_norm_t=safe_b_norm_t,
         b_norm=b_norm,
+        out=out,
     )
 
 
@@ -967,6 +984,7 @@ def _gmres_solve_wave_self_loop_triton_split(
     check_interval: int,
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
+    out: torch.Tensor | None,
 ) -> torch.Tensor:
     n = int(rhs.numel())
     block_n = _GMRES_TRITON_ARNOLDI_BLOCK_N
@@ -1082,9 +1100,9 @@ def _gmres_solve_wave_self_loop_triton_split(
                 "arnoldi_backend": "triton_split",
             }
         )
-    out = torch.empty_like(rhs)
-    torch.mv(basis_2d[:iters].t(), y, out=out.reshape(-1))
-    return out
+    result = torch.empty_like(rhs) if out is None else out
+    torch.mv(basis_2d[:iters].t(), y, out=result.reshape(-1))
+    return result
 
 
 def _gmres_solve_wave_self_loop_cgs2(
@@ -1098,6 +1116,7 @@ def _gmres_solve_wave_self_loop_cgs2(
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
     b_norm: float | None,
+    out: torch.Tensor | None,
 ) -> torch.Tensor:
     """GMRES Arnoldi using batched CGS with one reorthogonalization pass."""
     basis = torch.empty(
@@ -1185,9 +1204,9 @@ def _gmres_solve_wave_self_loop_cgs2(
                 "arnoldi_backend": "torch_cgs2",
             }
         )
-    out = torch.empty_like(rhs)
-    torch.mv(basis_2d[:iters].t(), y, out=out.reshape(-1))
-    return out
+    result = torch.empty_like(rhs) if out is None else out
+    torch.mv(basis_2d[:iters].t(), y, out=result.reshape(-1))
+    return result
 
 
 @triton.jit
@@ -1621,6 +1640,9 @@ def _wave_backward_uniform_2d(
     use_child_edge_self_loop = True
 
     launch_options = {"num_warps": 8}
+    self_loop_solver = str(self_loop_solver).strip().lower()
+    gmres_self_loop = self_loop_solver in ("gmres", "gmres_fixed")
+    skip_inactive_scratch_zero = not gmres_self_loop
 
     _wave_backward_uniform_2d_precompute_kernel[(n_row_blocks,)](
         Pi_star,
@@ -1669,17 +1691,15 @@ def _wave_backward_uniform_2d(
         **launch_options,
     )
 
-    self_loop_solver = str(self_loop_solver).strip().lower()
     jt_options = {"num_warps": 2}
-    if self_loop_solver in ("gmres", "gmres_fixed"):
+    if gmres_self_loop:
         if initial_v is not None:
             raise ValueError("GMRES self-loop solve does not support initial_v")
-        gmres_a_buf = torch.empty_like(v_k)
-        gmres_rhs = rhs
+        gmres_a_buf = spec_buf
+        gmres_rhs = v_k
         gmres_active_mask = active_mask
         if active_mask is not None:
             gmres_active_mask = active_mask.to(device=device, dtype=torch.bool).contiguous()
-            gmres_rhs = rhs * gmres_active_mask[:, None].to(dtype=dtype)
 
         def _apply_a(term_in: torch.Tensor) -> torch.Tensor:
             _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
@@ -1718,15 +1738,14 @@ def _wave_backward_uniform_2d(
             )
             return gmres_a_buf
 
-        v_k.copy_(
-            _gmres_solve_wave_self_loop(
-                _apply_a,
-                gmres_rhs,
-                max_iter=int(neumann_terms),
-                tol=float(gmres_tol),
-                fixed_iterations=self_loop_solver == "gmres_fixed",
-                check_interval=int(gmres_check_interval),
-            )
+        _gmres_solve_wave_self_loop(
+            _apply_a,
+            gmres_rhs,
+            max_iter=int(neumann_terms),
+            tol=float(gmres_tol),
+            fixed_iterations=self_loop_solver == "gmres_fixed",
+            check_interval=int(gmres_check_interval),
+            out=v_k,
         )
     elif self_loop_solver == "neumann" and initial_v is not None:
         if tuple(initial_v.shape) != scratch_shape:
