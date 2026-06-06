@@ -253,8 +253,16 @@ class SelfLoopBackwardRecorder:
                 if bool(row.get("fused_self_loop_first_dot", False))
             ]
             large_direct_norm_checks = sum(int(row.get("large_direct_norm_checks", 0)) for row in gmres_stats)
+            large_direct_norm_normalize_used = sum(
+                1 for row in gmres_stats if bool(row.get("large_direct_norm_normalize", False))
+            )
+            large_direct_norm_stores = sum(int(row.get("large_direct_norm_stores", 0)) for row in gmres_stats)
             large_group_norm_reductions = sum(
                 int(row.get("large_group_norm_reductions", 0))
+                for row in gmres_stats
+            )
+            large_normalize_from_hessenberg = sum(
+                int(row.get("large_normalize_from_hessenberg", 0))
                 for row in gmres_stats
             )
             residual_probe_applications = sum(
@@ -295,7 +303,10 @@ class SelfLoopBackwardRecorder:
                     default=None,
                 ),
                 "gmres_large_direct_norm_checks": int(large_direct_norm_checks),
+                "gmres_large_direct_norm_normalize_used": int(large_direct_norm_normalize_used),
+                "gmres_large_direct_norm_stores": int(large_direct_norm_stores),
                 "gmres_large_group_norm_reductions": int(large_group_norm_reductions),
+                "gmres_large_normalize_from_hessenberg": int(large_normalize_from_hessenberg),
                 "gmres_residual_probe_a_applications": int(residual_probe_applications),
                 "gmres_total_checks": int(sum(per_wave_checks)),
                 "gmres_residual_cpu_readbacks": int(residual_cpu_readbacks),
@@ -328,7 +339,10 @@ class SelfLoopBackwardRecorder:
             "gmres_fused_self_loop_first_dot_used": None,
             "gmres_fused_first_dot_max_partial_tiles": None,
             "gmres_large_direct_norm_checks": None,
+            "gmres_large_direct_norm_normalize_used": None,
+            "gmres_large_direct_norm_stores": None,
             "gmres_large_group_norm_reductions": None,
+            "gmres_large_normalize_from_hessenberg": None,
             "gmres_arnoldi_backend_counts": None,
         }
 

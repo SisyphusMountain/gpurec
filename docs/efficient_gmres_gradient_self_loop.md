@@ -3583,6 +3583,101 @@ small but real improvement beyond the `2048` cap, unlike the fused first-dot
 experiment, because it reduces launch count without making the self-loop matvec
 kernel heavier. Do not push this blindly to `8192`; that setting was slower.
 
+## Direct Norm Normalize Follow-Up
+
+The next small cleanup targeted the large-backend normalization step after
+`_gmres_arnoldi_project_norm_from_coeff_kernel`. With direct norm reductions
+enabled, the old path still reduced `norm_partials` into staged group partials
+before normalizing the next basis vector. That was redundant when a direct norm
+check had already stored `H[j+1,j]`.
+
+I added a gated path:
+
+```bash
+GPUREC_GMRES_TRITON_LARGE_DIRECT_NORM_NORMALIZE=0
+```
+
+restores the old staged normalization behavior. The default is enabled. The new
+path uses:
+
+- `_gmres_arnoldi_reduce_norm_store_kernel` for non-check iterations;
+- `_gmres_arnoldi_normalize_from_hessenberg_kernel` to normalize from the
+  stored `H[j+1,j]` scalar.
+
+Validation:
+
+```text
+pytest -q tests/test_gmres_self_loop_solver.py -k "direct_norm_store or direct_norm_check or triton_large"
+```
+
+Result:
+
+```text
+33 passed, 83 deselected
+```
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_norm_normalize_off_20260606_141500/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_norm_normalize_on_20260606_141500/
+benchmarks/large_dataset_capacity/output/nsys_direct_norm_normalize_checked_off_20260606_142500/
+benchmarks/large_dataset_capacity/output/nsys_direct_norm_normalize_checked_on_20260606_142500/
+benchmarks/large_dataset_capacity/output/nsys_direct_norm_normalize_off_20260606_142000/
+benchmarks/large_dataset_capacity/output/nsys_direct_norm_normalize_on_20260606_142000/
+benchmarks/large_dataset_capacity/output/ncu_direct_norm_normalize_20260606_143000/
+```
+
+Non-profiled A/B on the same dirty revision:
+
+| Mode | Direct Normalize | Mean Backward | Median Backward | Mean ms/Application | Group Norm Reductions | Direct Norm Stores | Normalize From H |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| GMRES10 checked | off | `61.240 ms` | `61.073 ms` | `0.43743` | `48` | `0` | `0` |
+| GMRES10 checked | on | `60.641 ms` | `60.513 ms` | `0.43315` | `12` | `0` | `36` |
+| GMRES10 reuse+trust | off | `50.815 ms` | `50.563 ms` | `0.36296` | `48` | `0` | `0` |
+| GMRES10 reuse+trust | on | `50.647 ms` | `50.345 ms` | `0.36177` | `12` | `36` | `36` |
+
+The checked case is the cleaner improvement because every GMRES iteration is a
+check iteration. The new path replaces `36` staged two-launch group-normalize
+sequences per backward pass with a single normalize-from-H launch each, for a
+net reduction of `36` launches per backward pass. The trusted case mostly
+replaces one pair of launches with another pair on non-check iterations, so the
+wall-clock gain is smaller.
+
+The checked `nsys` profile over three backward passes confirms the launch
+movement:
+
+| Direct Normalize | Kernel Launches | Kernel Time Sum | Runtime API Total |
+|---:|---:|---:|---:|
+| off | `16596` | `229.971 ms` | `85.256 ms` |
+| on | `16488` | `229.586 ms` | `84.525 ms` |
+
+Relevant checked-profile kernel buckets:
+
+| Kernel Bucket | Off Launches | On Launches |
+|---|---:|---:|
+| `_gmres_arnoldi_reduce_group_norm_partials_kernel` | `144` | `36` |
+| `_gmres_arnoldi_reduce_norm_normalize_kernel` | `159` | `51` |
+| `_gmres_arnoldi_normalize_from_hessenberg_kernel` | `0` | `108` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `420` | `420` |
+
+The trusted `nsys` profile showed no launch-count reduction (`15447` launches
+both ways), but kernel time moved from `225.166 ms` to `224.945 ms` and runtime
+API total moved from `74.697 ms` to `70.363 ms`. I do not overinterpret the
+runtime API delta; the reliable point is that the new path did not add heavy
+kernels.
+
+`ncu --set basic` on the new kernels:
+
+| Kernel | Duration | Registers/Thread | Achieved Occupancy | DRAM Throughput |
+|---|---:|---:|---:|---:|
+| `_gmres_arnoldi_normalize_from_hessenberg_kernel` | `5.98-6.82 us` | `23` | `64.70-69.80%` | `56.57-59.11%` |
+| `_gmres_arnoldi_reduce_norm_store_kernel` | `2.24-2.27 us` | `16` | `15.83-16.10%` | `0.48-0.53%` |
+
+Conclusion: keep this gated default-on change. It is not the root GMRES fix,
+but it removes redundant staged norm work and gives a small measured improvement
+without increasing register pressure.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

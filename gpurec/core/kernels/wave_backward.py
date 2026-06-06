@@ -1080,6 +1080,42 @@ def _gmres_arnoldi_reduce_norm_normalize_kernel(
 
 
 @triton.jit(do_not_specialize=["NUM_TILES", "J"])
+def _gmres_arnoldi_reduce_norm_store_kernel(
+    hessenberg_ptr,
+    norm_partials_ptr,
+    NUM_TILES,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tiles = tl.arange(0, BLOCK_TILES)
+    vals = tl.load(norm_partials_ptr + tiles, mask=tiles < NUM_TILES, other=0.0).to(DTYPE)
+    norm = tl.sqrt(tl.sum(vals, axis=0))
+    tl.store(hessenberg_ptr + (J + 1) * MAX_ITER + J, norm)
+
+
+@triton.jit(do_not_specialize=["N", "J"])
+def _gmres_arnoldi_normalize_from_hessenberg_kernel(
+    basis_ptr,
+    hessenberg_ptr,
+    work_ptr,
+    N,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    n_mask = n < N
+    norm = tl.load(hessenberg_ptr + (J + 1) * MAX_ITER + J).to(DTYPE)
+    denom = tl.maximum(norm, 1.0e-30)
+    work = tl.load(work_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    tl.store(basis_ptr + (J + 1) * N + n, work / denom, mask=n_mask & (J + 1 < MAX_ITER))
+
+
+@triton.jit(do_not_specialize=["NUM_TILES", "J"])
 def _gmres_arnoldi_reduce_norm_check_kernel(
     hessenberg_ptr,
     norm_partials_ptr,
@@ -1488,6 +1524,15 @@ def _gmres_use_triton_trusted_one_step_direct() -> bool:
 
 def _gmres_use_fused_self_loop() -> bool:
     return os.environ.get("GPUREC_GMRES_FUSED_SELF_LOOP", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _gmres_use_triton_large_direct_norm_normalize() -> bool:
+    return os.environ.get("GPUREC_GMRES_TRITON_LARGE_DIRECT_NORM_NORMALIZE", "1").lower() in (
         "1",
         "true",
         "yes",
@@ -2164,6 +2209,7 @@ def _gmres_solve_wave_self_loop_triton_large(
         "GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM_MAX_TILES",
         _GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES,
     )
+    use_direct_norm_normalize = use_direct_sum and _gmres_use_triton_large_direct_norm_normalize()
     direct_sum_block_tiles = triton.next_power_of_2(num_tiles) if use_direct_sum else None
     fused_first_dot_tiles = int(first_dot_partial_tiles or 0)
     use_fused_first_dot = (
@@ -2212,6 +2258,8 @@ def _gmres_solve_wave_self_loop_triton_large(
     trusted_check_used = False
     group_norm_reduction_count = 0
     direct_norm_check_count = 0
+    direct_norm_store_count = 0
+    normalize_from_hessenberg_count = 0
 
     for j in range(max_iter):
         basis_j = basis[j]
@@ -2397,7 +2445,20 @@ def _gmres_solve_wave_self_loop_triton_large(
                 if rel_res <= tol:
                     break
             if j + 1 < max_iter:
-                if not group_norm_ready:
+                if use_direct_norm_normalize:
+                    _gmres_arnoldi_normalize_from_hessenberg_kernel[grid](
+                        basis_2d,
+                        hessenberg,
+                        work,
+                        n,
+                        J=int(j),
+                        MAX_ITER=int(max_iter),
+                        BLOCK_N=int(block_n),
+                        DTYPE=_tl_float_dtype(rhs.dtype),
+                        num_warps=4,
+                    )
+                    normalize_from_hessenberg_count += 1
+                elif not group_norm_ready:
                     _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
                         norm_partials,
                         norm_group_partials,
@@ -2408,6 +2469,58 @@ def _gmres_solve_wave_self_loop_triton_large(
                     )
                     group_norm_reduction_count += 1
                     group_norm_ready = True
+                if not use_direct_norm_normalize:
+                    _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
+                        basis_2d,
+                        hessenberg,
+                        work,
+                        norm_group_partials,
+                        n,
+                        NUM_TILES=int(num_groups),
+                        J=int(j),
+                        MAX_ITER=int(max_iter),
+                        BLOCK_N=int(block_n),
+                        BLOCK_TILES=int(block_groups),
+                        DTYPE=_tl_float_dtype(rhs.dtype),
+                        num_warps=8,
+                    )
+        else:
+            if use_direct_norm_normalize:
+                _gmres_arnoldi_reduce_norm_store_kernel[(1,)](
+                    hessenberg,
+                    norm_partials,
+                    NUM_TILES=int(num_tiles),
+                    J=int(j),
+                    MAX_ITER=int(max_iter),
+                    BLOCK_TILES=int(direct_sum_block_tiles),
+                    DTYPE=_tl_float_dtype(rhs.dtype),
+                    num_warps=8,
+                )
+                direct_norm_store_count += 1
+                _gmres_arnoldi_normalize_from_hessenberg_kernel[grid](
+                    basis_2d,
+                    hessenberg,
+                    work,
+                    n,
+                    J=int(j),
+                    MAX_ITER=int(max_iter),
+                    BLOCK_N=int(block_n),
+                    DTYPE=_tl_float_dtype(rhs.dtype),
+                    num_warps=4,
+                )
+                normalize_from_hessenberg_count += 1
+            elif not group_norm_ready:
+                _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
+                    norm_partials,
+                    norm_group_partials,
+                    NUM_TILES=int(num_tiles),
+                    GROUP_TILES=int(group_tiles),
+                    DTYPE=_tl_float_dtype(rhs.dtype),
+                    num_warps=8,
+                )
+                group_norm_reduction_count += 1
+                group_norm_ready = True
+            if not use_direct_norm_normalize:
                 _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
                     basis_2d,
                     hessenberg,
@@ -2422,32 +2535,6 @@ def _gmres_solve_wave_self_loop_triton_large(
                     DTYPE=_tl_float_dtype(rhs.dtype),
                     num_warps=8,
                 )
-        else:
-            if not group_norm_ready:
-                _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
-                    norm_partials,
-                    norm_group_partials,
-                    NUM_TILES=int(num_tiles),
-                    GROUP_TILES=int(group_tiles),
-                    DTYPE=_tl_float_dtype(rhs.dtype),
-                    num_warps=8,
-                )
-                group_norm_reduction_count += 1
-                group_norm_ready = True
-            _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
-                basis_2d,
-                hessenberg,
-                work,
-                norm_group_partials,
-                n,
-                NUM_TILES=int(num_groups),
-                J=int(j),
-                MAX_ITER=int(max_iter),
-                BLOCK_N=int(block_n),
-                BLOCK_TILES=int(block_groups),
-                DTYPE=_tl_float_dtype(rhs.dtype),
-                num_warps=8,
-            )
 
     iters = int(last_j + 1)
     y = y_buf[:iters]
@@ -2460,10 +2547,13 @@ def _gmres_solve_wave_self_loop_triton_large(
             "arnoldi_backend": "triton_large",
             "large_direct_sum": bool(use_direct_sum),
             "large_direct_sum_max_tiles": int(direct_sum_max_tiles),
+            "large_direct_norm_normalize": bool(use_direct_norm_normalize),
             "fused_self_loop_first_dot": bool(use_fused_first_dot),
             "first_dot_partial_tiles": int(first_dot_tiles),
             "large_direct_norm_checks": int(direct_norm_check_count),
+            "large_direct_norm_stores": int(direct_norm_store_count),
             "large_group_norm_reductions": int(group_norm_reduction_count),
+            "large_normalize_from_hessenberg": int(normalize_from_hessenberg_count),
             "min_check_iter": int(min_check_iter),
             "trusted_check_schedule": bool(trust_min_check_iter),
             "trusted_check_used": bool(trusted_check_used),
