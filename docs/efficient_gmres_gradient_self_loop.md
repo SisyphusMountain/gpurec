@@ -2632,6 +2632,119 @@ more precompute/launch overhead. The safer next implementation target is a new
 large-wave backend with bounded per-kernel tile reductions, not increasing
 `_GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES` or `_GMRES_TRITON_ARNOLDI_BLOCK_N`.
 
+#### Gated Large-Wave Triton Arnoldi Backend
+
+Implementation commit: `690870f4`.
+
+I added an opt-in hierarchical Triton backend for waves above the existing
+split-Arnoldi cap:
+
+```bash
+GPUREC_GMRES_TRITON_ARNOLDI=1
+GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1
+```
+
+The existing `triton_split` path and its conservative `512` tile cap are
+unchanged. Above-cap fp32 adaptive GMRES waves can now route to
+`arnoldi_backend: triton_large` when no right preconditioner is active. The
+large backend keeps CGS2 Arnoldi semantics, but reduces dot and norm partials
+hierarchically:
+
+```text
+tile partials -> group partials of at most 512 tiles -> global coefficient
+```
+
+The largest-10 layout therefore moves from:
+
+```text
+torch_cgs2: 59, triton_split: 28
+```
+
+to:
+
+```text
+triton_large: 59, triton_split: 28
+```
+
+without changing the wave schedule or increasing
+`_GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES`.
+
+Validation:
+
+```text
+pytest -q
+python -m compileall gpurec/core/kernels/wave_backward.py \
+  tests/test_gmres_self_loop_solver.py \
+  benchmarks/large_dataset_capacity/hogenom_batch_gmres_gradient_check.py \
+  benchmarks/large_dataset_capacity/run_gpurec_benchmark.py
+```
+
+The CUDA tests include:
+
+- an above-cap fp32 diagonal solve with `N = 512 * 512 + 17`;
+- a dispatch boundary check showing `N = 512 * 512` stays on `triton_split`
+  and `N = 512 * 512 + 1` selects `triton_large`.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_large_smoke_20260606_100633/
+benchmarks/large_dataset_capacity/output/gmres_triton_large_warm_20260606_100711/
+benchmarks/large_dataset_capacity/output/gmres_triton_large_gradient_check_committed_20260606_100949/
+benchmarks/large_dataset_capacity/output/nsys_gmres_triton_large_20260606_100804/
+```
+
+Largest-10 gradient check against Neumann512, recorded at commit
+`690870f419f500a6b136794126a2b8879d577123`:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss | Backend Counts |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Neumann32 | `2784` | n/a | `8.631649e-08` | `1.234564e-07` | `1.394768e-07` | `167456.03125` | n/a |
+| GMRES10 I1 tol `7e-6`, large Triton | `142` | `87` | `1.819666e-06` | `3.580235e-06` | `3.581559e-06` | `167456.03125` | `triton_large: 59`, `triton_split: 28` |
+
+Largest-10 20-step timing:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16, current rerun | `27840` | n/a | `2.572` | `3.724` | `0.0994` | `166606.4375` |
+| GMRES with CGS2 `j=0` dot fallback | `2800` | `1793` | `2.595` | `3.731` | `0.0988` | `166606.4375` |
+| GMRES with `triton_large` | `2800` | `1793` | `2.561` | `3.739` | `0.0984` | `166606.453125` |
+
+The large backend is now the best largest-10 GMRES timing observed here. It is
+slightly faster than the Neumann16 rerun in train time while using `9.9x` fewer
+self-loop backward applications. The final loss differs by `0.015625`, which is
+within the float32 noise seen across the prior GMRES timing runs; the
+first-step gradient gate above is the correctness check.
+
+Short largest-10 `nsys` with the large backend:
+
+| Step | Step Seconds | Self-Loop Backward Applications | GMRES Checks | Backend Counts |
+|---:|---:|---:|---:|---|
+| `1` | `0.8242` | `140` | `140` | `triton_large: 59`, `triton_split: 28` |
+| `2` | `0.1135` | `140` | `87` | `triton_large: 59`, `triton_split: 28` |
+| `3` | `0.1123` | `140` | `87` | `triton_large: 59`, `triton_split: 28` |
+
+The mixed profile shows both cuBLAS fallback buckets removed:
+
+| Kernel Bucket | Launches | Total Time |
+|---|---:|---:|
+| cuBLAS `gemmk1_kernel` bucket | `0` | `0.000 ms` |
+| cuBLAS `gemv2N_kernel` bucket | `0` | `0.000 ms` |
+| `_gmres_arnoldi_project_from_coeff_kernel` | `309` | `4.948 ms` |
+| `_gmres_arnoldi_project_norm_from_coeff_kernel` | `309` | `3.419 ms` |
+| `_gmres_arnoldi_reduce_group_partials_kernel` | `618` | `0.933 ms` |
+| `_gmres_arnoldi_sum_group_coeff_kernel` | `618` | `0.740 ms` |
+| `_gmres_arnoldi_reduce_group_norm_partials_kernel` | `309` | `0.371 ms` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `314` | `1.295 ms` |
+| `_wave_backward_uniform_2d_jt_kernel` | `420` | `10.685 ms` |
+
+`ncu --set basic` on `_gmres_arnoldi_project_from_coeff_kernel` sampled the
+new large-wave projection at `624-713` blocks x `128` threads, `7.52-8.13 us`,
+`95` registers/thread, `32-33%` achieved occupancy, `52-55%` SM throughput, and
+`35-37%` DRAM throughput. This is not a tiny residual-style kernel; the next
+kernel-level improvement would need to reduce register pressure or fuse one of
+the group-reduction steps without harming the CGS2 residual gate.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
