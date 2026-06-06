@@ -2899,6 +2899,92 @@ prototype is not retained. The next larger optimization should instead batch or
 elide scheduled residual-check host synchronization, or fuse a broader section
 of the large-wave Arnoldi chain.
 
+#### Trusted Scheduled-Check Mode
+
+Implementation commit: `bd26119e`.
+
+I added an explicit `gmres_trust_check_schedule` option. This does not change
+the default adaptive schedule behavior. With both:
+
+```bash
+--gmres-reuse-check-schedule
+--gmres-trust-check-schedule
+```
+
+the first backward pass still runs adaptive GMRES and populates the per-wave
+iteration schedule. Later backward passes run each wave to its scheduled
+iteration count, execute the Triton check kernel to compute the final `y`, and
+then break without reading the residual scalar back to Python. This keeps the
+same self-loop application count as scheduled adaptive GMRES when the schedule
+is stable, but removes the per-wave residual CPU readback. The shortcut is
+disabled when GMRES solution-cache warm starts are active, because those require
+a true residual probe.
+
+Validation:
+
+```text
+python -m compileall gpurec benchmarks/large_dataset_capacity/run_gpurec_benchmark.py \
+  benchmarks/large_dataset_capacity/hogenom_batch_gmres_gradient_check.py \
+  tests/test_gmres_self_loop_solver.py tests/test_large_dataset_capacity_benchmark.py
+pytest -q tests/test_gmres_self_loop_solver.py tests/test_large_dataset_capacity_benchmark.py
+pytest -q
+```
+
+The full test suite passed with `54` tests.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_trusted_schedule_gradient_check_committed_20260606_104237/
+benchmarks/large_dataset_capacity/output/gmres_trusted_schedule_steps60_committed_20260606_104256/
+benchmarks/large_dataset_capacity/output/gmres_trusted_schedule_steps60_committed_repeat_20260606_104336/
+benchmarks/large_dataset_capacity/output/nsys_gmres_trusted_schedule_20260606_104129/
+```
+
+The committed gradient-check artifact recorded
+`bd26119ecb42d1f2d5065cdf88263bee8c4a2d3f`:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Residual CPU Readbacks | Trusted Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | n/a | n/a | `8.367668e-08` | `1.234564e-07` | `2.090772e-07` | `167456.03125` |
+| GMRES10 I1 tol `7e-6`, trusted schedule | `142` | `87` | `0` | `87` | `1.827979e-06` | `3.580235e-06` | `3.584022e-06` | `167456.03125` |
+
+Largest-10 60-step timing:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Residual CPU Readbacks | Trusted Checks | Train Seconds | Wall Seconds | Mean Step 2-60 | Step 60 Loss |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Neumann16 | `83520` | n/a | n/a | n/a | `6.320` | `7.446` | `0.09596` | `164817.609375` |
+| GMRES default large Triton | `8400` | `5273` | per-check readbacks in old artifact | `0` | `6.381` | `7.517` | `0.09629` | `164817.640625` |
+| GMRES trusted schedule, committed run 1 | `8400` | `5273` | `140` | `5133` | `6.265` | `7.448` | `0.09428` | `164817.609375` |
+| GMRES trusted schedule, committed run 2 | `8400` | `5273` | `140` | `5133` | `6.246` | `7.419` | `0.09404` | `164817.59375` |
+
+This is the first largest-10 result where GMRES is faster than Neumann16 in the
+in-process training timer over `60` optimizer steps while still using `9.94x`
+fewer self-loop applications. Wall time is close to the Neumann baseline in the
+first committed run and better in the repeat; the robust signal is the warm-step
+timing reduction from about `0.09596 s` to `0.0940-0.0943 s`.
+
+The trusted `nsys` 3-step profile confirms that the optimization removed host
+traffic rather than changing GPU math:
+
+| CUDA API Metric | Default Large Triton | Trusted Schedule |
+|---|---:|---:|
+| `cudaMemcpyAsync` calls | `987` | `813` |
+| `cudaStreamSynchronize` calls | `972` | `798` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` launches | `314` | `314` |
+| `_wave_backward_uniform_2d_jt_kernel` launches | `420` | `420` |
+
+The kernel launch counts are intentionally unchanged; the check kernel is still
+needed to compute `y`. The improvement comes from skipping `174` residual
+scalar readbacks over steps `2` and `3` in the profile (`2 * 87` waves).
+
+Correctness caveat: trusted schedule is a validated-schedule mode, not
+per-pass adaptive convergence. It assumes the previous pass's per-wave Krylov
+counts remain valid for the current optimizer step. The largest-10 Adam run
+above supports that assumption for this batch and tolerance, but a broader
+production default would need periodic validation or a fallback audit if the
+schedule becomes stale.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
