@@ -9,6 +9,10 @@ from gpurec.api._batch_state import (
     gmres_check_schedule_state_for_static,
     gmres_solution_cache_for_static,
 )
+from gpurec.api._implicit_grad import (
+    _gmres_observed_schedule_iterations,
+    implicit_grad_loglik_vjp_wave,
+)
 from gpurec.core.kernels import wave_backward
 
 
@@ -166,6 +170,57 @@ def test_gmres_check_schedule_state_can_disable_periodic_validation():
     schedule[:] = [2, 1]
     assert gmres_check_schedule_state_for_static(static) == (schedule, False)
     assert gmres_check_schedule_state_for_static(static) == (schedule, False)
+
+
+def test_gmres_observed_schedule_iterations_preserves_only_actual_trusted_skips():
+    previous_schedule = [2, 4]
+
+    assert _gmres_observed_schedule_iterations(
+        {"iterations": 3, "trusted_check_used": True},
+        previous_schedule,
+        0,
+        neumann_terms=10,
+    ) == 2
+    assert _gmres_observed_schedule_iterations(
+        {"iterations": 5},
+        previous_schedule,
+        1,
+        neumann_terms=10,
+    ) == 5
+    assert _gmres_observed_schedule_iterations(
+        {"iterations": 12, "trusted_check_used": False},
+        previous_schedule,
+        1,
+        neumann_terms=10,
+    ) == 10
+    assert _gmres_observed_schedule_iterations(None, previous_schedule, 0, neumann_terms=10) == 1
+
+
+def test_implicit_grad_rejects_negative_trusted_schedule_margin_direct_call():
+    tensor = torch.zeros((1, 1), dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="gmres_trusted_schedule_safety_margin"):
+        implicit_grad_loglik_vjp_wave(
+            {"root_clade_ids": torch.tensor([0]), "wave_metas": []},
+            {},
+            Pi_star_wave=tensor,
+            Pibar_star_wave=tensor,
+            E_star=tensor,
+            E_s1=tensor,
+            E_s2=tensor,
+            Ebar=tensor,
+            log_pS=tensor,
+            log_pD=tensor,
+            log_pL=tensor,
+            max_transfer_mat=tensor,
+            receiver_log_probs=torch.zeros((1,), dtype=torch.float32),
+            use_receiver_weights=False,
+            theta=tensor,
+            receiver_weights=torch.ones((1,), dtype=torch.float32),
+            uniform_pibar_row_max=tensor,
+            family_idx=torch.zeros((1,), dtype=torch.long),
+            gmres_trusted_schedule_safety_margin=-1,
+        )
 
 
 def test_gmres_solution_cache_is_opt_in_and_keyed():

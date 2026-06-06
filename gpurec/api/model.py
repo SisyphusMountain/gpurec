@@ -130,6 +130,7 @@ class GeneReconModel(torch.nn.Module):
             static.warm_E = None
             static.gmres_check_schedule = None
             static.gmres_check_schedule_key = None
+            static.gmres_check_schedule_pass_count = 0
             static.gmres_solution_cache = None
             static.gmres_solution_cache_key = None
         self.warm_E = None
