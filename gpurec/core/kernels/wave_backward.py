@@ -1587,9 +1587,15 @@ def _gmres_solve_wave_self_loop_triton_split(
                 num_warps=1,
             )
             check_count += 1
-            rel_res = float(residual_buf.detach().cpu())
-            if rel_res <= tol:
-                break
+            needs_rel_res = (
+                j + 1 < max_iter
+                or stats_out is not None
+                or _GMRES_SELF_LOOP_STATS is not None
+            )
+            if needs_rel_res:
+                rel_res = float(residual_buf.detach().cpu())
+                if rel_res <= tol:
+                    break
             if j + 1 < max_iter:
                 _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
                     basis_2d,
@@ -1822,9 +1828,15 @@ def _gmres_solve_wave_self_loop_triton_large(
                 num_warps=1,
             )
             check_count += 1
-            rel_res = float(residual_buf.detach().cpu())
-            if rel_res <= tol:
-                break
+            needs_rel_res = (
+                j + 1 < max_iter
+                or stats_out is not None
+                or _GMRES_SELF_LOOP_STATS is not None
+            )
+            if needs_rel_res:
+                rel_res = float(residual_buf.detach().cpu())
+                if rel_res <= tol:
+                    break
             if j + 1 < max_iter:
                 _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
                     basis_2d,
