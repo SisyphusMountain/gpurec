@@ -950,6 +950,92 @@ def _gmres_arnoldi_reduce_norm_normalize_kernel(
     tl.store(basis_ptr + (J + 1) * N + n, work / denom, mask=n_mask & (J + 1 < MAX_ITER))
 
 
+@triton.jit(do_not_specialize=["NUM_TILES", "J"])
+def _gmres_arnoldi_reduce_norm_check_kernel(
+    hessenberg_ptr,
+    norm_partials_ptr,
+    beta_ptr,
+    residual_ptr,
+    y_ptr,
+    NUM_TILES,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tiles = tl.arange(0, BLOCK_TILES)
+    vals = tl.load(norm_partials_ptr + tiles, mask=tiles < NUM_TILES, other=0.0).to(DTYPE)
+    norm = tl.sqrt(tl.sum(vals, axis=0))
+    tl.store(hessenberg_ptr + (J + 1) * MAX_ITER + J, norm)
+
+    rows = tl.arange(0, BLOCK_R)
+    cols = tl.arange(0, BLOCK_C)
+    row_grid = rows[:, None]
+    col_grid = cols[None, :]
+    iters = J + 1
+    mask = (row_grid < iters + 1) & (col_grid < iters)
+    h = tl.load(
+        hessenberg_ptr + row_grid * MAX_ITER + col_grid,
+        mask=mask,
+        other=0.0,
+    ).to(DTYPE)
+    h = tl.where((row_grid == J + 1) & (col_grid == J), norm, h)
+    beta = tl.load(beta_ptr).to(DTYPE)
+    g = tl.where(rows == 0, beta, tl.zeros([BLOCK_R], dtype=DTYPE))
+
+    for k in tl.static_range(0, MAX_ITER):
+        active = k < iters
+        row_k_mask = rows == k
+        row_k1_mask = rows == k + 1
+        col_active = cols >= k
+        row_k = tl.sum(tl.where(row_k_mask[:, None], h, 0.0), axis=0)
+        row_k1 = tl.sum(tl.where(row_k1_mask[:, None], h, 0.0), axis=0)
+        a = tl.sum(tl.where(cols == k, row_k, 0.0), axis=0)
+        b = tl.sum(tl.where(cols == k, row_k1, 0.0), axis=0)
+        r = tl.sqrt(a * a + b * b)
+        has_r = r > 0.0
+        c = tl.where(has_r, a / r, 1.0)
+        s = tl.where(has_r, b / r, 0.0)
+        new_row_k = c * row_k + s * row_k1
+        new_row_k1 = -s * row_k + c * row_k1
+        h = tl.where(
+            active & row_k_mask[:, None] & col_active[None, :],
+            new_row_k[None, :],
+            h,
+        )
+        h = tl.where(
+            active & row_k1_mask[:, None] & col_active[None, :],
+            new_row_k1[None, :],
+            h,
+        )
+
+        gk = tl.sum(tl.where(row_k_mask, g, 0.0), axis=0)
+        gk1 = tl.sum(tl.where(row_k1_mask, g, 0.0), axis=0)
+        new_gk = c * gk + s * gk1
+        new_gk1 = -s * gk + c * gk1
+        g = tl.where(active & row_k_mask, new_gk, g)
+        g = tl.where(active & row_k1_mask, new_gk1, g)
+
+    tail = tl.abs(tl.sum(tl.where(rows == iters, g, 0.0), axis=0))
+    denom_res = tl.maximum(tl.abs(beta), 1.0e-30)
+    tl.store(residual_ptr, tail / denom_res)
+
+    y = tl.zeros([BLOCK_C], dtype=DTYPE)
+    for rev in tl.static_range(0, MAX_ITER):
+        k = MAX_ITER - 1 - rev
+        active = k < iters
+        row_k_mask = rows == k
+        row_k = tl.sum(tl.where(row_k_mask[:, None], h, 0.0), axis=0)
+        diag = tl.sum(tl.where(cols == k, row_k, 0.0), axis=0)
+        rhs_k = tl.sum(tl.where(row_k_mask, g, 0.0), axis=0)
+        upper_sum = tl.sum(tl.where(cols > k, row_k * y, 0.0), axis=0)
+        y_k = tl.where(diag != 0.0, (rhs_k - upper_sum) / diag, 0.0)
+        y = tl.where(active & (cols == k), y_k, y)
+    tl.store(y_ptr + cols, y, mask=cols < iters)
+
+
 def _gmres_can_use_triton_arnoldi(rhs: torch.Tensor, max_iter: int, fixed_iterations: bool) -> bool:
     if os.environ.get("GPUREC_GMRES_TRITON_ARNOLDI", "0").lower() not in ("1", "true", "yes", "on"):
         return False
@@ -1288,21 +1374,6 @@ def _gmres_solve_wave_self_loop_triton_split(
             DTYPE=_tl_float_dtype(rhs.dtype),
             num_warps=8,
         )
-        _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
-            basis_2d,
-            hessenberg,
-            work,
-            norm_partials,
-            n,
-            NUM_TILES=int(num_tiles),
-            J=int(j),
-            MAX_ITER=int(max_iter),
-            BLOCK_N=int(block_n),
-            BLOCK_TILES=int(block_tiles),
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=8,
-        )
-
         last_j = j
         should_check = _gmres_should_check(
             j + 1,
@@ -1311,18 +1382,55 @@ def _gmres_solve_wave_self_loop_triton_split(
             check_interval=check_interval,
         )
         if should_check:
-            check_count += 1
-            rel_res = _gmres_hessenberg_rel_res(
+            _gmres_arnoldi_reduce_norm_check_kernel[(1,)](
                 hessenberg,
+                norm_partials,
                 b_norm_t,
-                iters=j + 1,
-                b_norm=None,
-                residual_buf=residual_buf,
-                y_buf=y_buf,
-                store_y=True,
+                residual_buf,
+                y_buf,
+                NUM_TILES=int(num_tiles),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_TILES=int(block_tiles),
+                BLOCK_R=int(triton.next_power_of_2(max_iter + 1)),
+                BLOCK_C=int(block_k),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=1,
             )
+            check_count += 1
+            rel_res = float(residual_buf.detach().cpu())
             if rel_res <= tol:
                 break
+            if j + 1 < max_iter:
+                _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
+                    basis_2d,
+                    hessenberg,
+                    work,
+                    norm_partials,
+                    n,
+                    NUM_TILES=int(num_tiles),
+                    J=int(j),
+                    MAX_ITER=int(max_iter),
+                    BLOCK_N=int(block_n),
+                    BLOCK_TILES=int(block_tiles),
+                    DTYPE=_tl_float_dtype(rhs.dtype),
+                    num_warps=8,
+                )
+        else:
+            _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
+                basis_2d,
+                hessenberg,
+                work,
+                norm_partials,
+                n,
+                NUM_TILES=int(num_tiles),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_N=int(block_n),
+                BLOCK_TILES=int(block_tiles),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
 
     iters = int(last_j + 1)
     y = y_buf[:iters]

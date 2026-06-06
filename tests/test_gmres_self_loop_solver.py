@@ -548,6 +548,63 @@ def test_gmres_hessenberg_residual_kernel_matches_lstsq_cuda(dtype):
         )
 
 
+def test_gmres_fused_norm_check_kernel_matches_residual_helper_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES norm/check kernel")
+
+    device = torch.device("cuda")
+    dtype = torch.float32
+    generator = torch.Generator(device="cpu").manual_seed(321)
+    max_m = 16
+    hessenberg_cpu = torch.randn((max_m + 1, max_m), generator=generator, dtype=torch.float32)
+    rows = torch.arange(max_m + 1)[:, None]
+    cols = torch.arange(max_m)[None, :]
+    hessenberg_cpu = torch.where(rows <= cols + 1, hessenberg_cpu, torch.zeros_like(hessenberg_cpu))
+    norm_partials_cpu = torch.tensor([0.04, 0.09, 0.16], dtype=torch.float32)
+    norm_value = torch.sqrt(norm_partials_cpu.sum())
+    beta = torch.tensor(2.5, dtype=dtype, device=device)
+
+    for iters in (1, 4, 10, 16):
+        actual_h = hessenberg_cpu.to(device=device, dtype=dtype)
+        expected_h = hessenberg_cpu.to(device=device, dtype=dtype)
+        expected_h[iters, iters - 1] = norm_value.to(device=device, dtype=dtype)
+        norm_partials = norm_partials_cpu.to(device=device, dtype=dtype)
+        actual_residual = torch.empty((), dtype=dtype, device=device)
+        expected_residual = torch.empty((), dtype=dtype, device=device)
+        actual_y = torch.empty((max_m,), dtype=dtype, device=device)
+        expected_y = torch.empty((max_m,), dtype=dtype, device=device)
+
+        wave_backward._gmres_arnoldi_reduce_norm_check_kernel[(1,)](
+            actual_h,
+            norm_partials,
+            beta,
+            actual_residual,
+            actual_y,
+            NUM_TILES=int(norm_partials.numel()),
+            J=int(iters - 1),
+            MAX_ITER=int(max_m),
+            BLOCK_TILES=int(wave_backward.triton.next_power_of_2(norm_partials.numel())),
+            BLOCK_R=int(wave_backward.triton.next_power_of_2(max_m + 1)),
+            BLOCK_C=int(wave_backward.triton.next_power_of_2(max_m)),
+            DTYPE=wave_backward._tl_float_dtype(dtype),
+            num_warps=1,
+        )
+        expected = wave_backward._gmres_hessenberg_rel_res(
+            expected_h,
+            beta,
+            iters=iters,
+            b_norm=float(beta.detach().cpu()),
+            residual_buf=expected_residual,
+            y_buf=expected_y,
+            store_y=True,
+        )
+
+        got = float(actual_residual.detach().cpu())
+        assert got == pytest.approx(expected, rel=5e-5, abs=2e-5)
+        torch.testing.assert_close(actual_h[iters, iters - 1], expected_h[iters, iters - 1])
+        torch.testing.assert_close(actual_y[:iters], expected_y[:iters], rtol=2e-4, atol=2e-5)
+
+
 def test_gmres_self_loop_matches_dense_solve_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for the Triton GMRES solve path")
