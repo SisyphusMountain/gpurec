@@ -1169,6 +1169,7 @@ def test_gmres_self_loop_triton_split_can_trust_min_check_iter_cuda_float32(monk
     assert stats[0]["iterations"] == 2
     assert stats[0]["trusted_check_schedule"] is True
     assert stats[0]["trusted_check_used"] is True
+    assert stats[0]["trusted_finalize_write"] is True
 
 
 def test_gmres_self_loop_triton_large_handles_above_cap_cuda_float32(monkeypatch):
@@ -1344,6 +1345,54 @@ def test_gmres_self_loop_triton_large_can_trust_min_check_iter_cuda_float32(monk
     assert stats[0]["iterations"] == 2
     assert stats[0]["trusted_check_schedule"] is True
     assert stats[0]["trusted_check_used"] is True
+    assert stats[0]["trusted_finalize_write"] is False
+
+
+def test_gmres_self_loop_triton_large_trusted_finalize_write_group_norm_cuda_float32(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_ARNOLDI", "1")
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_LARGE_ARNOLDI", "1")
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM", "0")
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        device = torch.device("cuda")
+        block_n = wave_backward._GMRES_TRITON_ARNOLDI_BLOCK_N
+        max_tiles = wave_backward._GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES
+        n = block_n * max_tiles + 17
+        idx = torch.arange(n, device=device)
+        diagonal = torch.where(
+            idx % 2 == 0,
+            torch.tensor(1.25, dtype=torch.float32, device=device),
+            torch.tensor(0.85, dtype=torch.float32, device=device),
+        )
+        rhs = torch.linspace(-1.0, 1.0, n, dtype=torch.float32, device=device)
+
+        def apply_a(vec):
+            return (diagonal * vec.reshape(-1)).reshape_as(vec)
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=4,
+            tol=1e-12,
+            min_check_iter=2,
+            trust_min_check_iter=True,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, rhs / diagonal, rtol=3e-5, atol=3e-5)
+    assert stats and stats[0]["arnoldi_backend"] == "triton_large"
+    assert stats[0]["large_direct_sum"] is False
+    assert stats[0]["large_group_norm_reductions"] == 2
+    assert stats[0]["iterations"] == 2
+    assert stats[0]["trusted_check_schedule"] is True
+    assert stats[0]["trusted_check_used"] is True
+    assert stats[0]["trusted_finalize_write"] is True
 
 
 def test_gmres_self_loop_triton_large_dispatch_boundary_cuda_float32(monkeypatch):

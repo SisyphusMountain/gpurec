@@ -3678,6 +3678,119 @@ Conclusion: keep this gated default-on change. It is not the root GMRES fix,
 but it removes redundant staged norm work and gives a small measured improvement
 without increasing register pressure.
 
+## Trusted Finalize Write Follow-Up
+
+The next retained cleanup targets only trusted scheduled GMRES waves. Before
+this change, a trusted wave that reached its scheduled stopping iteration still
+launched the normal residual/check kernel to compute the small Hessenberg solve,
+then launched `_gmres_write_solution_kernel` to form `Q y`. The residual was not
+read back in that path, so the separate check and write launches were mostly an
+implementation artifact.
+
+I added `_gmres_trusted_finalize_write_kernel`, gated by:
+
+```bash
+GPUREC_GMRES_TRITON_TRUSTED_FINALIZE_WRITE=0
+```
+
+to restore the old behavior. The default is enabled. A second cap:
+
+```bash
+GPUREC_GMRES_TRITON_TRUSTED_FINALIZE_MAX_NORM_TILES=512
+```
+
+keeps the kernel off very wide direct-sum reductions by default. For eligible
+trusted waves, the kernel reduces the current norm partials, completes the
+small Givens QR/backsolve from the stored Hessenberg column, and writes the
+final `Q y` vector in the same full-vector pass. This path is deliberately
+limited to CUDA float32, no solution warm-start base, no right preconditioner,
+and `max_iter <= 16`.
+
+Validation:
+
+```text
+python -m compileall gpurec/core/kernels/wave_backward.py benchmarks/large_dataset_capacity/run_gpurec_benchmark.py
+GPUREC_GMRES_TRITON_ARNOLDI=1 GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1 pytest -q tests/test_gmres_self_loop_solver.py -k "trusted_finalize or trust_min_check_iter or trusted_one_step"
+GPUREC_GMRES_TRITON_ARNOLDI=1 GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1 pytest -q tests/test_gmres_self_loop_solver.py -k "triton_split or triton_large or direct_norm or direct_sum or trusted_one_step"
+```
+
+Results:
+
+```text
+compileall passed
+5 passed, 112 deselected
+82 passed, 35 deselected
+```
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_overhead_trusted_finalize_off_20260606_151500/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_trusted_finalize_on_20260606_151500/
+benchmarks/large_dataset_capacity/output/nsys_trusted_finalize_off_20260606_152000/
+benchmarks/large_dataset_capacity/output/nsys_trusted_finalize_on_20260606_152000/
+benchmarks/large_dataset_capacity/output/ncu_trusted_finalize_20260606_152500/
+benchmarks/large_dataset_capacity/output/gmres_trusted_finalize_gradient_check_20260606_153000/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_trusted_finalize_cap1024_20260606_153500/
+```
+
+Non-profiled largest-10 self-loop overhead A/B:
+
+| Mode | Trusted Finalize | Mean Backward | Median Backward | Backward Applications | GMRES Checks | Trusted Finalize Waves |
+|---|---:|---:|---:|---:|---:|---:|
+| GMRES10 checked | off | `62.394 ms` | `62.377 ms` | `140` | `140` | `0` |
+| GMRES10 checked | on | `62.733 ms` | `61.463 ms` | `140` | `140` | `0` |
+| GMRES10 reuse+trust | off | `52.551 ms` | `52.436 ms` | `140` | `87` | `0` |
+| GMRES10 reuse+trust | on, cap `512` | `51.591 ms` | `51.582 ms` | `140` | `87` | `13` |
+| GMRES10 reuse+trust | on, cap `1024` | `52.540 ms` | `52.240 ms` | `140` | `87` | `22` |
+
+The checked case is intentionally unaffected because it still performs real
+adaptive residual checks. In the trusted case, the default cap `512` saves about
+`0.96 ms` per backward in this run. Raising the cap to `1024` activates the
+kernel on more waves, but loses the gain, so the conservative `512` cap is the
+right default for now.
+
+The `nsys` comparison over three profiled trusted backward passes explains the
+mechanism:
+
+| Trusted Finalize | Kernel Launches | Kernel Time Sum | Runtime API Total |
+|---:|---:|---:|---:|
+| off | `15447` | `218.770 ms` | `70.903 ms` |
+| on | `15408` | `218.740 ms` | `69.886 ms` |
+
+Relevant GMRES kernel buckets:
+
+| Kernel Bucket | Off Launches | Off Time | On Launches | On Time |
+|---|---:|---:|---:|---:|
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `123` | `0.543 ms` | `84` | `0.377 ms` |
+| `_gmres_write_solution_kernel` | `123` | `1.010 ms` | `84` | `0.357 ms` |
+| `_gmres_trusted_finalize_write_kernel` | `0` | `0.000 ms` | `39` | `0.759 ms` |
+
+The new kernel replaces `39` check/write launch pairs over the profile with
+`39` single finalize/write launches. Kernel time is basically unchanged, but
+runtime launch overhead drops by about `1.0 ms` over the three-backward profile.
+
+`ncu --set basic` on `_gmres_trusted_finalize_write_kernel` shows that it is not
+a register-pressure problem:
+
+| Sample | Duration | Registers/Thread | Achieved Occupancy | DRAM Throughput |
+|---:|---:|---:|---:|---:|
+| `1` | `5.70 us` | `32` | `51.68%` | `37.65%` |
+| `2` | `5.44 us` | `32` | `50.03%` | `38.60%` |
+| `3` | `4.64 us` | `32` | `37.74%` | `29.66%` |
+
+The gradient check against the high-reference Neumann run remains within the
+existing gate:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `8.739784e-08` | `1.234574e-07` | n/a | `167456.031250` |
+| GMRES10 reuse+trust finalize | `140` | `87` | `1.859820e-06` | `3.703722e-06` | `3.705699e-06` | `167456.031250` |
+
+Conclusion: keep this gated default-on patch. It is another launch-boundary
+cleanup, not the root GMRES fix. The root fix is still the fused wave-local
+backend described in the root-boundary section below.
+
 ## Root-Boundary Optimization Plan
 
 I also folded in the separate root-fix note. The important conclusion is

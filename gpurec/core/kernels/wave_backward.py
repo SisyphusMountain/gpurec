@@ -920,6 +920,87 @@ def _gmres_write_solution_kernel(
     tl.store(out_ptr + n, value, mask=n_mask)
 
 
+@triton.jit(do_not_specialize=["N", "NUM_TILES"])
+def _gmres_trusted_finalize_write_kernel(
+    basis_ptr,
+    hessenberg_ptr,
+    norm_partials_ptr,
+    beta_ptr,
+    out_ptr,
+    N,
+    NUM_TILES,
+    MAX_ITER: tl.constexpr,
+    ITERS: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tiles = tl.arange(0, BLOCK_TILES)
+    vals = tl.load(norm_partials_ptr + tiles, mask=tiles < NUM_TILES, other=0.0).to(DTYPE)
+    norm = tl.sqrt(tl.sum(vals, axis=0))
+
+    rows = tl.arange(0, BLOCK_R)
+    cols = tl.arange(0, BLOCK_C)
+    row_grid = rows[:, None]
+    col_grid = cols[None, :]
+    mask = (row_grid < ITERS + 1) & (col_grid < ITERS)
+    h = tl.load(
+        hessenberg_ptr + row_grid * MAX_ITER + col_grid,
+        mask=mask,
+        other=0.0,
+    ).to(DTYPE)
+    h = tl.where((row_grid == ITERS) & (col_grid == ITERS - 1), norm, h)
+    beta = tl.load(beta_ptr).to(DTYPE)
+    g = tl.where(rows == 0, beta, tl.zeros([BLOCK_R], dtype=DTYPE))
+
+    for k in tl.static_range(0, ITERS):
+        row_k_mask = rows == k
+        row_k1_mask = rows == k + 1
+        col_active = cols >= k
+        row_k = tl.sum(tl.where(row_k_mask[:, None], h, 0.0), axis=0)
+        row_k1 = tl.sum(tl.where(row_k1_mask[:, None], h, 0.0), axis=0)
+        a = tl.sum(tl.where(cols == k, row_k, 0.0), axis=0)
+        b = tl.sum(tl.where(cols == k, row_k1, 0.0), axis=0)
+        r = tl.sqrt(a * a + b * b)
+        has_r = r > 0.0
+        c = tl.where(has_r, a / r, 1.0)
+        s = tl.where(has_r, b / r, 0.0)
+        new_row_k = c * row_k + s * row_k1
+        new_row_k1 = -s * row_k + c * row_k1
+        h = tl.where(row_k_mask[:, None] & col_active[None, :], new_row_k[None, :], h)
+        h = tl.where(row_k1_mask[:, None] & col_active[None, :], new_row_k1[None, :], h)
+
+        gk = tl.sum(tl.where(row_k_mask, g, 0.0), axis=0)
+        gk1 = tl.sum(tl.where(row_k1_mask, g, 0.0), axis=0)
+        g = tl.where(row_k_mask, c * gk + s * gk1, g)
+        g = tl.where(row_k1_mask, -s * gk + c * gk1, g)
+
+    y = tl.zeros([BLOCK_C], dtype=DTYPE)
+    for rev in tl.static_range(0, ITERS):
+        k = ITERS - 1 - rev
+        row_k_mask = rows == k
+        row_k = tl.sum(tl.where(row_k_mask[:, None], h, 0.0), axis=0)
+        diag = tl.sum(tl.where(cols == k, row_k, 0.0), axis=0)
+        rhs_k = tl.sum(tl.where(row_k_mask, g, 0.0), axis=0)
+        upper_sum = tl.sum(tl.where(cols > k, row_k * y, 0.0), axis=0)
+        y_k = tl.where(diag != 0.0, (rhs_k - upper_sum) / diag, 0.0)
+        y = tl.where(cols == k, y_k, y)
+
+    n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_C)
+    n_mask = n < N
+    k_mask = k < ITERS
+    basis = tl.load(
+        basis_ptr + k[:, None] * N + n[None, :],
+        mask=k_mask[:, None] & n_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    out = tl.sum(basis * y[:, None], axis=0)
+    tl.store(out_ptr + n, out, mask=n_mask)
+
+
 def _gmres_can_use_triton_solution_write(
     basis_2d: torch.Tensor,
     y: torch.Tensor,
@@ -1540,6 +1621,38 @@ def _gmres_use_triton_large_direct_norm_normalize() -> bool:
     )
 
 
+def _gmres_use_triton_trusted_finalize_write() -> bool:
+    return os.environ.get("GPUREC_GMRES_TRITON_TRUSTED_FINALIZE_WRITE", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _gmres_triton_trusted_finalize_max_norm_tiles() -> int:
+    return _env_int("GPUREC_GMRES_TRITON_TRUSTED_FINALIZE_MAX_NORM_TILES", 512)
+
+
+def _gmres_can_use_triton_trusted_finalize_write(
+    *,
+    rhs: torch.Tensor,
+    iters: int,
+    norm_block_tiles: int,
+    solution_base: torch.Tensor | None,
+    right_preconditioner,
+) -> bool:
+    return (
+        _gmres_use_triton_trusted_finalize_write()
+        and solution_base is None
+        and right_preconditioner is None
+        and rhs.device.type == "cuda"
+        and rhs.dtype == torch.float32
+        and 1 <= int(iters) <= _GMRES_TRITON_HESSENBERG_MAX_M
+        and int(norm_block_tiles) <= _gmres_triton_trusted_finalize_max_norm_tiles()
+    )
+
+
 @torch.no_grad()
 def _gmres_solve_wave_self_loop(
     apply_a,
@@ -2022,6 +2135,8 @@ def _gmres_solve_wave_self_loop_triton_split(
     rel_res = 1.0
     check_count = 0
     trusted_check_used = False
+    trusted_finalize_write_used = False
+    trusted_finalize_result = None
 
     for j in range(max_iter):
         basis_j = basis[j]
@@ -2080,6 +2195,55 @@ def _gmres_solve_wave_self_loop_triton_split(
             check_interval=check_interval,
         )
         if should_check:
+            if trust_min_check_iter and j + 1 >= min_check_iter:
+                if _gmres_can_use_triton_trusted_finalize_write(
+                    rhs=rhs,
+                    iters=j + 1,
+                    norm_block_tiles=block_tiles,
+                    solution_base=solution_base,
+                    right_preconditioner=right_preconditioner,
+                ):
+                    trusted_finalize_result = torch.empty_like(rhs) if out is None else out
+                    block_c = triton.next_power_of_2(j + 1)
+                    _gmres_trusted_finalize_write_kernel[grid](
+                        basis_2d,
+                        hessenberg,
+                        norm_partials,
+                        b_norm_t,
+                        trusted_finalize_result.reshape(-1),
+                        n,
+                        NUM_TILES=int(num_tiles),
+                        MAX_ITER=int(max_iter),
+                        ITERS=int(j + 1),
+                        BLOCK_N=int(block_n),
+                        BLOCK_TILES=int(block_tiles),
+                        BLOCK_R=int(triton.next_power_of_2(j + 2)),
+                        BLOCK_C=int(block_c),
+                        DTYPE=_tl_float_dtype(rhs.dtype),
+                        num_warps=8,
+                    )
+                    check_count += 1
+                    trusted_check_used = True
+                    trusted_finalize_write_used = True
+                    break
+                _gmres_arnoldi_reduce_norm_check_kernel[(1,)](
+                    hessenberg,
+                    norm_partials,
+                    b_norm_t,
+                    residual_buf,
+                    y_buf,
+                    NUM_TILES=int(num_tiles),
+                    J=int(j),
+                    MAX_ITER=int(max_iter),
+                    BLOCK_TILES=int(block_tiles),
+                    BLOCK_R=int(triton.next_power_of_2(max_iter + 1)),
+                    BLOCK_C=int(block_k),
+                    DTYPE=_tl_float_dtype(rhs.dtype),
+                    num_warps=1,
+                )
+                check_count += 1
+                trusted_check_used = True
+                break
             _gmres_arnoldi_reduce_norm_check_kernel[(1,)](
                 hessenberg,
                 norm_partials,
@@ -2096,9 +2260,6 @@ def _gmres_solve_wave_self_loop_triton_split(
                 num_warps=1,
             )
             check_count += 1
-            if trust_min_check_iter and j + 1 >= min_check_iter:
-                trusted_check_used = True
-                break
             if (
                 j + 1 < max_iter
                 or stats_out is not None
@@ -2150,6 +2311,7 @@ def _gmres_solve_wave_self_loop_triton_split(
             "min_check_iter": int(min_check_iter),
             "trusted_check_schedule": bool(trust_min_check_iter),
             "trusted_check_used": bool(trusted_check_used),
+            "trusted_finalize_write": bool(trusted_finalize_write_used),
             "residual_cpu_readbacks": int(
                 check_count + initial_check_count - (1 if trusted_check_used else 0)
             ),
@@ -2165,6 +2327,8 @@ def _gmres_solve_wave_self_loop_triton_split(
         },
         stats_out,
     )
+    if trusted_finalize_result is not None:
+        return trusted_finalize_result
     return _gmres_write_solution(
         basis_2d,
         y,
@@ -2260,6 +2424,8 @@ def _gmres_solve_wave_self_loop_triton_large(
     direct_norm_check_count = 0
     direct_norm_store_count = 0
     normalize_from_hessenberg_count = 0
+    trusted_finalize_write_used = False
+    trusted_finalize_result = None
 
     for j in range(max_iter):
         basis_j = basis[j]
@@ -2417,6 +2583,55 @@ def _gmres_solve_wave_self_loop_triton_large(
             norm_check_block_tiles = direct_sum_block_tiles if use_direct_sum else block_groups
             if use_direct_sum:
                 direct_norm_check_count += 1
+            if trust_min_check_iter and j + 1 >= min_check_iter:
+                if _gmres_can_use_triton_trusted_finalize_write(
+                    rhs=rhs,
+                    iters=j + 1,
+                    norm_block_tiles=norm_check_block_tiles,
+                    solution_base=solution_base,
+                    right_preconditioner=right_preconditioner,
+                ):
+                    trusted_finalize_result = torch.empty_like(rhs) if out is None else out
+                    block_c = triton.next_power_of_2(j + 1)
+                    _gmres_trusted_finalize_write_kernel[grid](
+                        basis_2d,
+                        hessenberg,
+                        norm_check_partials,
+                        b_norm_t,
+                        trusted_finalize_result.reshape(-1),
+                        n,
+                        NUM_TILES=int(norm_check_tiles),
+                        MAX_ITER=int(max_iter),
+                        ITERS=int(j + 1),
+                        BLOCK_N=int(block_n),
+                        BLOCK_TILES=int(norm_check_block_tiles),
+                        BLOCK_R=int(triton.next_power_of_2(j + 2)),
+                        BLOCK_C=int(block_c),
+                        DTYPE=_tl_float_dtype(rhs.dtype),
+                        num_warps=8,
+                    )
+                    check_count += 1
+                    trusted_check_used = True
+                    trusted_finalize_write_used = True
+                    break
+                _gmres_arnoldi_reduce_norm_check_kernel[(1,)](
+                    hessenberg,
+                    norm_check_partials,
+                    b_norm_t,
+                    residual_buf,
+                    y_buf,
+                    NUM_TILES=int(norm_check_tiles),
+                    J=int(j),
+                    MAX_ITER=int(max_iter),
+                    BLOCK_TILES=int(norm_check_block_tiles),
+                    BLOCK_R=int(triton.next_power_of_2(max_iter + 1)),
+                    BLOCK_C=int(block_k),
+                    DTYPE=_tl_float_dtype(rhs.dtype),
+                    num_warps=1,
+                )
+                check_count += 1
+                trusted_check_used = True
+                break
             _gmres_arnoldi_reduce_norm_check_kernel[(1,)](
                 hessenberg,
                 norm_check_partials,
@@ -2433,9 +2648,6 @@ def _gmres_solve_wave_self_loop_triton_large(
                 num_warps=1,
             )
             check_count += 1
-            if trust_min_check_iter and j + 1 >= min_check_iter:
-                trusted_check_used = True
-                break
             if (
                 j + 1 < max_iter
                 or stats_out is not None
@@ -2557,6 +2769,7 @@ def _gmres_solve_wave_self_loop_triton_large(
             "min_check_iter": int(min_check_iter),
             "trusted_check_schedule": bool(trust_min_check_iter),
             "trusted_check_used": bool(trusted_check_used),
+            "trusted_finalize_write": bool(trusted_finalize_write_used),
             "residual_cpu_readbacks": int(
                 check_count + initial_check_count - (1 if trusted_check_used else 0)
             ),
@@ -2572,6 +2785,8 @@ def _gmres_solve_wave_self_loop_triton_large(
         },
         stats_out,
     )
+    if trusted_finalize_result is not None:
+        return trusted_finalize_result
     return _gmres_write_solution(
         basis_2d,
         y,
