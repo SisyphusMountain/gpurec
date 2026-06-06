@@ -2801,6 +2801,28 @@ fewer self-loop backward applications. The final loss difference is still one
 float32 step (`0.015625`) and the Neumann512 gradient check remains the
 correctness gate.
 
+Longer largest-10 timing, same committed code and one-flag Triton setup, for
+`60` optimizer steps:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_vs_neumann60_default_large_20260606_101527/
+```
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-60 | Step 60 Loss | Converged |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Neumann16 | `83520` | n/a | `6.320` | `7.446` | `0.09596` | `164817.609375` | no |
+| GMRES10 I1 tol `7e-6`, default large Triton | `8400` | `5273` | `6.381` | `7.517` | `0.09629` | `164817.640625` | no |
+
+The 60-step result is more conservative than the 20-step result. GMRES still
+uses `9.94x` fewer self-loop backward applications, but the additional Krylov
+bookkeeping and residual-check kernels make the run about `0.061 s` slower in
+train time and about `0.070 s` slower in wall time. The losses remain matched to
+float32-level optimizer noise at steps `20`, `40`, and `60`, but neither run met
+the convergence criteria by step `60`. This means the current implementation is
+not yet a demonstrated time-to-convergence win; the next optimization target is
+the per-GMRES-step launch/bookkeeping overhead identified by the `nsys` and
+`ncu` profiles, not the mathematical number of self-loop applications.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
