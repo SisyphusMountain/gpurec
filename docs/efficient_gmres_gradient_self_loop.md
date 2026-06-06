@@ -1504,6 +1504,100 @@ may help if it can express that fused step with less specialization overhead or
 lower register pressure, but it should be judged against `nsys` launch counts
 and end-to-end warmed/cold timings, not just one kernel's microseconds.
 
+#### Corrected Genewise Ordering And Conservative Triton Coverage
+
+A follow-up batch-gradient check found a separate correctness issue in the
+single-batch `genewise` model path: it passed the full `theta` tensor directly
+to the one-batch autograd function instead of indexing `theta` into the static
+batch order first. The streamed multi-batch path already did the correct
+`theta.index_select(...)` and scatter. This is now fixed in
+`gpurec/api/model.py`, with a regression test that checks non-identity batch
+order gradient scatter.
+
+That fix forced a rerun of the largest-10 benchmark results. It also exposed a
+real accuracy problem in the broad opt-in Triton Arnoldi coverage: with the
+previous `1024` block-tile cap, adaptive GMRES10 I4 could look fast but produced
+full-batch first-step gradients with milliscale relative error against
+Neumann512. Disabling Triton Arnoldi, or capping it to at most `512` block
+tiles, restored full-batch gradient agreement. The opt-in backend now uses the
+conservative `512` cap.
+
+Main corrected artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cap512_corrected_gradient_and_timing_20260606_072639/
+```
+
+Largest-10 fixed first-step gradient check, `E/Pi=16`, pruned adjoint path,
+reference `Neumann512`:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Backend Counts |
+|---|---:|---:|---:|---:|---:|---|
+| Neumann32 | `2784` | n/a | `9.098405e-08` | `1.234574e-07` | `2.090796e-07` | n/a |
+| GMRES10 I4 tol `1e-10` | `261` | `145` | `1.440077e-07` | `1.851861e-07` | `1.944992e-07` | `triton_split: 28`, `torch_cgs2: 59` |
+| GMRES10 I4 tol `1e-6` | `219` | `131` | `2.987016e-07` | `5.555583e-07` | `1.092594e-06` | `triton_split: 28`, `torch_cgs2: 59` |
+
+Corrected largest-10 20-step Adam timing with the same cap-512 code path:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16 | `27840` | n/a | `2.560` | `3.718` | `0.0997` | `166606.4375` |
+| Neumann32 | `55680` | n/a | `3.074` | `4.367` | `0.1251` | `166606.4375` |
+| GMRES10 I4 tol `1e-10` | `5223` | `2901` | `3.053` | `4.190` | `0.1218` | `166606.4375` |
+| GMRES10 I4 tol `1e-6` | `4380` | `2620` | `3.011` | `4.184` | `0.1196` | `166606.4375` |
+
+The corrected result is therefore narrower but more defensible:
+
+- GMRES10 I4 with the conservative Triton cap gives accurate full-batch
+  gradients against `Neumann512` for this largest-10 first-step check.
+- It cuts self-loop `J^T` applications by `6.4x` versus Neumann16 and `12.7x`
+  versus Neumann32.
+- It beats Neumann32 train time (`3.011 s` vs `3.074 s` for tol `1e-6`), but it
+  still does not beat Neumann16 (`2.560 s`).
+
+The all-CGS2 control was important:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_corrected_model_cgs2_gradient_check_largest10_e16pi16_pruned_20260606_072402/
+```
+
+With `GPUREC_GMRES_TRITON_ARNOLDI=0`, GMRES10 I4 tol `1e-10` matched
+Neumann512 at `1.310482e-07` relative L2 and `1.851861e-07` relative inf. The
+accuracy problem was therefore not GMRES itself; it was the too-broad opt-in
+Triton split-Arnoldi coverage.
+
+Additional `nsys`/`ncu` profiling on the hard family with GMRES10 I4 tol
+`1e-6`:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_gmres10_i4_tol1e-6_hard_family_20260606_071815/
+```
+
+The `nsys` backward-only capture recorded `470` self-loop applications and
+`190` GMRES checks. Top kernel buckets were:
+
+| Kernel Bucket | Total Time | Launches |
+|---|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `4.641 ms` | `470` |
+| PyTorch reduction kernels | `1.949 ms` | `487` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `1.807 ms` | `470` |
+| `_gmres_arnoldi_reduce_project_norm_kernel` | `1.297 ms` | `470` |
+| `_gmres_arnoldi_dot_partials_kernel` | `1.039 ms` | `470` |
+| `_gmres_hessenberg_residual_kernel` | `0.800 ms` | `258` |
+
+`ncu --set basic` confirmed these are tiny, underfilled kernels rather than a
+single saturated kernel:
+
+| Kernel | Duration | Grid | Registers/Thread | Achieved Occupancy |
+|---|---:|---:|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | about `16.1 us` | `1` block | `168` | about `4.2%` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | about `4.1 us` | `3` blocks | `48` | about `16.7%` |
+
+This strengthens the implementation conclusion: the remaining wall-time gap is
+mostly launch/control overhead around many small wave-local kernels. A Triton
+or Gluon rewrite is only worth doing if it fuses more of each GMRES step or
+reduces launch count without broadening numerically unsafe coverage.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

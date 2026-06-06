@@ -180,7 +180,8 @@ class GeneReconModel(torch.nn.Module):
         theta = self.theta if theta is None else theta
         receiver_weights = self.receiver_weights if receiver_weights is None else receiver_weights
         if len(self.batch_statics) == 1:
-            return _GeneReconFunction.apply(theta, receiver_weights, self.batch_statics[0])
+            static = self.batch_statics[0]
+            return _GeneReconFunction.apply(self._theta_for_static(static, theta), receiver_weights, static)
         if torch.is_grad_enabled() and (theta.requires_grad or receiver_weights.requires_grad):
             return _GeneReconFullLossFunction.apply(theta, receiver_weights, self)
         loss, _, _ = self._stream_batches(theta, receiver_weights, need_grad=False)

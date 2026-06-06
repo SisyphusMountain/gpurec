@@ -12,6 +12,7 @@ from gpurec.core.parameters.extract_parameters import (
 )
 from gpurec.core.scheduling import batching
 from gpurec.core.scheduling.batching import build_wave_layout, build_wave_layout_from_plan, preprocess_dataset
+from gpurec.api import model as model_module
 
 
 def _write_tiny_example(tmp_path: Path) -> tuple[Path, list[Path]]:
@@ -184,6 +185,38 @@ def test_gene_recon_model_forward_and_backward_on_tiny_example(tmp_path: Path) -
     assert model.receiver_weights.grad is not None
     assert model.receiver_weights.grad.shape == model.receiver_weights.shape
     assert torch.isfinite(model.receiver_weights.grad).all().item()
+
+
+def test_single_batch_genewise_forward_indexes_theta_in_batch_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = GeneReconModel.__new__(GeneReconModel)
+    torch.nn.Module.__init__(model)
+    model.genewise = True
+    model.theta = torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(4, 3))
+    model.receiver_weights = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
+    static = type(
+        "Static",
+        (),
+        {"family_index_tensor": torch.tensor([2, 0], dtype=torch.long)},
+    )()
+    model.batch_statics = [static]
+
+    captured = {}
+
+    def fake_apply(theta: torch.Tensor, receiver_weights: torch.Tensor, static_arg) -> torch.Tensor:
+        captured["theta"] = theta.detach().clone()
+        assert static_arg is static
+        return theta.sum() + 0.0 * receiver_weights.sum()
+
+    monkeypatch.setattr(model_module._GeneReconFunction, "apply", staticmethod(fake_apply))
+
+    loss = model()
+    loss.backward()
+
+    assert torch.equal(captured["theta"], model.theta.detach().index_select(0, static.family_index_tensor))
+    assert model.theta.grad is not None
+    expected_grad = torch.zeros_like(model.theta)
+    expected_grad.index_add_(0, static.family_index_tensor, torch.ones((2, 3)))
+    assert torch.equal(model.theta.grad, expected_grad)
 
 
 def test_gene_recon_model_backward_accepts_gmres_fixed_solver_options(tmp_path: Path) -> None:

@@ -1088,3 +1088,64 @@ benchmarks/large_dataset_capacity/output/gmres_triton_block1024_i4_largest10_ste
 
 I reverted the tile-width change. Current best measured setting remains
 GMRES10 I4 with `BLOCK_N=512`.
+
+### Corrected Largest-10 Batch Result
+
+After the follow-up profiling, a batch-gradient checker exposed a separate
+single-batch `genewise` ordering bug: the one-batch model fast path was not
+indexing `theta` into static batch order before calling the autograd function.
+That path is now fixed, and the largest-10 results below supersede the earlier
+largest-10 timing tables in this document.
+
+The broad opt-in Triton Arnoldi coverage was also too permissive. With the old
+`1024` block-tile cap, the largest-10 first-step gradient could be wrong at
+milliscale relative error even though the hard single-family check passed.
+The opt-in Triton cap is now `512`, which keeps the largest-10 full-batch
+gradient close to the Neumann512 reference.
+
+Corrected artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cap512_corrected_gradient_and_timing_20260606_072639/
+```
+
+Largest-10 first-step gradient check, `E/Pi=16`, pruned adjoint path,
+reference `Neumann512`:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Backend Counts |
+|---|---:|---:|---:|---:|---|
+| Neumann32 | `2784` | n/a | `9.098405e-08` | `1.234574e-07` | n/a |
+| GMRES10 I4 tol `1e-10` | `261` | `145` | `1.440077e-07` | `1.851861e-07` | `triton_split: 28`, `torch_cgs2: 59` |
+| GMRES10 I4 tol `1e-6` | `219` | `131` | `2.987016e-07` | `5.555583e-07` | `triton_split: 28`, `torch_cgs2: 59` |
+
+Corrected largest-10 20-step timing:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Final Loss |
+|---|---:|---:|---:|---:|
+| Neumann16 | `27840` | n/a | `2.560` | `166606.4375` |
+| Neumann32 | `55680` | n/a | `3.074` | `166606.4375` |
+| GMRES10 I4 tol `1e-10` | `5223` | `2901` | `3.053` | `166606.4375` |
+| GMRES10 I4 tol `1e-6` | `4380` | `2620` | `3.011` | `166606.4375` |
+
+So the current defensible conclusion is:
+
+- On the hard family `CLU_000680_20_4_C`, GMRES10 I4 remains much cheaper than
+  Neumann32 and passes the high-reference gradient check.
+- On the corrected largest-10 batch, GMRES10 I4 with cap-512 also passes a
+  Neumann512 first-step gradient check.
+- It is faster than Neumann32 and uses about `12.7x` fewer self-loop
+  applications, but it is still slower than Neumann16 in the 20-step timing.
+
+Nsight profiling of GMRES10 I4 tol `1e-6` on the hard family is stored here:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_gmres10_i4_tol1e-6_hard_family_20260606_071815/
+```
+
+The profile shows many small kernels rather than one dominant blocking solve:
+`_wave_backward_uniform_2d_jt_kernel` took `4.641 ms` across `470` launches,
+the main GMRES projection kernels were each in the `1-2 ms` total range, and
+the small Hessenberg residual kernel took `0.800 ms` across `258` launches.
+`ncu` measured roughly `16 us` for the wave matvec kernel at about `4%`
+achieved occupancy and roughly `4 us` for the GMRES projection-dot kernel at
+about `17%` achieved occupancy.
