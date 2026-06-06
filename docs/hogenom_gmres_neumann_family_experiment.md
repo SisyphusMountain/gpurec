@@ -736,3 +736,52 @@ is unlikely to change end-to-end performance. Gluon is worth considering only
 if it helps express a larger fused GMRES step, lowers register pressure in the
 self-loop matvec, or removes the Python/PyTorch reduction and scalar-check
 traffic that still dominates the adaptive path.
+
+### CUDA Host-Sync Reduction
+
+The next implementation step kept the GMRES mathematics and iteration counts
+unchanged, but removed avoidable scalar host reads from the CUDA path:
+
+- no RHS-norm Python float is needed when the Triton Hessenberg path is used;
+- CUDA no longer copies the Arnoldi norm to the host only to check breakdown
+  after a residual check;
+- final residuals are not copied unless fixed-iteration stats require them.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cuda_sync_reduction_20260606_060359/
+benchmarks/large_dataset_capacity/output/nsys_gmres_cuda_sync_reduction_20260606_060359/
+benchmarks/large_dataset_capacity/output/gmres_cuda_sync_reduction_correctness_20260606_060359/
+```
+
+Backward-only result on `CLU_000680_20_4_C`, adaptive GMRES max `10`,
+tolerance `1e-10`, check interval `3`:
+
+| Metric | Before | After |
+|---|---:|---:|
+| elapsed backward-only time | `0.161840 s` | `0.149429 s` |
+| total backward iterations / `J^T` applications | `619` | `619` |
+| total GMRES residual checks | `299` | `299` |
+| max relative residual | `3.849e-06` | `3.849e-06` |
+
+Nsys confirms the patch reduces host synchronization and copy traffic:
+
+| Category | Before | After |
+|---|---:|---:|
+| summed GPU kernels | `122.921 ms`, `10,847` launches | `122.575 ms`, `10,847` launches |
+| `cudaMemcpyAsync` API time | `63.703 ms`, `2,966` calls | `50.495 ms`, `2,500` calls |
+| Device-to-Host copies | `0.621 ms`, `747` copies | `0.290 ms`, `349` copies |
+| `cudaStreamSynchronize` | `0.536 ms`, `747` calls | `0.331 ms`, `349` calls |
+
+Correctness against the Neumann-512 reference remains in the same envelope:
+
+| Solver | Total Backward Iterations | Relative L2 Error vs N=512 | Gradient |
+|---|---:|---:|---|
+| Neumann32 | `2176` | `3.459027e-05` | `[-4.9283518950504375, -2.3778636587336126, 0.8579352123043589]` |
+| GMRES10 I3 | `619` | `6.589550e-06` | `[-4.928546352910933, -2.3777557207255815, 0.8579805383195991]` |
+
+The full family harness still times the forward solve around the backward pass,
+so it is not a pure measure of this patch. Its value here is correctness
+against high Neumann/Pi; the backward-only profiler is the relevant speed
+measurement.

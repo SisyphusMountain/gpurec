@@ -655,10 +655,12 @@ def _gmres_hessenberg_rel_res(
     beta: torch.Tensor,
     *,
     iters: int,
-    b_norm: float,
+    b_norm: float | None,
     residual_buf: torch.Tensor | None,
 ) -> float:
     if hessenberg.device.type != "cuda" or int(hessenberg.shape[1]) > _GMRES_TRITON_HESSENBERG_MAX_M:
+        if b_norm is None:
+            b_norm = float(beta.detach().cpu())
         h_sub = hessenberg[: iters + 1, :iters]
         rhs_sub = torch.zeros((iters + 1,), dtype=hessenberg.dtype, device=hessenberg.device)
         rhs_sub[0] = beta
@@ -691,14 +693,19 @@ def _gmres_hessenberg_solve(
     beta: torch.Tensor,
     *,
     iters: int,
-    b_norm: float,
+    b_norm: float | None,
     residual_buf: torch.Tensor | None,
-) -> tuple[torch.Tensor, float]:
+    read_residual: bool,
+) -> tuple[torch.Tensor, float | None]:
     h_sub = hessenberg[: iters + 1, :iters]
     rhs_sub = torch.zeros((iters + 1,), dtype=hessenberg.dtype, device=hessenberg.device)
     rhs_sub[0] = beta
     if hessenberg.device.type != "cuda" or int(hessenberg.shape[1]) > _GMRES_TRITON_HESSENBERG_MAX_M:
         y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+        if not read_residual:
+            return y, None
+        if b_norm is None:
+            b_norm = float(beta.detach().cpu())
         rel_res = float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
         return y, rel_res
 
@@ -721,7 +728,8 @@ def _gmres_hessenberg_solve(
         STORE_Y=True,
         num_warps=1,
     )
-    return y[:iters], float(residual_buf.detach().cpu())
+    rel_res = float(residual_buf.detach().cpu()) if read_residual else None
+    return y[:iters], rel_res
 
 
 @torch.no_grad()
@@ -748,11 +756,20 @@ def _gmres_solve_wave_self_loop(
         raise ValueError("gmres_check_interval must be at least 1")
 
     b_norm_t = torch.linalg.vector_norm(rhs)
-    b_norm = float(b_norm_t.detach().cpu())
-    if b_norm == 0.0:
-        if _GMRES_SELF_LOOP_STATS is not None:
-            _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 0.0})
-        return torch.zeros_like(rhs)
+    use_cuda_triton_hessenberg = (
+        rhs.device.type == "cuda"
+        and int(max_iter) <= _GMRES_TRITON_HESSENBERG_MAX_M
+    )
+    if use_cuda_triton_hessenberg:
+        b_norm: float | None = None
+        safe_b_norm_t = torch.clamp(b_norm_t, min=torch.finfo(rhs.dtype).tiny)
+    else:
+        b_norm = float(b_norm_t.detach().cpu())
+        if b_norm == 0.0:
+            if _GMRES_SELF_LOOP_STATS is not None:
+                _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 0.0})
+            return torch.zeros_like(rhs)
+        safe_b_norm_t = b_norm_t
 
     return _gmres_solve_wave_self_loop_cgs2(
         apply_a,
@@ -762,6 +779,7 @@ def _gmres_solve_wave_self_loop(
         fixed_iterations=bool(fixed_iterations),
         check_interval=check_interval,
         b_norm_t=b_norm_t,
+        safe_b_norm_t=safe_b_norm_t,
         b_norm=b_norm,
     )
 
@@ -775,7 +793,8 @@ def _gmres_solve_wave_self_loop_cgs2(
     fixed_iterations: bool,
     check_interval: int,
     b_norm_t: torch.Tensor,
-    b_norm: float,
+    safe_b_norm_t: torch.Tensor,
+    b_norm: float | None,
 ) -> torch.Tensor:
     """GMRES Arnoldi using batched CGS with one reorthogonalization pass."""
     basis = torch.empty(
@@ -784,14 +803,12 @@ def _gmres_solve_wave_self_loop_cgs2(
         device=rhs.device,
     )
     basis_2d = basis.reshape(max_iter + 1, -1)
-    basis_2d[0].copy_(rhs.reshape(-1) / b_norm_t)
+    basis_2d[0].copy_(rhs.reshape(-1) / safe_b_norm_t)
     hessenberg = torch.zeros(
         (max_iter + 1, max_iter),
         dtype=rhs.dtype,
         device=rhs.device,
     )
-    e1 = torch.zeros((max_iter + 1,), dtype=rhs.dtype, device=rhs.device)
-    e1[0] = b_norm_t
     coeff_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     coeff2_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     work = torch.empty_like(rhs).reshape(-1)
@@ -834,9 +851,10 @@ def _gmres_solve_wave_self_loop_cgs2(
                 )
                 if rel_res <= tol:
                     break
-                next_norm = float(next_norm_t.detach().cpu())
-                if next_norm == 0.0:
-                    break
+                if rhs.device.type != "cuda":
+                    next_norm = float(next_norm_t.detach().cpu())
+                    if next_norm == 0.0:
+                        break
         if j + 1 < max_iter:
             denom = torch.clamp(next_norm_t, min=torch.finfo(rhs.dtype).tiny)
             torch.div(work2, denom, out=basis_2d[j + 1])
@@ -844,13 +862,17 @@ def _gmres_solve_wave_self_loop_cgs2(
     iters = int(last_j + 1)
     if fixed_iterations:
         check_count += 1
-    y, rel_res = _gmres_hessenberg_solve(
+    read_final_residual = bool(_GMRES_SELF_LOOP_STATS is not None and fixed_iterations)
+    y, final_rel_res = _gmres_hessenberg_solve(
         hessenberg,
         b_norm_t,
         iters=iters,
         b_norm=b_norm,
         residual_buf=residual_buf,
+        read_residual=read_final_residual,
     )
+    if final_rel_res is not None:
+        rel_res = final_rel_res
     if _GMRES_SELF_LOOP_STATS is not None:
         _GMRES_SELF_LOOP_STATS.append(
             {

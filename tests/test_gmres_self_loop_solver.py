@@ -130,6 +130,25 @@ def test_gmres_self_loop_handles_zero_rhs_cpu():
     assert stats == [{"iterations": 0, "rel_res": 0.0}]
 
 
+def test_gmres_self_loop_handles_zero_rhs_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    device = torch.device("cuda")
+    rhs = torch.zeros((2, 3), dtype=torch.float64, device=device)
+
+    got = wave_backward._gmres_solve_wave_self_loop(
+        lambda vec: vec,
+        rhs,
+        max_iter=4,
+        tol=1e-12,
+        check_interval=2,
+    )
+
+    torch.testing.assert_close(got, rhs)
+    assert bool(torch.isfinite(got).all().detach().cpu())
+
+
 def test_gmres_self_loop_check_interval_counts_checks_cpu():
     old_stats = wave_backward._GMRES_SELF_LOOP_STATS
     stats = []

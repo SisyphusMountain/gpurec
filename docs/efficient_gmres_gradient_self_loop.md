@@ -1018,6 +1018,61 @@ GMRES bookkeeping with the matvec in a way that cuts launches and scalar host
 checks. It should not be treated as a drop-in replacement for the current tiny
 Hessenberg kernel.
 
+## CUDA Host-Sync Reduction
+
+The next low-risk optimization removed avoidable scalar device-to-host reads in
+the CUDA GMRES path:
+
+- the RHS norm is kept on device when the Triton Hessenberg path can handle the
+  residual denominator;
+- the post-check Arnoldi norm is no longer copied to the host for CUDA
+  breakdown checks;
+- the final residual is not copied when it is only needed for optional stats.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cuda_sync_reduction_20260606_060359/
+benchmarks/large_dataset_capacity/output/nsys_gmres_cuda_sync_reduction_20260606_060359/
+benchmarks/large_dataset_capacity/output/gmres_cuda_sync_reduction_correctness_20260606_060359/
+```
+
+Hard-family backward-only result on `CLU_000680_20_4_C`, adaptive GMRES max
+`10`, tolerance `1e-10`, check interval `3`:
+
+```text
+before: 0.161840 s, 619 J^T applications, 299 residual checks
+after:  0.149429 s, 619 J^T applications, 299 residual checks
+```
+
+The gradient was unchanged to the displayed precision:
+
+```text
+[-4.928546352910933, -2.3777557207255815, 0.8579805383195991]
+```
+
+`nsys` shows the expected movement in API and copy traffic while kernel work
+stays effectively unchanged:
+
+```text
+GPU kernels:             122.921 ms / 10,847 launches -> 122.575 ms / 10,847 launches
+cudaMemcpyAsync API:      63.703 ms /  2,966 calls    ->  50.495 ms /  2,500 calls
+Device-to-Host copies:     0.621 ms /    747 copies   ->   0.290 ms /    349 copies
+cudaStreamSynchronize:     0.536 ms /    747 calls    ->   0.331 ms /    349 calls
+```
+
+Correctness against Neumann-512 on the same family:
+
+```text
+Neumann32: 2176 J^T applications, rel L2 3.459027e-05
+GMRES10:   619 J^T applications, rel L2 6.589550e-06
+```
+
+The full family loss-gradient harness reports similar elapsed times for
+Neumann32 and GMRES10 because it includes the forward `E/Pi/Pibar` work around
+the backward solve. The backward-only profile is the right evidence for this
+particular overhead patch.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
