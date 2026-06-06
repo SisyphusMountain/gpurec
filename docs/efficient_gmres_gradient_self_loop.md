@@ -1103,6 +1103,38 @@ the driver constructed `solver_options.self_loop_solver = "gmres"` with
 `solver_options.neumann_terms = 2`, then completed one optimizer step on the
 single-family probe.
 
+The driver now also records per-step self-loop backward work:
+
+```text
+self_loop_backward_pass_count
+self_loop_waves_per_backward
+self_loop_wave_solves
+self_loop_backward_iterations
+self_loop_mean_iterations_per_wave
+gmres_total_checks
+gmres_max_rel_res
+```
+
+For Neumann, `self_loop_backward_iterations` is computed from the number of
+actual backward passes, the number of waves per backward pass, and the fixed
+term count. For GMRES and `gmres_fixed`, it is the sum of per-wave Krylov
+iterations recorded by the GMRES solver. This makes the optimizer benchmark
+report the requested expensive-work metric directly.
+
+Paired single-family accounting smoke:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_accounting_smoke_20260606_061411/
+```
+
+Both runs used one Adam step on the same HOGENOM single-family probe with
+`e_max_iter=4` and `pi_iters=2`:
+
+```text
+Neumann terms=2:    12 wave solves, 24 self-loop backward iterations
+GMRES max_iter=2:   12 wave solves, 19 self-loop backward iterations, 19 checks
+```
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

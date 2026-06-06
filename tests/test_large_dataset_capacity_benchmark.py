@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 parse_args = _MODULE.parse_args
 solver_options_from_args = _MODULE.solver_options_from_args
+SelfLoopBackwardRecorder = _MODULE.SelfLoopBackwardRecorder
 
 
 def _base_args(tmp_path: Path) -> list[str]:
@@ -72,3 +74,58 @@ def test_run_gpurec_benchmark_gmres_defaults_to_neumann_terms(tmp_path: Path):
 def test_run_gpurec_benchmark_rejects_gmres_max_iter_for_neumann(tmp_path: Path):
     with pytest.raises(SystemExit):
         parse_args(_base_args(tmp_path) + ["--gmres-max-iter", "10"])
+
+
+def test_self_loop_backward_recorder_summarizes_neumann_iterations(tmp_path: Path):
+    args = parse_args(_base_args(tmp_path) + ["--neumann-terms", "12"])
+    model = SimpleNamespace(
+        solver_options=solver_options_from_args(args),
+        batch_statics=[
+            SimpleNamespace(wave_layout={"wave_metas": [object(), object()]}),
+            SimpleNamespace(wave_layout={"wave_metas": [object()]}),
+        ],
+    )
+    recorder = SelfLoopBackwardRecorder(model)
+    recorder.backward_pass_count = 2
+
+    summary = recorder.summary()
+
+    assert summary["self_loop_solver"] == "neumann"
+    assert summary["self_loop_backward_pass_count"] == 2
+    assert summary["self_loop_waves_per_backward"] == 3
+    assert summary["self_loop_wave_solves"] == 6
+    assert summary["self_loop_backward_iterations"] == 72
+    assert summary["self_loop_mean_iterations_per_wave"] == 12.0
+    assert summary["gmres_total_checks"] is None
+
+
+def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path):
+    args = parse_args(
+        _base_args(tmp_path)
+        + [
+            "--self-loop-solver",
+            "gmres",
+            "--gmres-max-iter",
+            "10",
+        ]
+    )
+    model = SimpleNamespace(
+        solver_options=solver_options_from_args(args),
+        batch_statics=[SimpleNamespace(wave_layout={"wave_metas": [object(), object()]})],
+    )
+    recorder = SelfLoopBackwardRecorder(model)
+    recorder.backward_pass_count = 1
+    recorder._gmres_stats = [
+        {"iterations": 3, "check_count": 2, "rel_res": 1e-4},
+        {"iterations": 5, "check_count": 3, "rel_res": 2e-5},
+    ]
+
+    summary = recorder.summary()
+
+    assert summary["self_loop_solver"] == "gmres"
+    assert summary["self_loop_wave_solves"] == 2
+    assert summary["self_loop_backward_iterations"] == 8
+    assert summary["self_loop_mean_iterations_per_wave"] == 4.0
+    assert summary["self_loop_max_iterations_per_wave"] == 5
+    assert summary["gmres_total_checks"] == 5
+    assert summary["gmres_max_rel_res"] == 1e-4

@@ -15,6 +15,7 @@ from typing import Any
 import torch
 
 from gpurec import GeneReconModel, SolverOptions, clamp_log_rate_, project_rate_gradient_
+from gpurec.core.kernels import wave_backward as wave_backward_module
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -145,11 +146,88 @@ def projected_grad(model: GeneReconModel, min_rate: float, max_rate: float) -> t
     return projected
 
 
+def self_loop_wave_count(model: GeneReconModel) -> int:
+    return int(sum(len(static.wave_layout["wave_metas"]) for static in model.batch_statics))
+
+
+class SelfLoopBackwardRecorder:
+    """Collect self-loop backward work across one optimizer step."""
+
+    def __init__(self, model: GeneReconModel) -> None:
+        self.model = model
+        self.solver_options = model.solver_options
+        self.backward_pass_count = 0
+        self._old_gmres_stats = None
+        self._gmres_stats: list[dict[str, float | int]] | None = None
+
+    def __enter__(self) -> "SelfLoopBackwardRecorder":
+        if self.solver_options.self_loop_solver in ("gmres", "gmres_fixed"):
+            self._old_gmres_stats = wave_backward_module._GMRES_SELF_LOOP_STATS
+            self._gmres_stats = []
+            wave_backward_module._GMRES_SELF_LOOP_STATS = self._gmres_stats
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._gmres_stats is not None:
+            wave_backward_module._GMRES_SELF_LOOP_STATS = self._old_gmres_stats
+
+    def backward(self, loss: torch.Tensor) -> None:
+        self.backward_pass_count += 1
+        loss.backward()
+
+    def summary(self) -> dict[str, float | int | None | str]:
+        solver = self.solver_options.self_loop_solver
+        waves_per_backward = self_loop_wave_count(self.model)
+        if solver in ("gmres", "gmres_fixed"):
+            gmres_stats = self._gmres_stats or []
+            per_wave_iterations = [int(row["iterations"]) for row in gmres_stats]
+            per_wave_checks = [int(row.get("check_count", 0)) for row in gmres_stats]
+            rel_res = [float(row.get("rel_res", 0.0)) for row in gmres_stats]
+            wave_solves = len(per_wave_iterations)
+            total_iterations = int(sum(per_wave_iterations))
+            return {
+                "self_loop_solver": solver,
+                "self_loop_backward_pass_count": int(self.backward_pass_count),
+                "self_loop_waves_per_backward": int(waves_per_backward),
+                "self_loop_wave_solves": int(wave_solves),
+                "self_loop_backward_iterations": total_iterations,
+                "self_loop_mean_iterations_per_wave": (
+                    total_iterations / wave_solves if wave_solves else None
+                ),
+                "self_loop_max_iterations_per_wave": max(per_wave_iterations, default=0),
+                "gmres_total_checks": int(sum(per_wave_checks)),
+                "gmres_mean_checks_per_wave": (
+                    sum(per_wave_checks) / wave_solves if wave_solves else None
+                ),
+                "gmres_max_checks_per_wave": max(per_wave_checks, default=0),
+                "gmres_max_rel_res": max(rel_res, default=None),
+            }
+
+        wave_solves = int(self.backward_pass_count) * int(waves_per_backward)
+        total_iterations = int(wave_solves) * int(self.solver_options.neumann_terms)
+        return {
+            "self_loop_solver": solver,
+            "self_loop_backward_pass_count": int(self.backward_pass_count),
+            "self_loop_waves_per_backward": int(waves_per_backward),
+            "self_loop_wave_solves": int(wave_solves),
+            "self_loop_backward_iterations": int(total_iterations),
+            "self_loop_mean_iterations_per_wave": (
+                float(self.solver_options.neumann_terms) if wave_solves else None
+            ),
+            "self_loop_max_iterations_per_wave": int(self.solver_options.neumann_terms),
+            "gmres_total_checks": None,
+            "gmres_mean_checks_per_wave": None,
+            "gmres_max_checks_per_wave": None,
+            "gmres_max_rel_res": None,
+        }
+
+
 def fd_diag_hessian_sgd_step(
     model: GeneReconModel,
     loss: torch.Tensor,
     args: argparse.Namespace,
     device: torch.device,
+    backward_recorder: SelfLoopBackwardRecorder,
 ) -> dict[str, float | None]:
     """Take one damped finite-difference diagonal Hessian-SGD-like step.
 
@@ -158,7 +236,7 @@ def fd_diag_hessian_sgd_step(
     comparing projected gradients at theta and at one small simultaneous
     per-coordinate perturbation.
     """
-    loss.backward()
+    backward_recorder.backward(loss)
     base_grad = projected_grad(model, args.min_rate, args.max_rate)
     theta0 = model.theta.detach().clone()
     direction = torch.sign(base_grad)
@@ -189,7 +267,7 @@ def fd_diag_hessian_sgd_step(
         with torch.no_grad():
             model.theta.copy_(theta0)
         return stats
-    fd_loss.backward()
+    backward_recorder.backward(fd_loss)
     fd_grad = projected_grad(model, args.min_rate, args.max_rate)
     stats["hessian_fd_loss"] = finite_float(float(fd_loss.detach().item()))
 
@@ -352,20 +430,23 @@ def main() -> None:
                 run["history"].append({"step": step, "loss": None, "step_seconds": time.perf_counter() - step_t0})
                 convergence = {"reason": "non-finite loss"}
                 break
-            if optimizer is None:
-                grad_stats = fd_diag_hessian_sgd_step(model, loss, args, device)
-            else:
-                loss.backward()
-                grad_stats = projected_grad_stats(model, args.min_rate, args.max_rate)
-                project_rate_gradient_(model.theta, min_rate=args.min_rate, max_rate=args.max_rate)
-                optimizer.step()
-                clamp_log_rate_(model.theta, min_rate=args.min_rate, max_rate=args.max_rate)
-                cuda_sync(device)
+            with SelfLoopBackwardRecorder(model) as backward_recorder:
+                if optimizer is None:
+                    grad_stats = fd_diag_hessian_sgd_step(model, loss, args, device, backward_recorder)
+                else:
+                    backward_recorder.backward(loss)
+                    grad_stats = projected_grad_stats(model, args.min_rate, args.max_rate)
+                    project_rate_gradient_(model.theta, min_rate=args.min_rate, max_rate=args.max_rate)
+                    optimizer.step()
+                    clamp_log_rate_(model.theta, min_rate=args.min_rate, max_rate=args.max_rate)
+                    cuda_sync(device)
+                self_loop_stats = backward_recorder.summary()
             entry = {
                 "step": step,
                 "loss": finite_float(float(loss.detach().item())),
                 "step_seconds": time.perf_counter() - step_t0,
             }
+            entry.update(self_loop_stats)
             if args.optimizer == "adam":
                 entry["projected_grad_max_abs"] = grad_stats["max_abs"]
                 entry["projected_grad_l2"] = grad_stats["l2"]
@@ -384,6 +465,12 @@ def main() -> None:
         run["train_seconds"] = time.perf_counter() - train_t0
         run["converged"] = converged
         run["convergence"] = convergence
+        run["self_loop_backward_iterations"] = int(
+            sum(int(entry.get("self_loop_backward_iterations") or 0) for entry in run["history"])
+        )
+        run["self_loop_backward_pass_count"] = int(
+            sum(int(entry.get("self_loop_backward_pass_count") or 0) for entry in run["history"])
+        )
 
     run["finished_at_unix"] = time.time()
     run["wall_seconds"] = run["finished_at_unix"] - run["started_at_unix"]

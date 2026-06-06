@@ -816,3 +816,33 @@ That run used the HOGENOM single-family probe, `--self-loop-solver gmres`, and
 solver_options.self_loop_solver = "gmres"
 solver_options.neumann_terms = 2
 ```
+
+The driver now records the total self-loop backward applications per step and
+for the full run. This is the end-to-end counterpart to the hard-family
+`total_backward_iterations` metric:
+
+```text
+self_loop_backward_iterations
+self_loop_backward_pass_count
+self_loop_wave_solves
+self_loop_mean_iterations_per_wave
+gmres_total_checks
+gmres_max_rel_res
+```
+
+For Neumann, the count is exact from `backward_passes * waves * terms`. For
+GMRES, it is the sum of actual per-wave Krylov iterations collected from the
+solver stats.
+
+Paired smoke artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_accounting_smoke_20260606_061411/
+```
+
+On the same one-step single-family HOGENOM probe:
+
+| Solver | Wave Solves | Self-Loop Backward Iterations | GMRES Checks | Step Seconds |
+|---|---:|---:|---:|---:|
+| Neumann terms=2 | `12` | `24` | n/a | `1.123` |
+| GMRES max=2 | `12` | `19` | `19` | `0.504` |
