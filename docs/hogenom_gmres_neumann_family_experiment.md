@@ -637,3 +637,99 @@ family: fewer VJPs than fixed `m=10`, no checkpoint or final cuSOLVER solves,
 and lower summed GPU kernel time than the previous fixed CGS2 profile. The
 remaining validation is end-to-end: whether lower VJP count wins over the
 remaining adaptive-check overhead during optimization.
+
+### Current HEAD Nsys/NCU Rerun
+
+Current HEAD:
+
+```text
+9119c57c Document Triton QR GMRES profiling results
+```
+
+The same family and solver setting were rerun after the Triton QR work:
+
+```text
+family: CLU_000680_20_4_C
+GMRES max iterations: 10
+GMRES tolerance: 1e-10
+GMRES check interval: 3
+self-loop solver: gmres
+```
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/current_gmres_tritonqr_i3_profile_20260606_032652/
+benchmarks/large_dataset_capacity/output/nsys_current_gmres_tritonqr_i3_profile_20260606_032728/
+benchmarks/large_dataset_capacity/output/ncu_current_gmres_tritonqr_i3_hessenberg_basic_20260606_032912/
+benchmarks/large_dataset_capacity/output/ncu_current_gmres_tritonqr_i3_jt_basic_20260606_032944/
+```
+
+Unprofiled result:
+
+| Metric | Value |
+|---|---:|
+| elapsed backward-only time | `0.159892 s` |
+| wave count | `68` |
+| total backward iterations / `J^T` applications | `619` |
+| total GMRES residual checks | `299` |
+| mean iterations per wave | `9.103` |
+| max iterations per wave | `10` |
+| max relative residual | `3.849e-06` |
+
+`nsys` captured only the CUDA-profiler range around the backward solve. The
+wall-clock timer inside the profiled run is inflated by profiler overhead, so
+the useful numbers are the CUDA summaries:
+
+| Category | Total |
+|---|---:|
+| summed GPU kernels | `122.877 ms`, `10,847` launches |
+| CUDA API time | `86.946 ms`, `24,671` calls |
+| `cudaMemcpyAsync` API time | `63.556 ms`, `2,966` calls |
+| GPU memcpy time | `3.300 ms`, `2,966` copies |
+
+Top kernel buckets:
+
+| Kernel bucket | Time | Launches |
+|---|---:|---:|
+| `_dts_ge2_stage1_kernel` | `25.924 ms` | `66` |
+| `_wave_backward_uniform_2d_precompute_kernel` | `24.916 ms` | `68` |
+| PyTorch reductions | `13.625 ms` | `1,194` |
+| `_dts_cross_backward_accum_kernel` | `8.692 ms` | `67` |
+| `_wave_backward_uniform_2d_jt_kernel` | `8.356 ms` | `619` |
+| cuBLAS dot kernels | `4.063 ms` | `1,270` |
+| cuBLAS GEMV kernels | `3.341 ms` | `1,084` |
+| `_gmres_hessenberg_residual_kernel` | `2.866 ms` | `367` |
+
+The capture contains no cuSOLVER least-squares work. The slow part that remains
+is many small launches and scalar/reduction traffic around Arnoldi and residual
+checking.
+
+`ncu` on `_gmres_hessenberg_residual_kernel` shows that the Triton QR/residual
+kernel is not a hardware-throughput problem:
+
+| Metric | Sampled Values |
+|---|---:|
+| grid/block | `1 x 32` |
+| duration | `5.34 us`, `8.61 us`, `11.81 us` |
+| DRAM throughput | `0.26%` - `0.28%` |
+| compute throughput | `0.18%` - `0.25%` |
+| achieved occupancy | `2.09%` |
+
+`ncu` on `_wave_backward_uniform_2d_jt_kernel` shows that the repeated
+self-loop matvec is register-limited and underfilled on this single family:
+
+| Metric | Sampled Values |
+|---|---:|
+| grid/block | `64 x 64` |
+| duration | `20.03 us` - `20.48 us` |
+| registers/thread | `254` |
+| DRAM throughput | `17.16%` - `17.52%` |
+| compute throughput | `9.41%` - `9.54%` |
+| achieved occupancy | `4.11%` - `4.19%` |
+
+Implication: replacing only the one-block Triton Hessenberg kernel with Gluon
+is unlikely to change end-to-end performance. Gluon is worth considering only
+if it helps express a larger fused GMRES step, lowers register pressure in the
+self-loop matvec, or removes the Python/PyTorch reduction and scalar-check
+traffic that still dominates the adaptive path.

@@ -932,6 +932,90 @@ clock is still slightly better for fixed M10 on this single family, so the next
 required proof is the user-facing one: end-to-end time to convergence on the
 HOGENOM benchmark.
 
+## Fresh Nsys/NCU Check
+
+Current HEAD `9119c57c` was profiled again on the same hard HOGENOM family,
+`CLU_000680_20_4_C`, using adaptive GMRES max `10`, tolerance `1e-10`, and
+check interval `3`.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/current_gmres_tritonqr_i3_profile_20260606_032652/
+benchmarks/large_dataset_capacity/output/nsys_current_gmres_tritonqr_i3_profile_20260606_032728/
+benchmarks/large_dataset_capacity/output/ncu_current_gmres_tritonqr_i3_hessenberg_basic_20260606_032912/
+benchmarks/large_dataset_capacity/output/ncu_current_gmres_tritonqr_i3_jt_basic_20260606_032944/
+```
+
+Unprofiled backward-only result:
+
+```text
+elapsed:                    0.159892 s
+waves:                      68
+total J^T applications:     619
+total GMRES checks:         299
+mean iterations per wave:   9.103
+max iterations per wave:    10
+max relative residual:      3.849e-06
+```
+
+`nsys` captured the CUDA-profiler range around the backward solve:
+
+```text
+summed GPU kernels:         122.877 ms across 10,847 launches
+CUDA API time:               86.946 ms across 24,671 calls
+CUDA memcpy API time:        63.556 ms across 2,966 calls
+GPU memcpy time:              3.300 ms across 2,966 copies
+```
+
+Top kernel buckets:
+
+```text
+_dts_ge2_stage1_kernel:                    25.924 ms /   66 launches
+_wave_backward_uniform_2d_precompute:      24.916 ms /   68 launches
+PyTorch reductions, grouped:               13.625 ms / 1194 launches
+_dts_cross_backward_accum_kernel:           8.692 ms /   67 launches
+_wave_backward_uniform_2d_jt_kernel:        8.356 ms /  619 launches
+cuBLAS dot kernels:                         4.063 ms / 1270 launches
+cuBLAS GEMV kernels:                        3.341 ms / 1084 launches
+_gmres_hessenberg_residual_kernel:          2.866 ms /  367 launches
+```
+
+There are no cuSOLVER least-squares kernels left in this captured hot path. The
+remaining GMRES overhead is therefore launch/control overhead plus PyTorch
+reduction and cuBLAS dot/GEMV work, not dense CPU or cuSOLVER solves.
+
+`ncu --set basic` on `_gmres_hessenberg_residual_kernel` sampled three launches:
+
+```text
+grid/block:                 1 block x 32 threads
+duration:                   5.34 us, 8.61 us, 11.81 us
+DRAM throughput:            0.26% - 0.28%
+compute throughput:         0.18% - 0.25%
+achieved occupancy:         2.09%
+```
+
+This kernel is intentionally tiny and underfilled. A direct Triton-to-Gluon
+rewrite of only this one-block QR/backsolve kernel is unlikely to matter.
+
+`ncu --set basic` on `_wave_backward_uniform_2d_jt_kernel` sampled three
+representative self-loop matvec launches:
+
+```text
+grid/block:                 64 blocks x 64 threads
+duration:                   20.03 us - 20.48 us
+registers/thread:           254
+DRAM throughput:            17.16% - 17.52%
+compute throughput:         9.41% - 9.54%
+achieved occupancy:         4.11% - 4.19%
+```
+
+The matvec is register-limited and also underfills this GPU on the single hard
+family. Gluon could be useful if it lets us reduce register pressure or fuse
+GMRES bookkeeping with the matvec in a way that cuts launches and scalar host
+checks. It should not be treated as a drop-in replacement for the current tiny
+Hessenberg kernel.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
