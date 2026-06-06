@@ -1522,15 +1522,26 @@ def _gmres_solve_wave_self_loop_cgs2(
         w = apply_a(
             basis_j if right_preconditioner is None else right_preconditioner(basis_j)
         ).reshape(-1)
-        q = basis_2d[: j + 1]
-        coeff = coeff_buf[: j + 1]
-        torch.mv(q, w, out=coeff)
-        torch.addmv(w, q.t(), coeff, beta=1.0, alpha=-1.0, out=work)
+        if j == 0 and rhs.device.type == "cuda":
+            q0 = basis_2d[0]
+            coeff0 = torch.dot(q0, w)
+            torch.mul(q0, coeff0, out=work)
+            torch.sub(w, work, out=work)
 
-        coeff2 = coeff2_buf[: j + 1]
-        torch.mv(q, work, out=coeff2)
-        torch.add(coeff, coeff2, out=hessenberg[: j + 1, j])
-        torch.addmv(work, q.t(), coeff2, beta=1.0, alpha=-1.0, out=work2)
+            coeff20 = torch.dot(q0, work)
+            torch.add(coeff0, coeff20, out=hessenberg[0, 0])
+            torch.mul(q0, coeff20, out=work2)
+            torch.sub(work, work2, out=work2)
+        else:
+            q = basis_2d[: j + 1]
+            coeff = coeff_buf[: j + 1]
+            torch.mv(q, w, out=coeff)
+            torch.addmv(w, q.t(), coeff, beta=1.0, alpha=-1.0, out=work)
+
+            coeff2 = coeff2_buf[: j + 1]
+            torch.mv(q, work, out=coeff2)
+            torch.add(coeff, coeff2, out=hessenberg[: j + 1, j])
+            torch.addmv(work, q.t(), coeff2, beta=1.0, alpha=-1.0, out=work2)
 
         next_norm_t = torch.linalg.vector_norm(work2)
         hessenberg[j + 1, j] = next_norm_t
