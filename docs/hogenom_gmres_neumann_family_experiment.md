@@ -846,3 +846,39 @@ On the same one-step single-family HOGENOM probe:
 |---|---:|---:|---:|---:|
 | Neumann terms=2 | `12` | `24` | n/a | `1.123` |
 | GMRES max=2 | `12` | `19` | `19` | `0.504` |
+
+### Largest-10 Capacity Benchmark Comparison
+
+Artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_vs_neumann_capacity_largest10_steps20_20260606_061809/
+```
+
+Settings:
+
+```text
+--select largest --limit 10
+--steps 20 --optimizer adam --lr 0.01
+--e-max-iter 16 --pi-iters 16
+--family-chunk-size 0 --clade-budget 500000
+```
+
+The run was deliberately short and did not converge. It is an end-to-end timing
+and trajectory sanity check on a fixed HOGENOM subset.
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Final Loss |
+|---|---:|---:|---:|---:|---:|
+| Neumann16 | `27840` | n/a | `2.557` | `3.726` | `166606.4375` |
+| Neumann32 | `55680` | n/a | `3.066` | `4.219` | `166606.4375` |
+| Neumann64 | `111360` | n/a | `4.123` | `5.306` | `166606.4375` |
+| GMRES10 I3 | `4443` | `3021` | `3.150` | `4.369` | `166606.4375` |
+| GMRES4 I4 | `5160` | `2880` | `3.391` | `4.513` | `166606.4375` |
+| GMRES10 I10 | `12000` | `2880` | `4.593` | `5.767` | `166606.4375` |
+
+GMRES10 I3 used far fewer self-loop applications than all Neumann budgets and
+was faster than Neumann64, but it was still slightly slower than Neumann32 on
+this warmed subset. That points back to implementation overhead, not
+mathematical iteration count. Coarser checks (`I10`) increased Krylov work too
+much, while fixed-m attempts were unstable here because the backward pass hit
+an E-adjoint BiCGSTAB NaN.

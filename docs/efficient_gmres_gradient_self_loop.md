@@ -1135,6 +1135,54 @@ Neumann terms=2:    12 wave solves, 24 self-loop backward iterations
 GMRES max_iter=2:   12 wave solves, 19 self-loop backward iterations, 19 checks
 ```
 
+### Largest-10 End-to-End Timing Check
+
+Artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_vs_neumann_capacity_largest10_steps20_20260606_061809/
+```
+
+Settings:
+
+```text
+HOGENOM largest 10 families by gene-tree file size
+one resident batch, clade_budget=500000
+20 Adam steps, lr=0.01
+e_max_iter=16, pi_iters=16
+```
+
+Results:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Time | Final Loss |
+|---|---:|---:|---:|---:|
+| Neumann16 | `27840` | n/a | `2.557 s` | `166606.4375` |
+| Neumann32 | `55680` | n/a | `3.066 s` | `166606.4375` |
+| Neumann64 | `111360` | n/a | `4.123 s` | `166606.4375` |
+| GMRES10 I3 | `4443` | `3021` | `3.150 s` | `166606.4375` |
+| GMRES4 I4 | `5160` | `2880` | `3.391 s` | `166606.4375` |
+| GMRES10 I10 | `12000` | `2880` | `4.593 s` | `166606.4375` |
+
+Interpretation:
+
+- GMRES10 I3 cuts self-loop applications by `12.5x` versus Neumann32 and
+  `25.1x` versus Neumann64.
+- On this warmed 10-family end-to-end run, GMRES10 I3 is still slightly slower
+  than Neumann32 (`3.150 s` vs `3.066 s`) and faster than Neumann64
+  (`3.150 s` vs `4.123 s`).
+- The identical displayed loss trajectory means this is a useful overhead
+  measurement, not an optimizer-quality failure.
+- Coarser residual checks (`I10`) and fixed small GMRES were not a solution:
+  I10 spent too many Krylov iterations, and fixed-m runs hit an E-adjoint
+  BiCGSTAB NaN on this setup.
+
+This is the clearest current end-to-end evidence: GMRES is doing much less
+mathematical work, but the remaining Python/PyTorch Arnoldi and residual-check
+overhead still prevents a wall-time win against practical Neumann16/32 budgets
+on this subset. The next implementation step should therefore move Arnoldi
+vector algebra out of the PyTorch/cuBLAS loop or reduce residual-check/control
+overhead further.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
