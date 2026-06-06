@@ -137,7 +137,13 @@ def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path)
     recorder = SelfLoopBackwardRecorder(model)
     recorder.backward_pass_count = 1
     recorder._gmres_stats = [
-        {"iterations": 3, "check_count": 2, "rel_res": 1e-4, "arnoldi_backend": "triton_split"},
+        {
+            "iterations": 3,
+            "check_count": 2,
+            "rel_res": 1e-4,
+            "arnoldi_backend": "triton_large",
+            "large_direct_sum": True,
+        },
         {
             "iterations": 0,
             "a_applications": 1,
@@ -161,11 +167,12 @@ def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path)
     assert summary["gmres_warm_start_used"] == 1
     assert summary["gmres_warm_start_accepted"] == 1
     assert summary["gmres_trusted_check_used"] == 0
+    assert summary["gmres_large_direct_sum_used"] == 1
     assert summary["gmres_residual_probe_a_applications"] == 1
     assert summary["gmres_total_checks"] == 3
     assert summary["gmres_residual_cpu_readbacks"] == 3
     assert summary["gmres_max_rel_res"] == 1e-4
-    assert summary["gmres_arnoldi_backend_counts"] == {"triton_split": 1, "warm_start": 1}
+    assert summary["gmres_arnoldi_backend_counts"] == {"triton_large": 1, "warm_start": 1}
 
 
 def test_self_loop_backward_recorder_ignores_trusted_check_residuals(tmp_path: Path):
@@ -191,11 +198,13 @@ def test_self_loop_backward_recorder_ignores_trusted_check_residuals(tmp_path: P
             "rel_res": 1.0,
             "trusted_check_used": True,
             "arnoldi_backend": "triton_large",
+            "large_direct_sum": True,
         },
     ]
 
     summary = recorder.summary()
 
     assert summary["gmres_trusted_check_used"] == 1
+    assert summary["gmres_large_direct_sum_used"] == 1
     assert summary["gmres_residual_cpu_readbacks"] == 0
     assert summary["gmres_max_rel_res"] is None

@@ -3032,6 +3032,96 @@ added deliberately. Based on the profile, a useful Triton or Gluon rewrite would
 need to fuse a larger GMRES step or reduce launch count, not just rewrite the
 single residual-check kernel.
 
+#### Large-Backend Direct Sum Reduction
+
+Implementation commit: `0b722632` adds
+`_gmres_arnoldi_sum_partials_direct_kernel` and gates it with
+`GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM` (default enabled). This is a deliberately
+small optimization driven by the Nsight profile above. For `triton_large` waves
+whose tile count fits in a single Triton reduction block (`<= 1024` tiles), the
+large backend now sums Arnoldi dot partials directly from `partials` into
+`coeff_buf` and `hessenberg`. The older two-stage path
+(`_gmres_arnoldi_reduce_group_partials_kernel` followed by
+`_gmres_arnoldi_sum_group_coeff_kernel`) remains the fallback and can be forced
+with:
+
+```bash
+GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM=0
+```
+
+Validation:
+
+```text
+python -m compileall gpurec/core/kernels/wave_backward.py tests/test_gmres_self_loop_solver.py
+GPUREC_GMRES_TRITON_ARNOLDI=1 GPUREC_GMRES_TRITON_LARGE_ARNOLDI=1 pytest -q tests/test_gmres_self_loop_solver.py -k "direct_sum or triton_large"
+pytest -q
+```
+
+The direct kernel is tested against the staged reduction for `513`, `729`, and
+`1024` tiles, `j in {0, 1, 3}`, and both overwrite/add-to-Hessenberg modes. The
+full suite passed with `79` tests after the kernel change.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_ncu_gmres_large_direct_sum_20260606_111629/
+```
+
+That folder contains `MANIFEST.md`, `profile_summary.json`, the `nsys` report
+and SQLite export, CUDA API/kernel summary CSVs, two `ncu` reports, and the
+direct-vs-staged 60-step timing JSONs. The profiled command used the same
+largest-10 trusted-periodic configuration as the previous section, with
+`GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM=1`.
+
+The 3-step `nsys` run still shows the same mathematical GMRES work:
+
+| Step | Step Seconds | Self-Loop Backward Applications | GMRES Checks | Residual CPU Readbacks | Trusted Checks |
+|---:|---:|---:|---:|---:|---:|
+| `1` | `19.6295` | `140` | `140` | `140` | `0` |
+| `2` | `0.1106` | `140` | `87` | `0` | `87` |
+| `3` | `0.1087` | `140` | `87` | `0` | `87` |
+
+The first profiled step includes one-time compile/profile overhead, so warm
+steps are the useful timing signal. The launch/accounting signal is cleaner:
+
+| Kernel | Launches | Total Time | Avg Time | Kernel Time Share |
+|---|---:|---:|---:|---:|
+| `_gmres_arnoldi_project_from_coeff_kernel` | `309` | `4.975 ms` | `16.10 us` | `2.2%` |
+| `_gmres_arnoldi_dot_partials_kernel` | `420` | `4.938 ms` | `11.76 us` | `2.1%` |
+| `_gmres_arnoldi_project_norm_from_coeff_kernel` | `309` | `3.442 ms` | `11.14 us` | `1.5%` |
+| `_gmres_arnoldi_reduce_norm_check_kernel` | `314` | `1.304 ms` | `4.15 us` | `0.6%` |
+| `_gmres_arnoldi_reduce_group_partials_kernel` | `444` | `0.688 ms` | `1.55 us` | `0.3%` |
+| `_gmres_arnoldi_sum_group_coeff_kernel` | `444` | `0.547 ms` | `1.23 us` | `0.2%` |
+| `_gmres_arnoldi_sum_partials_direct_kernel` | `174` | `0.305 ms` | `1.75 us` | `0.1%` |
+
+Relative to the previous trusted-periodic profile, `cuLaunchKernelEx` calls
+fell from `11011` to `10837`, exactly matching the `174` direct-sum launches
+that replaced pairs of staged launches. The old staged group-reduction kernels
+still appear because `triton_split` waves use their own kernels and not all
+large-wave reductions are eligible for the direct path.
+
+The `ncu --set basic` samples show that the new direct kernel is not a compute
+kernel; it is a one-block launch that exists to save launch orchestration:
+
+| Kernel | Sampled Duration | Grid x Block | Registers/Thread | Achieved Occupancy | Compute Throughput | DRAM Throughput |
+|---|---:|---|---:|---:|---:|---:|
+| `_gmres_arnoldi_sum_partials_direct_kernel` | `2.66-3.07 us` | `1 x 256` | `64-72` | `15.25-17.00%` | `0.16-0.17%` | `1.01-1.28%` |
+| `_gmres_arnoldi_project_from_coeff_kernel` | `7.49-8.64 us` | `624-728 x 128` | `95` | `31.85-33.30%` | `53.02-56.07%` | `35.10-36.64%` |
+
+Plain 60-step largest-10 timings, outside Nsight, show a small but real timing
+movement and unchanged GMRES mathematical work:
+
+| Mode | Train Seconds | Wall Seconds | Mean Step 2-60 | Step 60 | Step 60 Loss | Self-Loop Backward Applications | Residual CPU Readbacks | Trusted Checks |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Direct sum enabled | `6.157` | `7.415` | `0.09250` | `0.09188` | `164817.59375` | `8400` | `314` | `4959` |
+| Staged sum forced | `6.243` | `7.441` | `0.09304` | `0.09270` | `164817.609375` | `8400` | `314` | `4959` |
+
+Conclusion: the direct-sum path is worth keeping because it is simple, tested,
+and slightly faster. It does not change the larger conclusion. The remaining
+GMRES overhead is not one bad reduction kernel; it is the aggregate of many
+small launches plus the actual self-loop applications. A larger win needs to
+fuse a broader Arnoldi segment or batch more waves/checks together.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

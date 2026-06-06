@@ -238,6 +238,7 @@ class SelfLoopBackwardRecorder:
             warm_start_used = sum(1 for row in gmres_stats if bool(row.get("warm_start_used", False)))
             warm_start_accepted = sum(1 for row in gmres_stats if bool(row.get("warm_start_accepted", False)))
             trusted_check_used = sum(1 for row in gmres_stats if bool(row.get("trusted_check_used", False)))
+            large_direct_sum_used = sum(1 for row in gmres_stats if bool(row.get("large_direct_sum", False)))
             residual_probe_applications = sum(
                 int(row.get("residual_probe_a_applications", 0))
                 for row in gmres_stats
@@ -265,6 +266,7 @@ class SelfLoopBackwardRecorder:
                 "gmres_warm_start_used": int(warm_start_used),
                 "gmres_warm_start_accepted": int(warm_start_accepted),
                 "gmres_trusted_check_used": int(trusted_check_used),
+                "gmres_large_direct_sum_used": int(large_direct_sum_used),
                 "gmres_residual_probe_a_applications": int(residual_probe_applications),
                 "gmres_total_checks": int(sum(per_wave_checks)),
                 "gmres_residual_cpu_readbacks": int(residual_cpu_readbacks),
@@ -292,6 +294,7 @@ class SelfLoopBackwardRecorder:
             "gmres_mean_checks_per_wave": None,
             "gmres_max_checks_per_wave": None,
             "gmres_max_rel_res": None,
+            "gmres_large_direct_sum_used": None,
             "gmres_arnoldi_backend_counts": None,
         }
 
