@@ -2745,6 +2745,62 @@ new large-wave projection at `624-713` blocks x `128` threads, `7.52-8.13 us`,
 kernel-level improvement would need to reduce register pressure or fuse one of
 the group-reduction steps without harming the CGS2 residual gate.
 
+#### Large-Wave Backend Promoted Under Triton Opt-In
+
+Implementation commit: `ed921474`.
+
+After the correctness and profiling results above, I promoted the large-wave
+backend to the existing Triton GMRES opt-in. The production experiment now only
+needs:
+
+```bash
+GPUREC_GMRES_TRITON_ARNOLDI=1
+```
+
+Large waves use `triton_large` by default under that flag. The escape hatch is:
+
+```bash
+GPUREC_GMRES_TRITON_LARGE_ARNOLDI=0
+```
+
+Validation:
+
+```text
+pytest -q
+python -m compileall gpurec/core/kernels/wave_backward.py \
+  tests/test_gmres_self_loop_solver.py \
+  benchmarks/large_dataset_capacity/hogenom_batch_gmres_gradient_check.py \
+  benchmarks/large_dataset_capacity/run_gpurec_benchmark.py
+```
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_large_default_warm_20260606_101257/
+benchmarks/large_dataset_capacity/output/gmres_triton_large_default_gradient_check_committed_20260606_101401/
+```
+
+The committed gradient check recorded
+`ed921474b4ac7e2b36e78953cdbf95a45ee73e7b`:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss | Backend Counts |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Neumann32 | `2784` | n/a | `9.797353e-08` | `1.234564e-07` | `1.713223e-07` | `167456.03125` | n/a |
+| GMRES10 I1 tol `7e-6`, default large Triton | `142` | `87` | `1.791769e-06` | `3.580235e-06` | `3.582774e-06` | `167456.03125` | `triton_large: 59`, `triton_split: 28` |
+
+Largest-10 20-step timing with only `GPUREC_GMRES_TRITON_ARNOLDI=1`:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss | Backend Counts |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Neumann16, current rerun | `27840` | n/a | `2.572` | `3.724` | `0.0994` | `166606.4375` | n/a |
+| GMRES with default large Triton | `2800` | `1793` | `2.545` | `3.728` | `0.0972` | `166606.453125` | `triton_large: 59`, `triton_split: 28` |
+
+This is the strongest current result: the practical one-flag Triton GMRES
+configuration is faster than the Neumann16 rerun in train time and uses `9.9x`
+fewer self-loop backward applications. The final loss difference is still one
+float32 step (`0.015625`) and the Neumann512 gradient check remains the
+correctness gate.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
