@@ -1669,6 +1669,85 @@ profile. The next structural optimization should therefore batch or keep more
 residual-stop decisions on device, or fuse the single-tile Arnoldi step to
 reduce launches, rather than expanding Triton coverage beyond cap-512.
 
+#### Max-3 Cap And Current Nsight Refresh
+
+The buffer-reuse largest-10 run showed no wave needing more than three GMRES
+steps, so I tested the same interval-1 tolerance setting with
+`gmres_max_iter=3` instead of `10`.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cap512_max3_tol7e-6_i1_largest10_20260606_074905/
+benchmarks/large_dataset_capacity/output/nsys_largest10_gmres10_i1_tol7e-6_buffer_reuse_20260606_075108/
+benchmarks/large_dataset_capacity/output/ncu_gmres_buffer_reuse_i1_tol7e-6_hard_family_20260606_075108/
+```
+
+Largest-10 first-step gradient check against Neumann512:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `1.046496e-07` | `1.851861e-07` | `2.090796e-07` |
+| GMRES3 I1 tol `7e-6` | `140` | `140` | `1.761937e-06` | `3.518536e-06` | `3.520320e-06` |
+
+Largest-10 20-step timing:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| GMRES10 I1 tol `7e-6`, cap-512 | `2800` | `2800` | `2.757` | `3.916` | `0.1065` | `166606.453125` |
+| GMRES3 I1 tol `7e-6`, cap-512 | `2800` | `2800` | `2.776` | `3.966` | `0.1075` | `166606.4375` |
+
+Reducing the maximum Krylov dimension did not reduce actual work: both runs
+performed `2800` backward self-loop applications and `2800` residual checks.
+It also did not reduce wall time. The max-10 interval-1/tol `7e-6` setting
+therefore remains the best corrected largest-10 GMRES result.
+
+I also refreshed Nsight profiling on the current best largest-10 run. The
+profiled run used the same `2800` GMRES self-loop applications and `2800`
+checks; profiler wall time was `4.523 s`.
+
+Key `nsys` summaries:
+
+| Bucket | Count | Total Time |
+|---|---:|---:|
+| `cudaLaunchKernel` | `64570` | `200.651 ms` |
+| `cuLaunchKernelEx` | `57285` | `102.338 ms` |
+| `cudaStreamSynchronize` | `3679` | `147.345 ms` |
+| `cudaMemcpyAsync` | `14619` | `248.989 ms` |
+| device-to-device copies | `10940`, `24067.910 MB` | `33.398 ms` |
+| device-to-host copies | `3065`, `0.012 MB` | `2.687 ms` |
+
+Largest kernel buckets in that full benchmark profile:
+
+| Kernel Bucket | Launches | Total Time |
+|---|---:|---:|
+| `_wave_step_kernel` | `26100` | `663.074 ms` |
+| `_wave_backward_uniform_2d_precompute_kernel` | `1740` | `137.494 ms` |
+| `_wave_backward_uniform_2d_jt_kernel` | `2800` | `71.874 ms` |
+| `_gmres_hessenberg_residual_kernel` | `4540` | `14.792 ms` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `740` | `4.319 ms` |
+| `_gmres_arnoldi_reduce_project_norm_kernel` | `740` | `2.710 ms` |
+| `_gmres_arnoldi_dot_partials_kernel` | `740` | `2.226 ms` |
+
+The refreshed `ncu --set basic` samples on the hard family confirm that the
+main GMRES-specific kernels are tiny and underfilled:
+
+| Kernel | Launch Shape | Duration | Registers/Thread | Achieved Occupancy | DRAM Throughput |
+|---|---:|---:|---:|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `1 x 64` | `15.84-16.19 us` | `168` | `4.14-4.27%` | `0.41-0.42%` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `3 x 256` | `4.06 us` | `48` | `16.50-16.92%` | `0.58-0.85%` |
+| `_gmres_hessenberg_residual_kernel` | `1 x 32` | `4.03-4.06 us` | `46` | `2.07-2.09%` | `0.43%` |
+
+The hard family still hits the GMRES cap under this tolerance: the backward-only
+`ncu` runs used `348` self-loop applications and `348` checks over `68` waves,
+with maximum wave iterations `10`. This is different from the corrected
+largest-10 batch, where the same tolerance needed at most three iterations per
+wave. The profiling conclusion is unchanged: the remaining gap to Neumann16 is
+launch/control/copy overhead around many small wave-local kernels, not a CPU
+solve and not a single saturated CUDA kernel. Gluon is not available in the
+current environment, so the practical GPU-kernel path remains Triton unless we
+add Gluon as a deliberate dependency.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
