@@ -1385,6 +1385,54 @@ targets are therefore either prewarming unavoidable variants for optimizer
 runs or attacking the remaining launch/control overhead, especially residual
 checks and the large-wave CGS2 fallback.
 
+#### GMRES10 I4 Timing And Correctness
+
+After the specialization patch, I tested a coarser residual-check schedule:
+GMRES max `10`, tolerance `1e-10`, check interval `4`, with the opt-in Triton
+Arnoldi backend and a warm Triton cache.
+
+Artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_max10_i4_largest10_steps20_20260606_065516/
+```
+
+Largest-10 HOGENOM, same short Adam setup:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann32 baseline | `55680` | n/a | `3.066` | `4.219` | `0.1247` | `166606.4375` |
+| GMRES10 I3 opt-in Triton | `4865` | about `3120` | `3.071` | `4.214` | `0.1231` | `166606.625` |
+| GMRES10 I4 opt-in Triton | `5493` | `2971` | `3.006` | `4.169` | `0.1200` | `166606.46875` |
+
+`GMRES10 I4` uses slightly more self-loop applications than I3, but fewer
+residual checks and lower per-step overhead. On this warmed largest-10 run it
+is the first measured GMRES setting that beats the Neumann32 train time while
+using about `10.1x` fewer self-loop `J^T` applications.
+
+Hard-family correctness against the high `Pi`/Neumann reference remained
+better than Neumann32:
+
+Artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres10_i4_correctness_hard_family_20260606_065537/
+```
+
+`CLU_000680_20_4_C`, reference Neumann512:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Gradient |
+|---|---:|---:|---:|---:|---|
+| Neumann32 | `2176` | n/a | `3.459027e-05` | `3.307442e-05` | `[-4.9283518950504375, -2.3778636587336126, 0.8579352123043589]` |
+| GMRES10 I4 | `638` | `251` | `6.588813e-06` | `6.380493e-06` | `[-4.9285463491555435, -2.377755722398327, 0.8579805382449783]` |
+
+This is progress toward the target state, not the final endpoint. GMRES10 I4
+now beats Neumann32 on the warmed largest-10 timing, but it still does not beat
+Neumann16 (`2.557 s` train time in the same benchmark), and the result still
+depends on opt-in Triton plus a warm cache. The next work should therefore
+focus on removing more residual-check/control overhead, prewarming unavoidable
+variants in a reproducible way, or eliminating the large-wave CGS2 fallback.
+
 Implication for a Triton or Gluon rewrite: rewriting only the small
 Hessenberg/residual kernel is not enough. The useful target is a larger fused
 GMRES step or a lower-compilation, lower-launch Arnoldi implementation. Gluon

@@ -993,3 +993,44 @@ benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_donotspecialize_la
 This is progress but not completion: warmed GMRES10 now roughly ties Neumann32
 while using about `11.4x` fewer self-loop `J^T` applications, but it still does
 not beat Neumann16 and cold-cache runs remain compile dominated.
+
+### GMRES10 I4 Follow-Up
+
+I tested a coarser residual-check schedule after reducing Triton
+specialization: GMRES max `10`, tolerance `1e-10`, check interval `4`, opt-in
+Triton Arnoldi, and a warm Triton cache.
+
+Largest-10 HOGENOM, same short Adam setup:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann32 baseline | `55680` | n/a | `3.066` | `4.219` | `0.1247` | `166606.4375` |
+| GMRES10 I3 opt-in Triton | `4865` | about `3120` | `3.071` | `4.214` | `0.1231` | `166606.625` |
+| GMRES10 I4 opt-in Triton | `5493` | `2971` | `3.006` | `4.169` | `0.1200` | `166606.46875` |
+
+Artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_max10_i4_largest10_steps20_20260606_065516/
+```
+
+On this warmed largest-10 run, GMRES10 I4 is the first measured GMRES setting
+that beats the Neumann32 train time while using about `10.1x` fewer self-loop
+`J^T` applications. It does not beat Neumann16.
+
+The hard-family correctness comparison against the high `Pi`/Neumann reference
+remained favorable:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres10_i4_correctness_hard_family_20260606_065537/
+```
+
+`CLU_000680_20_4_C`, reference Neumann512:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Gradient |
+|---|---:|---:|---:|---:|---|
+| Neumann32 | `2176` | n/a | `3.459027e-05` | `3.307442e-05` | `[-4.9283518950504375, -2.3778636587336126, 0.8579352123043589]` |
+| GMRES10 I4 | `638` | `251` | `6.588813e-06` | `6.380493e-06` | `[-4.9285463491555435, -2.377755722398327, 0.8579805382449783]` |
+
+This confirms that the lower-check schedule did not create an obvious gradient
+accuracy regression on the known hard family.
