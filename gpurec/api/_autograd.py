@@ -95,6 +95,8 @@ class _GeneReconFunction(torch.autograd.Function):
             gmres_tol=static.solver_options.gmres_tol,
             gmres_check_interval=static.solver_options.gmres_check_interval,
             gmres_check_schedule=gmres_check_schedule_for_static(static),
+            gmres_preconditioner=static.solver_options.gmres_preconditioner,
+            gmres_diagonal_preconditioner_floor=static.solver_options.gmres_diagonal_preconditioner_floor,
             bicgstab_max_iter=static.solver_options.bicgstab_max_iter,
             bicgstab_tol=static.solver_options.bicgstab_tol,
             bicgstab_breakdown_tol=static.solver_options.bicgstab_breakdown_tol,

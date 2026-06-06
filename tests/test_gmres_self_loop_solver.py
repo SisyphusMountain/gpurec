@@ -15,6 +15,8 @@ def test_solver_options_accept_gmres_fixed():
         gmres_tol=1e-8,
         gmres_check_interval=2,
         gmres_reuse_check_schedule=True,
+        gmres_preconditioner=" Diagonal ",
+        gmres_diagonal_preconditioner_floor=1e-5,
     )
 
     options.validate()
@@ -23,6 +25,8 @@ def test_solver_options_accept_gmres_fixed():
     assert options.gmres_tol == 1e-8
     assert options.gmres_check_interval == 2
     assert options.gmres_reuse_check_schedule is True
+    assert options.gmres_preconditioner == "diagonal"
+    assert options.gmres_diagonal_preconditioner_floor == 1e-5
 
 
 @pytest.mark.parametrize(
@@ -31,6 +35,8 @@ def test_solver_options_accept_gmres_fixed():
         {"self_loop_solver": "bad"},
         {"gmres_tol": 0.0},
         {"gmres_check_interval": 0},
+        {"gmres_preconditioner": "bad"},
+        {"gmres_diagonal_preconditioner_floor": 0.0},
     ],
 )
 def test_solver_options_reject_invalid_gmres_options(kwargs):
@@ -179,6 +185,7 @@ def test_gmres_self_loop_records_stats_and_stops_early_cpu():
             "check_count": 1,
             "arnoldi_backend": "torch_cgs2",
             "min_check_iter": 1,
+            "preconditioner": "none",
         }
     ]
 
@@ -200,7 +207,7 @@ def test_gmres_self_loop_handles_zero_rhs_cpu():
         wave_backward._GMRES_SELF_LOOP_STATS = old_stats
 
     torch.testing.assert_close(got, rhs)
-    assert stats == [{"iterations": 0, "rel_res": 0.0}]
+    assert stats == [{"iterations": 0, "rel_res": 0.0, "preconditioner": "none"}]
 
 
 def test_gmres_self_loop_handles_zero_rhs_cuda():
@@ -313,6 +320,39 @@ def test_gmres_self_loop_min_check_iter_continues_after_failed_check_cpu():
     assert stats[0]["iterations"] == 4
     assert stats[0]["check_count"] == 3
     assert stats[0]["min_check_iter"] == 2
+
+
+def test_gmres_self_loop_right_preconditioner_reduces_cpu_iterations():
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    calls = 0
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        matrix = torch.diag(torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64))
+        rhs = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+        diagonal_inverse = torch.diag(matrix).reciprocal()
+
+        def apply_a(vec):
+            nonlocal calls
+            calls += 1
+            return matrix @ vec
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=3,
+            tol=1e-12,
+            right_preconditioner=lambda vec: vec * diagonal_inverse,
+            preconditioner_name="diagonal",
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, torch.linalg.solve(matrix, rhs), rtol=1e-12, atol=1e-12)
+    assert calls == 1
+    assert stats[0]["iterations"] == 1
+    assert stats[0]["check_count"] == 1
+    assert stats[0]["preconditioner"] == "diagonal"
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])

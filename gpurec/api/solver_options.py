@@ -14,6 +14,8 @@ class SolverOptions:
     gmres_tol: float = 1e-10
     gmres_check_interval: int = 1
     gmres_reuse_check_schedule: bool = False
+    gmres_preconditioner: str = "none"
+    gmres_diagonal_preconditioner_floor: float = 1e-4
     bicgstab_max_iter: int = 500
     bicgstab_tol: float = 1e-7
     bicgstab_breakdown_tol: float = 1e-30
@@ -39,6 +41,12 @@ class SolverOptions:
         if int(self.gmres_check_interval) < 1:
             raise ValueError("gmres_check_interval must be at least 1")
         self.gmres_reuse_check_schedule = bool(self.gmres_reuse_check_schedule)
+        gmres_preconditioner = str(self.gmres_preconditioner).strip().lower()
+        if gmres_preconditioner not in ("none", "diagonal"):
+            raise ValueError("gmres_preconditioner must be one of: none, diagonal")
+        self.gmres_preconditioner = gmres_preconditioner
+        if float(self.gmres_diagonal_preconditioner_floor) <= 0.0:
+            raise ValueError("gmres_diagonal_preconditioner_floor must be positive")
         if int(self.bicgstab_max_iter) < 1:
             raise ValueError("bicgstab_max_iter must be at least 1")
         if float(self.bicgstab_tol) <= 0.0:

@@ -930,6 +930,8 @@ def _gmres_solve_wave_self_loop(
     fixed_iterations: bool = False,
     check_interval: int = 1,
     min_check_iter: int = 1,
+    right_preconditioner=None,
+    preconditioner_name: str = "none",
     out: torch.Tensor | None = None,
     stats_out=None,
 ) -> torch.Tensor:
@@ -948,7 +950,14 @@ def _gmres_solve_wave_self_loop(
             result = out
         else:
             result = torch.zeros_like(rhs)
-        _record_gmres_self_loop_stats({"iterations": 0, "rel_res": 1.0}, stats_out)
+        _record_gmres_self_loop_stats(
+            {
+                "iterations": 0,
+                "rel_res": 1.0,
+                "preconditioner": str(preconditioner_name),
+            },
+            stats_out,
+        )
         return result
     if tol <= 0.0:
         raise ValueError("gmres_tol must be positive")
@@ -972,7 +981,14 @@ def _gmres_solve_wave_self_loop(
                 result = out
             else:
                 result = torch.zeros_like(rhs)
-            _record_gmres_self_loop_stats({"iterations": 0, "rel_res": 0.0}, stats_out)
+            _record_gmres_self_loop_stats(
+                {
+                    "iterations": 0,
+                    "rel_res": 0.0,
+                    "preconditioner": str(preconditioner_name),
+                },
+                stats_out,
+            )
             return result
         safe_b_norm_t = b_norm_t
 
@@ -986,6 +1002,8 @@ def _gmres_solve_wave_self_loop(
             min_check_iter=min_check_iter,
             b_norm_t=b_norm_t,
             safe_b_norm_t=safe_b_norm_t,
+            right_preconditioner=right_preconditioner,
+            preconditioner_name=preconditioner_name,
             out=out,
             stats_out=stats_out,
         )
@@ -1001,9 +1019,33 @@ def _gmres_solve_wave_self_loop(
         b_norm_t=b_norm_t,
         safe_b_norm_t=safe_b_norm_t,
         b_norm=b_norm,
+        right_preconditioner=right_preconditioner,
+        preconditioner_name=preconditioner_name,
         out=out,
         stats_out=stats_out,
     )
+
+
+def _gmres_write_solution(
+    basis_2d: torch.Tensor,
+    y: torch.Tensor,
+    rhs: torch.Tensor,
+    *,
+    right_preconditioner,
+    out: torch.Tensor | None,
+) -> torch.Tensor:
+    if right_preconditioner is None:
+        result = torch.empty_like(rhs) if out is None else out
+        torch.mv(basis_2d[: y.numel()].t(), y, out=result.reshape(-1))
+        return result
+
+    unpreconditioned = torch.empty_like(rhs)
+    torch.mv(basis_2d[: y.numel()].t(), y, out=unpreconditioned.reshape(-1))
+    preconditioned = right_preconditioner(unpreconditioned)
+    if out is None:
+        return preconditioned
+    out.copy_(preconditioned)
+    return out
 
 
 def _gmres_solve_wave_self_loop_triton_split(
@@ -1016,6 +1058,8 @@ def _gmres_solve_wave_self_loop_triton_split(
     min_check_iter: int,
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
+    right_preconditioner,
+    preconditioner_name: str,
     out: torch.Tensor | None,
     stats_out,
 ) -> torch.Tensor:
@@ -1040,7 +1084,10 @@ def _gmres_solve_wave_self_loop_triton_split(
     check_count = 0
 
     for j in range(max_iter):
-        w = apply_a(basis[j]).reshape(-1)
+        basis_j = basis[j]
+        w = apply_a(
+            basis_j if right_preconditioner is None else right_preconditioner(basis_j)
+        ).reshape(-1)
         _gmres_arnoldi_dot_partials_kernel[grid](
             basis_2d,
             w,
@@ -1130,12 +1177,17 @@ def _gmres_solve_wave_self_loop_triton_split(
             "check_count": int(check_count),
             "arnoldi_backend": "triton_split",
             "min_check_iter": int(min_check_iter),
+            "preconditioner": str(preconditioner_name),
         },
         stats_out,
     )
-    result = torch.empty_like(rhs) if out is None else out
-    torch.mv(basis_2d[:iters].t(), y, out=result.reshape(-1))
-    return result
+    return _gmres_write_solution(
+        basis_2d,
+        y,
+        rhs,
+        right_preconditioner=right_preconditioner,
+        out=out,
+    )
 
 
 def _gmres_solve_wave_self_loop_cgs2(
@@ -1150,6 +1202,8 @@ def _gmres_solve_wave_self_loop_cgs2(
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
     b_norm: float | None,
+    right_preconditioner,
+    preconditioner_name: str,
     out: torch.Tensor | None,
     stats_out,
 ) -> torch.Tensor:
@@ -1185,7 +1239,10 @@ def _gmres_solve_wave_self_loop_cgs2(
     )
 
     for j in range(max_iter):
-        w = apply_a(basis[j]).reshape(-1)
+        basis_j = basis[j]
+        w = apply_a(
+            basis_j if right_preconditioner is None else right_preconditioner(basis_j)
+        ).reshape(-1)
         q = basis_2d[: j + 1]
         coeff = coeff_buf[: j + 1]
         torch.mv(q, w, out=coeff)
@@ -1252,12 +1309,17 @@ def _gmres_solve_wave_self_loop_cgs2(
             "check_count": int(check_count),
             "arnoldi_backend": "torch_cgs2",
             "min_check_iter": int(min_check_iter),
+            "preconditioner": str(preconditioner_name),
         },
         stats_out,
     )
-    result = torch.empty_like(rhs) if out is None else out
-    torch.mv(basis_2d[:iters].t(), y, out=result.reshape(-1))
-    return result
+    return _gmres_write_solution(
+        basis_2d,
+        y,
+        rhs,
+        right_preconditioner=right_preconditioner,
+        out=out,
+    )
 
 
 @triton.jit
@@ -1606,6 +1668,8 @@ def _wave_backward_uniform_2d(
     gmres_check_interval=1,
     gmres_min_check_iter=1,
     gmres_stats_out=None,
+    gmres_preconditioner="none",
+    gmres_diagonal_preconditioner_floor=1e-4,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -1695,6 +1759,9 @@ def _wave_backward_uniform_2d(
     launch_options = {"num_warps": 8}
     self_loop_solver = str(self_loop_solver).strip().lower()
     gmres_self_loop = self_loop_solver in ("gmres", "gmres_fixed")
+    gmres_preconditioner = str(gmres_preconditioner).strip().lower()
+    if gmres_preconditioner not in ("none", "diagonal"):
+        raise ValueError("gmres_preconditioner must be one of: none, diagonal")
     skip_inactive_scratch_zero = not gmres_self_loop
 
     _wave_backward_uniform_2d_precompute_kernel[(n_row_blocks,)](
@@ -1751,8 +1818,26 @@ def _wave_backward_uniform_2d(
         gmres_a_buf = spec_buf
         gmres_rhs = v_k
         gmres_active_mask = active_mask
+        gmres_right_preconditioner = None
+        gmres_preconditioner_name = "none"
         if active_mask is not None:
             gmres_active_mask = active_mask.to(device=device, dtype=torch.bool).contiguous()
+        if gmres_preconditioner == "diagonal":
+            floor = float(gmres_diagonal_preconditioner_floor)
+            if floor <= 0.0:
+                raise ValueError("gmres_diagonal_preconditioner_floor must be positive")
+            gmres_right_scale = term_buf
+            torch.sub(1.0, aw0, out=gmres_right_scale)
+            torch.clamp(gmres_right_scale, min=floor, out=gmres_right_scale)
+            torch.reciprocal(gmres_right_scale, out=gmres_right_scale)
+            gmres_preconditioner_buf = aw345 if aw345 is not None else torch.empty_like(v_k)
+
+            def _right_precondition(term: torch.Tensor) -> torch.Tensor:
+                torch.mul(term, gmres_right_scale, out=gmres_preconditioner_buf)
+                return gmres_preconditioner_buf
+
+            gmres_right_preconditioner = _right_precondition
+            gmres_preconditioner_name = "diagonal"
 
         def _apply_a(term_in: torch.Tensor) -> torch.Tensor:
             _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
@@ -1799,6 +1884,8 @@ def _wave_backward_uniform_2d(
             fixed_iterations=self_loop_solver == "gmres_fixed",
             check_interval=int(gmres_check_interval),
             min_check_iter=int(gmres_min_check_iter),
+            right_preconditioner=gmres_right_preconditioner,
+            preconditioner_name=gmres_preconditioner_name,
             out=v_k,
             stats_out=gmres_stats_out,
         )
@@ -2015,6 +2102,8 @@ def wave_backward_uniform_fused(
     gmres_check_interval=1,
     gmres_min_check_iter=1,
     gmres_stats_out=None,
+    gmres_preconditioner="none",
+    gmres_diagonal_preconditioner_floor=1e-4,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -2115,6 +2204,8 @@ def wave_backward_uniform_fused(
         gmres_check_interval=gmres_check_interval,
         gmres_min_check_iter=gmres_min_check_iter,
         gmres_stats_out=gmres_stats_out,
+        gmres_preconditioner=gmres_preconditioner,
+        gmres_diagonal_preconditioner_floor=gmres_diagonal_preconditioner_floor,
     )
 
 

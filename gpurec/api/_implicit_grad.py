@@ -111,6 +111,8 @@ def implicit_grad_loglik_vjp_wave(
     gmres_tol: float = 1e-10,
     gmres_check_interval: int = 1,
     gmres_check_schedule: list[int] | None = None,
+    gmres_preconditioner: str = "none",
+    gmres_diagonal_preconditioner_floor: float = 1e-4,
     bicgstab_max_iter: int = 500,
     bicgstab_tol: float = 1e-7,
     bicgstab_breakdown_tol: float = 1e-30,
@@ -285,6 +287,8 @@ def implicit_grad_loglik_vjp_wave(
             gmres_check_interval=gmres_check_interval,
             gmres_min_check_iter=gmres_min_check_iter,
             gmres_stats_out=gmres_wave_stats,
+            gmres_preconditioner=gmres_preconditioner,
+            gmres_diagonal_preconditioner_floor=gmres_diagonal_preconditioner_floor,
         )
         if next_gmres_check_schedule is not None:
             observed_iterations = (

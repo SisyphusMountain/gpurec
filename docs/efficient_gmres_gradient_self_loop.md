@@ -1900,6 +1900,94 @@ body. A Triton or Gluon rewrite should therefore be justified by fusing or
 removing more of this small-kernel/check orchestration, not by tuning the
 standalone residual kernel.
 
+#### Diagonal Right Preconditioning
+
+A subagent review ranked diagonal right preconditioning as the next best
+candidate for reducing actual GMRES `A` applications. The retained precompute
+kernel already stores the diagonal self-loop weight in `aw0`, so I added an
+opt-in right preconditioner:
+
+```text
+SolverOptions(gmres_preconditioner="diagonal")
+--gmres-preconditioner diagonal
+--gmres-diagonal-preconditioner-floor 1e-4
+```
+
+The implemented solve is right-preconditioned GMRES:
+
+```text
+K z = A M z, then v = M z
+M = 1 / clamp(1 - diag_wt, floor)
+```
+
+This preserves the checked residual for the original system because each
+Arnoldi matvec applies `A(M q)`, and the final returned vector is scaled by
+`M`. The option is default-off, and the cached check schedule key includes the
+preconditioner settings so schedules do not cross solver variants.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_diagonal_precond_tol7e-6_i1_largest10_20260606_083216/
+benchmarks/large_dataset_capacity/output/gmres_diagonal_precond_tol7e-6_i1_largest10_20260606_083250/
+benchmarks/large_dataset_capacity/output/nsys_largest10_gmres10_i1_tol7e-6_diagonal_precond_20260606_083427/
+benchmarks/large_dataset_capacity/output/gmres_tol_sweep_i1_largest10_20260606_083337/
+benchmarks/large_dataset_capacity/output/gmres_tol_fine_sweep_i1_largest10_20260606_083357/
+```
+
+Largest-10 gradient check against Neumann512, with one schedule warmup before
+the measured GMRES row:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `9.692890e-08` | `1.234574e-07` | `2.090796e-07` |
+| GMRES10 I1 tol `7e-6`, diagonal | `140` | `87` | `1.684517e-06` | `3.333350e-06` | `3.336457e-06` |
+
+The preconditioner passes the gradient gate, but it does not reduce the
+first-step self-loop application count. The 20-step timing is correspondingly
+negative:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| GMRES10 I1 tol `7e-6`, checked-y + schedule | `2800` | `1793` | `2.689` | `3.968` | `0.1036` | `166606.453125` |
+| GMRES10 I1 tol `7e-6`, diagonal + schedule | `2800` | `1793` | `2.785` | `3.948` | `0.1083` | `166606.4375` |
+
+The `nsys` comparison explains the slowdown:
+
+| Metric | Schedule Only | Diagonal + Schedule |
+|---|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` launches | `2800` | `2800` |
+| `_gmres_hessenberg_residual_kernel` launches | `1793` | `1793` |
+| `cudaLaunchKernel` calls | `62830` | `72590` |
+| `cudaMemcpyAsync` calls | `11872` | `13612` |
+| device-to-device copies | `9200`, `24067.903 MB` | `10940`, `28915.511 MB` |
+| reciprocal kernels | `0` | `1740` |
+| clamp-scalar kernels | `3280` | `5020` |
+| binary float elementwise kernels | `3060` | `7600` |
+
+The current diagonal implementation adds scale construction and application
+overhead without reducing Krylov iterations. It is useful as a correctness-tested
+experimental hook, but it should not be used for the largest-10 production
+setting unless a later fused implementation or different preconditioner actually
+reduces self-loop applications.
+
+I also swept looser non-preconditioned tolerances to check whether the current
+`7e-6` point is too conservative:
+
+| GMRES Tol | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| `8e-6` | `138` | `87` | `1.045550e-05` | `2.246925e-05` | `2.244268e-05` |
+| `9e-6` | `138` | `87` | `1.051128e-05` | `2.259270e-05` | `2.256505e-05` |
+| `1e-5` | `138` | `87` | `1.042568e-05` | `2.240752e-05` | `2.238117e-05` |
+| `2e-5` | `137` | `87` | `1.597647e-05` | `3.321004e-05` | `3.318367e-05` |
+| `5e-5` | `136` | `87` | `3.032280e-05` | `6.432130e-05` | `6.429629e-05` |
+
+Those settings save only two to four self-loop applications on the first
+backward pass and fail the `~1e-5` gradient-error gate, especially in relative
+infinity norm. Therefore the current safe largest-10 setting remains
+GMRES10/check-interval-1/tol `7e-6` with checked-y reuse and the cached check
+schedule.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

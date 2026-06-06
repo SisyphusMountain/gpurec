@@ -68,6 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gmres-tols", type=_csv_floats, default=_csv_floats("1e-8,1e-7,1e-6"))
     parser.add_argument("--gmres-check-interval", type=int, default=4)
     parser.add_argument("--gmres-reuse-check-schedule", action="store_true")
+    parser.add_argument("--gmres-preconditioner", choices=("none", "diagonal"), default="none")
+    parser.add_argument("--gmres-diagonal-preconditioner-floor", type=float, default=1e-4)
     parser.add_argument(
         "--gmres-schedule-warmups",
         type=int,
@@ -114,6 +116,8 @@ def _solver_options(args: argparse.Namespace, *, solver: str, iterations: int, g
         gmres_tol=float(gmres_tol),
         gmres_check_interval=int(args.gmres_check_interval),
         gmres_reuse_check_schedule=bool(args.gmres_reuse_check_schedule),
+        gmres_preconditioner=str(args.gmres_preconditioner),
+        gmres_diagonal_preconditioner_floor=float(args.gmres_diagonal_preconditioner_floor),
         bicgstab_max_iter=int(args.bicgstab_max_iter),
         bicgstab_tol=float(args.bicgstab_tol),
         adjoint_pruning_threshold=float(args.adjoint_pruning_threshold) if args.use_adjoint_pruning else 0.0,

@@ -39,6 +39,8 @@ def gmres_check_schedule_for_static(static: _BatchStatic) -> list[int] | None:
         int(options.neumann_terms),
         float(options.gmres_tol),
         int(options.gmres_check_interval),
+        str(options.gmres_preconditioner).strip().lower(),
+        float(options.gmres_diagonal_preconditioner_floor),
         bool(options.use_adjoint_pruning),
         float(options.adjoint_pruning_threshold),
         wave_signature,

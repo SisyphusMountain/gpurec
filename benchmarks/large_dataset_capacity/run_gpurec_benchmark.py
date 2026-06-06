@@ -70,6 +70,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "minimum first residual-check iteration on the next backward pass."
         ),
     )
+    parser.add_argument("--gmres-preconditioner", choices=("none", "diagonal"), default="none")
+    parser.add_argument("--gmres-diagonal-preconditioner-floor", type=float, default=1e-4)
     parser.add_argument("--bicgstab-max-iter", type=int, default=500)
     parser.add_argument("--bicgstab-tol", type=float, default=1e-7)
     parser.add_argument("--eval-only", action="store_true")
@@ -95,6 +97,8 @@ def solver_options_from_args(args: argparse.Namespace) -> SolverOptions:
         gmres_tol=args.gmres_tol,
         gmres_check_interval=args.gmres_check_interval,
         gmres_reuse_check_schedule=args.gmres_reuse_check_schedule,
+        gmres_preconditioner=args.gmres_preconditioner,
+        gmres_diagonal_preconditioner_floor=args.gmres_diagonal_preconditioner_floor,
         bicgstab_max_iter=args.bicgstab_max_iter,
         bicgstab_tol=args.bicgstab_tol,
     )

@@ -44,6 +44,10 @@ def test_run_gpurec_benchmark_wires_gmres_solver_options(tmp_path: Path):
             "--gmres-check-interval",
             "3",
             "--gmres-reuse-check-schedule",
+            "--gmres-preconditioner",
+            "diagonal",
+            "--gmres-diagonal-preconditioner-floor",
+            "1e-5",
         ]
     )
 
@@ -54,6 +58,8 @@ def test_run_gpurec_benchmark_wires_gmres_solver_options(tmp_path: Path):
     assert options.gmres_tol == 1e-8
     assert options.gmres_check_interval == 3
     assert options.gmres_reuse_check_schedule is True
+    assert options.gmres_preconditioner == "diagonal"
+    assert options.gmres_diagonal_preconditioner_floor == 1e-5
 
 
 def test_run_gpurec_benchmark_gmres_defaults_to_neumann_terms(tmp_path: Path):
