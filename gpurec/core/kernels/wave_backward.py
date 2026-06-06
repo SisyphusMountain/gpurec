@@ -662,6 +662,8 @@ def _gmres_hessenberg_rel_res(
     iters: int,
     b_norm: float | None,
     residual_buf: torch.Tensor | None,
+    y_buf: torch.Tensor | None = None,
+    store_y: bool = False,
 ) -> float:
     if hessenberg.device.type != "cuda" or int(hessenberg.shape[1]) > _GMRES_TRITON_HESSENBERG_MAX_M:
         if b_norm is None:
@@ -670,10 +672,16 @@ def _gmres_hessenberg_rel_res(
         rhs_sub = torch.zeros((iters + 1,), dtype=hessenberg.dtype, device=hessenberg.device)
         rhs_sub[0] = beta
         y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+        if store_y:
+            if y_buf is None:
+                raise ValueError("y_buf is required when store_y=True")
+            y_buf[:iters].copy_(y)
         return float(torch.linalg.vector_norm(h_sub @ y - rhs_sub).detach().cpu()) / b_norm
 
     if residual_buf is None:
         raise ValueError("residual_buf is required for CUDA GMRES residual checks")
+    if store_y and y_buf is None:
+        raise ValueError("y_buf is required when store_y=True")
     max_m = int(hessenberg.shape[1])
     block_r = triton.next_power_of_2(max_m + 1)
     block_c = triton.next_power_of_2(max_m)
@@ -681,13 +689,13 @@ def _gmres_hessenberg_rel_res(
         hessenberg,
         beta,
         residual_buf,
-        residual_buf,
+        y_buf if store_y else residual_buf,
         max_m,
         int(iters),
         block_r,
         block_c,
         DTYPE=_tl_float_dtype(hessenberg.dtype),
-        STORE_Y=False,
+        STORE_Y=bool(store_y),
         num_warps=1,
     )
     return float(residual_buf.detach().cpu())
@@ -1001,6 +1009,7 @@ def _gmres_solve_wave_self_loop_triton_split(
     norm_partials = torch.empty((num_tiles,), dtype=rhs.dtype, device=rhs.device)
     work = torch.empty((n,), dtype=rhs.dtype, device=rhs.device)
     residual_buf = torch.empty((), dtype=rhs.dtype, device=rhs.device)
+    y_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     last_j = 0
     rel_res = 1.0
     check_count = 0
@@ -1076,21 +1085,14 @@ def _gmres_solve_wave_self_loop_triton_split(
                 iters=j + 1,
                 b_norm=None,
                 residual_buf=residual_buf,
+                y_buf=y_buf,
+                store_y=True,
             )
             if rel_res <= tol:
                 break
 
     iters = int(last_j + 1)
-    y, final_rel_res = _gmres_hessenberg_solve(
-        hessenberg,
-        b_norm_t,
-        iters=iters,
-        b_norm=None,
-        residual_buf=residual_buf,
-        read_residual=False,
-    )
-    if final_rel_res is not None:
-        rel_res = final_rel_res
+    y = y_buf[:iters]
     if _GMRES_SELF_LOOP_STATS is not None:
         _GMRES_SELF_LOOP_STATS.append(
             {
@@ -1143,6 +1145,11 @@ def _gmres_solve_wave_self_loop_cgs2(
         if rhs.device.type == "cuda" and not fixed_iterations
         else None
     )
+    y_buf = (
+        torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
+        if residual_buf is not None
+        else None
+    )
 
     for j in range(max_iter):
         w = apply_a(basis[j]).reshape(-1)
@@ -1170,6 +1177,8 @@ def _gmres_solve_wave_self_loop_cgs2(
                     iters=j + 1,
                     b_norm=b_norm,
                     residual_buf=residual_buf,
+                    y_buf=y_buf,
+                    store_y=y_buf is not None,
                 )
                 if rel_res <= tol:
                     break
@@ -1184,17 +1193,20 @@ def _gmres_solve_wave_self_loop_cgs2(
     iters = int(last_j + 1)
     if fixed_iterations:
         check_count += 1
-    read_final_residual = bool(_GMRES_SELF_LOOP_STATS is not None and fixed_iterations)
-    y, final_rel_res = _gmres_hessenberg_solve(
-        hessenberg,
-        b_norm_t,
-        iters=iters,
-        b_norm=b_norm,
-        residual_buf=residual_buf,
-        read_residual=read_final_residual,
-    )
-    if final_rel_res is not None:
-        rel_res = final_rel_res
+    if y_buf is None:
+        read_final_residual = bool(_GMRES_SELF_LOOP_STATS is not None and fixed_iterations)
+        y, final_rel_res = _gmres_hessenberg_solve(
+            hessenberg,
+            b_norm_t,
+            iters=iters,
+            b_norm=b_norm,
+            residual_buf=residual_buf,
+            read_residual=read_final_residual,
+        )
+        if final_rel_res is not None:
+            rel_res = final_rel_res
+    else:
+        y = y_buf[:iters]
     if _GMRES_SELF_LOOP_STATS is not None:
         _GMRES_SELF_LOOP_STATS.append(
             {

@@ -1629,10 +1629,10 @@ result and the fixed Neumann baselines:
 | GMRES10 I4 tol `1e-6`, cap-512 | `4380` | `2620` | `3.011` | `4.184` | `0.1196` | `166606.4375` |
 | GMRES10 I1 tol `7e-6`, cap-512 | `2800` | `2800` | `2.757` | `3.916` | `0.1065` | `166606.453125` |
 
-This is the best corrected largest-10 GMRES setting so far. It uses about
-`9.9x` fewer self-loop applications than Neumann16 and about `19.9x` fewer than
-Neumann32. It is faster than Neumann32 by `0.317 s`, but still slower than
-Neumann16 by `0.197 s` in this 20-step timing.
+At this point, this was the best corrected largest-10 GMRES setting. It used
+about `9.9x` fewer self-loop applications than Neumann16 and about `19.9x`
+fewer than Neumann32. It was faster than Neumann32 by `0.317 s`, but still
+slower than Neumann16 by `0.197 s` in this 20-step timing.
 
 The implementation change behind the last row is intentionally small:
 
@@ -1700,7 +1700,8 @@ Largest-10 20-step timing:
 Reducing the maximum Krylov dimension did not reduce actual work: both runs
 performed `2800` backward self-loop applications and `2800` residual checks.
 It also did not reduce wall time. The max-10 interval-1/tol `7e-6` setting
-therefore remains the best corrected largest-10 GMRES result.
+therefore remained the best corrected largest-10 GMRES result before the
+checked-y reuse patch below.
 
 I also refreshed Nsight profiling on the current best largest-10 run. The
 profiled run used the same `2800` GMRES self-loop applications and `2800`
@@ -1747,6 +1748,64 @@ launch/control/copy overhead around many small wave-local kernels, not a CPU
 solve and not a single saturated CUDA kernel. Gluon is not available in the
 current environment, so the practical GPU-kernel path remains Triton unless we
 add Gluon as a deliberate dependency.
+
+#### Reusing The Last Checked GMRES Solution
+
+The `nsys` result above showed that each adaptive wave paid for residual checks
+and then launched `_gmres_hessenberg_residual_kernel` again at wave exit to
+materialize the small least-squares solution `y`. This was redundant: the final
+adaptive check already has the current Hessenberg matrix. I changed the CUDA
+residual check to optionally store `y`, and adaptive GMRES now reuses that
+stored vector instead of launching the final solve kernel.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_reuse_checked_y_tol7e-6_i1_largest10_20260606_075745/
+benchmarks/large_dataset_capacity/output/nsys_largest10_gmres10_i1_tol7e-6_reuse_checked_y_20260606_075851/
+benchmarks/large_dataset_capacity/output/ncu_gmres_reuse_checked_y_i1_tol7e-6_hard_family_20260606_075851/
+```
+
+Largest-10 first-step gradient check against Neumann512:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `8.936047e-08` | `1.234574e-07` | `1.893820e-07` |
+| GMRES10 I1 tol `7e-6`, checked-y reuse | `140` | `140` | `1.730390e-06` | `3.395078e-06` | `3.398378e-06` |
+
+Largest-10 20-step timing:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16 | `27840` | n/a | `2.560` | `3.718` | `0.0997` | `166606.4375` |
+| Neumann32 | `55680` | n/a | `3.074` | `4.367` | `0.1251` | `166606.4375` |
+| GMRES10 I1 tol `7e-6`, buffer reuse | `2800` | `2800` | `2.757` | `3.916` | `0.1065` | `166606.453125` |
+| GMRES10 I1 tol `7e-6`, checked-y reuse | `2800` | `2800` | `2.731` | `3.910` | `0.1061` | `166606.4375` |
+
+The VJP count and residual-check count are unchanged. The patch only removes
+redundant per-wave post-check work. It improves train time by `0.026 s` versus
+the previous buffer-reuse result. GMRES is now `0.343 s` faster than Neumann32
+but remains `0.171 s` slower than Neumann16 on this 20-step largest-10 timing.
+
+The follow-up `nsys` comparison confirmed the expected launch/copy reduction:
+
+| Metric | Buffer Reuse | Checked-y Reuse |
+|---|---:|---:|
+| profiled wall time | `4.523 s` | `4.358 s` |
+| `_gmres_hessenberg_residual_kernel` launches | `4540` | `2800` |
+| `_gmres_hessenberg_residual_kernel` total time | `14.792 ms` | `10.998 ms` |
+| `cudaLaunchKernel` calls | `64570` | `62830` |
+| `cuLaunchKernelEx` calls | `57285` | `55545` |
+| `cudaMemcpyAsync` calls | `14619` | `12879` |
+| device-to-device copies | `10940` | `9200` |
+| device-to-host copies | `3065` | `3065` |
+
+The `ncu` sample on the hard family shows why this is only a small win:
+storing `y` makes each residual kernel heavier, but still tiny. The checked-y
+residual kernel used a `1 x 32` launch, took `5.31-5.34 us`, used `78`
+registers/thread, and reached only `2.10-2.12%` achieved occupancy. The earlier
+no-store residual sample was `4.03-4.06 us` with `46` registers/thread. Fewer
+launches win, but the remaining D2H scalar residual checks are unchanged.
 
 ## Recommended First Experiment
 

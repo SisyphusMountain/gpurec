@@ -228,6 +228,7 @@ def test_gmres_hessenberg_residual_kernel_matches_lstsq_cuda(dtype):
     hessenberg = hessenberg_cpu.to(device=device, dtype=dtype)
     beta = torch.tensor(2.5, dtype=dtype, device=device)
     residual_buf = torch.empty((), dtype=dtype, device=device)
+    y_buf = torch.empty((max_m,), dtype=dtype, device=device)
 
     for iters in (1, 4, 10, 16):
         got = wave_backward._gmres_hessenberg_rel_res(
@@ -236,6 +237,8 @@ def test_gmres_hessenberg_residual_kernel_matches_lstsq_cuda(dtype):
             iters=iters,
             b_norm=float(beta.detach().cpu()),
             residual_buf=residual_buf,
+            y_buf=y_buf,
+            store_y=True,
         )
         h_sub = hessenberg[: iters + 1, :iters]
         rhs_sub = torch.zeros((iters + 1,), dtype=dtype, device=device)
@@ -246,6 +249,12 @@ def test_gmres_hessenberg_residual_kernel_matches_lstsq_cuda(dtype):
         abs_tol = 2e-5 if dtype == torch.float32 else 1e-7
         rel_tol = 5e-5 if dtype == torch.float32 else 1e-10
         assert got == pytest.approx(expected, rel=rel_tol, abs=abs_tol)
+        torch.testing.assert_close(
+            y_buf[:iters],
+            y,
+            rtol=2e-4 if dtype == torch.float32 else 1e-10,
+            atol=2e-5 if dtype == torch.float32 else 1e-10,
+        )
 
 
 def test_gmres_self_loop_matches_dense_solve_cuda():
