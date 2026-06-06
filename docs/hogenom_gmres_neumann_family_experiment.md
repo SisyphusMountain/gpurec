@@ -942,3 +942,54 @@ the reduce/project dot kernel was `4.32-4.77 us` at `47-52` blocks with
 launch/specialization/fusion problem. A Gluon rewrite is worth considering only
 if it lets us fuse a larger GMRES step or reduce specialization overhead; a
 drop-in rewrite of the tiny Hessenberg kernel is not the right target.
+
+### Specialization Reduction Follow-Up
+
+I reduced opt-in Triton specialization by making `NUM_TILES` and residual
+`ITERS` runtime scalars, adding `do_not_specialize` for scalar runtime inputs,
+and using a minimum Arnoldi reduction bucket of `BLOCK_TILES=64` for small
+waves. This leaves the GMRES iteration counts unchanged; it only reduces the
+number of Triton variants compiled by the opt-in backend.
+
+One-family isolated-cache smoke, `steps=2`, adaptive GMRES10 I3:
+
+| Variant | Wall Seconds | Step 1 | Step 2 | Triton Cache Files |
+|---|---:|---:|---:|---:|
+| original opt-in Triton split | `41.30` | `39.35` | `0.985` | `3668` |
+| runtime `NUM_TILES` only | `26.02` | `24.97` | `0.075` | `1940` |
+| runtime scalars + min `BLOCK_TILES=64` | `18.64` | `17.61` | `0.075` | `1121` |
+
+Largest-10 cold-cache opt-in run after the specialization patch:
+
+| Metric | Before | After |
+|---|---:|---:|
+| wall seconds | `35.100` | `25.419` |
+| train seconds | `33.956` | `24.278` |
+| step 1 seconds | `30.655` | `21.931` |
+| mean step seconds, steps 2-20 | `0.174` | `0.124` |
+| late JIT-looking spikes | `0.626 s`, `0.540 s` | none observed |
+| total self-loop backward iterations | `4769` | `4863` |
+
+Largest-10 rerun with the same warmed Triton cache:
+
+| Metric | Value |
+|---|---:|
+| train seconds | `3.071` |
+| wall seconds | `4.214` |
+| step 1 seconds | `0.732` |
+| mean step seconds, steps 2-20 | `0.123` |
+| total self-loop backward iterations | `4865` |
+| backend counts | `triton_split: 920`, `torch_cgs2: 820` |
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_runtime_num_tiles_cold_smoke_20260606_064326/
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_donotspecialize_cold_smoke_20260606_064801/
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_donotspecialize_largest10_steps20_20260606_064842/
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_donotspecialize_largest10_steps20_warm_20260606_064937/
+```
+
+This is progress but not completion: warmed GMRES10 now roughly ties Neumann32
+while using about `11.4x` fewer self-loop `J^T` applications, but it still does
+not beat Neumann16 and cold-cache runs remain compile dominated.

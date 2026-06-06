@@ -19,6 +19,7 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 _GMRES_SELF_LOOP_STATS = None
 _GMRES_TRITON_HESSENBERG_MAX_M = 16
 _GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES = 1024
+_GMRES_TRITON_ARNOLDI_MIN_BLOCK_TILES = 64
 _GMRES_TRITON_ARNOLDI_BLOCK_N = 512
 
 
@@ -576,14 +577,14 @@ def _wave_backward_uniform_2d_jt_kernel(
         tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["ITERS"])
 def _gmres_hessenberg_residual_kernel(
     hessenberg_ptr,
     beta_ptr,
     residual_ptr,
     y_ptr,
     MAX_M: tl.constexpr,
-    ITERS: tl.constexpr,
+    ITERS,
     BLOCK_R: tl.constexpr,
     BLOCK_C: tl.constexpr,
     DTYPE: tl.constexpr,
@@ -736,7 +737,7 @@ def _gmres_hessenberg_solve(
     return y[:iters], rel_res
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["N", "J"])
 def _gmres_arnoldi_dot_partials_kernel(
     basis_ptr,
     work_in_ptr,
@@ -763,7 +764,7 @@ def _gmres_arnoldi_dot_partials_kernel(
     tl.store(partials_ptr + tile * MAX_ITER + k, partial, mask=k_mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["N", "NUM_TILES", "J"])
 def _gmres_arnoldi_reduce_project_dot_kernel(
     basis_ptr,
     work_in_ptr,
@@ -771,7 +772,7 @@ def _gmres_arnoldi_reduce_project_dot_kernel(
     hessenberg_ptr,
     work_ptr,
     N,
-    NUM_TILES: tl.constexpr,
+    NUM_TILES,
     J,
     MAX_ITER: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -805,7 +806,7 @@ def _gmres_arnoldi_reduce_project_dot_kernel(
     tl.store(partials_ptr + tile * MAX_ITER + k, partial2, mask=k_mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["N", "NUM_TILES", "J"])
 def _gmres_arnoldi_reduce_project_norm_kernel(
     basis_ptr,
     partials_ptr,
@@ -813,7 +814,7 @@ def _gmres_arnoldi_reduce_project_norm_kernel(
     work_ptr,
     norm_partials_ptr,
     N,
-    NUM_TILES: tl.constexpr,
+    NUM_TILES,
     J,
     MAX_ITER: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -852,14 +853,14 @@ def _gmres_arnoldi_reduce_project_norm_kernel(
     tl.store(norm_partials_ptr + tile, norm_sq)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["N", "NUM_TILES", "J"])
 def _gmres_arnoldi_reduce_norm_normalize_kernel(
     basis_ptr,
     hessenberg_ptr,
     work_ptr,
     norm_partials_ptr,
     N,
-    NUM_TILES: tl.constexpr,
+    NUM_TILES,
     J,
     MAX_ITER: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -887,7 +888,10 @@ def _gmres_can_use_triton_arnoldi(rhs: torch.Tensor, max_iter: int, fixed_iterat
         return False
     n = int(rhs.numel())
     num_tiles = triton.cdiv(n, _GMRES_TRITON_ARNOLDI_BLOCK_N)
-    block_tiles = triton.next_power_of_2(num_tiles)
+    block_tiles = max(
+        _GMRES_TRITON_ARNOLDI_MIN_BLOCK_TILES,
+        triton.next_power_of_2(num_tiles),
+    )
     return block_tiles <= _GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES
 
 
@@ -967,7 +971,7 @@ def _gmres_solve_wave_self_loop_triton_split(
     n = int(rhs.numel())
     block_n = _GMRES_TRITON_ARNOLDI_BLOCK_N
     num_tiles = triton.cdiv(n, block_n)
-    block_tiles = triton.next_power_of_2(num_tiles)
+    block_tiles = max(_GMRES_TRITON_ARNOLDI_MIN_BLOCK_TILES, triton.next_power_of_2(num_tiles))
     block_k = triton.next_power_of_2(max_iter)
     grid = (num_tiles,)
 

@@ -1310,6 +1310,81 @@ JIT-looking spikes (`0.626 s` and `0.540 s`). This is why the prototype is
 opt-in: it improves one backward-only float32 hard-family solve, but it does
 not yet improve the broader end-to-end benchmark.
 
+#### Specialization Reduction Follow-Up
+
+The first Triton prototype still specialized on values that are scalar runtime
+inputs rather than true compile-time structure. I changed:
+
+- `NUM_TILES` in the split-Arnoldi reduction kernels from `tl.constexpr` to a
+  runtime scalar;
+- `ITERS` in `_gmres_hessenberg_residual_kernel` from `tl.constexpr` to a
+  runtime scalar;
+- `do_not_specialize` for `N`, `J`, `NUM_TILES`, and residual `ITERS`;
+- the opt-in Arnoldi reduction bucket to use at least `BLOCK_TILES=64`, so
+  small waves do not compile separate 1/2/4/8/16/32-tile variants.
+
+This does not change the GMRES math or the number of `J^T` applications. It
+only reduces the number of Triton variants the opt-in path asks the compiler
+to build.
+
+One-family isolated-cache smoke, same largest HOGENOM family as above,
+`steps=2`, adaptive GMRES10 I3:
+
+| Variant | Wall Seconds | Step 1 | Step 2 | Triton Cache Files |
+|---|---:|---:|---:|---:|
+| original opt-in Triton split | `41.30` | `39.35` | `0.985` | `3668` |
+| runtime `NUM_TILES` only | `26.02` | `24.97` | `0.075` | `1940` |
+| runtime scalars + min `BLOCK_TILES=64` | `18.64` | `17.61` | `0.075` | `1121` |
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_runtime_num_tiles_cold_smoke_20260606_064326/
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_donotspecialize_cold_smoke_20260606_064801/
+```
+
+Largest-10 cold-cache opt-in run:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_donotspecialize_largest10_steps20_20260606_064842/
+```
+
+| Metric | Before | After |
+|---|---:|---:|
+| wall seconds | `35.100` | `25.419` |
+| train seconds | `33.956` | `24.278` |
+| step 1 seconds | `30.655` | `21.931` |
+| mean step seconds, steps 2-20 | `0.174` | `0.124` |
+| late JIT-looking spikes | `0.626 s`, `0.540 s` | none observed |
+| cache files | not isolated | `1512` |
+| total self-loop backward iterations | `4769` | `4863` |
+| backend counts | `triton_split: 920`, `torch_cgs2: 820` | same |
+
+Largest-10 rerun with the same warmed Triton cache:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_donotspecialize_largest10_steps20_warm_20260606_064937/
+```
+
+| Metric | Value |
+|---|---:|
+| train seconds | `3.071` |
+| wall seconds | `4.214` |
+| step 1 seconds | `0.732` |
+| mean step seconds, steps 2-20 | `0.123` |
+| total self-loop backward iterations | `4865` |
+| backend counts | `triton_split: 920`, `torch_cgs2: 820` |
+| final loss | `166606.625` |
+
+This is a real overhead improvement, but it still does not prove the final
+goal. The warmed opt-in GMRES10 run now roughly ties the earlier Neumann32
+train time (`3.071 s` vs `3.066 s`) while using about `11.4x` fewer self-loop
+applications (`4865` vs `55680`). It still does not beat Neumann16, and the
+cold-cache run is still dominated by first-step compilation. The next useful
+targets are therefore either prewarming unavoidable variants for optimizer
+runs or attacking the remaining launch/control overhead, especially residual
+checks and the large-wave CGS2 fallback.
+
 Implication for a Triton or Gluon rewrite: rewriting only the small
 Hessenberg/residual kernel is not enough. The useful target is a larger fused
 GMRES step or a lower-compilation, lower-launch Arnoldi implementation. Gluon
