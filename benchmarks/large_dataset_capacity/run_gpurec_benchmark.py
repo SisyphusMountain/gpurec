@@ -62,6 +62,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--gmres-tol", type=float, default=1e-10)
     parser.add_argument("--gmres-check-interval", type=int, default=1)
+    parser.add_argument(
+        "--gmres-reuse-check-schedule",
+        action="store_true",
+        help=(
+            "Reuse each wave's previous adaptive GMRES iteration count as the "
+            "minimum first residual-check iteration on the next backward pass."
+        ),
+    )
     parser.add_argument("--bicgstab-max-iter", type=int, default=500)
     parser.add_argument("--bicgstab-tol", type=float, default=1e-7)
     parser.add_argument("--eval-only", action="store_true")
@@ -86,6 +94,7 @@ def solver_options_from_args(args: argparse.Namespace) -> SolverOptions:
         self_loop_solver=args.self_loop_solver,
         gmres_tol=args.gmres_tol,
         gmres_check_interval=args.gmres_check_interval,
+        gmres_reuse_check_schedule=args.gmres_reuse_check_schedule,
         bicgstab_max_iter=args.bicgstab_max_iter,
         bicgstab_tol=args.bicgstab_tol,
     )

@@ -67,6 +67,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gmres-iters", type=int, default=10)
     parser.add_argument("--gmres-tols", type=_csv_floats, default=_csv_floats("1e-8,1e-7,1e-6"))
     parser.add_argument("--gmres-check-interval", type=int, default=4)
+    parser.add_argument("--gmres-reuse-check-schedule", action="store_true")
+    parser.add_argument(
+        "--gmres-schedule-warmups",
+        type=int,
+        default=0,
+        help=(
+            "Discard this many same-solver GMRES backward passes before the "
+            "measured gradient, preserving only the cached GMRES check schedule."
+        ),
+    )
     parser.add_argument("--bicgstab-max-iter", type=int, default=1000)
     parser.add_argument("--bicgstab-tol", type=float, default=1e-8)
     parser.add_argument("--use-adjoint-pruning", action="store_true")
@@ -103,6 +113,7 @@ def _solver_options(args: argparse.Namespace, *, solver: str, iterations: int, g
         self_loop_solver=solver,
         gmres_tol=float(gmres_tol),
         gmres_check_interval=int(args.gmres_check_interval),
+        gmres_reuse_check_schedule=bool(args.gmres_reuse_check_schedule),
         bicgstab_max_iter=int(args.bicgstab_max_iter),
         bicgstab_tol=float(args.bicgstab_tol),
         adjoint_pruning_threshold=float(args.adjoint_pruning_threshold) if args.use_adjoint_pruning else 0.0,
@@ -127,6 +138,12 @@ def _cuda_memory(device: torch.device) -> dict[str, int] | None:
     }
 
 
+def _clear_forward_warm_starts(model: GeneReconModel) -> None:
+    for static in model.batch_statics:
+        static.warm_E = None
+    model.warm_E = None
+
+
 def _run_gradient(
     model: GeneReconModel,
     args: argparse.Namespace,
@@ -138,6 +155,20 @@ def _run_gradient(
     device = model.theta.device
     model.solver_options = _solver_options(args, solver=solver, iterations=iterations, gmres_tol=gmres_tol)
     model.clear_warm_starts()
+    warmups = (
+        max(0, int(args.gmres_schedule_warmups))
+        if solver == "gmres" and bool(args.gmres_reuse_check_schedule)
+        else 0
+    )
+    for _ in range(warmups):
+        model.theta.grad = None
+        model.receiver_weights.grad = None
+        warmup_loss = model()
+        with SelfLoopBackwardRecorder(model) as recorder:
+            recorder.backward(warmup_loss)
+            _cuda_sync(device)
+    if warmups:
+        _clear_forward_warm_starts(model)
     model.theta.grad = None
     model.receiver_weights.grad = None
     if device.type == "cuda":

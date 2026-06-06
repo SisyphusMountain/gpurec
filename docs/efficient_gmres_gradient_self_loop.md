@@ -1807,6 +1807,99 @@ registers/thread, and reached only `2.10-2.12%` achieved occupancy. The earlier
 no-store residual sample was `4.03-4.06 us` with `46` registers/thread. Fewer
 launches win, but the remaining D2H scalar residual checks are unchanged.
 
+#### Reusing The Previous Check Schedule
+
+The largest-10 checked-y run showed that every backward pass needed the same
+GMRES work: `87` wave solves, `140` self-loop applications, and no wave used
+more than three Krylov iterations. With `gmres_check_interval=1`, adaptive GMRES
+still checked the residual after every GMRES iteration. That means a wave that
+always converges in three iterations paid three scalar residual checks every
+backward pass.
+
+I added an opt-in schedule cache:
+
+```text
+SolverOptions(gmres_reuse_check_schedule=True)
+--gmres-reuse-check-schedule
+```
+
+The schedule is stored on the batch static state and is keyed by the GMRES
+parameters, adjoint pruning parameters, and wave layout. On the first backward
+pass there is no schedule, so the behavior is identical to ordinary adaptive
+GMRES. After each wave solve, the observed GMRES iteration count is recorded.
+On the next backward pass, the same wave delays its first residual check until
+that previous iteration count. If the check passes, the wave exits after one
+check. If it fails, GMRES continues and checks again every
+`gmres_check_interval` iterations until convergence or the maximum iteration
+count. Therefore this is not a fixed-iteration shortcut and it does not accept a
+wave without a residual check; it only avoids residual checks that were
+predictably too early on the previous backward pass.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_cached_check_schedule_warm_tol7e-6_i1_largest10_20260606_081504/
+benchmarks/large_dataset_capacity/output/nsys_largest10_gmres10_i1_tol7e-6_cached_schedule_20260606_081504/
+```
+
+Largest-10 first-step gradient check against Neumann512, with one schedule
+warmup backward before measuring the GMRES row:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `1.053618e-07` | `1.851861e-07` | `3.136194e-07` |
+| GMRES10 I1 tol `7e-6`, checked-y + schedule | `140` | `87` | `1.718619e-06` | `3.395078e-06` | `3.398090e-06` |
+
+Largest-10 20-step timing:
+
+| Solver | Self-Loop Backward Iterations | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann16 | `27840` | n/a | `2.560` | `3.718` | `0.0997` | `166606.4375` |
+| Neumann32 | `55680` | n/a | `3.074` | `4.367` | `0.1251` | `166606.4375` |
+| GMRES10 I1 tol `7e-6`, checked-y reuse | `2800` | `2800` | `2.731` | `3.910` | `0.1061` | `166606.4375` |
+| GMRES10 I1 tol `7e-6`, checked-y + schedule | `2800` | `1793` | `2.689` | `3.968` | `0.1036` | `166606.453125` |
+
+The first scheduled training step has no cached schedule yet, so it performed
+`140` self-loop applications and `140` checks. Steps 2-20 used the cached
+schedule and each performed `140` self-loop applications but only `87` checks.
+The total is therefore:
+
+```text
+self-loop applications: 20 * 140 = 2800
+GMRES checks:           140 + 19 * 87 = 1793
+```
+
+This does not reduce the expensive backward self-loop application count versus
+the current best GMRES run. It reduces residual-check overhead. The benefit is
+small but measurable in the warm training metric: `2.731 s` to `2.689 s` train
+time, and `0.1061 s` to `0.1036 s` mean step time after step 1. It is still
+slower than Neumann16 on this benchmark, but it remains much cheaper in the
+mathematical work metric: `2800` self-loop backward applications instead of
+`27840`.
+
+The `nsys` profile confirms that the change removed the expected scalar
+residual-check traffic:
+
+| Metric | Checked-y Reuse | Checked-y + Schedule |
+|---|---:|---:|
+| profiled wall time | `4.358 s` | `4.430 s` |
+| `_gmres_hessenberg_residual_kernel` launches | `2800` | `1793` |
+| `_gmres_hessenberg_residual_kernel` total time | `10.998 ms` | `7.080 ms` |
+| `cuLaunchKernelEx` calls | `55545` | `54538` |
+| `cudaStreamSynchronize` calls | `3679` | `2672` |
+| `cudaMemcpyAsync` calls | `12879` | `11872` |
+| device-to-host copies | `3065`, `0.012 MB` | `2058`, `0.008 MB` |
+| device-to-device copies | `9200`, `24067.903 MB` | `9200`, `24067.903 MB` |
+
+The profiled wall time is noisier than the unprofiled train-time measurement,
+but the event counts match the design exactly: the schedule removed `1007`
+residual checks and therefore `1007` D2H scalar copies and stream syncs over the
+20-step run. The existing `ncu` residual-kernel sample remains applicable
+because this patch changes when the same kernel is launched, not the kernel
+body. A Triton or Gluon rewrite should therefore be justified by fusing or
+removing more of this small-kernel/check orchestration, not by tuning the
+standalone residual kernel.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

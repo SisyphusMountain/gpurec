@@ -23,6 +23,23 @@ _GMRES_TRITON_ARNOLDI_MIN_BLOCK_TILES = 64
 _GMRES_TRITON_ARNOLDI_BLOCK_N = 512
 
 
+def _record_gmres_self_loop_stats(row: dict[str, float | int | str], stats_out=None) -> None:
+    if stats_out is not None:
+        stats_out.update(row)
+    if _GMRES_SELF_LOOP_STATS is not None:
+        _GMRES_SELF_LOOP_STATS.append(dict(row))
+
+
+def _gmres_should_check(iter_count: int, *, max_iter: int, min_check_iter: int, check_interval: int) -> bool:
+    if iter_count >= max_iter:
+        return True
+    if min_check_iter <= 1:
+        return iter_count == 1 or iter_count % check_interval == 0
+    if iter_count < min_check_iter:
+        return False
+    return (iter_count - min_check_iter) % check_interval == 0
+
+
 def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
 
@@ -912,12 +929,15 @@ def _gmres_solve_wave_self_loop(
     tol: float,
     fixed_iterations: bool = False,
     check_interval: int = 1,
+    min_check_iter: int = 1,
     out: torch.Tensor | None = None,
+    stats_out=None,
 ) -> torch.Tensor:
     """Solve ``A v = rhs`` for one wave with unrestarted GMRES."""
     max_iter = int(max_iter)
     tol = float(tol)
     check_interval = int(check_interval)
+    min_check_iter = int(min_check_iter)
     if out is not None and (
         out.shape != rhs.shape or out.dtype != rhs.dtype or out.device != rhs.device
     ):
@@ -928,13 +948,13 @@ def _gmres_solve_wave_self_loop(
             result = out
         else:
             result = torch.zeros_like(rhs)
-        if _GMRES_SELF_LOOP_STATS is not None:
-            _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 1.0})
+        _record_gmres_self_loop_stats({"iterations": 0, "rel_res": 1.0}, stats_out)
         return result
     if tol <= 0.0:
         raise ValueError("gmres_tol must be positive")
     if check_interval < 1:
         raise ValueError("gmres_check_interval must be at least 1")
+    min_check_iter = max(1, min(min_check_iter, max_iter))
 
     b_norm_t = torch.linalg.vector_norm(rhs)
     use_cuda_triton_hessenberg = (
@@ -952,8 +972,7 @@ def _gmres_solve_wave_self_loop(
                 result = out
             else:
                 result = torch.zeros_like(rhs)
-            if _GMRES_SELF_LOOP_STATS is not None:
-                _GMRES_SELF_LOOP_STATS.append({"iterations": 0, "rel_res": 0.0})
+            _record_gmres_self_loop_stats({"iterations": 0, "rel_res": 0.0}, stats_out)
             return result
         safe_b_norm_t = b_norm_t
 
@@ -964,9 +983,11 @@ def _gmres_solve_wave_self_loop(
             max_iter=max_iter,
             tol=tol,
             check_interval=check_interval,
+            min_check_iter=min_check_iter,
             b_norm_t=b_norm_t,
             safe_b_norm_t=safe_b_norm_t,
             out=out,
+            stats_out=stats_out,
         )
 
     return _gmres_solve_wave_self_loop_cgs2(
@@ -976,10 +997,12 @@ def _gmres_solve_wave_self_loop(
         tol=tol,
         fixed_iterations=bool(fixed_iterations),
         check_interval=check_interval,
+        min_check_iter=min_check_iter,
         b_norm_t=b_norm_t,
         safe_b_norm_t=safe_b_norm_t,
         b_norm=b_norm,
         out=out,
+        stats_out=stats_out,
     )
 
 
@@ -990,9 +1013,11 @@ def _gmres_solve_wave_self_loop_triton_split(
     max_iter: int,
     tol: float,
     check_interval: int,
+    min_check_iter: int,
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
     out: torch.Tensor | None,
+    stats_out,
 ) -> torch.Tensor:
     n = int(rhs.numel())
     block_n = _GMRES_TRITON_ARNOLDI_BLOCK_N
@@ -1076,7 +1101,12 @@ def _gmres_solve_wave_self_loop_triton_split(
         )
 
         last_j = j
-        should_check = j == 0 or (j + 1) % check_interval == 0 or j + 1 >= max_iter
+        should_check = _gmres_should_check(
+            j + 1,
+            max_iter=max_iter,
+            min_check_iter=min_check_iter,
+            check_interval=check_interval,
+        )
         if should_check:
             check_count += 1
             rel_res = _gmres_hessenberg_rel_res(
@@ -1093,15 +1123,16 @@ def _gmres_solve_wave_self_loop_triton_split(
 
     iters = int(last_j + 1)
     y = y_buf[:iters]
-    if _GMRES_SELF_LOOP_STATS is not None:
-        _GMRES_SELF_LOOP_STATS.append(
-            {
-                "iterations": iters,
-                "rel_res": float(rel_res),
-                "check_count": int(check_count),
-                "arnoldi_backend": "triton_split",
-            }
-        )
+    _record_gmres_self_loop_stats(
+        {
+            "iterations": iters,
+            "rel_res": float(rel_res),
+            "check_count": int(check_count),
+            "arnoldi_backend": "triton_split",
+            "min_check_iter": int(min_check_iter),
+        },
+        stats_out,
+    )
     result = torch.empty_like(rhs) if out is None else out
     torch.mv(basis_2d[:iters].t(), y, out=result.reshape(-1))
     return result
@@ -1115,10 +1146,12 @@ def _gmres_solve_wave_self_loop_cgs2(
     tol: float,
     fixed_iterations: bool,
     check_interval: int,
+    min_check_iter: int,
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
     b_norm: float | None,
     out: torch.Tensor | None,
+    stats_out,
 ) -> torch.Tensor:
     """GMRES Arnoldi using batched CGS with one reorthogonalization pass."""
     basis = torch.empty(
@@ -1168,7 +1201,12 @@ def _gmres_solve_wave_self_loop_cgs2(
         hessenberg[j + 1, j] = next_norm_t
         last_j = j
         if not fixed_iterations:
-            should_check = j == 0 or (j + 1) % check_interval == 0 or j + 1 >= max_iter
+            should_check = _gmres_should_check(
+                j + 1,
+                max_iter=max_iter,
+                min_check_iter=min_check_iter,
+                check_interval=check_interval,
+            )
             if should_check:
                 check_count += 1
                 rel_res = _gmres_hessenberg_rel_res(
@@ -1207,15 +1245,16 @@ def _gmres_solve_wave_self_loop_cgs2(
             rel_res = final_rel_res
     else:
         y = y_buf[:iters]
-    if _GMRES_SELF_LOOP_STATS is not None:
-        _GMRES_SELF_LOOP_STATS.append(
-            {
-                "iterations": iters,
-                "rel_res": float(rel_res),
-                "check_count": int(check_count),
-                "arnoldi_backend": "torch_cgs2",
-            }
-        )
+    _record_gmres_self_loop_stats(
+        {
+            "iterations": iters,
+            "rel_res": float(rel_res),
+            "check_count": int(check_count),
+            "arnoldi_backend": "torch_cgs2",
+            "min_check_iter": int(min_check_iter),
+        },
+        stats_out,
+    )
     result = torch.empty_like(rhs) if out is None else out
     torch.mv(basis_2d[:iters].t(), y, out=result.reshape(-1))
     return result
@@ -1565,6 +1604,8 @@ def _wave_backward_uniform_2d(
     self_loop_solver="neumann",
     gmres_tol=1e-10,
     gmres_check_interval=1,
+    gmres_min_check_iter=1,
+    gmres_stats_out=None,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -1757,7 +1798,9 @@ def _wave_backward_uniform_2d(
             tol=float(gmres_tol),
             fixed_iterations=self_loop_solver == "gmres_fixed",
             check_interval=int(gmres_check_interval),
+            min_check_iter=int(gmres_min_check_iter),
             out=v_k,
+            stats_out=gmres_stats_out,
         )
     elif self_loop_solver == "neumann" and initial_v is not None:
         if tuple(initial_v.shape) != scratch_shape:
@@ -1970,6 +2013,8 @@ def wave_backward_uniform_fused(
     self_loop_solver="neumann",
     gmres_tol=1e-10,
     gmres_check_interval=1,
+    gmres_min_check_iter=1,
+    gmres_stats_out=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -2068,6 +2113,8 @@ def wave_backward_uniform_fused(
         self_loop_solver=self_loop_solver,
         gmres_tol=gmres_tol,
         gmres_check_interval=gmres_check_interval,
+        gmres_min_check_iter=gmres_min_check_iter,
+        gmres_stats_out=gmres_stats_out,
     )
 
 

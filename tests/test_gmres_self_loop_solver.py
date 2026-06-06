@@ -1,7 +1,10 @@
+from types import SimpleNamespace
+
 import torch
 import pytest
 
 from gpurec import SolverOptions
+from gpurec.api._batch_state import gmres_check_schedule_for_static
 from gpurec.core.kernels import wave_backward
 
 
@@ -11,6 +14,7 @@ def test_solver_options_accept_gmres_fixed():
         self_loop_solver=" GMRES_FIXED ",
         gmres_tol=1e-8,
         gmres_check_interval=2,
+        gmres_reuse_check_schedule=True,
     )
 
     options.validate()
@@ -18,6 +22,7 @@ def test_solver_options_accept_gmres_fixed():
     assert options.self_loop_solver == "gmres_fixed"
     assert options.gmres_tol == 1e-8
     assert options.gmres_check_interval == 2
+    assert options.gmres_reuse_check_schedule is True
 
 
 @pytest.mark.parametrize(
@@ -33,6 +38,36 @@ def test_solver_options_reject_invalid_gmres_options(kwargs):
 
     with pytest.raises(ValueError):
         options.validate()
+
+
+def test_gmres_check_schedule_cache_is_opt_in_and_keyed():
+    static = SimpleNamespace(
+        solver_options=SolverOptions(
+            neumann_terms=10,
+            self_loop_solver="gmres",
+            gmres_reuse_check_schedule=True,
+            gmres_tol=1e-6,
+            gmres_check_interval=1,
+        ),
+        wave_layout={"wave_metas": [{"start": 0, "W": 2}, {"start": 2, "W": 1}]},
+        gmres_check_schedule=None,
+        gmres_check_schedule_key=None,
+    )
+
+    schedule = gmres_check_schedule_for_static(static)
+    assert schedule == []
+
+    schedule.extend([2, 1])
+    assert gmres_check_schedule_for_static(static) is schedule
+
+    static.solver_options.gmres_tol = 1e-7
+    assert gmres_check_schedule_for_static(static) == []
+    assert static.gmres_check_schedule is not schedule
+
+    static.solver_options.gmres_reuse_check_schedule = False
+    assert gmres_check_schedule_for_static(static) is None
+    assert static.gmres_check_schedule is None
+    assert static.gmres_check_schedule_key is None
 
 
 def test_gmres_self_loop_matches_dense_solve_cpu():
@@ -138,7 +173,13 @@ def test_gmres_self_loop_records_stats_and_stops_early_cpu():
 
     torch.testing.assert_close(got, rhs, rtol=1e-12, atol=1e-12)
     assert stats == [
-        {"iterations": 1, "rel_res": 0.0, "check_count": 1, "arnoldi_backend": "torch_cgs2"}
+        {
+            "iterations": 1,
+            "rel_res": 0.0,
+            "check_count": 1,
+            "arnoldi_backend": "torch_cgs2",
+            "min_check_iter": 1,
+        }
     ]
 
 
@@ -210,6 +251,68 @@ def test_gmres_self_loop_check_interval_counts_checks_cpu():
     assert stats[0]["iterations"] == 3
     assert stats[0]["check_count"] == 2
     assert stats[0]["rel_res"] < 1e-12
+
+
+def test_gmres_self_loop_min_check_iter_delays_first_check_cpu():
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    calls = 0
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        matrix = torch.diag(torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64))
+        rhs = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+
+        def apply_a(vec):
+            nonlocal calls
+            calls += 1
+            return matrix @ vec
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=5,
+            tol=1e-12,
+            min_check_iter=3,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, torch.linalg.solve(matrix, rhs), rtol=1e-12, atol=1e-12)
+    assert calls == 3
+    assert stats[0]["iterations"] == 3
+    assert stats[0]["check_count"] == 1
+    assert stats[0]["min_check_iter"] == 3
+
+
+def test_gmres_self_loop_min_check_iter_continues_after_failed_check_cpu():
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    calls = 0
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        matrix = torch.diag(torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float64))
+        rhs = torch.tensor([1.0, -2.0, 0.5, 0.25], dtype=torch.float64)
+
+        def apply_a(vec):
+            nonlocal calls
+            calls += 1
+            return matrix @ vec
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=4,
+            tol=1e-14,
+            min_check_iter=2,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, torch.linalg.solve(matrix, rhs), rtol=1e-11, atol=1e-11)
+    assert calls == 4
+    assert stats[0]["iterations"] == 4
+    assert stats[0]["check_count"] == 3
+    assert stats[0]["min_check_iter"] == 2
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])

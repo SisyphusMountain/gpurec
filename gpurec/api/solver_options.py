@@ -13,6 +13,7 @@ class SolverOptions:
     self_loop_solver: str = "neumann"
     gmres_tol: float = 1e-10
     gmres_check_interval: int = 1
+    gmres_reuse_check_schedule: bool = False
     bicgstab_max_iter: int = 500
     bicgstab_tol: float = 1e-7
     bicgstab_breakdown_tol: float = 1e-30
@@ -37,6 +38,7 @@ class SolverOptions:
             raise ValueError("gmres_tol must be positive")
         if int(self.gmres_check_interval) < 1:
             raise ValueError("gmres_check_interval must be at least 1")
+        self.gmres_reuse_check_schedule = bool(self.gmres_reuse_check_schedule)
         if int(self.bicgstab_max_iter) < 1:
             raise ValueError("bicgstab_max_iter must be at least 1")
         if float(self.bicgstab_tol) <= 0.0:

@@ -110,6 +110,7 @@ def implicit_grad_loglik_vjp_wave(
     self_loop_solver: str = "neumann",
     gmres_tol: float = 1e-10,
     gmres_check_interval: int = 1,
+    gmres_check_schedule: list[int] | None = None,
     bicgstab_max_iter: int = 500,
     bicgstab_tol: float = 1e-7,
     bicgstab_breakdown_tol: float = 1e-30,
@@ -188,8 +189,21 @@ def implicit_grad_loglik_vjp_wave(
     compact_level_child1 = species_helpers["compact_level_child1"]
     compact_level_child2 = species_helpers["compact_level_child2"]
     leaf_species_idx = wave_layout["leaf_species_index"].to(device=device, dtype=torch.int32).contiguous()
+    wave_metas = wave_layout["wave_metas"]
+    use_gmres_check_schedule = (
+        gmres_check_schedule is not None
+        and self_loop_solver == "gmres"
+        and neumann_terms > 0
+    )
+    previous_gmres_check_schedule = (
+        list(gmres_check_schedule)
+        if use_gmres_check_schedule
+        and len(gmres_check_schedule) == len(wave_metas)
+        else None
+    )
+    next_gmres_check_schedule: list[int] | None = [] if use_gmres_check_schedule else None
 
-    for meta in reversed(wave_layout["wave_metas"]):
+    for wave_rev_index, meta in enumerate(reversed(wave_metas)):
         ws = int(meta["start"])
         W = int(meta["W"])
         rhs_k = accumulated_rhs[ws : ws + W]
@@ -222,6 +236,16 @@ def implicit_grad_loglik_vjp_wave(
             if has_splits
             else None
         )
+        gmres_min_check_iter = 1
+        gmres_wave_stats: dict[str, float | int | str] | None = None
+        if use_gmres_check_schedule:
+            if previous_gmres_check_schedule is not None:
+                gmres_min_check_iter = max(
+                    1,
+                    min(int(previous_gmres_check_schedule[wave_rev_index]), neumann_terms),
+                )
+            gmres_wave_stats = {}
+
         v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
             Pi_star_wave,
             Pibar_star_wave,
@@ -259,7 +283,16 @@ def implicit_grad_loglik_vjp_wave(
             self_loop_solver=self_loop_solver,
             gmres_tol=gmres_tol,
             gmres_check_interval=gmres_check_interval,
+            gmres_min_check_iter=gmres_min_check_iter,
+            gmres_stats_out=gmres_wave_stats,
         )
+        if next_gmres_check_schedule is not None:
+            observed_iterations = (
+                int(gmres_wave_stats["iterations"])
+                if gmres_wave_stats is not None and "iterations" in gmres_wave_stats
+                else 1
+            )
+            next_gmres_check_schedule.append(max(1, min(observed_iterations, neumann_terms)))
         family_rows_for_wave = family_idx[ws : ws + W]
         _scatter_accum(grad_log_pD, family_rows_for_wave, aw0)
         _scatter_accum(grad_log_pS, family_rows_for_wave, aw345)
@@ -325,6 +358,8 @@ def implicit_grad_loglik_vjp_wave(
                 use_receiver_weights=use_receiver_weights,
                 side_active_threshold=pibar_side_threshold,
             )
+    if gmres_check_schedule is not None and next_gmres_check_schedule is not None:
+        gmres_check_schedule[:] = next_gmres_check_schedule
     return _e_adjoint_and_theta_vjp(
         E_star, log_pS, log_pD, log_pL, max_transfer_mat,
         receiver_log_probs,

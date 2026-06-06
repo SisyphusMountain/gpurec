@@ -17,6 +17,38 @@ class _BatchStatic:
     family_index_tensor: torch.Tensor
     solver_options: SolverOptions
     warm_E: torch.Tensor | None = None
+    gmres_check_schedule: list[int] | None = None
+    gmres_check_schedule_key: tuple | None = None
+
+
+def gmres_check_schedule_for_static(static: _BatchStatic) -> list[int] | None:
+    options = static.solver_options
+    if (
+        not bool(options.gmres_reuse_check_schedule)
+        or str(options.self_loop_solver).strip().lower() != "gmres"
+    ):
+        static.gmres_check_schedule = None
+        static.gmres_check_schedule_key = None
+        return None
+
+    wave_signature = tuple(
+        (int(meta["start"]), int(meta["W"]))
+        for meta in static.wave_layout["wave_metas"]
+    )
+    key = (
+        int(options.neumann_terms),
+        float(options.gmres_tol),
+        int(options.gmres_check_interval),
+        bool(options.use_adjoint_pruning),
+        float(options.adjoint_pruning_threshold),
+        wave_signature,
+    )
+    if static.gmres_check_schedule_key != key:
+        static.gmres_check_schedule = []
+        static.gmres_check_schedule_key = key
+    if static.gmres_check_schedule is None:
+        static.gmres_check_schedule = []
+    return static.gmres_check_schedule
 
 
 def build_batch_static(
