@@ -640,15 +640,16 @@ remaining adaptive-check overhead during optimization.
 
 ### Current HEAD Nsys/NCU Rerun
 
-Current HEAD:
+Profiled code:
 
 ```text
-9119c57c Document Triton QR GMRES profiling results
+d87135bc Document current GMRES profiler results
 ```
 
 The same family and solver setting were rerun after the Triton QR work:
 
 ```text
+script: benchmarks/large_dataset_capacity/profile_hogenom_gmres_backward.py
 family: CLU_000680_20_4_C
 GMRES max iterations: 10
 GMRES tolerance: 1e-10
@@ -659,17 +660,17 @@ self-loop solver: gmres
 Artifacts:
 
 ```text
-benchmarks/large_dataset_capacity/output/current_gmres_tritonqr_i3_profile_20260606_032652/
-benchmarks/large_dataset_capacity/output/nsys_current_gmres_tritonqr_i3_profile_20260606_032728/
-benchmarks/large_dataset_capacity/output/ncu_current_gmres_tritonqr_i3_hessenberg_basic_20260606_032912/
-benchmarks/large_dataset_capacity/output/ncu_current_gmres_tritonqr_i3_jt_basic_20260606_032944/
+benchmarks/large_dataset_capacity/output/current_gmres_tritonqr_i3_profile_20260606_055419/
+benchmarks/large_dataset_capacity/output/nsys_current_gmres_tritonqr_i3_profile_20260606_055419/
+benchmarks/large_dataset_capacity/output/ncu_current_gmres_tritonqr_i3_hessenberg_basic_20260606_055419/
+benchmarks/large_dataset_capacity/output/ncu_current_gmres_tritonqr_i3_jt_grid28_basic_20260606_055419/
 ```
 
 Unprofiled result:
 
 | Metric | Value |
 |---|---:|
-| elapsed backward-only time | `0.159892 s` |
+| elapsed backward-only time | `0.161840 s` |
 | wave count | `68` |
 | total backward iterations / `J^T` applications | `619` |
 | total GMRES residual checks | `299` |
@@ -683,10 +684,10 @@ the useful numbers are the CUDA summaries:
 
 | Category | Total |
 |---|---:|
-| summed GPU kernels | `122.877 ms`, `10,847` launches |
-| CUDA API time | `86.946 ms`, `24,671` calls |
-| `cudaMemcpyAsync` API time | `63.556 ms`, `2,966` calls |
-| GPU memcpy time | `3.300 ms`, `2,966` copies |
+| summed GPU kernels | `122.921 ms`, `10,847` launches |
+| CUDA API time | `87.269 ms`, `24,671` calls |
+| `cudaMemcpyAsync` API time | `63.703 ms`, `2,966` calls |
+| GPU memcpy time | `3.309 ms`, `2,966` copies |
 
 Top kernel buckets:
 
@@ -694,10 +695,10 @@ Top kernel buckets:
 |---|---:|---:|
 | `_dts_ge2_stage1_kernel` | `25.924 ms` | `66` |
 | `_wave_backward_uniform_2d_precompute_kernel` | `24.916 ms` | `68` |
-| PyTorch reductions | `13.625 ms` | `1,194` |
+| PyTorch reductions | `13.630 ms` | `1,192` |
 | `_dts_cross_backward_accum_kernel` | `8.692 ms` | `67` |
-| `_wave_backward_uniform_2d_jt_kernel` | `8.356 ms` | `619` |
-| cuBLAS dot kernels | `4.063 ms` | `1,270` |
+| `_wave_backward_uniform_2d_jt_kernel` | `8.333 ms` | `619` |
+| cuBLAS dot kernels | `4.021 ms` | `1,238` |
 | cuBLAS GEMV kernels | `3.341 ms` | `1,084` |
 | `_gmres_hessenberg_residual_kernel` | `2.866 ms` | `367` |
 
@@ -711,22 +712,24 @@ kernel is not a hardware-throughput problem:
 | Metric | Sampled Values |
 |---|---:|
 | grid/block | `1 x 32` |
-| duration | `5.34 us`, `8.61 us`, `11.81 us` |
-| DRAM throughput | `0.26%` - `0.28%` |
-| compute throughput | `0.18%` - `0.25%` |
-| achieved occupancy | `2.09%` |
+| duration | `3.30 us`, `5.34 us`, `8.58 us` |
+| DRAM throughput | `0.26%` - `0.27%` |
+| compute throughput | `0.10%` - `0.22%` |
+| achieved occupancy | `2.08%` - `2.10%` |
 
 `ncu` on `_wave_backward_uniform_2d_jt_kernel` shows that the repeated
-self-loop matvec is register-limited and underfilled on this single family:
+self-loop matvec is register-limited and underfilled on this single family.
+The first matching launches are one-block edge cases, so this run sampled the
+most frequent high-cost shape from the Nsys launch distribution:
 
 | Metric | Sampled Values |
 |---|---:|
-| grid/block | `64 x 64` |
-| duration | `20.03 us` - `20.48 us` |
+| grid/block | `28 x 64` |
+| duration | `18.91 us` - `19.10 us` |
 | registers/thread | `254` |
-| DRAM throughput | `17.16%` - `17.52%` |
-| compute throughput | `9.41%` - `9.54%` |
-| achieved occupancy | `4.11%` - `4.19%` |
+| DRAM throughput | `8.15%` - `8.24%` |
+| compute throughput | `4.40%` - `4.49%` |
+| achieved occupancy | `4.15%` - `4.23%` |
 
 Implication: replacing only the one-block Triton Hessenberg kernel with Gluon
 is unlikely to change end-to-end performance. Gluon is worth considering only
