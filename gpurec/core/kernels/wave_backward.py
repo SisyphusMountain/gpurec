@@ -21,6 +21,8 @@ _GMRES_TRITON_HESSENBERG_MAX_M = 16
 _GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES = 512
 _GMRES_TRITON_ARNOLDI_MIN_BLOCK_TILES = 64
 _GMRES_TRITON_ARNOLDI_BLOCK_N = 512
+_GMRES_TRITON_LARGE_ARNOLDI_GROUP_TILES = 512
+_GMRES_TRITON_LARGE_ARNOLDI_MAX_GROUPS = 512
 
 
 def _record_gmres_self_loop_stats(row: dict[str, float | int | str], stats_out=None) -> None:
@@ -1036,6 +1038,138 @@ def _gmres_arnoldi_reduce_norm_check_kernel(
     tl.store(y_ptr + cols, y, mask=cols < iters)
 
 
+@triton.jit(do_not_specialize=["NUM_TILES", "J"])
+def _gmres_arnoldi_reduce_group_partials_kernel(
+    partials_ptr,
+    group_partials_ptr,
+    NUM_TILES,
+    J,
+    MAX_ITER: tl.constexpr,
+    GROUP_TILES: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    group = tl.program_id(0)
+    tiles = group * GROUP_TILES + tl.arange(0, GROUP_TILES)
+    k = tl.arange(0, BLOCK_K)
+    k_mask = k < J + 1
+    partials = tl.load(
+        partials_ptr + tiles[:, None] * MAX_ITER + k[None, :],
+        mask=(tiles[:, None] < NUM_TILES) & k_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    coeff = tl.sum(partials, axis=0)
+    tl.store(group_partials_ptr + group * MAX_ITER + k, coeff, mask=k_mask)
+
+
+@triton.jit(do_not_specialize=["NUM_GROUPS", "J"])
+def _gmres_arnoldi_sum_group_coeff_kernel(
+    group_partials_ptr,
+    coeff_ptr,
+    hessenberg_ptr,
+    NUM_GROUPS,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_GROUPS: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    ADD_TO_H: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    groups = tl.arange(0, BLOCK_GROUPS)
+    k = tl.arange(0, BLOCK_K)
+    k_mask = k < J + 1
+    vals = tl.load(
+        group_partials_ptr + groups[:, None] * MAX_ITER + k[None, :],
+        mask=(groups[:, None] < NUM_GROUPS) & k_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    coeff = tl.sum(vals, axis=0)
+    tl.store(coeff_ptr + k, coeff, mask=k_mask)
+    h_ptr = hessenberg_ptr + k * MAX_ITER + J
+    if ADD_TO_H:
+        prev = tl.load(h_ptr, mask=k_mask, other=0.0).to(DTYPE)
+        tl.store(h_ptr, prev + coeff, mask=k_mask)
+    else:
+        tl.store(h_ptr, coeff, mask=k_mask)
+
+
+@triton.jit(do_not_specialize=["N", "J"])
+def _gmres_arnoldi_project_from_coeff_kernel(
+    basis_ptr,
+    work_in_ptr,
+    coeff_ptr,
+    partials_ptr,
+    work_ptr,
+    N,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_K)
+    n_mask = n < N
+    k_mask = k < J + 1
+    work0 = tl.load(work_in_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    basis = tl.load(
+        basis_ptr + k[:, None] * N + n[None, :],
+        mask=k_mask[:, None] & n_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    coeff = tl.load(coeff_ptr + k, mask=k_mask, other=0.0).to(DTYPE)
+    work1 = work0 - tl.sum(basis * coeff[:, None], axis=0)
+    tl.store(work_ptr + n, work1, mask=n_mask)
+    partial2 = tl.sum(basis * work1[None, :], axis=1)
+    tl.store(partials_ptr + tile * MAX_ITER + k, partial2, mask=k_mask)
+
+
+@triton.jit(do_not_specialize=["N", "J"])
+def _gmres_arnoldi_project_norm_from_coeff_kernel(
+    basis_ptr,
+    coeff_ptr,
+    work_ptr,
+    norm_partials_ptr,
+    N,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_K)
+    n_mask = n < N
+    k_mask = k < J + 1
+    work1 = tl.load(work_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    basis = tl.load(
+        basis_ptr + k[:, None] * N + n[None, :],
+        mask=k_mask[:, None] & n_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    coeff2 = tl.load(coeff_ptr + k, mask=k_mask, other=0.0).to(DTYPE)
+    work2 = work1 - tl.sum(basis * coeff2[:, None], axis=0)
+    tl.store(work_ptr + n, work2, mask=n_mask)
+    norm_sq = tl.sum(tl.where(n_mask, work2 * work2, tl.zeros_like(work2)), axis=0)
+    tl.store(norm_partials_ptr + tile, norm_sq)
+
+
+@triton.jit(do_not_specialize=["NUM_TILES"])
+def _gmres_arnoldi_reduce_group_norm_partials_kernel(
+    norm_partials_ptr,
+    norm_group_partials_ptr,
+    NUM_TILES,
+    GROUP_TILES: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    group = tl.program_id(0)
+    tiles = group * GROUP_TILES + tl.arange(0, GROUP_TILES)
+    vals = tl.load(norm_partials_ptr + tiles, mask=tiles < NUM_TILES, other=0.0).to(DTYPE)
+    tl.store(norm_group_partials_ptr + group, tl.sum(vals, axis=0))
+
+
 def _gmres_can_use_triton_arnoldi(rhs: torch.Tensor, max_iter: int, fixed_iterations: bool) -> bool:
     if os.environ.get("GPUREC_GMRES_TRITON_ARNOLDI", "0").lower() not in ("1", "true", "yes", "on"):
         return False
@@ -1050,6 +1184,35 @@ def _gmres_can_use_triton_arnoldi(rhs: torch.Tensor, max_iter: int, fixed_iterat
         triton.next_power_of_2(num_tiles),
     )
     return block_tiles <= _GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES
+
+
+def _gmres_can_use_triton_large_arnoldi(
+    rhs: torch.Tensor,
+    max_iter: int,
+    fixed_iterations: bool,
+    *,
+    right_preconditioner,
+) -> bool:
+    if os.environ.get("GPUREC_GMRES_TRITON_ARNOLDI", "0").lower() not in ("1", "true", "yes", "on"):
+        return False
+    if os.environ.get("GPUREC_GMRES_TRITON_LARGE_ARNOLDI", "0").lower() not in ("1", "true", "yes", "on"):
+        return False
+    if right_preconditioner is not None:
+        return False
+    if fixed_iterations or rhs.device.type != "cuda" or rhs.dtype != torch.float32:
+        return False
+    if int(max_iter) < 1 or int(max_iter) > _GMRES_TRITON_HESSENBERG_MAX_M:
+        return False
+    n = int(rhs.numel())
+    num_tiles = triton.cdiv(n, _GMRES_TRITON_ARNOLDI_BLOCK_N)
+    block_tiles = max(
+        _GMRES_TRITON_ARNOLDI_MIN_BLOCK_TILES,
+        triton.next_power_of_2(num_tiles),
+    )
+    if block_tiles <= _GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES:
+        return False
+    num_groups = triton.cdiv(num_tiles, _GMRES_TRITON_LARGE_ARNOLDI_GROUP_TILES)
+    return num_groups <= _GMRES_TRITON_LARGE_ARNOLDI_MAX_GROUPS
 
 
 @torch.no_grad()
@@ -1188,6 +1351,32 @@ def _gmres_solve_wave_self_loop(
 
     if _gmres_can_use_triton_arnoldi(solve_rhs, max_iter, bool(fixed_iterations)):
         return _gmres_solve_wave_self_loop_triton_split(
+            apply_a,
+            solve_rhs,
+            max_iter=max_iter,
+            tol=tol,
+            check_interval=check_interval,
+            min_check_iter=min_check_iter,
+            b_norm_t=b_norm_t,
+            safe_b_norm_t=safe_b_norm_t,
+            solution_base=solution_base,
+            initial_residual_applications=initial_residual_applications,
+            initial_check_count=initial_check_count,
+            warm_start_used=warm_start_used,
+            warm_start_rel_res=warm_start_rel_res,
+            right_preconditioner=right_preconditioner,
+            preconditioner_name=preconditioner_name,
+            out=out,
+            stats_out=stats_out,
+        )
+
+    if _gmres_can_use_triton_large_arnoldi(
+        solve_rhs,
+        max_iter,
+        bool(fixed_iterations),
+        right_preconditioner=right_preconditioner,
+    ):
+        return _gmres_solve_wave_self_loop_triton_large(
             apply_a,
             solve_rhs,
             max_iter=max_iter,
@@ -1441,6 +1630,241 @@ def _gmres_solve_wave_self_loop_triton_split(
             "rel_res": float(rel_res),
             "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "triton_split",
+            "min_check_iter": int(min_check_iter),
+            "preconditioner": str(preconditioner_name),
+            "warm_start_used": bool(warm_start_used),
+            "warm_start_accepted": False,
+            "warm_start_status": "corrected" if solution_base is not None else (
+                "restarted" if warm_start_used else "not_attempted"
+            ),
+            "warm_start_rel_res": None if warm_start_rel_res is None else float(warm_start_rel_res),
+            "residual_probe_a_applications": int(initial_residual_applications),
+            "correction_iterations": int(iters),
+        },
+        stats_out,
+    )
+    return _gmres_write_solution(
+        basis_2d,
+        y,
+        rhs,
+        right_preconditioner=right_preconditioner,
+        solution_base=solution_base,
+        out=out,
+    )
+
+
+def _gmres_solve_wave_self_loop_triton_large(
+    apply_a,
+    rhs: torch.Tensor,
+    *,
+    max_iter: int,
+    tol: float,
+    check_interval: int,
+    min_check_iter: int,
+    b_norm_t: torch.Tensor,
+    safe_b_norm_t: torch.Tensor,
+    solution_base: torch.Tensor | None,
+    initial_residual_applications: int,
+    initial_check_count: int,
+    warm_start_used: bool,
+    warm_start_rel_res: float | None,
+    right_preconditioner,
+    preconditioner_name: str,
+    out: torch.Tensor | None,
+    stats_out,
+) -> torch.Tensor:
+    n = int(rhs.numel())
+    block_n = _GMRES_TRITON_ARNOLDI_BLOCK_N
+    num_tiles = triton.cdiv(n, block_n)
+    group_tiles = _GMRES_TRITON_LARGE_ARNOLDI_GROUP_TILES
+    num_groups = triton.cdiv(num_tiles, group_tiles)
+    block_groups = max(1, triton.next_power_of_2(num_groups))
+    block_k = triton.next_power_of_2(max_iter)
+    grid = (num_tiles,)
+    group_grid = (num_groups,)
+
+    basis = torch.empty((max_iter + 1, *rhs.shape), dtype=rhs.dtype, device=rhs.device)
+    basis_2d = basis.reshape(max_iter + 1, -1)
+    torch.div(rhs.reshape(-1), safe_b_norm_t, out=basis_2d[0])
+    hessenberg = torch.empty((max_iter + 1, max_iter), dtype=rhs.dtype, device=rhs.device)
+    partials = torch.empty((num_tiles, max_iter), dtype=rhs.dtype, device=rhs.device)
+    group_partials = torch.empty((num_groups, max_iter), dtype=rhs.dtype, device=rhs.device)
+    coeff_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
+    norm_partials = torch.empty((num_tiles,), dtype=rhs.dtype, device=rhs.device)
+    norm_group_partials = torch.empty((num_groups,), dtype=rhs.dtype, device=rhs.device)
+    work = torch.empty((n,), dtype=rhs.dtype, device=rhs.device)
+    residual_buf = torch.empty((), dtype=rhs.dtype, device=rhs.device)
+    y_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
+    last_j = 0
+    rel_res = 1.0
+    check_count = 0
+
+    for j in range(max_iter):
+        basis_j = basis[j]
+        w = apply_a(basis_j).reshape(-1)
+        _gmres_arnoldi_dot_partials_kernel[grid](
+            basis_2d,
+            w,
+            partials,
+            n,
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_N=int(block_n),
+            BLOCK_K=int(block_k),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=4,
+        )
+        _gmres_arnoldi_reduce_group_partials_kernel[group_grid](
+            partials,
+            group_partials,
+            NUM_TILES=int(num_tiles),
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            GROUP_TILES=int(group_tiles),
+            BLOCK_K=int(block_k),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=8,
+        )
+        _gmres_arnoldi_sum_group_coeff_kernel[(1,)](
+            group_partials,
+            coeff_buf,
+            hessenberg,
+            NUM_GROUPS=int(num_groups),
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_GROUPS=int(block_groups),
+            BLOCK_K=int(block_k),
+            ADD_TO_H=False,
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=1,
+        )
+        _gmres_arnoldi_project_from_coeff_kernel[grid](
+            basis_2d,
+            w,
+            coeff_buf,
+            partials,
+            work,
+            n,
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_N=int(block_n),
+            BLOCK_K=int(block_k),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=4,
+        )
+        _gmres_arnoldi_reduce_group_partials_kernel[group_grid](
+            partials,
+            group_partials,
+            NUM_TILES=int(num_tiles),
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            GROUP_TILES=int(group_tiles),
+            BLOCK_K=int(block_k),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=8,
+        )
+        _gmres_arnoldi_sum_group_coeff_kernel[(1,)](
+            group_partials,
+            coeff_buf,
+            hessenberg,
+            NUM_GROUPS=int(num_groups),
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_GROUPS=int(block_groups),
+            BLOCK_K=int(block_k),
+            ADD_TO_H=True,
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=1,
+        )
+        _gmres_arnoldi_project_norm_from_coeff_kernel[grid](
+            basis_2d,
+            coeff_buf,
+            work,
+            norm_partials,
+            n,
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_N=int(block_n),
+            BLOCK_K=int(block_k),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=4,
+        )
+        _gmres_arnoldi_reduce_group_norm_partials_kernel[group_grid](
+            norm_partials,
+            norm_group_partials,
+            NUM_TILES=int(num_tiles),
+            GROUP_TILES=int(group_tiles),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=8,
+        )
+
+        last_j = j
+        should_check = _gmres_should_check(
+            j + 1,
+            max_iter=max_iter,
+            min_check_iter=min_check_iter,
+            check_interval=check_interval,
+        )
+        if should_check:
+            _gmres_arnoldi_reduce_norm_check_kernel[(1,)](
+                hessenberg,
+                norm_group_partials,
+                b_norm_t,
+                residual_buf,
+                y_buf,
+                NUM_TILES=int(num_groups),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_TILES=int(block_groups),
+                BLOCK_R=int(triton.next_power_of_2(max_iter + 1)),
+                BLOCK_C=int(block_k),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=1,
+            )
+            check_count += 1
+            rel_res = float(residual_buf.detach().cpu())
+            if rel_res <= tol:
+                break
+            if j + 1 < max_iter:
+                _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
+                    basis_2d,
+                    hessenberg,
+                    work,
+                    norm_group_partials,
+                    n,
+                    NUM_TILES=int(num_groups),
+                    J=int(j),
+                    MAX_ITER=int(max_iter),
+                    BLOCK_N=int(block_n),
+                    BLOCK_TILES=int(block_groups),
+                    DTYPE=_tl_float_dtype(rhs.dtype),
+                    num_warps=8,
+                )
+        else:
+            _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
+                basis_2d,
+                hessenberg,
+                work,
+                norm_group_partials,
+                n,
+                NUM_TILES=int(num_groups),
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_N=int(block_n),
+                BLOCK_TILES=int(block_groups),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=8,
+            )
+
+    iters = int(last_j + 1)
+    y = y_buf[:iters]
+    _record_gmres_self_loop_stats(
+        {
+            "iterations": iters,
+            "a_applications": int(iters + initial_residual_applications),
+            "rel_res": float(rel_res),
+            "check_count": int(check_count + initial_check_count),
+            "arnoldi_backend": "triton_large",
             "min_check_iter": int(min_check_iter),
             "preconditioner": str(preconditioner_name),
             "warm_start_used": bool(warm_start_used),
