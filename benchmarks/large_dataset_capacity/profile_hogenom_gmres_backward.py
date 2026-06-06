@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--family-index", type=int, default=DEFAULT_FAMILY_INDEX)
     parser.add_argument("--family-name", default=DEFAULT_FAMILY_NAME)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--dtype", choices=("float32", "float64"), default="float64")
     parser.add_argument("--e-iters", type=int, default=256)
     parser.add_argument("--pi-iters", type=int, default=256)
     parser.add_argument("--reference-neumann", type=int, default=512)
@@ -50,6 +51,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--output-json", type=Path, default=None)
     return parser.parse_args()
+
+
+def _torch_dtype(name: str) -> torch.dtype:
+    if name == "float32":
+        return torch.float32
+    if name == "float64":
+        return torch.float64
+    raise ValueError(f"unsupported dtype {name!r}")
 
 
 def _prepare_forward_state(
@@ -109,7 +118,7 @@ def _run_gmres_backward_from_state(
     static.solver_options.neumann_terms = int(gmres_iters)
 
     original_gmres_stats = wave_backward_module._GMRES_SELF_LOOP_STATS
-    gmres_stats: list[dict[str, float | int]] = []
+    gmres_stats: list[dict[str, float | int | str]] = []
 
     wave_backward_module._GMRES_SELF_LOOP_STATS = gmres_stats
     try:
@@ -150,6 +159,10 @@ def _run_gmres_backward_from_state(
 
     per_wave_iterations = [int(row["iterations"]) for row in gmres_stats]
     per_wave_checks = [int(row.get("check_count", 0)) for row in gmres_stats]
+    arnoldi_backend_counts: dict[str, int] = {}
+    for row in gmres_stats:
+        backend = str(row.get("arnoldi_backend", "unknown"))
+        arnoldi_backend_counts[backend] = arnoldi_backend_counts.get(backend, 0) + 1
     stats = {
         "wave_count": len(gmres_stats),
         "total_backward_iterations": int(sum(per_wave_iterations)),
@@ -159,6 +172,7 @@ def _run_gmres_backward_from_state(
         "max_wave_iterations": max(per_wave_iterations, default=0),
         "max_gmres_checks": max(per_wave_checks, default=0),
         "max_rel_res": max((float(row["rel_res"]) for row in gmres_stats), default=0.0),
+        "gmres_arnoldi_backend_counts": arnoldi_backend_counts,
         "loss": float(state["loss"].detach().cpu()),
     }
     return grad_theta.detach(), grad_receiver.detach(), stats
@@ -201,7 +215,8 @@ def main() -> None:
     args = parse_args()
     tree_path = family_tree_path(args.families_file, args.family_name)
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    theta_row = checkpoint["theta"][args.family_index].detach().double()
+    dtype = _torch_dtype(args.dtype)
+    theta_row = checkpoint["theta"][args.family_index].detach().to(dtype=dtype)
 
     model = build_model(args, tree_path)
     theta = theta_row.to(device=args.device).contiguous()
@@ -252,6 +267,7 @@ def main() -> None:
         "family_name": args.family_name,
         "family_tree": str(tree_path),
         "checkpoint": str(args.checkpoint),
+        "dtype": str(theta.dtype).replace("torch.", ""),
         "gmres_iters": int(args.gmres_iters),
         "gmres_tol": float(args.gmres_tol),
         "gmres_check_interval": int(args.gmres_check_interval),

@@ -116,8 +116,8 @@ def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path)
     recorder = SelfLoopBackwardRecorder(model)
     recorder.backward_pass_count = 1
     recorder._gmres_stats = [
-        {"iterations": 3, "check_count": 2, "rel_res": 1e-4},
-        {"iterations": 5, "check_count": 3, "rel_res": 2e-5},
+        {"iterations": 3, "check_count": 2, "rel_res": 1e-4, "arnoldi_backend": "triton_split"},
+        {"iterations": 5, "check_count": 3, "rel_res": 2e-5, "arnoldi_backend": "torch_cgs2"},
     ]
 
     summary = recorder.summary()
@@ -129,3 +129,4 @@ def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path)
     assert summary["self_loop_max_iterations_per_wave"] == 5
     assert summary["gmres_total_checks"] == 5
     assert summary["gmres_max_rel_res"] == 1e-4
+    assert summary["gmres_arnoldi_backend_counts"] == {"triton_split": 1, "torch_cgs2": 1}

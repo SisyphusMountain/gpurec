@@ -6,6 +6,8 @@ inputs for standalone row-mask experiments, but the retained public
 ``Pi_wave_backward`` path rejects bf16 before this helper is reached.
 """
 
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -16,6 +18,8 @@ from gpurec.core.memory_policy import proposal0_memory_gate
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 _GMRES_SELF_LOOP_STATS = None
 _GMRES_TRITON_HESSENBERG_MAX_M = 16
+_GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES = 1024
+_GMRES_TRITON_ARNOLDI_BLOCK_N = 512
 
 
 def _tl_float_dtype(dtype):
@@ -732,6 +736,161 @@ def _gmres_hessenberg_solve(
     return y[:iters], rel_res
 
 
+@triton.jit
+def _gmres_arnoldi_dot_partials_kernel(
+    basis_ptr,
+    work_in_ptr,
+    partials_ptr,
+    N,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_K)
+    n_mask = n < N
+    k_mask = k < J + 1
+    work0 = tl.load(work_in_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    basis = tl.load(
+        basis_ptr + k[:, None] * N + n[None, :],
+        mask=k_mask[:, None] & n_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    partial = tl.sum(basis * work0[None, :], axis=1)
+    tl.store(partials_ptr + tile * MAX_ITER + k, partial, mask=k_mask)
+
+
+@triton.jit
+def _gmres_arnoldi_reduce_project_dot_kernel(
+    basis_ptr,
+    work_in_ptr,
+    partials_ptr,
+    hessenberg_ptr,
+    work_ptr,
+    N,
+    NUM_TILES: tl.constexpr,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_K)
+    tiles = tl.arange(0, BLOCK_TILES)
+    n_mask = n < N
+    k_mask = k < J + 1
+    partials = tl.load(
+        partials_ptr + tiles[:, None] * MAX_ITER + k[None, :],
+        mask=(tiles[:, None] < NUM_TILES) & k_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    coeff = tl.sum(partials, axis=0)
+    tl.store(hessenberg_ptr + k * MAX_ITER + J, coeff, mask=(tile == 0) & k_mask)
+
+    work0 = tl.load(work_in_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    basis = tl.load(
+        basis_ptr + k[:, None] * N + n[None, :],
+        mask=k_mask[:, None] & n_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    work1 = work0 - tl.sum(basis * coeff[:, None], axis=0)
+    tl.store(work_ptr + n, work1, mask=n_mask)
+    partial2 = tl.sum(basis * work1[None, :], axis=1)
+    tl.store(partials_ptr + tile * MAX_ITER + k, partial2, mask=k_mask)
+
+
+@triton.jit
+def _gmres_arnoldi_reduce_project_norm_kernel(
+    basis_ptr,
+    partials_ptr,
+    hessenberg_ptr,
+    work_ptr,
+    norm_partials_ptr,
+    N,
+    NUM_TILES: tl.constexpr,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_K)
+    tiles = tl.arange(0, BLOCK_TILES)
+    n_mask = n < N
+    k_mask = k < J + 1
+    partials = tl.load(
+        partials_ptr + tiles[:, None] * MAX_ITER + k[None, :],
+        mask=(tiles[:, None] < NUM_TILES) & k_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    coeff2 = tl.sum(partials, axis=0)
+    prev = tl.load(hessenberg_ptr + k * MAX_ITER + J, mask=k_mask, other=0.0).to(DTYPE)
+    tl.store(
+        hessenberg_ptr + k * MAX_ITER + J,
+        prev + coeff2,
+        mask=(tile == 0) & k_mask,
+    )
+
+    work1 = tl.load(work_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    basis = tl.load(
+        basis_ptr + k[:, None] * N + n[None, :],
+        mask=k_mask[:, None] & n_mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    work2 = work1 - tl.sum(basis * coeff2[:, None], axis=0)
+    tl.store(work_ptr + n, work2, mask=n_mask)
+    norm_sq = tl.sum(tl.where(n_mask, work2 * work2, tl.zeros_like(work2)), axis=0)
+    tl.store(norm_partials_ptr + tile, norm_sq)
+
+
+@triton.jit
+def _gmres_arnoldi_reduce_norm_normalize_kernel(
+    basis_ptr,
+    hessenberg_ptr,
+    work_ptr,
+    norm_partials_ptr,
+    N,
+    NUM_TILES: tl.constexpr,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    tile = tl.program_id(0)
+    n = tile * BLOCK_N + tl.arange(0, BLOCK_N)
+    tiles = tl.arange(0, BLOCK_TILES)
+    n_mask = n < N
+    vals = tl.load(norm_partials_ptr + tiles, mask=tiles < NUM_TILES, other=0.0).to(DTYPE)
+    norm = tl.sqrt(tl.sum(vals, axis=0))
+    tl.store(hessenberg_ptr + (J + 1) * MAX_ITER + J, norm, mask=tile == 0)
+    denom = tl.maximum(norm, 1.0e-30)
+    work = tl.load(work_ptr + n, mask=n_mask, other=0.0).to(DTYPE)
+    tl.store(basis_ptr + (J + 1) * N + n, work / denom, mask=n_mask & (J + 1 < MAX_ITER))
+
+
+def _gmres_can_use_triton_arnoldi(rhs: torch.Tensor, max_iter: int, fixed_iterations: bool) -> bool:
+    if os.environ.get("GPUREC_GMRES_TRITON_ARNOLDI", "0").lower() not in ("1", "true", "yes", "on"):
+        return False
+    if fixed_iterations or rhs.device.type != "cuda" or rhs.dtype != torch.float32:
+        return False
+    if int(max_iter) < 1 or int(max_iter) > _GMRES_TRITON_HESSENBERG_MAX_M:
+        return False
+    n = int(rhs.numel())
+    num_tiles = triton.cdiv(n, _GMRES_TRITON_ARNOLDI_BLOCK_N)
+    block_tiles = triton.next_power_of_2(num_tiles)
+    return block_tiles <= _GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES
+
+
 @torch.no_grad()
 def _gmres_solve_wave_self_loop(
     apply_a,
@@ -771,6 +930,17 @@ def _gmres_solve_wave_self_loop(
             return torch.zeros_like(rhs)
         safe_b_norm_t = b_norm_t
 
+    if _gmres_can_use_triton_arnoldi(rhs, max_iter, bool(fixed_iterations)):
+        return _gmres_solve_wave_self_loop_triton_split(
+            apply_a,
+            rhs,
+            max_iter=max_iter,
+            tol=tol,
+            check_interval=check_interval,
+            b_norm_t=b_norm_t,
+            safe_b_norm_t=safe_b_norm_t,
+        )
+
     return _gmres_solve_wave_self_loop_cgs2(
         apply_a,
         rhs,
@@ -782,6 +952,135 @@ def _gmres_solve_wave_self_loop(
         safe_b_norm_t=safe_b_norm_t,
         b_norm=b_norm,
     )
+
+
+def _gmres_solve_wave_self_loop_triton_split(
+    apply_a,
+    rhs: torch.Tensor,
+    *,
+    max_iter: int,
+    tol: float,
+    check_interval: int,
+    b_norm_t: torch.Tensor,
+    safe_b_norm_t: torch.Tensor,
+) -> torch.Tensor:
+    n = int(rhs.numel())
+    block_n = _GMRES_TRITON_ARNOLDI_BLOCK_N
+    num_tiles = triton.cdiv(n, block_n)
+    block_tiles = triton.next_power_of_2(num_tiles)
+    block_k = triton.next_power_of_2(max_iter)
+    grid = (num_tiles,)
+
+    basis = torch.empty((max_iter + 1, *rhs.shape), dtype=rhs.dtype, device=rhs.device)
+    basis_2d = basis.reshape(max_iter + 1, -1)
+    basis_2d[0].copy_(rhs.reshape(-1) / safe_b_norm_t)
+    hessenberg = torch.zeros((max_iter + 1, max_iter), dtype=rhs.dtype, device=rhs.device)
+    partials = torch.empty((num_tiles, max_iter), dtype=rhs.dtype, device=rhs.device)
+    norm_partials = torch.empty((num_tiles,), dtype=rhs.dtype, device=rhs.device)
+    work = torch.empty((n,), dtype=rhs.dtype, device=rhs.device)
+    residual_buf = torch.empty((), dtype=rhs.dtype, device=rhs.device)
+    last_j = 0
+    rel_res = 1.0
+    check_count = 0
+
+    for j in range(max_iter):
+        w = apply_a(basis[j]).reshape(-1)
+        _gmres_arnoldi_dot_partials_kernel[grid](
+            basis_2d,
+            w,
+            partials,
+            n,
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_N=int(block_n),
+            BLOCK_K=int(block_k),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=4,
+        )
+        _gmres_arnoldi_reduce_project_dot_kernel[grid](
+            basis_2d,
+            w,
+            partials,
+            hessenberg,
+            work,
+            n,
+            NUM_TILES=int(num_tiles),
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_N=int(block_n),
+            BLOCK_K=int(block_k),
+            BLOCK_TILES=int(block_tiles),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=8,
+        )
+        _gmres_arnoldi_reduce_project_norm_kernel[grid](
+            basis_2d,
+            partials,
+            hessenberg,
+            work,
+            norm_partials,
+            n,
+            NUM_TILES=int(num_tiles),
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_N=int(block_n),
+            BLOCK_K=int(block_k),
+            BLOCK_TILES=int(block_tiles),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=8,
+        )
+        _gmres_arnoldi_reduce_norm_normalize_kernel[grid](
+            basis_2d,
+            hessenberg,
+            work,
+            norm_partials,
+            n,
+            NUM_TILES=int(num_tiles),
+            J=int(j),
+            MAX_ITER=int(max_iter),
+            BLOCK_N=int(block_n),
+            BLOCK_TILES=int(block_tiles),
+            DTYPE=_tl_float_dtype(rhs.dtype),
+            num_warps=8,
+        )
+
+        last_j = j
+        should_check = j == 0 or (j + 1) % check_interval == 0 or j + 1 >= max_iter
+        if should_check:
+            check_count += 1
+            rel_res = _gmres_hessenberg_rel_res(
+                hessenberg,
+                b_norm_t,
+                iters=j + 1,
+                b_norm=None,
+                residual_buf=residual_buf,
+            )
+            if rel_res <= tol:
+                break
+
+    iters = int(last_j + 1)
+    y, final_rel_res = _gmres_hessenberg_solve(
+        hessenberg,
+        b_norm_t,
+        iters=iters,
+        b_norm=None,
+        residual_buf=residual_buf,
+        read_residual=False,
+    )
+    if final_rel_res is not None:
+        rel_res = final_rel_res
+    if _GMRES_SELF_LOOP_STATS is not None:
+        _GMRES_SELF_LOOP_STATS.append(
+            {
+                "iterations": iters,
+                "rel_res": float(rel_res),
+                "check_count": int(check_count),
+                "arnoldi_backend": "triton_split",
+            }
+        )
+    out = torch.empty_like(rhs)
+    torch.mv(basis_2d[:iters].t(), y, out=out.reshape(-1))
+    return out
 
 
 def _gmres_solve_wave_self_loop_cgs2(
@@ -879,6 +1178,7 @@ def _gmres_solve_wave_self_loop_cgs2(
                 "iterations": iters,
                 "rel_res": float(rel_res),
                 "check_count": int(check_count),
+                "arnoldi_backend": "torch_cgs2",
             }
         )
     out = torch.empty_like(rhs)

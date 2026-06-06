@@ -882,3 +882,63 @@ this warmed subset. That points back to implementation overhead, not
 mathematical iteration count. Coarser checks (`I10`) increased Krylov work too
 much, while fixed-m attempts were unstable here because the backward pass hit
 an E-adjoint BiCGSTAB NaN.
+
+### Opt-In Triton Split-Arnoldi Follow-Up
+
+I added an experimental adaptive CUDA float32 Arnoldi backend guarded by:
+
+```bash
+GPUREC_GMRES_TRITON_ARNOLDI=1
+```
+
+The default remains PyTorch CGS2 because this backend is not yet a net
+end-to-end win.
+
+On the hard HOGENOM family `CLU_000680_20_4_C`, GMRES10 with tolerance
+`1e-10` and check interval `3` used the same mathematical work in both
+backends:
+
+| Backend | Elapsed Backward-Only Time | Wave Solves | J^T Applications | GMRES Checks |
+|---|---:|---:|---:|---:|
+| PyTorch CGS2 float32 | `0.1068 s` | `68` | `619` | `299` |
+| Triton split Arnoldi float32 | `0.0817 s` | `68` | `619` | `299` |
+
+The `nsys` profiles show why the Triton path helps this isolated backward:
+
+| Metric | CGS2 | Triton Split |
+|---|---:|---:|
+| summed GPU kernels | `34.830 ms`, `10753` launches | `24.751 ms`, `6718` launches |
+| CUDA runtime API | `31.702 ms`, `23247` calls | `18.128 ms`, `10710` calls |
+| device-to-device copies | `321.063 MB`, `2151` copies | `30.879 MB`, `226` copies |
+
+However, the largest-10 opt-in run was much worse as an end-to-end result:
+
+| Metric | Value |
+|---|---:|
+| train seconds | `33.956 s` |
+| wall seconds | `35.100 s` |
+| step 1 seconds | `30.655 s` |
+| mean step seconds, steps 2-20 | `0.174 s` |
+| total self-loop backward iterations | `4769` |
+| backend counts | `triton_split: 920`, `torch_cgs2: 820` |
+| final loss | `166606.40625` |
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/current_gmres_cgs2_float32_i3_profile_prep_20260606_063707/
+benchmarks/large_dataset_capacity/output/current_gmres_triton_arnoldi_profile_prep_20260606_063333/
+benchmarks/large_dataset_capacity/output/nsys_gmres_cgs2_float32_i3_profile_20260606_063735/
+benchmarks/large_dataset_capacity/output/nsys_gmres_triton_arnoldi_float32_i3_profile_20260606_063459/
+benchmarks/large_dataset_capacity/output/ncu_gmres_triton_arnoldi_float32_i3_reduce_project_dot_basic_20260606_063529/
+benchmarks/large_dataset_capacity/output/ncu_gmres_triton_arnoldi_float32_i3_jt_basic_20260606_063625/
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_largest10_steps20_20260606_063130/
+```
+
+The `ncu` samples show underfilled kernels rather than throughput saturation:
+the reduce/project dot kernel was `4.32-4.77 us` at `47-52` blocks with
+`48` registers/thread, while the self-loop matvec was `15.07-15.39 us` at
+`18-20` blocks with `182` registers/thread. The remaining work is therefore a
+launch/specialization/fusion problem. A Gluon rewrite is worth considering only
+if it lets us fuse a larger GMRES step or reduce specialization overhead; a
+drop-in rewrite of the tiny Hessenberg kernel is not the right target.

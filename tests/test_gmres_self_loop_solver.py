@@ -107,7 +107,9 @@ def test_gmres_self_loop_records_stats_and_stops_early_cpu():
         wave_backward._GMRES_SELF_LOOP_STATS = old_stats
 
     torch.testing.assert_close(got, rhs, rtol=1e-12, atol=1e-12)
-    assert stats == [{"iterations": 1, "rel_res": 0.0, "check_count": 1}]
+    assert stats == [
+        {"iterations": 1, "rel_res": 0.0, "check_count": 1, "arnoldi_backend": "torch_cgs2"}
+    ]
 
 
 def test_gmres_self_loop_handles_zero_rhs_cpu():
@@ -247,6 +249,47 @@ def test_gmres_self_loop_matches_dense_solve_cuda():
     expected = torch.linalg.solve(matrix, rhs.reshape(-1)).reshape_as(rhs)
 
     torch.testing.assert_close(got, expected, rtol=1e-11, atol=1e-11)
+
+
+def test_gmres_self_loop_triton_split_matches_dense_solve_cuda_float32(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_ARNOLDI", "1")
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        device = torch.device("cuda")
+        dtype = torch.float32
+        matrix = torch.tensor(
+            [
+                [1.40, -0.20, 0.05, 0.00],
+                [0.10, 1.15, -0.10, 0.03],
+                [0.00, 0.20, 1.30, -0.07],
+                [-0.04, 0.00, 0.08, 1.10],
+            ],
+            dtype=dtype,
+            device=device,
+        )
+        rhs = torch.tensor([[0.7, -1.2], [2.0, 0.3]], dtype=dtype, device=device)
+
+        def apply_a(vec):
+            return (matrix @ vec.reshape(-1)).reshape_as(vec)
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=4,
+            tol=1e-6,
+            check_interval=2,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    expected = torch.linalg.solve(matrix, rhs.reshape(-1)).reshape_as(rhs)
+    torch.testing.assert_close(got, expected, rtol=2e-5, atol=2e-5)
+    assert stats and stats[0]["arnoldi_backend"] == "triton_split"
 
 
 def test_triton_apply_a_zeroes_inactive_rows_cuda():

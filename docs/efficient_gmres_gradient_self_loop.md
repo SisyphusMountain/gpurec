@@ -1183,6 +1183,140 @@ on this subset. The next implementation step should therefore move Arnoldi
 vector algebra out of the PyTorch/cuBLAS loop or reduce residual-check/control
 overhead further.
 
+### Opt-In Triton Split-Arnoldi Prototype
+
+I implemented an experimental split-Arnoldi path for adaptive CUDA float32
+GMRES. It replaces the PyTorch/cuBLAS modified Gram-Schmidt bookkeeping with
+four Triton kernels per Arnoldi step:
+
+```text
+_gmres_arnoldi_dot_partials_kernel
+_gmres_arnoldi_reduce_project_dot_kernel
+_gmres_arnoldi_reduce_project_norm_kernel
+_gmres_arnoldi_reduce_norm_normalize_kernel
+```
+
+This path is deliberately opt-in:
+
+```bash
+GPUREC_GMRES_TRITON_ARNOLDI=1
+```
+
+The default remains the existing PyTorch CGS2 Arnoldi path. The Triton version
+is mathematically useful but not yet production-safe as a default because cold
+JIT compilation dominates short runs and because large waves can still fall
+back to CGS2.
+
+Validation:
+
+```text
+pytest -q tests/test_gmres_self_loop_solver.py tests/test_large_dataset_capacity_benchmark.py
+20 passed
+```
+
+The CUDA float32 regression asserts that the Triton split path runs and matches
+a dense solve within float32 tolerance.
+
+Hard-family backward-only comparison on `CLU_000680_20_4_C`, adaptive GMRES10,
+tolerance `1e-10`, check interval `3`, dtype `float32`:
+
+| Backend | Elapsed | Waves | J^T Applications | GMRES Checks | Backend Counts |
+|---|---:|---:|---:|---:|---|
+| PyTorch CGS2 | `0.1068 s` | `68` | `619` | `299` | `torch_cgs2: 68` |
+| Triton split Arnoldi | `0.0817 s` | `68` | `619` | `299` | `triton_split: 68` |
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/current_gmres_cgs2_float32_i3_profile_prep_20260606_063707/
+benchmarks/large_dataset_capacity/output/current_gmres_triton_arnoldi_profile_prep_20260606_063333/
+benchmarks/large_dataset_capacity/output/nsys_gmres_cgs2_float32_i3_profile_20260606_063735/
+benchmarks/large_dataset_capacity/output/nsys_gmres_triton_arnoldi_float32_i3_profile_20260606_063459/
+benchmarks/large_dataset_capacity/output/ncu_gmres_triton_arnoldi_float32_i3_reduce_project_dot_basic_20260606_063529/
+benchmarks/large_dataset_capacity/output/ncu_gmres_triton_arnoldi_float32_i3_jt_basic_20260606_063625/
+```
+
+The `nsys` profile shows the Triton path cuts launch/copy overhead relative to
+float32 CGS2 for this backward-only workload:
+
+| Metric | CGS2 | Triton Split |
+|---|---:|---:|
+| summed GPU kernels | `34.830 ms`, `10753` launches | `24.751 ms`, `6718` launches |
+| CUDA runtime API | `31.702 ms`, `23247` calls | `18.128 ms`, `10710` calls |
+| device-to-device copies | `321.063 MB`, `2151` copies | `30.879 MB`, `226` copies |
+| device-to-host copies | `349` copies | `349` copies |
+
+Top Triton-split kernel buckets:
+
+| Kernel Bucket | Time | Launches |
+|---|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `5.987 ms` | `619` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `2.240 ms` | `619` |
+| `_gmres_arnoldi_reduce_project_norm_kernel` | `1.688 ms` | `619` |
+| `_gmres_arnoldi_dot_partials_kernel` | `1.334 ms` | `619` |
+| `_gmres_arnoldi_reduce_norm_normalize_kernel` | `0.920 ms` | `619` |
+| `_gmres_hessenberg_residual_kernel` | `0.763 ms` | `367` |
+
+`ncu --set basic` on `_gmres_arnoldi_reduce_project_dot_kernel` sampled three
+launches:
+
+| Metric | Sampled Values |
+|---|---:|
+| grid/block | `47-52 x 256` |
+| duration | `4.32 us` - `4.77 us` |
+| registers/thread | `48` |
+| DRAM throughput | `5.4%` - `14.8%` |
+| SM throughput | `10.9%` - `13.0%` |
+| active-warps occupancy | `16.2%` - `16.4%` |
+
+`ncu --set basic` on `_wave_backward_uniform_2d_jt_kernel` sampled three
+launches:
+
+| Metric | Sampled Values |
+|---|---:|
+| grid/block | `18-20 x 64` |
+| duration | `15.07 us` - `15.39 us` |
+| registers/thread | `182` |
+| DRAM throughput | `3.4%` - `3.8%` |
+| SM throughput | `1.15%` - `1.28%` |
+| active-warps occupancy | `4.14%` - `4.23%` |
+
+The bottleneck remains underfilled small kernels and launch/control overhead,
+not a dense solve and not a single throughput-saturating kernel.
+
+Largest-10 opt-in run:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_triton_arnoldi_largest10_steps20_20260606_063130/
+```
+
+Same settings as the previous largest-10 comparison, with
+`GPUREC_GMRES_TRITON_ARNOLDI=1` in effect at the time of the run.
+
+| Metric | Value |
+|---|---:|
+| train seconds | `33.956 s` |
+| wall seconds | `35.100 s` |
+| step 1 seconds | `30.655 s` |
+| mean step seconds, steps 2-20 | `0.174 s` |
+| total self-loop backward iterations | `4769` |
+| backend counts | `triton_split: 920`, `torch_cgs2: 820` |
+| final loss | `166606.40625` |
+
+The first step is dominated by Triton compilation. Warm steps without new JIT
+specializations are near `0.124 s`, which is essentially the same as the
+previous GMRES10 I3 and Neumann32 warmed steps. Some later steps still had
+JIT-looking spikes (`0.626 s` and `0.540 s`). This is why the prototype is
+opt-in: it improves one backward-only float32 hard-family solve, but it does
+not yet improve the broader end-to-end benchmark.
+
+Implication for a Triton or Gluon rewrite: rewriting only the small
+Hessenberg/residual kernel is not enough. The useful target is a larger fused
+GMRES step or a lower-compilation, lower-launch Arnoldi implementation. Gluon
+may help if it can express that fused step with less specialization overhead or
+lower register pressure, but it should be judged against `nsys` launch counts
+and end-to-end warmed/cold timings, not just one kernel's microseconds.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

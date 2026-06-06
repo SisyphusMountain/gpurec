@@ -158,7 +158,7 @@ class SelfLoopBackwardRecorder:
         self.solver_options = model.solver_options
         self.backward_pass_count = 0
         self._old_gmres_stats = None
-        self._gmres_stats: list[dict[str, float | int]] | None = None
+        self._gmres_stats: list[dict[str, float | int | str]] | None = None
 
     def __enter__(self) -> "SelfLoopBackwardRecorder":
         if self.solver_options.self_loop_solver in ("gmres", "gmres_fixed"):
@@ -183,6 +183,10 @@ class SelfLoopBackwardRecorder:
             per_wave_iterations = [int(row["iterations"]) for row in gmres_stats]
             per_wave_checks = [int(row.get("check_count", 0)) for row in gmres_stats]
             rel_res = [float(row.get("rel_res", 0.0)) for row in gmres_stats]
+            arnoldi_backend_counts: dict[str, int] = {}
+            for row in gmres_stats:
+                backend = str(row.get("arnoldi_backend", "unknown"))
+                arnoldi_backend_counts[backend] = arnoldi_backend_counts.get(backend, 0) + 1
             wave_solves = len(per_wave_iterations)
             total_iterations = int(sum(per_wave_iterations))
             return {
@@ -201,6 +205,7 @@ class SelfLoopBackwardRecorder:
                 ),
                 "gmres_max_checks_per_wave": max(per_wave_checks, default=0),
                 "gmres_max_rel_res": max(rel_res, default=None),
+                "gmres_arnoldi_backend_counts": arnoldi_backend_counts,
             }
 
         wave_solves = int(self.backward_pass_count) * int(waves_per_backward)
@@ -219,6 +224,7 @@ class SelfLoopBackwardRecorder:
             "gmres_mean_checks_per_wave": None,
             "gmres_max_checks_per_wave": None,
             "gmres_max_rel_res": None,
+            "gmres_arnoldi_backend_counts": None,
         }
 
 
