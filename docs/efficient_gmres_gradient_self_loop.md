@@ -2823,6 +2823,82 @@ not yet a demonstrated time-to-convergence win; the next optimization target is
 the per-GMRES-step launch/bookkeeping overhead identified by the `nsys` and
 `ncu` profiles, not the mathematical number of self-loop applications.
 
+#### Final Residual Readback Guard
+
+Implementation commit: `234d1995`.
+
+I made one small production-path cleanup in both Triton Arnoldi backends. The
+Triton check kernel still runs on the forced final iteration because it writes
+the small `y` vector used to form the GMRES solution. However, when no
+per-wave stats are being collected and the loop is already at `max_iter`, the
+Python `float(residual_buf.detach().cpu())` readback is not needed for a break
+decision. The code now skips that scalar GPU-to-CPU synchronization only in
+that final/no-stats case.
+
+Validation:
+
+```text
+python -m compileall gpurec/core/kernels/wave_backward.py
+pytest -q tests/test_gmres_self_loop_solver.py
+pytest -q
+```
+
+This does not change the recorded benchmark timings above, because the
+benchmark intentionally collects GMRES stats to report backward-application
+counts and residuals. It is still useful for production backward passes that
+hit `max_iter` without active GMRES statistics.
+
+#### Rejected Large-Wave `j=0` Analytic Reorthogonalization
+
+I also tested a larger launch-reduction patch for the large-wave Triton backend.
+For Arnoldi step `j=0`, the second CGS pass can be written as:
+
+```text
+coeff2 = dot(q0, w - q0 * coeff0)
+       = coeff0 - coeff0 * dot(q0, q0)
+```
+
+The prototype used this identity to replace the first large-wave
+`project_from_coeff -> reduce_group_partials -> sum_group_coeff` sequence with
+new `j0` kernels. It passed the gradient check and reduced launch counts, but I
+backed it out because it did not produce a robust end-to-end timing win and it
+made the large-wave Arnoldi path more complex.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_large_j0_analytic_warm_20260606_102453/
+benchmarks/large_dataset_capacity/output/gmres_large_j0_analytic_gradient_check_20260606_102542/
+benchmarks/large_dataset_capacity/output/gmres_large_j0_analytic_steps60_20260606_102637/
+benchmarks/large_dataset_capacity/output/gmres_large_j0_analytic_steps60_warm_20260606_102724/
+benchmarks/large_dataset_capacity/output/nsys_gmres_large_j0_analytic_20260606_102841/
+```
+
+Gradient check against Neumann512, with the uncommitted prototype:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 | Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `4.195229e-08` | `6.172818e-08` | `1.045386e-07` | `167456.03125` |
+| GMRES10 I1 tol `7e-6`, `j=0` analytic prototype | `142` | `87` | `1.766348e-06` | `3.456778e-06` | `3.460674e-06` | `167456.03125` |
+
+Largest-10 timings for the prototype:
+
+| Run | Train Seconds | Wall Seconds | Mean Warm Steps | Final Loss | Result |
+|---|---:|---:|---:|---:|---|
+| 20-step warmed prototype | `2.510` | `3.690` | `0.09540` over steps 2-20 | `166606.4375` | promising |
+| 60-step warmed prototype | `6.388` | `7.692` | `0.09633` over steps 2-60 | `164817.640625` | not better |
+
+The `nsys` profile confirmed the intended launch movement. Relative to the
+previous large-backend 3-step profile, `_gmres_arnoldi_project_from_coeff_kernel`
+fell from `309` to `132` launches, `_gmres_arnoldi_reduce_group_partials_kernel`
+from `618` to `441`, and `_gmres_arnoldi_sum_group_coeff_kernel` from `618` to
+`264`, with `177` launches of each new `j0` helper. The total launch reduction
+was real, but the profiled step timings were essentially unchanged
+(`0.842`, `0.113`, `0.112` seconds under `nsys`). Given that result, the
+prototype is not retained. The next larger optimization should instead batch or
+elide scheduled residual-check host synchronization, or fuse a broader section
+of the large-wave Arnoldi chain.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
