@@ -1334,3 +1334,127 @@ def test_triton_apply_a_zeroes_inactive_rows_cuda():
 
     expected = torch.tensor([[0.5, 1.0], [0.0, 0.0]], device=device, dtype=dtype)
     torch.testing.assert_close(term_out, expected)
+
+
+def test_triton_apply_a_first_dot_matches_separate_jt_cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton self-loop kernel")
+
+    device = torch.device("cuda")
+    dtype = torch.float32
+    W = 2
+    S = 3
+    max_iter = 3
+    j = 1
+    term_in = torch.tensor(
+        [[1.0, -2.0, 3.0], [4.0, -5.0, 6.0]],
+        device=device,
+        dtype=dtype,
+    )
+    term_out_ref = torch.full_like(term_in, float("nan"))
+    term_out_fused = torch.full_like(term_in, float("nan"))
+    rhs = torch.zeros_like(term_in)
+    active_mask = torch.tensor([True, False], device=device)
+    diag = torch.tensor(
+        [[0.5, 0.25, 0.75], [1.0, 0.5, 0.25]],
+        device=device,
+        dtype=dtype,
+    )
+    pibar_coeff = torch.tensor(
+        [[0.1, -0.2, 0.3], [0.25, -0.1, 0.15]],
+        device=device,
+        dtype=dtype,
+    )
+    p_prime = torch.tensor(
+        [[0.2, 0.4, -0.1], [0.3, -0.2, 0.5]],
+        device=device,
+        dtype=dtype,
+    )
+    zeros = torch.zeros_like(term_in)
+    pibar_corr_ref = torch.empty_like(term_in)
+    pibar_corr_fused = torch.empty_like(term_in)
+    v_k = torch.empty_like(term_in)
+    sp_child = torch.zeros((S,), device=device, dtype=torch.int32)
+    sp_parent = torch.full((S,), -1, device=device, dtype=torch.int32)
+    compact_level_ptr = torch.tensor([0], device=device, dtype=torch.long)
+    compact_empty = torch.empty((0,), device=device, dtype=torch.int32)
+    basis = torch.tensor(
+        [
+            [[0.5, 0.25, -0.75], [0.0, 1.0, 0.0]],
+            [[-0.25, 0.5, 0.125], [1.0, 0.0, -1.0]],
+            [[0.1, 0.2, 0.3], [0.3, 0.2, 0.1]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        ],
+        device=device,
+        dtype=dtype,
+    )
+    partials = torch.full((W, max_iter), float("nan"), device=device, dtype=dtype)
+
+    wave_backward._wave_backward_uniform_2d_jt_kernel[(W,)](
+        term_in,
+        term_out_ref,
+        rhs,
+        active_mask,
+        diag,
+        pibar_coeff,
+        p_prime,
+        zeros,
+        zeros,
+        sp_child,
+        sp_child,
+        sp_parent,
+        compact_level_ptr,
+        compact_empty,
+        compact_empty,
+        compact_empty,
+        pibar_corr_ref,
+        v_k,
+        W,
+        S,
+        1,
+        4,
+        1,
+        0,
+        USE_ACTIVE_MASK=True,
+        SKIP_INACTIVE_SCRATCH_ZERO=False,
+        FIXED_POINT_UPDATE=False,
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        USE_CHILD_EDGE_SELF_LOOP=True,
+        OUTPUT_A=True,
+        ACCUMULATE_V=False,
+        num_warps=1,
+    )
+    wave_backward._wave_backward_uniform_2d_jt_first_dot_kernel[(W,)](
+        term_in,
+        term_out_fused,
+        active_mask,
+        diag,
+        pibar_coeff,
+        p_prime,
+        zeros,
+        sp_parent,
+        compact_level_ptr,
+        compact_empty,
+        compact_empty,
+        compact_empty,
+        pibar_corr_fused,
+        basis.reshape(max_iter + 1, -1),
+        partials,
+        W,
+        W * S,
+        S,
+        j,
+        max_iter,
+        4,
+        1,
+        0,
+        USE_ACTIVE_MASK=True,
+        DTYPE=wave_backward._tl_float_dtype(dtype),
+        BLOCK_K=4,
+        num_warps=1,
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(term_out_fused, term_out_ref)
+    expected_partials = (basis[: j + 1] * term_out_ref[None, :, :]).sum(dim=2).T
+    torch.testing.assert_close(partials[:, : j + 1], expected_partials)

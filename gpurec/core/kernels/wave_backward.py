@@ -597,6 +597,122 @@ def _wave_backward_uniform_2d_jt_kernel(
         tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
 
 
+@triton.jit(do_not_specialize=["J"])
+def _wave_backward_uniform_2d_jt_first_dot_kernel(
+    term_in_ptr,
+    term_out_ptr,
+    active_mask_ptr,
+    diag_ptr,
+    pibar_coeff_ptr,
+    p_prime_ptr,
+    sl1_ptr,
+    sp_parent_ptr,
+    compact_level_ptr,
+    compact_level_parent_ptr,
+    compact_level_child1_ptr,
+    compact_level_child2_ptr,
+    pibar_corr_ptr,
+    basis_ptr,
+    partials_ptr,
+    W,
+    N,
+    S: tl.constexpr,
+    J,
+    MAX_ITER: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    BLOCK_NODES: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    DTYPE: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    """Apply one self-loop row and write first Arnoldi dot partials for GMRES."""
+    row = tl.program_id(0)
+    s_offs = tl.arange(0, BLOCK_S)
+    species_valid = s_offs < S
+    row_valid = row < W
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + row, mask=row_valid, other=0) != 0
+    else:
+        row_active = row_valid
+    row_mask = row_valid & row_active
+    mask = species_valid & row_mask
+    offsets = row * S + s_offs
+
+    term_val = tl.load(term_in_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    pibar_u_coeff = tl.load(pibar_coeff_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    u_d = term_val * pibar_u_coeff
+    A = tl.sum(tl.where(mask, u_d, tl.zeros([BLOCK_S], dtype=DTYPE)), axis=0)
+    tl.store(pibar_corr_ptr + offsets, tl.where(mask, u_d, tl.zeros_like(u_d)), mask=species_valid & row_valid)
+
+    tl.debug_barrier()
+
+    for level in range(0, N_LEVELS):
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=0)
+            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            reduce_mask = node_mask & row_mask
+            parent_val = tl.load(
+                pibar_corr_ptr + row * S + parent,
+                mask=reduce_mask,
+                other=0.0,
+            ).to(DTYPE)
+            c1_val = tl.load(
+                pibar_corr_ptr + row * S + c1,
+                mask=reduce_mask & (c1 < S),
+                other=0.0,
+            ).to(DTYPE)
+            c2_val = tl.load(
+                pibar_corr_ptr + row * S + c2,
+                mask=reduce_mask & (c2 < S),
+                other=0.0,
+            ).to(DTYPE)
+            tl.store(
+                pibar_corr_ptr + row * S + parent,
+                parent_val + c1_val + c2_val,
+                mask=reduce_mask,
+            )
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
+    tl.debug_barrier()
+
+    corr = tl.load(pibar_corr_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    diag_wt = tl.load(diag_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    p_prime = tl.load(p_prime_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    base = term_val * diag_wt + p_prime * (A - corr)
+
+    parent = tl.load(sp_parent_ptr + s_offs, mask=species_valid, other=-1)
+    parent_valid = species_valid & (parent >= 0) & (parent < S)
+    parent_term = tl.load(
+        term_in_ptr + row * S + parent,
+        mask=parent_valid & row_mask,
+        other=0.0,
+    ).to(DTYPE)
+    edge_wt = tl.load(sl1_ptr + offsets, mask=parent_valid & row_mask, other=0.0).to(DTYPE)
+    result = base + parent_term * edge_wt
+    out_val = term_val - result
+    store_mask = species_valid & row_valid
+    out_stored = tl.where(mask, out_val, tl.zeros_like(out_val))
+    tl.store(term_out_ptr + offsets, out_stored, mask=store_mask)
+
+    k = tl.arange(0, BLOCK_K)
+    k_mask = k < J + 1
+    basis = tl.load(
+        basis_ptr + k[:, None] * N + offsets[None, :],
+        mask=k_mask[:, None] & mask[None, :],
+        other=0.0,
+    ).to(DTYPE)
+    partial = tl.sum(basis * out_val[None, :], axis=1)
+    tl.store(partials_ptr + row * MAX_ITER + k, partial, mask=row_valid & k_mask)
+
+
 @triton.jit(do_not_specialize=["ITERS"])
 def _gmres_hessenberg_residual_kernel(
     hessenberg_ptr,
@@ -1357,6 +1473,15 @@ def _gmres_use_triton_trusted_one_step_direct() -> bool:
     )
 
 
+def _gmres_use_fused_self_loop() -> bool:
+    return os.environ.get("GPUREC_GMRES_FUSED_SELF_LOOP", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 @torch.no_grad()
 def _gmres_solve_wave_self_loop(
     apply_a,
@@ -1371,6 +1496,8 @@ def _gmres_solve_wave_self_loop(
     initial_guess: torch.Tensor | None = None,
     right_preconditioner=None,
     preconditioner_name: str = "none",
+    apply_a_first_dot=None,
+    first_dot_partial_tiles: int | None = None,
     out: torch.Tensor | None = None,
     stats_out=None,
 ) -> torch.Tensor:
@@ -1574,6 +1701,8 @@ def _gmres_solve_wave_self_loop(
             warm_start_rel_res=warm_start_rel_res,
             right_preconditioner=right_preconditioner,
             preconditioner_name=preconditioner_name,
+            apply_a_first_dot=apply_a_first_dot,
+            first_dot_partial_tiles=first_dot_partial_tiles,
             out=out,
             stats_out=stats_out,
         )
@@ -2006,6 +2135,8 @@ def _gmres_solve_wave_self_loop_triton_large(
     warm_start_rel_res: float | None,
     right_preconditioner,
     preconditioner_name: str,
+    apply_a_first_dot,
+    first_dot_partial_tiles: int | None,
     out: torch.Tensor | None,
     stats_out,
 ) -> torch.Tensor:
@@ -2017,19 +2148,40 @@ def _gmres_solve_wave_self_loop_triton_large(
     block_groups = max(1, triton.next_power_of_2(num_groups))
     use_direct_sum = _gmres_can_use_triton_large_direct_sum(num_tiles)
     direct_sum_block_tiles = triton.next_power_of_2(num_tiles) if use_direct_sum else None
+    fused_first_dot_tiles = int(first_dot_partial_tiles or 0)
+    use_fused_first_dot = (
+        apply_a_first_dot is not None
+        and fused_first_dot_tiles > 0
+        and triton.cdiv(fused_first_dot_tiles, group_tiles)
+        <= _GMRES_TRITON_LARGE_ARNOLDI_MAX_GROUPS
+    )
+    first_dot_tiles = fused_first_dot_tiles if use_fused_first_dot else num_tiles
+    first_use_direct_sum = _gmres_can_use_triton_large_direct_sum(first_dot_tiles)
+    first_direct_sum_block_tiles = (
+        triton.next_power_of_2(first_dot_tiles) if first_use_direct_sum else None
+    )
+    first_num_groups = triton.cdiv(first_dot_tiles, group_tiles)
+    first_block_groups = max(1, triton.next_power_of_2(first_num_groups))
     block_k = triton.next_power_of_2(max_iter)
     grid = (num_tiles,)
     group_grid = (num_groups,)
+    first_group_grid = (first_num_groups,)
 
     basis = torch.empty((max_iter + 1, *rhs.shape), dtype=rhs.dtype, device=rhs.device)
     basis_2d = basis.reshape(max_iter + 1, -1)
     torch.div(rhs.reshape(-1), safe_b_norm_t, out=basis_2d[0])
     hessenberg = torch.empty((max_iter + 1, max_iter), dtype=rhs.dtype, device=rhs.device)
-    partials = torch.empty((num_tiles, max_iter), dtype=rhs.dtype, device=rhs.device)
+    partial_tiles = max(num_tiles, first_dot_tiles)
+    partials = torch.empty((partial_tiles, max_iter), dtype=rhs.dtype, device=rhs.device)
+    group_partial_rows = 0
+    if not use_direct_sum:
+        group_partial_rows = max(group_partial_rows, num_groups)
+    if not first_use_direct_sum:
+        group_partial_rows = max(group_partial_rows, first_num_groups)
     group_partials = (
         None
-        if use_direct_sum
-        else torch.empty((num_groups, max_iter), dtype=rhs.dtype, device=rhs.device)
+        if group_partial_rows == 0
+        else torch.empty((group_partial_rows, max_iter), dtype=rhs.dtype, device=rhs.device)
     )
     coeff_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     norm_partials = torch.empty((num_tiles,), dtype=rhs.dtype, device=rhs.device)
@@ -2046,38 +2198,48 @@ def _gmres_solve_wave_self_loop_triton_large(
 
     for j in range(max_iter):
         basis_j = basis[j]
-        w = apply_a(basis_j).reshape(-1)
-        _gmres_arnoldi_dot_partials_kernel[grid](
-            basis_2d,
-            w,
-            partials,
-            n,
-            J=int(j),
-            MAX_ITER=int(max_iter),
-            BLOCK_N=int(block_n),
-            BLOCK_K=int(block_k),
-            DTYPE=_tl_float_dtype(rhs.dtype),
-            num_warps=4,
-        )
-        if use_direct_sum:
+        if use_fused_first_dot:
+            w = apply_a_first_dot(
+                basis_j,
+                basis_2d,
+                partials,
+                int(j),
+                int(max_iter),
+                int(block_k),
+            ).reshape(-1)
+        else:
+            w = apply_a(basis_j).reshape(-1)
+            _gmres_arnoldi_dot_partials_kernel[grid](
+                basis_2d,
+                w,
+                partials,
+                n,
+                J=int(j),
+                MAX_ITER=int(max_iter),
+                BLOCK_N=int(block_n),
+                BLOCK_K=int(block_k),
+                DTYPE=_tl_float_dtype(rhs.dtype),
+                num_warps=4,
+            )
+        if first_use_direct_sum:
             _gmres_arnoldi_sum_partials_direct_kernel[(1,)](
                 partials,
                 coeff_buf,
                 hessenberg,
-                NUM_TILES=int(num_tiles),
+                NUM_TILES=int(first_dot_tiles),
                 J=int(j),
                 MAX_ITER=int(max_iter),
-                BLOCK_TILES=int(direct_sum_block_tiles),
+                BLOCK_TILES=int(first_direct_sum_block_tiles),
                 BLOCK_K=int(block_k),
                 ADD_TO_H=False,
                 DTYPE=_tl_float_dtype(rhs.dtype),
                 num_warps=8,
             )
         else:
-            _gmres_arnoldi_reduce_group_partials_kernel[group_grid](
+            _gmres_arnoldi_reduce_group_partials_kernel[first_group_grid](
                 partials,
                 group_partials,
-                NUM_TILES=int(num_tiles),
+                NUM_TILES=int(first_dot_tiles),
                 J=int(j),
                 MAX_ITER=int(max_iter),
                 GROUP_TILES=int(group_tiles),
@@ -2089,10 +2251,10 @@ def _gmres_solve_wave_self_loop_triton_large(
                 group_partials,
                 coeff_buf,
                 hessenberg,
-                NUM_GROUPS=int(num_groups),
+                NUM_GROUPS=int(first_num_groups),
                 J=int(j),
                 MAX_ITER=int(max_iter),
-                BLOCK_GROUPS=int(block_groups),
+                BLOCK_GROUPS=int(first_block_groups),
                 BLOCK_K=int(block_k),
                 ADD_TO_H=False,
                 DTYPE=_tl_float_dtype(rhs.dtype),
@@ -2280,6 +2442,8 @@ def _gmres_solve_wave_self_loop_triton_large(
             "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "triton_large",
             "large_direct_sum": bool(use_direct_sum),
+            "fused_self_loop_first_dot": bool(use_fused_first_dot),
+            "first_dot_partial_tiles": int(first_dot_tiles),
             "large_direct_norm_checks": int(direct_norm_check_count),
             "large_group_norm_reductions": int(group_norm_reduction_count),
             "min_check_iter": int(min_check_iter),
@@ -3039,6 +3203,58 @@ def _wave_backward_uniform_2d(
             )
             return gmres_a_buf
 
+        gmres_apply_a_first_dot = None
+        gmres_first_dot_partial_tiles = None
+        if (
+            _gmres_use_fused_self_loop()
+            and gmres_preconditioner_name == "none"
+            and dtype == torch.float32
+            and block_w == 1
+            and bool(use_child_edge_self_loop)
+        ):
+
+            def _apply_a_first_dot(
+                term_in: torch.Tensor,
+                basis_2d: torch.Tensor,
+                partials: torch.Tensor,
+                j: int,
+                max_iter: int,
+                block_k: int,
+            ) -> torch.Tensor:
+                _wave_backward_uniform_2d_jt_first_dot_kernel[(n_row_blocks,)](
+                    term_in,
+                    gmres_a_buf,
+                    gmres_active_mask if gmres_active_mask is not None else rhs,
+                    aw0,
+                    aw1,
+                    aw2,
+                    aw3,
+                    sp_parent,
+                    compact_level_ptr,
+                    compact_level_parents,
+                    compact_level_child1,
+                    compact_level_child2,
+                    pibar_corr,
+                    basis_2d,
+                    partials,
+                    W,
+                    W * S,
+                    S,
+                    int(j),
+                    int(max_iter),
+                    block_s,
+                    block_nodes,
+                    compact_level_ptr.numel() - 1,
+                    USE_ACTIVE_MASK=bool(gmres_active_mask is not None),
+                    DTYPE=_tl_float_dtype(dtype),
+                    BLOCK_K=int(block_k),
+                    **jt_options,
+                )
+                return gmres_a_buf
+
+            gmres_apply_a_first_dot = _apply_a_first_dot
+            gmres_first_dot_partial_tiles = int(n_row_blocks)
+
         _gmres_solve_wave_self_loop(
             _apply_a,
             gmres_rhs,
@@ -3051,6 +3267,8 @@ def _wave_backward_uniform_2d(
             initial_guess=gmres_initial_v,
             right_preconditioner=gmres_right_preconditioner,
             preconditioner_name=gmres_preconditioner_name,
+            apply_a_first_dot=gmres_apply_a_first_dot,
+            first_dot_partial_tiles=gmres_first_dot_partial_tiles,
             out=v_k,
             stats_out=gmres_stats_out,
         )

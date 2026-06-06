@@ -239,6 +239,14 @@ class SelfLoopBackwardRecorder:
             warm_start_accepted = sum(1 for row in gmres_stats if bool(row.get("warm_start_accepted", False)))
             trusted_check_used = sum(1 for row in gmres_stats if bool(row.get("trusted_check_used", False)))
             large_direct_sum_used = sum(1 for row in gmres_stats if bool(row.get("large_direct_sum", False)))
+            fused_first_dot_used = sum(
+                1 for row in gmres_stats if bool(row.get("fused_self_loop_first_dot", False))
+            )
+            fused_first_dot_tiles = [
+                int(row.get("first_dot_partial_tiles", 0))
+                for row in gmres_stats
+                if bool(row.get("fused_self_loop_first_dot", False))
+            ]
             large_direct_norm_checks = sum(int(row.get("large_direct_norm_checks", 0)) for row in gmres_stats)
             large_group_norm_reductions = sum(
                 int(row.get("large_group_norm_reductions", 0))
@@ -272,6 +280,11 @@ class SelfLoopBackwardRecorder:
                 "gmres_warm_start_accepted": int(warm_start_accepted),
                 "gmres_trusted_check_used": int(trusted_check_used),
                 "gmres_large_direct_sum_used": int(large_direct_sum_used),
+                "gmres_fused_self_loop_first_dot_used": int(fused_first_dot_used),
+                "gmres_fused_first_dot_max_partial_tiles": max(
+                    fused_first_dot_tiles,
+                    default=None,
+                ),
                 "gmres_large_direct_norm_checks": int(large_direct_norm_checks),
                 "gmres_large_group_norm_reductions": int(large_group_norm_reductions),
                 "gmres_residual_probe_a_applications": int(residual_probe_applications),
@@ -302,6 +315,8 @@ class SelfLoopBackwardRecorder:
             "gmres_max_checks_per_wave": None,
             "gmres_max_rel_res": None,
             "gmres_large_direct_sum_used": None,
+            "gmres_fused_self_loop_first_dot_used": None,
+            "gmres_fused_first_dot_max_partial_tiles": None,
             "gmres_large_direct_norm_checks": None,
             "gmres_large_group_norm_reductions": None,
             "gmres_arnoldi_backend_counts": None,

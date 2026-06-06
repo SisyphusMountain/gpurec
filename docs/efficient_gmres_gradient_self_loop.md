@@ -3385,6 +3385,103 @@ same diagnosis. The one-step subcase is now cheap; the next meaningful speedup
 has to reduce launch count in the multi-step Arnoldi path or remove the outer
 backward scalar waits.
 
+## Fused First-Dot Experiment
+
+I tested the first concrete piece of the proposed fused self-loop backend behind
+an explicit opt-in:
+
+```bash
+GPUREC_GMRES_FUSED_SELF_LOOP=1
+```
+
+The implementation adds `_wave_backward_uniform_2d_jt_first_dot_kernel`, a
+GMRES-specific variant of the retained self-loop `J^T` kernel. For
+`triton_large` GMRES waves, it computes `A(q_j)` and the first Arnoldi
+partials `dot(q_i, A(q_j))` in one launch. The existing fallback remains the
+default, and the fused path is not enabled unless the environment flag above is
+set.
+
+The focused regression test was:
+
+```bash
+pytest -q tests/test_gmres_self_loop_solver.py -k "first_dot or triton_large"
+```
+
+Result:
+
+```text
+6 passed, 66 deselected
+```
+
+I then compared the same current revision with the flag off and on using the
+largest-10 self-loop benchmark. Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_overhead_fused_first_dot_baseline_20260606_123500/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_fused_first_dot_20260606_123000/
+benchmarks/large_dataset_capacity/output/nsys_fused_first_dot_baseline_20260606_124500/
+benchmarks/large_dataset_capacity/output/nsys_fused_first_dot_trusted_20260606_124000/
+benchmarks/large_dataset_capacity/output/ncu_fused_first_dot_20260606_125000/
+```
+
+Non-profiled results:
+
+| Mode | Fused First Dot | Mean Backward | Backward Applications | Mean ms/Application | Fused Large Waves |
+|---|---:|---:|---:|---:|---:|
+| Neumann16 | off | `61.964 ms` | `1392` | `0.04451` | n/a |
+| GMRES10 checked | off | `63.254 ms` | `140` | `0.45181` | `0` |
+| GMRES10 reuse+trust | off | `55.935 ms` | `140` | `0.39953` | `0` |
+| Neumann16 | on | `62.340 ms` | `1392` | `0.04478` | n/a |
+| GMRES10 checked | on | `64.531 ms` | `140` | `0.46093` | `59` |
+| GMRES10 reuse+trust | on | `56.574 ms` | `140` | `0.40410` | `50` |
+
+So this first fused attempt is a small regression in non-profiled wall time.
+The fused path does activate on all eligible large GMRES waves, with a maximum
+of `6617` row partial tiles.
+
+The `nsys` trusted-GMRES comparison over three profiled backward passes shows
+why the result is mixed:
+
+| Profile | Mean Backward Under nsys | Kernel Launches | Kernel Time Sum | Runtime API Total |
+|---|---:|---:|---:|---:|
+| Baseline | `68.403 ms` | `16362` | `226.984 ms` | `74.523 ms` |
+| Fused first dot | `66.380 ms` | `15912` | `234.932 ms` | `81.799 ms` |
+
+The fused path removes `450` kernel launches over the three profiled backward
+passes, but total GPU kernel time rises by about `7.95 ms`.
+
+The kernel-level `nsys` totals make the tradeoff explicit:
+
+| Kernel Bucket | Baseline Launches | Baseline Time | Fused Launches | Fused Time |
+|---|---:|---:|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `420` | `10.726 ms` | `138` | `1.416 ms` |
+| `_gmres_arnoldi_dot_partials_kernel` | `336` | `4.612 ms` | `54` | `0.179 ms` |
+| `_wave_backward_uniform_2d_jt_first_dot_kernel` | `0` | `0 ms` | `282` | `20.696 ms` |
+
+For the largest wave specifically, baseline `J^T` plus standalone dot is about
+`305.7 us + 138.1 us = 443.8 us`, while the fused `J^T` plus dot launch is
+about `501.5 us`. The launch boundary improves, but this kernel shape is too
+register-heavy and inefficient.
+
+The `ncu --set basic` sample of `_wave_backward_uniform_2d_jt_first_dot_kernel`
+captured a smaller `240 x 64` launch at `27.04 us`, with `255`
+registers/thread, `0.47` waves/SM, and only `7.97%` active warps. DRAM
+throughput was only `0.44%`, so the issue is not memory bandwidth saturation;
+it is poor occupancy/register pressure from adding basis-vector dot work inside
+the already complex row-wise self-loop kernel.
+
+Conclusion: do not promote this fused first-dot path to default. It is useful
+as a profiling experiment, but the production fused backend should not simply
+bolt Arnoldi dot loops onto `_wave_backward_uniform_2d_jt_kernel`. The next
+attempt should either:
+
+- use a separate lower-register matvec-dot kernel design, possibly in Gluon if
+  it produces lower register pressure;
+- keep the self-loop matvec separate and instead fuse the post-matvec
+  projection/reduction/norm sequence; or
+- implement a dedicated trusted two-step/three-step GMRES path, since current
+  trusted schedules have max iteration `3` on this benchmark.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small
