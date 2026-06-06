@@ -1073,6 +1073,36 @@ Neumann32 and GMRES10 because it includes the forward `E/Pi/Pibar` work around
 the backward solve. The backward-only profile is the right evidence for this
 particular overhead patch.
 
+## End-to-End Benchmark Driver Knobs
+
+The broader capacity benchmark driver now exposes the GMRES self-loop solver
+controls needed for HOGENOM optimizer experiments:
+
+```text
+benchmarks/large_dataset_capacity/run_gpurec_benchmark.py
+--self-loop-solver neumann|gmres|gmres_fixed
+--gmres-max-iter N
+--gmres-tol TOL
+--gmres-check-interval N
+```
+
+`--gmres-max-iter` is an optional clarity alias for GMRES runs. If it is
+omitted, the driver keeps using `--neumann-terms` as the effective Krylov
+maximum, matching the lower-level `SolverOptions` field. The output JSON now
+records the effective `solver_options` block, so a GMRES run is reproducible
+without inferring which CLI value controlled the max iteration count.
+
+Single-family HOGENOM smoke artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_driver_smoke_20260606_061011/run.json
+```
+
+The smoke used `--self-loop-solver gmres --gmres-max-iter 2` and verified that
+the driver constructed `solver_options.self_loop_solver = "gmres"` with
+`solver_options.neumann_terms = 2`, then completed one optimizer step on the
+single-family probe.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

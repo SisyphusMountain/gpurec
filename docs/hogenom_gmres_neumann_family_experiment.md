@@ -785,3 +785,34 @@ The full family harness still times the forward solve around the backward pass,
 so it is not a pure measure of this patch. Its value here is correctness
 against high Neumann/Pi; the backward-only profiler is the relevant speed
 measurement.
+
+### General Benchmark Driver GMRES Knobs
+
+`benchmarks/large_dataset_capacity/run_gpurec_benchmark.py` now exposes the
+same GMRES controls needed for broader HOGENOM optimizer comparisons:
+
+```text
+--self-loop-solver neumann|gmres|gmres_fixed
+--gmres-max-iter N
+--gmres-tol TOL
+--gmres-check-interval N
+```
+
+The driver records the effective `solver_options` block in its JSON output.
+`--gmres-max-iter` is optional; when supplied for `gmres` or `gmres_fixed`, it
+sets the effective `SolverOptions.neumann_terms` value used as the Krylov
+maximum.
+
+Smoke artifact:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_driver_smoke_20260606_061011/run.json
+```
+
+That run used the HOGENOM single-family probe, `--self-loop-solver gmres`, and
+`--gmres-max-iter 2`. It completed one optimizer step and recorded:
+
+```text
+solver_options.self_loop_solver = "gmres"
+solver_options.neumann_terms = 2
+```
