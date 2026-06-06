@@ -804,7 +804,7 @@ def test_gmres_fused_norm_check_kernel_matches_residual_helper_cuda():
         torch.testing.assert_close(actual_y[:iters], expected_y[:iters], rtol=2e-4, atol=2e-5)
 
 
-@pytest.mark.parametrize("num_tiles", [513, 729, 1024])
+@pytest.mark.parametrize("num_tiles", [513, 729, 1024, 1536, 2048])
 @pytest.mark.parametrize("j", [0, 1, 3])
 @pytest.mark.parametrize("add_to_h", [False, True])
 def test_gmres_large_direct_sum_matches_staged_reduction_cuda(num_tiles, j, add_to_h):
@@ -871,7 +871,7 @@ def test_gmres_large_direct_sum_matches_staged_reduction_cuda(num_tiles, j, add_
     torch.testing.assert_close(h_direct[: j + 1, j], h_staged[: j + 1, j], rtol=1e-5, atol=2e-5)
 
 
-@pytest.mark.parametrize("num_tiles", [513, 729, 1024])
+@pytest.mark.parametrize("num_tiles", [513, 729, 1024, 1536, 2048])
 @pytest.mark.parametrize("iters", [1, 4, 10])
 def test_gmres_large_direct_norm_check_matches_staged_reduction_cuda(num_tiles, iters):
     if not torch.cuda.is_available():
@@ -944,6 +944,17 @@ def test_gmres_large_direct_norm_check_matches_staged_reduction_cuda(num_tiles, 
     torch.testing.assert_close(residual_direct, residual_staged, rtol=1e-5, atol=2e-5)
     torch.testing.assert_close(h_direct[iters, j], h_staged[iters, j], rtol=1e-5, atol=2e-5)
     torch.testing.assert_close(y_direct[:iters], y_staged[:iters], rtol=2e-4, atol=2e-5)
+
+
+def test_gmres_large_direct_sum_max_tiles_env(monkeypatch):
+    monkeypatch.delenv("GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM_MAX_TILES", raising=False)
+    assert wave_backward._gmres_can_use_triton_large_direct_sum(1024)
+    assert wave_backward._gmres_can_use_triton_large_direct_sum(2048)
+    assert not wave_backward._gmres_can_use_triton_large_direct_sum(2049)
+
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM_MAX_TILES", "1024")
+    assert wave_backward._gmres_can_use_triton_large_direct_sum(1024)
+    assert not wave_backward._gmres_can_use_triton_large_direct_sum(1025)
 
 
 def test_gmres_self_loop_matches_dense_solve_cuda():

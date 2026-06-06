@@ -239,6 +239,11 @@ class SelfLoopBackwardRecorder:
             warm_start_accepted = sum(1 for row in gmres_stats if bool(row.get("warm_start_accepted", False)))
             trusted_check_used = sum(1 for row in gmres_stats if bool(row.get("trusted_check_used", False)))
             large_direct_sum_used = sum(1 for row in gmres_stats if bool(row.get("large_direct_sum", False)))
+            large_direct_sum_caps = [
+                int(row.get("large_direct_sum_max_tiles", 0))
+                for row in gmres_stats
+                if "large_direct_sum_max_tiles" in row
+            ]
             fused_first_dot_used = sum(
                 1 for row in gmres_stats if bool(row.get("fused_self_loop_first_dot", False))
             )
@@ -280,6 +285,10 @@ class SelfLoopBackwardRecorder:
                 "gmres_warm_start_accepted": int(warm_start_accepted),
                 "gmres_trusted_check_used": int(trusted_check_used),
                 "gmres_large_direct_sum_used": int(large_direct_sum_used),
+                "gmres_large_direct_sum_max_tiles": max(
+                    large_direct_sum_caps,
+                    default=None,
+                ),
                 "gmres_fused_self_loop_first_dot_used": int(fused_first_dot_used),
                 "gmres_fused_first_dot_max_partial_tiles": max(
                     fused_first_dot_tiles,
@@ -315,6 +324,7 @@ class SelfLoopBackwardRecorder:
             "gmres_max_checks_per_wave": None,
             "gmres_max_rel_res": None,
             "gmres_large_direct_sum_used": None,
+            "gmres_large_direct_sum_max_tiles": None,
             "gmres_fused_self_loop_first_dot_used": None,
             "gmres_fused_first_dot_max_partial_tiles": None,
             "gmres_large_direct_norm_checks": None,

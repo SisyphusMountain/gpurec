@@ -23,7 +23,17 @@ _GMRES_TRITON_ARNOLDI_MIN_BLOCK_TILES = 64
 _GMRES_TRITON_ARNOLDI_BLOCK_N = 512
 _GMRES_TRITON_LARGE_ARNOLDI_GROUP_TILES = 512
 _GMRES_TRITON_LARGE_ARNOLDI_MAX_GROUPS = 512
-_GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES = 1024
+_GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES = 2048
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return int(default)
+    value = int(raw)
+    if value < 1:
+        raise ValueError(f"{name} must be positive")
+    return value
 
 
 def _record_gmres_self_loop_stats(row: dict[str, float | int | str], stats_out=None) -> None:
@@ -1453,7 +1463,10 @@ def _gmres_can_use_triton_large_direct_sum(num_tiles: int) -> bool:
     ):
         return False
     block_tiles = triton.next_power_of_2(int(num_tiles))
-    return int(block_tiles) <= _GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES
+    return int(block_tiles) <= _env_int(
+        "GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM_MAX_TILES",
+        _GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES,
+    )
 
 
 def _gmres_can_use_triton_trusted_one_step(rhs: torch.Tensor) -> bool:
@@ -2147,6 +2160,10 @@ def _gmres_solve_wave_self_loop_triton_large(
     num_groups = triton.cdiv(num_tiles, group_tiles)
     block_groups = max(1, triton.next_power_of_2(num_groups))
     use_direct_sum = _gmres_can_use_triton_large_direct_sum(num_tiles)
+    direct_sum_max_tiles = _env_int(
+        "GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM_MAX_TILES",
+        _GMRES_TRITON_LARGE_ARNOLDI_DIRECT_SUM_MAX_TILES,
+    )
     direct_sum_block_tiles = triton.next_power_of_2(num_tiles) if use_direct_sum else None
     fused_first_dot_tiles = int(first_dot_partial_tiles or 0)
     use_fused_first_dot = (
@@ -2442,6 +2459,7 @@ def _gmres_solve_wave_self_loop_triton_large(
             "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "triton_large",
             "large_direct_sum": bool(use_direct_sum),
+            "large_direct_sum_max_tiles": int(direct_sum_max_tiles),
             "fused_self_loop_first_dot": bool(use_fused_first_dot),
             "first_dot_partial_tiles": int(first_dot_tiles),
             "large_direct_norm_checks": int(direct_norm_check_count),

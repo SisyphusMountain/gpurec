@@ -3037,10 +3037,10 @@ single residual-check kernel.
 Implementation commit: `0b722632` adds
 `_gmres_arnoldi_sum_partials_direct_kernel` and gates it with
 `GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM` (default enabled). This is a deliberately
-small optimization driven by the Nsight profile above. For `triton_large` waves
-whose tile count fits in a single Triton reduction block (`<= 1024` tiles), the
-large backend now sums Arnoldi dot partials directly from `partials` into
-`coeff_buf` and `hessenberg`. The older two-stage path
+small optimization driven by the Nsight profile above. In the first version,
+for `triton_large` waves whose tile count fit in a single Triton reduction
+block (`<= 1024` tiles), the large backend summed Arnoldi dot partials directly
+from `partials` into `coeff_buf` and `hessenberg`. The older two-stage path
 (`_gmres_arnoldi_reduce_group_partials_kernel` followed by
 `_gmres_arnoldi_sum_group_coeff_kernel`) remains the fallback and can be forced
 with:
@@ -3481,6 +3481,100 @@ attempt should either:
   projection/reduction/norm sequence; or
 - implement a dedicated trusted two-step/three-step GMRES path, since current
   trusted schedules have max iteration `3` on this benchmark.
+
+## Direct-Sum 2048 Follow-Up
+
+After the fused first-dot regression, I tested a narrower launch-reduction
+change that does not touch the self-loop kernel: increase the large-backend
+single-block reduction cap from `1024` to `2048` tiles. The cap is now tunable:
+
+```bash
+GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM_MAX_TILES=1024
+```
+
+sets the old behavior, while the default is `2048`.
+
+The rationale came from the `nsys` tile distribution: many trusted large-wave
+reductions were just above `1024` tiles, in the `1027-1968` range. Letting those
+use `_gmres_arnoldi_sum_partials_direct_kernel` replaces a staged
+group-reduction pair with one one-block reduction.
+
+Validation:
+
+```bash
+pytest -q tests/test_gmres_self_loop_solver.py -k "direct_sum"
+pytest -q
+```
+
+Results:
+
+```text
+32 passed, 59 deselected
+111 passed
+```
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_1024_trusted_compare_20260606_130500/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_2048_trusted_compare_20260606_130500/
+benchmarks/large_dataset_capacity/output/nsys_direct_sum_2048_trusted_20260606_131000/
+benchmarks/large_dataset_capacity/output/ncu_direct_sum_2048_20260606_132500/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_2048_default_20260606_132000/
+```
+
+Trusted-only non-profiled comparison on the same revision:
+
+| Direct-Sum Cap | Mean Backward | Median Backward | Mean ms/Application | Direct-Sum Large Waves | Group Norm Reductions | Direct Norm Checks |
+|---:|---:|---:|---:|---:|---:|---:|
+| `1024` | `56.422 ms` | `55.816 ms` | `0.40301` | `9` | `85` | `9` |
+| `2048` | `54.050 ms` | `53.836 ms` | `0.38607` | `43` | `51` | `43` |
+
+This is the cleanest comparison for the cap itself: same solver, same trusted
+schedule behavior, no fused first-dot path. The larger cap improves trusted
+GMRES by about `2.37 ms` per backward pass in this run.
+
+The `nsys` comparison over three profiled backward passes confirms the intended
+launch movement:
+
+| Cap | Mean Backward Under nsys | Kernel Launches | Kernel Time Sum | Runtime API Total |
+|---:|---:|---:|---:|---:|
+| `1024` | `68.403 ms` | `16362` | `226.984 ms` | `74.523 ms` |
+| `2048` | `65.761 ms` | `15942` | `226.651 ms` | `73.038 ms` |
+
+The relevant kernel launch counts changed as follows:
+
+| Kernel Bucket | Cap 1024 Launches | Cap 2048 Launches |
+|---|---:|---:|
+| `_gmres_arnoldi_sum_partials_direct_kernel` | `120` | `438` |
+| `_gmres_arnoldi_reduce_group_partials_kernel` | `444` | `126` |
+| `_gmres_arnoldi_sum_group_coeff_kernel` | `444` | `126` |
+| `_gmres_arnoldi_reduce_group_norm_partials_kernel` | `255` | `153` |
+
+The cap removes `420` total kernel launches over the profiled three backward
+passes without increasing total kernel time.
+
+The `ncu --set basic` sample on `_gmres_arnoldi_sum_partials_direct_kernel`
+remains tiny and underfilled, as expected for this one-block reduction:
+
+| Sample | Duration | Registers/Thread | Active Warps | SM Throughput | DRAM Throughput |
+|---:|---:|---:|---:|---:|---:|
+| `1` | `2.656 us` | `72` | `16.95%` | `0.175%` | `1.154%` |
+| `2` | `3.104 us` | `64` | `15.89%` | `0.161%` | `1.008%` |
+| `3` | `2.656 us` | `72` | `15.54%` | `0.176%` | `1.270%` |
+
+Finally, the default full self-loop overhead benchmark, with no direct-sum cap
+environment variable set, now reports:
+
+| Mode | Mean Backward | Backward Applications | Mean ms/Application | Backends |
+|---|---:|---:|---:|---|
+| Neumann16 | `62.100 ms` | `1392` | `0.04461` | n/a |
+| GMRES10 checked | `62.879 ms` | `140` | `0.44914` | `triton_large=59`, `triton_split=28` |
+| GMRES10 reuse+trust | `52.673 ms` | `140` | `0.37623` | `triton_large=32`, `triton_split=9`, `trusted_one_step_triton_direct=46` |
+
+Conclusion: promoting the direct-sum cap to `2048` is worth keeping. It is a
+small but real improvement, unlike the fused first-dot experiment, because it
+reduces launch count without making the self-loop matvec kernel heavier.
 
 ## Recommended First Experiment
 
