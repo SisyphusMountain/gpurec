@@ -1,6 +1,10 @@
 import torch
 
-from gpurec.api._batch_state import _BatchStatic, gmres_check_schedule_for_static
+from gpurec.api._batch_state import (
+    _BatchStatic,
+    gmres_check_schedule_for_static,
+    gmres_solution_cache_for_static,
+)
 from gpurec.api._implicit_grad import implicit_grad_loglik_vjp_wave
 from gpurec.core.inference.solver import nll_from_root_rows, receiver_weights_are_uniform, solve_resident_e_pi
 
@@ -65,6 +69,8 @@ def evaluate_static_loss_grad(
             gmres_tol=static.solver_options.gmres_tol,
             gmres_check_interval=static.solver_options.gmres_check_interval,
             gmres_check_schedule=gmres_check_schedule_for_static(static),
+            gmres_solution_cache=gmres_solution_cache_for_static(static),
+            gmres_solution_cache_min_iterations=static.solver_options.gmres_solution_cache_min_iterations,
             gmres_preconditioner=static.solver_options.gmres_preconditioner,
             gmres_diagonal_preconditioner_floor=static.solver_options.gmres_diagonal_preconditioner_floor,
             bicgstab_max_iter=static.solver_options.bicgstab_max_iter,

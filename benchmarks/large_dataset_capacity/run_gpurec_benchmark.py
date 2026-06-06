@@ -70,6 +70,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "minimum first residual-check iteration on the next backward pass."
         ),
     )
+    parser.add_argument(
+        "--gmres-reuse-solution",
+        action="store_true",
+        help=(
+            "Reuse previous wave solutions as GMRES correction warm starts. "
+            "The warm start is accepted only after a true residual check."
+        ),
+    )
+    parser.add_argument("--gmres-solution-cache-min-iterations", type=int, default=2)
     parser.add_argument("--gmres-preconditioner", choices=("none", "diagonal"), default="none")
     parser.add_argument("--gmres-diagonal-preconditioner-floor", type=float, default=1e-4)
     parser.add_argument("--bicgstab-max-iter", type=int, default=500)
@@ -97,6 +106,8 @@ def solver_options_from_args(args: argparse.Namespace) -> SolverOptions:
         gmres_tol=args.gmres_tol,
         gmres_check_interval=args.gmres_check_interval,
         gmres_reuse_check_schedule=args.gmres_reuse_check_schedule,
+        gmres_reuse_solution=args.gmres_reuse_solution,
+        gmres_solution_cache_min_iterations=args.gmres_solution_cache_min_iterations,
         gmres_preconditioner=args.gmres_preconditioner,
         gmres_diagonal_preconditioner_floor=args.gmres_diagonal_preconditioner_floor,
         bicgstab_max_iter=args.bicgstab_max_iter,
@@ -194,6 +205,10 @@ class SelfLoopBackwardRecorder:
         if solver in ("gmres", "gmres_fixed"):
             gmres_stats = self._gmres_stats or []
             per_wave_iterations = [int(row["iterations"]) for row in gmres_stats]
+            per_wave_applications = [
+                int(row.get("a_applications", row["iterations"]))
+                for row in gmres_stats
+            ]
             per_wave_checks = [int(row.get("check_count", 0)) for row in gmres_stats]
             rel_res = [float(row.get("rel_res", 0.0)) for row in gmres_stats]
             arnoldi_backend_counts: dict[str, int] = {}
@@ -201,17 +216,28 @@ class SelfLoopBackwardRecorder:
                 backend = str(row.get("arnoldi_backend", "unknown"))
                 arnoldi_backend_counts[backend] = arnoldi_backend_counts.get(backend, 0) + 1
             wave_solves = len(per_wave_iterations)
+            total_applications = int(sum(per_wave_applications))
             total_iterations = int(sum(per_wave_iterations))
+            warm_start_used = sum(1 for row in gmres_stats if bool(row.get("warm_start_used", False)))
+            warm_start_accepted = sum(1 for row in gmres_stats if bool(row.get("warm_start_accepted", False)))
+            residual_probe_applications = sum(
+                int(row.get("residual_probe_a_applications", 0))
+                for row in gmres_stats
+            )
             return {
                 "self_loop_solver": solver,
                 "self_loop_backward_pass_count": int(self.backward_pass_count),
                 "self_loop_waves_per_backward": int(waves_per_backward),
                 "self_loop_wave_solves": int(wave_solves),
-                "self_loop_backward_iterations": total_iterations,
+                "self_loop_backward_iterations": total_applications,
                 "self_loop_mean_iterations_per_wave": (
-                    total_iterations / wave_solves if wave_solves else None
+                    total_applications / wave_solves if wave_solves else None
                 ),
-                "self_loop_max_iterations_per_wave": max(per_wave_iterations, default=0),
+                "self_loop_max_iterations_per_wave": max(per_wave_applications, default=0),
+                "gmres_krylov_iterations": total_iterations,
+                "gmres_warm_start_used": int(warm_start_used),
+                "gmres_warm_start_accepted": int(warm_start_accepted),
+                "gmres_residual_probe_a_applications": int(residual_probe_applications),
                 "gmres_total_checks": int(sum(per_wave_checks)),
                 "gmres_mean_checks_per_wave": (
                     sum(per_wave_checks) / wave_solves if wave_solves else None

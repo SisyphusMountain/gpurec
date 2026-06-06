@@ -111,6 +111,8 @@ def implicit_grad_loglik_vjp_wave(
     gmres_tol: float = 1e-10,
     gmres_check_interval: int = 1,
     gmres_check_schedule: list[int] | None = None,
+    gmres_solution_cache: list[torch.Tensor | None] | None = None,
+    gmres_solution_cache_min_iterations: int = 2,
     gmres_preconditioner: str = "none",
     gmres_diagonal_preconditioner_floor: float = 1e-4,
     bicgstab_max_iter: int = 500,
@@ -204,6 +206,21 @@ def implicit_grad_loglik_vjp_wave(
         else None
     )
     next_gmres_check_schedule: list[int] | None = [] if use_gmres_check_schedule else None
+    use_gmres_solution_cache = (
+        gmres_solution_cache is not None
+        and self_loop_solver == "gmres"
+        and neumann_terms > 0
+    )
+    gmres_solution_cache_min_iterations = max(1, int(gmres_solution_cache_min_iterations))
+    previous_gmres_solution_cache = (
+        list(gmres_solution_cache)
+        if use_gmres_solution_cache
+        and len(gmres_solution_cache) == len(wave_metas)
+        else None
+    )
+    next_gmres_solution_cache: list[torch.Tensor | None] | None = (
+        [] if use_gmres_solution_cache else None
+    )
 
     for wave_rev_index, meta in enumerate(reversed(wave_metas)):
         ws = int(meta["start"])
@@ -240,13 +257,23 @@ def implicit_grad_loglik_vjp_wave(
         )
         gmres_min_check_iter = 1
         gmres_wave_stats: dict[str, float | int | str] | None = None
-        if use_gmres_check_schedule:
+        if use_gmres_check_schedule or use_gmres_solution_cache:
             if previous_gmres_check_schedule is not None:
                 gmres_min_check_iter = max(
                     1,
                     min(int(previous_gmres_check_schedule[wave_rev_index]), neumann_terms),
                 )
             gmres_wave_stats = {}
+        initial_v = None
+        if previous_gmres_solution_cache is not None:
+            cached_v = previous_gmres_solution_cache[wave_rev_index]
+            if (
+                cached_v is not None
+                and tuple(cached_v.shape) == (W, S)
+                and cached_v.device == device
+                and cached_v.dtype == dtype
+            ):
+                initial_v = cached_v
 
         v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
             Pi_star_wave,
@@ -267,6 +294,7 @@ def implicit_grad_loglik_vjp_wave(
             sp_child2,
             None,
             neumann_terms=neumann_terms,
+            initial_v=initial_v,
             leaf_species_idx=leaf_species_idx,
             leaf_logp=log_pS_family,
             has_leaf_term=has_leaf_term,
@@ -297,6 +325,25 @@ def implicit_grad_loglik_vjp_wave(
                 else 1
             )
             next_gmres_check_schedule.append(max(1, min(observed_iterations, neumann_terms)))
+        if next_gmres_solution_cache is not None:
+            observed_iterations = (
+                int(gmres_wave_stats["iterations"])
+                if gmres_wave_stats is not None and "iterations" in gmres_wave_stats
+                else 0
+            )
+            warm_start_used = bool(
+                gmres_wave_stats is not None
+                and bool(gmres_wave_stats.get("warm_start_used", False))
+            )
+            warm_start_accepted = bool(
+                gmres_wave_stats is not None
+                and bool(gmres_wave_stats.get("warm_start_accepted", False))
+            )
+            keep_solution = warm_start_accepted or (
+                not warm_start_used
+                and observed_iterations >= gmres_solution_cache_min_iterations
+            )
+            next_gmres_solution_cache.append(v_k.detach().clone() if keep_solution else None)
         family_rows_for_wave = family_idx[ws : ws + W]
         _scatter_accum(grad_log_pD, family_rows_for_wave, aw0)
         _scatter_accum(grad_log_pS, family_rows_for_wave, aw345)
@@ -364,6 +411,8 @@ def implicit_grad_loglik_vjp_wave(
             )
     if gmres_check_schedule is not None and next_gmres_check_schedule is not None:
         gmres_check_schedule[:] = next_gmres_check_schedule
+    if gmres_solution_cache is not None and next_gmres_solution_cache is not None:
+        gmres_solution_cache[:] = next_gmres_solution_cache
     return _e_adjoint_and_theta_vjp(
         E_star, log_pS, log_pD, log_pL, max_transfer_mat,
         receiver_log_probs,

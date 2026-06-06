@@ -1988,6 +1988,191 @@ infinity norm. Therefore the current safe largest-10 setting remains
 GMRES10/check-interval-1/tol `7e-6` with checked-y reuse and the cached check
 schedule.
 
+#### Current Nsight Refresh At Interval 1
+
+I refreshed `nsys` and `ncu` on the hard HOGENOM family with the current
+interval-1 GMRES configuration:
+
+```text
+family: CLU_000680_20_4_C
+dtype: float32
+E/Pi iterations: 16/16
+GMRES max_iter: 10
+GMRES tol: 7e-6
+GMRES check interval: 1
+opt-in backend: GPUREC_GMRES_TRITON_ARNOLDI=1
+```
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/nsys_ncu_gmres_warm_20260606_085526/
+```
+
+The unprofiled backward-only smoke run used:
+
+```text
+waves:                      68
+self-loop applications:      348
+GMRES checks:                348
+elapsed backward-only:       0.066870 s
+max relative residual:       6.77e-06
+backend counts:              triton_split: 68
+```
+
+The `nsys` captured range was intentionally the backward-only CUDA-profiler
+range. The profiler overhead inflates wall time, so the event and kernel
+counts are more important than the reported elapsed time. Top GPU kernel
+buckets:
+
+| Kernel Bucket | Launches | Total Time |
+|---|---:|---:|
+| `_wave_backward_uniform_2d_jt_kernel` | `348` | `3.408 ms` |
+| PyTorch reduction kernels | `487` | `1.954 ms` |
+| `_gmres_arnoldi_reduce_project_dot_kernel` | `348` | `1.356 ms` |
+| `_gmres_hessenberg_residual_kernel` | `348` | `1.355 ms` |
+| `_gmres_arnoldi_reduce_project_norm_kernel` | `348` | `0.956 ms` |
+| `_gmres_arnoldi_dot_partials_kernel` | `348` | `0.772 ms` |
+| `_gmres_arnoldi_reduce_norm_normalize_kernel` | `348` | `0.547 ms` |
+
+CUDA API/copy activity in the captured range:
+
+| API Or Copy Bucket | Count | Time |
+|---|---:|---:|
+| `cuLaunchKernelEx` | `2731` | `4.964 ms` |
+| `cudaLaunchKernel` | `2405` | `4.761 ms` |
+| `cudaMemcpyAsync` | `488` | `3.156 ms` |
+| `cudaStreamSynchronize` | `398` | `0.279 ms` |
+| device-to-host copies | `398` | `0.329 ms` |
+
+`ncu --set basic` on `_gmres_arnoldi_reduce_project_dot_kernel` showed the
+small-wave and late-wave regimes:
+
+| Sample | Launch Shape | Duration | SM Throughput | DRAM Throughput | Achieved Occupancy |
+|---|---:|---:|---:|---:|---:|
+| early wave | `3 x 256` | about `4.1 us` | about `0.8%` | `0.6-0.9%` | about `16.5%` |
+| late wave | `219-255 x 256` | `7.5-8.5 us` | `30-35%` | `25-33%` | about `28%` |
+
+`ncu --set basic` on `_wave_backward_uniform_2d_jt_kernel` showed:
+
+| Sample | Launch Shape | Duration | SM Throughput | DRAM Throughput | Achieved Occupancy |
+|---|---:|---:|---:|---:|---:|
+| early wave | `1 x 64` | about `15.5 us` | about `0.06%` | about `0.4%` | about `4.2%` |
+| late wave | `84-98 x 64` | about `16.4 us` | about `5.0%` | about `14%` | about `4.2%` |
+
+This confirms the earlier diagnosis under the current code: GMRES is not slow
+because of a remaining CPU least-squares solve, and not because one CUDA kernel
+is saturated. It is many small wave-local kernels plus residual-check and
+launch orchestration. Gluon is not installed in the current environment, so the
+practical kernel route remains Triton unless Gluon is added deliberately. Gluon
+would only be worth considering if it lets us fuse a larger GMRES step or lower
+register/specialization pressure; replacing the tiny residual kernel alone is
+not the right target.
+
+#### Solution-Cache Correction GMRES
+
+I added an opt-in previous-solution cache:
+
+```text
+SolverOptions(gmres_reuse_solution=True)
+--gmres-reuse-solution
+--gmres-solution-cache-min-iterations N
+```
+
+The cached object is the wave-local linear-solve solution `v`, not the final
+parameter gradient. On a later backward pass, GMRES computes a true residual
+probe:
+
+```text
+r0 = rhs_new - A_new previous_v
+```
+
+That probe costs one real `A previous_v` application and therefore one real
+`J^T previous_v` application. If the residual passes the usual tolerance, the
+cached `v` is accepted with zero Krylov correction iterations. Otherwise GMRES
+solves the correction system:
+
+```text
+A_new delta = r0
+v_new = previous_v + delta
+```
+
+Accounting now reports both:
+
+```text
+gmres_krylov_iterations
+self_loop_backward_iterations = residual probes + Krylov applications
+```
+
+The cache is keyed like the check-schedule cache, plus the solution-cache
+threshold. A cached solution is used only when the wave shape, dtype, and
+device match. After the optimizer-step experiment below, the retention policy
+was made conservative: keep a solution after an accepted warm-start probe, or
+after a fresh zero-start solve that required at least
+`gmres_solution_cache_min_iterations`; drop it after a failed warm-start probe.
+This avoids retrying the same stale solution on every optimizer step.
+
+Artifacts:
+
+```text
+benchmarks/large_dataset_capacity/output/gmres_solution_reuse_selective_20260606_085846/
+```
+
+Largest-10 first-step gradient check against Neumann512, with one same-state
+GMRES warmup before the measured GMRES row:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Relative L2 Error | Relative Inf Error | Max Family Relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Neumann32 | `2784` | n/a | `1.438418e-07` | `2.469148e-07` | `2.789548e-07` |
+| GMRES10 I1 tol `7e-6`, schedule + solution cache | `87` | `87` | `1.717149e-06` | `3.395078e-06` | `3.398378e-06` |
+
+Measured GMRES breakdown for that row:
+
+```text
+wave solves:                   87
+warm starts attempted:          41
+warm starts accepted:           41
+residual-probe applications:    41
+Krylov applications:            46
+total applications:             87
+backend counts:                 warm_start: 41, triton_split: 19, torch_cgs2: 27
+```
+
+This is the positive case. When the forward state is unchanged between the
+warmup gradient and the measured gradient, the previous solutions are exact
+enough that 41 wave solves exit after the one residual probe. The measured
+application count drops from the zero-start scheduled GMRES count of `140` to
+`87`.
+
+The 20-step optimizer timing is negative:
+
+| Solver | Self-Loop Backward Applications | GMRES Checks | Train Seconds | Wall Seconds | Mean Step 2-20 | Final Loss |
+|---|---:|---:|---:|---:|---:|---:|
+| GMRES10 I1 tol `7e-6`, checked-y + schedule | `2800` | `1793` | `2.689` | `3.968` | `0.1036` | `166606.453125` |
+| GMRES10 I1 tol `7e-6`, schedule + selective solution cache | `3208` | `2203` | `2.754` | `3.901` | `0.1075` | `166606.4375` |
+
+Step-level behavior explains the slowdown:
+
+```text
+step 1:   140 applications, 140 checks, 0 warm probes
+step 2:   181 applications, 128 checks, 41 warm probes, 0 accepted
+step 3:   140 applications,  87 checks, 0 warm probes
+step 4:   181 applications, 128 checks, 41 warm probes, 0 accepted
+...
+total:   3208 applications, 2203 checks
+```
+
+Only `1` of `410` optimizer-step warm-start probes was accepted. With Adam
+`lr=0.01` on this largest-10 run, previous-step wave solutions are usually too
+stale. The conservative retention policy prevents the failed probes from being
+paid every step, but the alternating probe/fresh pattern still adds
+applications and checks compared with schedule-only GMRES.
+
+Conclusion: solution-cache correction GMRES is correct and very effective for
+same-state repeated gradients, but it should remain default-off for this
+optimizer benchmark. It needs an acceptance-rate gate, a parameter-step-size
+gate, or a better predictor before it can be useful end-to-end.
+
 ## Recommended First Experiment
 
 Use the known hard HOGENOM family as the first target, then run the small

@@ -157,7 +157,7 @@ def _run_gmres_backward_from_state(
     finally:
         wave_backward_module._GMRES_SELF_LOOP_STATS = original_gmres_stats
 
-    per_wave_iterations = [int(row["iterations"]) for row in gmres_stats]
+    per_wave_iterations = [int(row.get("a_applications", row["iterations"])) for row in gmres_stats]
     per_wave_checks = [int(row.get("check_count", 0)) for row in gmres_stats]
     arnoldi_backend_counts: dict[str, int] = {}
     for row in gmres_stats:

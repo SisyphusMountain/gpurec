@@ -4,7 +4,7 @@ import torch
 import pytest
 
 from gpurec import SolverOptions
-from gpurec.api._batch_state import gmres_check_schedule_for_static
+from gpurec.api._batch_state import gmres_check_schedule_for_static, gmres_solution_cache_for_static
 from gpurec.core.kernels import wave_backward
 
 
@@ -15,6 +15,8 @@ def test_solver_options_accept_gmres_fixed():
         gmres_tol=1e-8,
         gmres_check_interval=2,
         gmres_reuse_check_schedule=True,
+        gmres_reuse_solution=True,
+        gmres_solution_cache_min_iterations=3,
         gmres_preconditioner=" Diagonal ",
         gmres_diagonal_preconditioner_floor=1e-5,
     )
@@ -25,6 +27,8 @@ def test_solver_options_accept_gmres_fixed():
     assert options.gmres_tol == 1e-8
     assert options.gmres_check_interval == 2
     assert options.gmres_reuse_check_schedule is True
+    assert options.gmres_reuse_solution is True
+    assert options.gmres_solution_cache_min_iterations == 3
     assert options.gmres_preconditioner == "diagonal"
     assert options.gmres_diagonal_preconditioner_floor == 1e-5
 
@@ -35,6 +39,7 @@ def test_solver_options_accept_gmres_fixed():
         {"self_loop_solver": "bad"},
         {"gmres_tol": 0.0},
         {"gmres_check_interval": 0},
+        {"gmres_solution_cache_min_iterations": 0},
         {"gmres_preconditioner": "bad"},
         {"gmres_diagonal_preconditioner_floor": 0.0},
     ],
@@ -46,18 +51,31 @@ def test_solver_options_reject_invalid_gmres_options(kwargs):
         options.validate()
 
 
+def _static_for_gmres_cache(options: SolverOptions) -> SimpleNamespace:
+    return SimpleNamespace(
+        genewise=True,
+        specieswise=False,
+        family_indices=[3, 1],
+        family_index_tensor=torch.tensor([3, 1], dtype=torch.long),
+        species_helpers={"sp_parent": torch.tensor([-1, 0, 0], dtype=torch.int32)},
+        wave_layout={"wave_metas": [{"start": 0, "W": 2}, {"start": 2, "W": 1}]},
+        solver_options=options,
+        gmres_check_schedule=None,
+        gmres_check_schedule_key=None,
+        gmres_solution_cache=None,
+        gmres_solution_cache_key=None,
+    )
+
+
 def test_gmres_check_schedule_cache_is_opt_in_and_keyed():
-    static = SimpleNamespace(
-        solver_options=SolverOptions(
+    static = _static_for_gmres_cache(
+        SolverOptions(
             neumann_terms=10,
             self_loop_solver="gmres",
             gmres_reuse_check_schedule=True,
             gmres_tol=1e-6,
             gmres_check_interval=1,
-        ),
-        wave_layout={"wave_metas": [{"start": 0, "W": 2}, {"start": 2, "W": 1}]},
-        gmres_check_schedule=None,
-        gmres_check_schedule_key=None,
+        )
     )
 
     schedule = gmres_check_schedule_for_static(static)
@@ -74,6 +92,49 @@ def test_gmres_check_schedule_cache_is_opt_in_and_keyed():
     assert gmres_check_schedule_for_static(static) is None
     assert static.gmres_check_schedule is None
     assert static.gmres_check_schedule_key is None
+
+
+def test_gmres_solution_cache_is_opt_in_and_keyed():
+    static = _static_for_gmres_cache(
+        SolverOptions(
+            neumann_terms=10,
+            self_loop_solver="gmres",
+            gmres_reuse_solution=True,
+            gmres_solution_cache_min_iterations=2,
+            gmres_tol=1e-6,
+            gmres_check_interval=1,
+        )
+    )
+
+    cache = gmres_solution_cache_for_static(static)
+    assert cache == []
+
+    cached_tensor = torch.ones((2, 3))
+    cache.extend([cached_tensor, None])
+    assert gmres_solution_cache_for_static(static) is cache
+
+    static.solver_options.gmres_solution_cache_min_iterations = 3
+    assert gmres_solution_cache_for_static(static) == []
+    assert static.gmres_solution_cache is not cache
+
+    static.solver_options.gmres_reuse_solution = False
+    assert gmres_solution_cache_for_static(static) is None
+    assert static.gmres_solution_cache is None
+    assert static.gmres_solution_cache_key is None
+
+
+def test_gmres_check_schedule_disabled_for_fixed_gmres():
+    static = _static_for_gmres_cache(
+        SolverOptions(
+            neumann_terms=10,
+            self_loop_solver="gmres_fixed",
+            gmres_reuse_check_schedule=True,
+            gmres_reuse_solution=True,
+        )
+    )
+
+    assert gmres_check_schedule_for_static(static) is None
+    assert gmres_solution_cache_for_static(static) is None
 
 
 def test_gmres_self_loop_matches_dense_solve_cpu():
@@ -181,11 +242,18 @@ def test_gmres_self_loop_records_stats_and_stops_early_cpu():
     assert stats == [
         {
             "iterations": 1,
+            "a_applications": 1,
             "rel_res": 0.0,
             "check_count": 1,
             "arnoldi_backend": "torch_cgs2",
             "min_check_iter": 1,
             "preconditioner": "none",
+            "warm_start_used": False,
+            "warm_start_accepted": False,
+            "warm_start_status": "not_attempted",
+            "warm_start_rel_res": None,
+            "residual_probe_a_applications": 0,
+            "correction_iterations": 1,
         }
     ]
 
@@ -207,7 +275,19 @@ def test_gmres_self_loop_handles_zero_rhs_cpu():
         wave_backward._GMRES_SELF_LOOP_STATS = old_stats
 
     torch.testing.assert_close(got, rhs)
-    assert stats == [{"iterations": 0, "rel_res": 0.0, "preconditioner": "none"}]
+    assert stats == [
+        {
+            "iterations": 0,
+            "a_applications": 0,
+            "rel_res": 0.0,
+            "preconditioner": "none",
+            "warm_start_used": False,
+            "warm_start_accepted": False,
+            "warm_start_status": "not_attempted",
+            "residual_probe_a_applications": 0,
+            "correction_iterations": 0,
+        }
+    ]
 
 
 def test_gmres_self_loop_handles_zero_rhs_cuda():
@@ -353,6 +433,74 @@ def test_gmres_self_loop_right_preconditioner_reduces_cpu_iterations():
     assert stats[0]["iterations"] == 1
     assert stats[0]["check_count"] == 1
     assert stats[0]["preconditioner"] == "diagonal"
+
+
+def test_gmres_self_loop_accepts_exact_initial_guess_cpu():
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    calls = 0
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        rhs = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+
+        def apply_a(vec):
+            nonlocal calls
+            calls += 1
+            return vec
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=5,
+            tol=1e-12,
+            initial_guess=rhs.clone(),
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, rhs, rtol=1e-12, atol=1e-12)
+    assert calls == 1
+    assert stats[0]["iterations"] == 0
+    assert stats[0]["a_applications"] == 1
+    assert stats[0]["check_count"] == 1
+    assert stats[0]["warm_start_used"] is True
+    assert stats[0]["warm_start_accepted"] is True
+    assert stats[0]["rel_res"] == pytest.approx(0.0)
+
+
+def test_gmres_self_loop_solves_correction_from_initial_guess_cpu():
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    calls = 0
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        matrix = torch.diag(torch.tensor([1.0, 2.0], dtype=torch.float64))
+        rhs = torch.tensor([3.0, 4.0], dtype=torch.float64)
+        initial_guess = torch.tensor([3.0, 0.0], dtype=torch.float64)
+
+        def apply_a(vec):
+            nonlocal calls
+            calls += 1
+            return matrix @ vec
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=2,
+            tol=1e-12,
+            initial_guess=initial_guess,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, torch.linalg.solve(matrix, rhs), rtol=1e-12, atol=1e-12)
+    assert calls == 2
+    assert stats[0]["iterations"] == 1
+    assert stats[0]["a_applications"] == 2
+    assert stats[0]["check_count"] == 2
+    assert stats[0]["warm_start_used"] is True
+    assert stats[0]["warm_start_accepted"] is False
+    assert stats[0]["warm_start_rel_res"] == pytest.approx(4.0 / 5.0)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])

@@ -930,6 +930,7 @@ def _gmres_solve_wave_self_loop(
     fixed_iterations: bool = False,
     check_interval: int = 1,
     min_check_iter: int = 1,
+    initial_guess: torch.Tensor | None = None,
     right_preconditioner=None,
     preconditioner_name: str = "none",
     out: torch.Tensor | None = None,
@@ -944,6 +945,12 @@ def _gmres_solve_wave_self_loop(
         out.shape != rhs.shape or out.dtype != rhs.dtype or out.device != rhs.device
     ):
         raise ValueError("GMRES output tensor must match rhs shape, dtype, and device")
+    if initial_guess is not None and (
+        initial_guess.shape != rhs.shape
+        or initial_guess.dtype != rhs.dtype
+        or initial_guess.device != rhs.device
+    ):
+        raise ValueError("GMRES initial_guess tensor must match rhs shape, dtype, and device")
     if max_iter < 1:
         if out is not None:
             out.zero_()
@@ -953,8 +960,14 @@ def _gmres_solve_wave_self_loop(
         _record_gmres_self_loop_stats(
             {
                 "iterations": 0,
+                "a_applications": 0,
                 "rel_res": 1.0,
                 "preconditioner": str(preconditioner_name),
+                "warm_start_used": bool(initial_guess is not None),
+                "warm_start_accepted": False,
+                "warm_start_status": "ineligible" if initial_guess is None else "invalid_max_iter",
+                "residual_probe_a_applications": 0,
+                "correction_iterations": 0,
             },
             stats_out,
         )
@@ -965,14 +978,59 @@ def _gmres_solve_wave_self_loop(
         raise ValueError("gmres_check_interval must be at least 1")
     min_check_iter = max(1, min(min_check_iter, max_iter))
 
-    b_norm_t = torch.linalg.vector_norm(rhs)
+    solution_base = None
+    solve_rhs = rhs
+    initial_residual_applications = 0
+    initial_check_count = 0
+    warm_start_used = initial_guess is not None
+    warm_start_rel_res: float | None = None
+    if initial_guess is not None:
+        initial_residual_applications = 1
+        initial_check_count = 1
+        residual = rhs - apply_a(initial_guess)
+        rhs_norm_t = torch.linalg.vector_norm(rhs)
+        residual_norm_t = torch.linalg.vector_norm(residual)
+        rhs_norm = float(rhs_norm_t.detach().cpu())
+        residual_norm = float(residual_norm_t.detach().cpu())
+        denom = max(rhs_norm, torch.finfo(rhs.dtype).tiny)
+        warm_start_rel_res = residual_norm / denom
+        if warm_start_rel_res <= tol:
+            if out is None:
+                result = initial_guess.clone()
+            else:
+                out.copy_(initial_guess)
+                result = out
+            _record_gmres_self_loop_stats(
+                {
+                    "iterations": 0,
+                    "a_applications": int(initial_residual_applications),
+                    "rel_res": float(warm_start_rel_res),
+                    "check_count": int(initial_check_count),
+                    "arnoldi_backend": "warm_start",
+                    "min_check_iter": int(min_check_iter),
+                    "preconditioner": str(preconditioner_name),
+                    "warm_start_used": True,
+                    "warm_start_accepted": True,
+                    "warm_start_status": "accepted",
+                    "warm_start_rel_res": float(warm_start_rel_res),
+                    "residual_probe_a_applications": int(initial_residual_applications),
+                    "correction_iterations": 0,
+                },
+                stats_out,
+            )
+            return result
+        if residual_norm <= denom:
+            solve_rhs = residual
+            solution_base = initial_guess
+
+    b_norm_t = torch.linalg.vector_norm(solve_rhs)
     use_cuda_triton_hessenberg = (
-        rhs.device.type == "cuda"
+        solve_rhs.device.type == "cuda"
         and int(max_iter) <= _GMRES_TRITON_HESSENBERG_MAX_M
     )
     if use_cuda_triton_hessenberg:
         b_norm: float | None = None
-        safe_b_norm_t = torch.clamp(b_norm_t, min=torch.finfo(rhs.dtype).tiny)
+        safe_b_norm_t = torch.clamp(b_norm_t, min=torch.finfo(solve_rhs.dtype).tiny)
     else:
         b_norm = float(b_norm_t.detach().cpu())
         if b_norm == 0.0:
@@ -984,24 +1042,35 @@ def _gmres_solve_wave_self_loop(
             _record_gmres_self_loop_stats(
                 {
                     "iterations": 0,
+                    "a_applications": int(initial_residual_applications),
                     "rel_res": 0.0,
                     "preconditioner": str(preconditioner_name),
+                    "warm_start_used": bool(warm_start_used),
+                    "warm_start_accepted": False,
+                    "warm_start_status": "not_attempted" if not warm_start_used else "zero_rhs",
+                    "residual_probe_a_applications": int(initial_residual_applications),
+                    "correction_iterations": 0,
                 },
                 stats_out,
             )
             return result
         safe_b_norm_t = b_norm_t
 
-    if _gmres_can_use_triton_arnoldi(rhs, max_iter, bool(fixed_iterations)):
+    if _gmres_can_use_triton_arnoldi(solve_rhs, max_iter, bool(fixed_iterations)):
         return _gmres_solve_wave_self_loop_triton_split(
             apply_a,
-            rhs,
+            solve_rhs,
             max_iter=max_iter,
             tol=tol,
             check_interval=check_interval,
             min_check_iter=min_check_iter,
             b_norm_t=b_norm_t,
             safe_b_norm_t=safe_b_norm_t,
+            solution_base=solution_base,
+            initial_residual_applications=initial_residual_applications,
+            initial_check_count=initial_check_count,
+            warm_start_used=warm_start_used,
+            warm_start_rel_res=warm_start_rel_res,
             right_preconditioner=right_preconditioner,
             preconditioner_name=preconditioner_name,
             out=out,
@@ -1010,7 +1079,7 @@ def _gmres_solve_wave_self_loop(
 
     return _gmres_solve_wave_self_loop_cgs2(
         apply_a,
-        rhs,
+        solve_rhs,
         max_iter=max_iter,
         tol=tol,
         fixed_iterations=bool(fixed_iterations),
@@ -1019,6 +1088,11 @@ def _gmres_solve_wave_self_loop(
         b_norm_t=b_norm_t,
         safe_b_norm_t=safe_b_norm_t,
         b_norm=b_norm,
+        solution_base=solution_base,
+        initial_residual_applications=initial_residual_applications,
+        initial_check_count=initial_check_count,
+        warm_start_used=warm_start_used,
+        warm_start_rel_res=warm_start_rel_res,
         right_preconditioner=right_preconditioner,
         preconditioner_name=preconditioner_name,
         out=out,
@@ -1032,19 +1106,27 @@ def _gmres_write_solution(
     rhs: torch.Tensor,
     *,
     right_preconditioner,
+    solution_base: torch.Tensor | None = None,
     out: torch.Tensor | None,
 ) -> torch.Tensor:
     if right_preconditioner is None:
         result = torch.empty_like(rhs) if out is None else out
         torch.mv(basis_2d[: y.numel()].t(), y, out=result.reshape(-1))
-        return result
+        correction = result
+    else:
+        unpreconditioned = torch.empty_like(rhs)
+        torch.mv(basis_2d[: y.numel()].t(), y, out=unpreconditioned.reshape(-1))
+        correction = right_preconditioner(unpreconditioned)
 
-    unpreconditioned = torch.empty_like(rhs)
-    torch.mv(basis_2d[: y.numel()].t(), y, out=unpreconditioned.reshape(-1))
-    preconditioned = right_preconditioner(unpreconditioned)
+    if solution_base is None:
+        if out is None or correction is out:
+            return correction
+        out.copy_(correction)
+        return out
+
     if out is None:
-        return preconditioned
-    out.copy_(preconditioned)
+        return solution_base + correction
+    torch.add(solution_base, correction, out=out)
     return out
 
 
@@ -1058,6 +1140,11 @@ def _gmres_solve_wave_self_loop_triton_split(
     min_check_iter: int,
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
+    solution_base: torch.Tensor | None,
+    initial_residual_applications: int,
+    initial_check_count: int,
+    warm_start_used: bool,
+    warm_start_rel_res: float | None,
     right_preconditioner,
     preconditioner_name: str,
     out: torch.Tensor | None,
@@ -1173,11 +1260,20 @@ def _gmres_solve_wave_self_loop_triton_split(
     _record_gmres_self_loop_stats(
         {
             "iterations": iters,
+            "a_applications": int(iters + initial_residual_applications),
             "rel_res": float(rel_res),
-            "check_count": int(check_count),
+            "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "triton_split",
             "min_check_iter": int(min_check_iter),
             "preconditioner": str(preconditioner_name),
+            "warm_start_used": bool(warm_start_used),
+            "warm_start_accepted": False,
+            "warm_start_status": "corrected" if solution_base is not None else (
+                "restarted" if warm_start_used else "not_attempted"
+            ),
+            "warm_start_rel_res": None if warm_start_rel_res is None else float(warm_start_rel_res),
+            "residual_probe_a_applications": int(initial_residual_applications),
+            "correction_iterations": int(iters),
         },
         stats_out,
     )
@@ -1186,6 +1282,7 @@ def _gmres_solve_wave_self_loop_triton_split(
         y,
         rhs,
         right_preconditioner=right_preconditioner,
+        solution_base=solution_base,
         out=out,
     )
 
@@ -1202,6 +1299,11 @@ def _gmres_solve_wave_self_loop_cgs2(
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
     b_norm: float | None,
+    solution_base: torch.Tensor | None,
+    initial_residual_applications: int,
+    initial_check_count: int,
+    warm_start_used: bool,
+    warm_start_rel_res: float | None,
     right_preconditioner,
     preconditioner_name: str,
     out: torch.Tensor | None,
@@ -1305,11 +1407,20 @@ def _gmres_solve_wave_self_loop_cgs2(
     _record_gmres_self_loop_stats(
         {
             "iterations": iters,
+            "a_applications": int(iters + initial_residual_applications),
             "rel_res": float(rel_res),
-            "check_count": int(check_count),
+            "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "torch_cgs2",
             "min_check_iter": int(min_check_iter),
             "preconditioner": str(preconditioner_name),
+            "warm_start_used": bool(warm_start_used),
+            "warm_start_accepted": False,
+            "warm_start_status": "corrected" if solution_base is not None else (
+                "restarted" if warm_start_used else "not_attempted"
+            ),
+            "warm_start_rel_res": None if warm_start_rel_res is None else float(warm_start_rel_res),
+            "residual_probe_a_applications": int(initial_residual_applications),
+            "correction_iterations": int(iters),
         },
         stats_out,
     )
@@ -1318,6 +1429,7 @@ def _gmres_solve_wave_self_loop_cgs2(
         y,
         rhs,
         right_preconditioner=right_preconditioner,
+        solution_base=solution_base,
         out=out,
     )
 
@@ -1813,15 +1925,26 @@ def _wave_backward_uniform_2d(
 
     jt_options = {"num_warps": 2}
     if gmres_self_loop:
-        if initial_v is not None:
-            raise ValueError("GMRES self-loop solve does not support initial_v")
         gmres_a_buf = spec_buf
         gmres_rhs = v_k
         gmres_active_mask = active_mask
+        gmres_initial_v = None
         gmres_right_preconditioner = None
         gmres_preconditioner_name = "none"
         if active_mask is not None:
             gmres_active_mask = active_mask.to(device=device, dtype=torch.bool).contiguous()
+        if initial_v is not None:
+            if tuple(initial_v.shape) != scratch_shape:
+                raise ValueError(
+                    f"initial_v shape {tuple(initial_v.shape)} does not match "
+                    f"wave scratch shape {scratch_shape}"
+                )
+            gmres_initial_v = initial_v.to(device=device, dtype=dtype).contiguous()
+            if gmres_active_mask is not None:
+                warm_start_buf = torch.empty_like(v_k) if gmres_preconditioner == "diagonal" else term_buf
+                warm_start_buf.copy_(gmres_initial_v)
+                warm_start_buf.mul_(gmres_active_mask[:, None])
+                gmres_initial_v = warm_start_buf
         if gmres_preconditioner == "diagonal":
             floor = float(gmres_diagonal_preconditioner_floor)
             if floor <= 0.0:
@@ -1884,6 +2007,7 @@ def _wave_backward_uniform_2d(
             fixed_iterations=self_loop_solver == "gmres_fixed",
             check_interval=int(gmres_check_interval),
             min_check_iter=int(gmres_min_check_iter),
+            initial_guess=gmres_initial_v,
             right_preconditioner=gmres_right_preconditioner,
             preconditioner_name=gmres_preconditioner_name,
             out=v_k,

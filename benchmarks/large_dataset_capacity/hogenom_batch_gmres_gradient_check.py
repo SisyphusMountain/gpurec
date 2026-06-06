@@ -68,6 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gmres-tols", type=_csv_floats, default=_csv_floats("1e-8,1e-7,1e-6"))
     parser.add_argument("--gmres-check-interval", type=int, default=4)
     parser.add_argument("--gmres-reuse-check-schedule", action="store_true")
+    parser.add_argument("--gmres-reuse-solution", action="store_true")
+    parser.add_argument("--gmres-solution-cache-min-iterations", type=int, default=2)
     parser.add_argument("--gmres-preconditioner", choices=("none", "diagonal"), default="none")
     parser.add_argument("--gmres-diagonal-preconditioner-floor", type=float, default=1e-4)
     parser.add_argument(
@@ -116,6 +118,8 @@ def _solver_options(args: argparse.Namespace, *, solver: str, iterations: int, g
         gmres_tol=float(gmres_tol),
         gmres_check_interval=int(args.gmres_check_interval),
         gmres_reuse_check_schedule=bool(args.gmres_reuse_check_schedule),
+        gmres_reuse_solution=bool(args.gmres_reuse_solution),
+        gmres_solution_cache_min_iterations=int(args.gmres_solution_cache_min_iterations),
         gmres_preconditioner=str(args.gmres_preconditioner),
         gmres_diagonal_preconditioner_floor=float(args.gmres_diagonal_preconditioner_floor),
         bicgstab_max_iter=int(args.bicgstab_max_iter),
@@ -161,7 +165,8 @@ def _run_gradient(
     model.clear_warm_starts()
     warmups = (
         max(0, int(args.gmres_schedule_warmups))
-        if solver == "gmres" and bool(args.gmres_reuse_check_schedule)
+        if solver == "gmres"
+        and (bool(args.gmres_reuse_check_schedule) or bool(args.gmres_reuse_solution))
         else 0
     )
     for _ in range(warmups):

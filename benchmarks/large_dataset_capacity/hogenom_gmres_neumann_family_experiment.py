@@ -172,7 +172,7 @@ def run_gradient(
         total_backward_iterations = int(iterations) * wave_count
         per_wave_iterations = None
     else:
-        per_wave_iterations = [int(item["iterations"]) for item in gmres_stats]
+        per_wave_iterations = [int(item.get("a_applications", item["iterations"])) for item in gmres_stats]
         total_backward_iterations = int(sum(per_wave_iterations))
         per_wave_checks = [int(item.get("check_count", 0)) for item in gmres_stats]
 

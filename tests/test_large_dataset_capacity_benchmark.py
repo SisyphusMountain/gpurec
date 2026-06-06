@@ -44,6 +44,9 @@ def test_run_gpurec_benchmark_wires_gmres_solver_options(tmp_path: Path):
             "--gmres-check-interval",
             "3",
             "--gmres-reuse-check-schedule",
+            "--gmres-reuse-solution",
+            "--gmres-solution-cache-min-iterations",
+            "4",
             "--gmres-preconditioner",
             "diagonal",
             "--gmres-diagonal-preconditioner-floor",
@@ -58,6 +61,8 @@ def test_run_gpurec_benchmark_wires_gmres_solver_options(tmp_path: Path):
     assert options.gmres_tol == 1e-8
     assert options.gmres_check_interval == 3
     assert options.gmres_reuse_check_schedule is True
+    assert options.gmres_reuse_solution is True
+    assert options.gmres_solution_cache_min_iterations == 4
     assert options.gmres_preconditioner == "diagonal"
     assert options.gmres_diagonal_preconditioner_floor == 1e-5
 
@@ -125,16 +130,29 @@ def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path)
     recorder.backward_pass_count = 1
     recorder._gmres_stats = [
         {"iterations": 3, "check_count": 2, "rel_res": 1e-4, "arnoldi_backend": "triton_split"},
-        {"iterations": 5, "check_count": 3, "rel_res": 2e-5, "arnoldi_backend": "torch_cgs2"},
+        {
+            "iterations": 0,
+            "a_applications": 1,
+            "check_count": 1,
+            "rel_res": 2e-5,
+            "arnoldi_backend": "warm_start",
+            "warm_start_used": True,
+            "warm_start_accepted": True,
+            "residual_probe_a_applications": 1,
+        },
     ]
 
     summary = recorder.summary()
 
     assert summary["self_loop_solver"] == "gmres"
     assert summary["self_loop_wave_solves"] == 2
-    assert summary["self_loop_backward_iterations"] == 8
-    assert summary["self_loop_mean_iterations_per_wave"] == 4.0
-    assert summary["self_loop_max_iterations_per_wave"] == 5
-    assert summary["gmres_total_checks"] == 5
+    assert summary["self_loop_backward_iterations"] == 4
+    assert summary["self_loop_mean_iterations_per_wave"] == 2.0
+    assert summary["self_loop_max_iterations_per_wave"] == 3
+    assert summary["gmres_krylov_iterations"] == 3
+    assert summary["gmres_warm_start_used"] == 1
+    assert summary["gmres_warm_start_accepted"] == 1
+    assert summary["gmres_residual_probe_a_applications"] == 1
+    assert summary["gmres_total_checks"] == 3
     assert summary["gmres_max_rel_res"] == 1e-4
-    assert summary["gmres_arnoldi_backend_counts"] == {"triton_split": 1, "torch_cgs2": 1}
+    assert summary["gmres_arnoldi_backend_counts"] == {"triton_split": 1, "warm_start": 1}
