@@ -3482,22 +3482,24 @@ attempt should either:
 - implement a dedicated trusted two-step/three-step GMRES path, since current
   trusted schedules have max iteration `3` on this benchmark.
 
-## Direct-Sum 2048 Follow-Up
+## Direct-Sum 4096 Follow-Up
 
 After the fused first-dot regression, I tested a narrower launch-reduction
 change that does not touch the self-loop kernel: increase the large-backend
-single-block reduction cap from `1024` to `2048` tiles. The cap is now tunable:
+single-block reduction cap. The cap is tunable:
 
 ```bash
-GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM_MAX_TILES=1024
+GPUREC_GMRES_TRITON_LARGE_DIRECT_SUM_MAX_TILES=2048
 ```
 
-sets the old behavior, while the default is `2048`.
+sets the previous behavior, while the default is now `4096`.
 
 The rationale came from the `nsys` tile distribution: many trusted large-wave
-reductions were just above `1024` tiles, in the `1027-1968` range. Letting those
-use `_gmres_arnoldi_sum_partials_direct_kernel` replaces a staged
-group-reduction pair with one one-block reduction.
+reductions were just above the old direct-sum thresholds. Letting those use
+`_gmres_arnoldi_sum_partials_direct_kernel` replaces a staged group-reduction
+pair with one one-block reduction. I tested `2048`, `4096`, and `8192`; `4096`
+was the best point. `8192` was correct in a standalone kernel check, but slower
+in the benchmark because the one-block reductions became too large.
 
 Validation:
 
@@ -3509,72 +3511,77 @@ pytest -q
 Results:
 
 ```text
-32 passed, 59 deselected
-111 passed
+44 passed, 65 deselected
+129 passed
 ```
 
 Artifacts:
 
 ```text
-benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_1024_trusted_compare_20260606_130500/
-benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_2048_trusted_compare_20260606_130500/
-benchmarks/large_dataset_capacity/output/nsys_direct_sum_2048_trusted_20260606_131000/
-benchmarks/large_dataset_capacity/output/ncu_direct_sum_2048_20260606_132500/
-benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_2048_default_20260606_132000/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_2048_trusted_compare_20260606_133500/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_4096_trusted_compare_20260606_133000/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_8192_trusted_compare_20260606_134000/
+benchmarks/large_dataset_capacity/output/nsys_direct_sum_2048_current_trusted_20260606_135000/
+benchmarks/large_dataset_capacity/output/nsys_direct_sum_4096_trusted_20260606_134500/
+benchmarks/large_dataset_capacity/output/ncu_direct_sum_4096_20260606_135500/
+benchmarks/large_dataset_capacity/output/self_loop_overhead_direct_sum_4096_default_20260606_140000/
 ```
 
 Trusted-only non-profiled comparison on the same revision:
 
 | Direct-Sum Cap | Mean Backward | Median Backward | Mean ms/Application | Direct-Sum Large Waves | Group Norm Reductions | Direct Norm Checks |
 |---:|---:|---:|---:|---:|---:|---:|
-| `1024` | `56.422 ms` | `55.816 ms` | `0.40301` | `9` | `85` | `9` |
-| `2048` | `54.050 ms` | `53.836 ms` | `0.38607` | `43` | `51` | `43` |
+| `2048` | `51.688 ms` | `51.621 ms` | `0.36920` | `25` | `51` | `25` |
+| `4096` | `51.178 ms` | `51.261 ms` | `0.36556` | `28` | `48` | `28` |
+| `8192` | `52.905 ms` | `52.844 ms` | `0.37789` | `31` | `45` | `31` |
 
 This is the cleanest comparison for the cap itself: same solver, same trusted
-schedule behavior, no fused first-dot path. The larger cap improves trusted
-GMRES by about `2.37 ms` per backward pass in this run.
+schedule behavior, no fused first-dot path. The `4096` cap improves trusted
+GMRES by about `0.51 ms` per backward pass relative to `2048`; `8192` loses
+that gain.
 
 The `nsys` comparison over three profiled backward passes confirms the intended
 launch movement:
 
 | Cap | Mean Backward Under nsys | Kernel Launches | Kernel Time Sum | Runtime API Total |
 |---:|---:|---:|---:|---:|
-| `1024` | `68.403 ms` | `16362` | `226.984 ms` | `74.523 ms` |
-| `2048` | `65.761 ms` | `15942` | `226.651 ms` | `73.038 ms` |
+| `2048` | `64.301 ms` | `15510` | `224.866 ms` | `74.224 ms` |
+| `4096` | `62.386 ms` | `15447` | `224.279 ms` | `73.699 ms` |
 
 The relevant kernel launch counts changed as follows:
 
-| Kernel Bucket | Cap 1024 Launches | Cap 2048 Launches |
+| Kernel Bucket | Cap 2048 Launches | Cap 4096 Launches |
 |---|---:|---:|
-| `_gmres_arnoldi_sum_partials_direct_kernel` | `120` | `438` |
-| `_gmres_arnoldi_reduce_group_partials_kernel` | `444` | `126` |
-| `_gmres_arnoldi_sum_group_coeff_kernel` | `444` | `126` |
-| `_gmres_arnoldi_reduce_group_norm_partials_kernel` | `255` | `153` |
+| `_gmres_arnoldi_sum_partials_direct_kernel` | `330` | `384` |
+| `_gmres_arnoldi_reduce_group_partials_kernel` | `126` | `72` |
+| `_gmres_arnoldi_sum_group_coeff_kernel` | `126` | `72` |
+| `_gmres_arnoldi_reduce_group_norm_partials_kernel` | `153` | `144` |
 
-The cap removes `420` total kernel launches over the profiled three backward
-passes without increasing total kernel time.
+The `4096` cap removes `63` total kernel launches over the profiled three
+backward passes without increasing total kernel time.
 
 The `ncu --set basic` sample on `_gmres_arnoldi_sum_partials_direct_kernel`
 remains tiny and underfilled, as expected for this one-block reduction:
 
 | Sample | Duration | Registers/Thread | Active Warps | SM Throughput | DRAM Throughput |
 |---:|---:|---:|---:|---:|---:|
-| `1` | `2.656 us` | `72` | `16.95%` | `0.175%` | `1.154%` |
-| `2` | `3.104 us` | `64` | `15.89%` | `0.161%` | `1.008%` |
-| `3` | `2.656 us` | `72` | `15.54%` | `0.176%` | `1.270%` |
+| `1` | `2.688 us` | `72` | `17.18%` | `0.173%` | `1.157%` |
+| `2` | `3.040 us` | `64` | `16.00%` | `0.160%` | `1.036%` |
+| `3` | `2.656 us` | `72` | `16.65%` | `0.170%` | `1.270%` |
 
 Finally, the default full self-loop overhead benchmark, with no direct-sum cap
 environment variable set, now reports:
 
 | Mode | Mean Backward | Backward Applications | Mean ms/Application | Backends |
 |---|---:|---:|---:|---|
-| Neumann16 | `62.100 ms` | `1392` | `0.04461` | n/a |
-| GMRES10 checked | `62.879 ms` | `140` | `0.44914` | `triton_large=59`, `triton_split=28` |
-| GMRES10 reuse+trust | `52.673 ms` | `140` | `0.37623` | `triton_large=32`, `triton_split=9`, `trusted_one_step_triton_direct=46` |
+| Neumann16 | `61.928 ms` | `1392` | `0.04449` | n/a |
+| GMRES10 checked | `61.685 ms` | `140` | `0.44060` | `triton_large=59`, `triton_split=28` |
+| GMRES10 reuse+trust | `51.699 ms` | `140` | `0.36928` | `triton_large=32`, `triton_split=9`, `trusted_one_step_triton_direct=46` |
 
-Conclusion: promoting the direct-sum cap to `2048` is worth keeping. It is a
-small but real improvement, unlike the fused first-dot experiment, because it
-reduces launch count without making the self-loop matvec kernel heavier.
+Conclusion: promoting the direct-sum cap to `4096` is worth keeping. It is a
+small but real improvement beyond the `2048` cap, unlike the fused first-dot
+experiment, because it reduces launch count without making the self-loop matvec
+kernel heavier. Do not push this blindly to `8192`; that setting was slower.
 
 ## Recommended First Experiment
 
