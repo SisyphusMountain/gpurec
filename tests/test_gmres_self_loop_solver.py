@@ -322,6 +322,32 @@ def test_gmres_self_loop_triton_split_matches_dense_solve_cuda_float32(monkeypat
     assert stats and stats[0]["arnoldi_backend"] == "triton_split"
 
 
+def test_gmres_self_loop_triton_split_handles_multi_tile_cuda_float32(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_ARNOLDI", "1")
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        device = torch.device("cuda")
+        rhs = torch.linspace(-1.0, 1.0, 513, dtype=torch.float32, device=device)
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            lambda vec: vec,
+            rhs,
+            max_iter=4,
+            tol=1e-6,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, rhs, rtol=2e-5, atol=2e-5)
+    assert stats and stats[0]["arnoldi_backend"] == "triton_split"
+    assert stats[0]["iterations"] == 1
+
+
 def test_triton_apply_a_zeroes_inactive_rows_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for the Triton self-loop kernel")
