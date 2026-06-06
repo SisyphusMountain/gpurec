@@ -38,6 +38,7 @@ def _gmres_adaptive_cache_key(static: _BatchStatic) -> tuple:
         int(options.neumann_terms),
         float(options.gmres_tol),
         int(options.gmres_check_interval),
+        bool(options.gmres_trust_check_schedule),
         str(options.gmres_preconditioner).strip().lower(),
         float(options.gmres_diagonal_preconditioner_floor),
         bool(options.use_adjoint_pruning),

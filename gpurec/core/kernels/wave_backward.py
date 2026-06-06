@@ -1225,6 +1225,7 @@ def _gmres_solve_wave_self_loop(
     fixed_iterations: bool = False,
     check_interval: int = 1,
     min_check_iter: int = 1,
+    trust_min_check_iter: bool = False,
     initial_guess: torch.Tensor | None = None,
     right_preconditioner=None,
     preconditioner_name: str = "none",
@@ -1357,6 +1358,7 @@ def _gmres_solve_wave_self_loop(
             tol=tol,
             check_interval=check_interval,
             min_check_iter=min_check_iter,
+            trust_min_check_iter=bool(trust_min_check_iter),
             b_norm_t=b_norm_t,
             safe_b_norm_t=safe_b_norm_t,
             solution_base=solution_base,
@@ -1383,6 +1385,7 @@ def _gmres_solve_wave_self_loop(
             tol=tol,
             check_interval=check_interval,
             min_check_iter=min_check_iter,
+            trust_min_check_iter=bool(trust_min_check_iter),
             b_norm_t=b_norm_t,
             safe_b_norm_t=safe_b_norm_t,
             solution_base=solution_base,
@@ -1482,6 +1485,7 @@ def _gmres_solve_wave_self_loop_triton_split(
     tol: float,
     check_interval: int,
     min_check_iter: int,
+    trust_min_check_iter: bool,
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
     solution_base: torch.Tensor | None,
@@ -1513,6 +1517,7 @@ def _gmres_solve_wave_self_loop_triton_split(
     last_j = 0
     rel_res = 1.0
     check_count = 0
+    trusted_check_used = False
 
     for j in range(max_iter):
         basis_j = basis[j]
@@ -1587,12 +1592,14 @@ def _gmres_solve_wave_self_loop_triton_split(
                 num_warps=1,
             )
             check_count += 1
-            needs_rel_res = (
+            if trust_min_check_iter and j + 1 >= min_check_iter:
+                trusted_check_used = True
+                break
+            if (
                 j + 1 < max_iter
                 or stats_out is not None
                 or _GMRES_SELF_LOOP_STATS is not None
-            )
-            if needs_rel_res:
+            ):
                 rel_res = float(residual_buf.detach().cpu())
                 if rel_res <= tol:
                     break
@@ -1637,6 +1644,11 @@ def _gmres_solve_wave_self_loop_triton_split(
             "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "triton_split",
             "min_check_iter": int(min_check_iter),
+            "trusted_check_schedule": bool(trust_min_check_iter),
+            "trusted_check_used": bool(trusted_check_used),
+            "residual_cpu_readbacks": int(
+                check_count + initial_check_count - (1 if trusted_check_used else 0)
+            ),
             "preconditioner": str(preconditioner_name),
             "warm_start_used": bool(warm_start_used),
             "warm_start_accepted": False,
@@ -1667,6 +1679,7 @@ def _gmres_solve_wave_self_loop_triton_large(
     tol: float,
     check_interval: int,
     min_check_iter: int,
+    trust_min_check_iter: bool,
     b_norm_t: torch.Tensor,
     safe_b_norm_t: torch.Tensor,
     solution_base: torch.Tensor | None,
@@ -1704,6 +1717,7 @@ def _gmres_solve_wave_self_loop_triton_large(
     last_j = 0
     rel_res = 1.0
     check_count = 0
+    trusted_check_used = False
 
     for j in range(max_iter):
         basis_j = basis[j]
@@ -1828,12 +1842,14 @@ def _gmres_solve_wave_self_loop_triton_large(
                 num_warps=1,
             )
             check_count += 1
-            needs_rel_res = (
+            if trust_min_check_iter and j + 1 >= min_check_iter:
+                trusted_check_used = True
+                break
+            if (
                 j + 1 < max_iter
                 or stats_out is not None
                 or _GMRES_SELF_LOOP_STATS is not None
-            )
-            if needs_rel_res:
+            ):
                 rel_res = float(residual_buf.detach().cpu())
                 if rel_res <= tol:
                     break
@@ -1878,6 +1894,11 @@ def _gmres_solve_wave_self_loop_triton_large(
             "check_count": int(check_count + initial_check_count),
             "arnoldi_backend": "triton_large",
             "min_check_iter": int(min_check_iter),
+            "trusted_check_schedule": bool(trust_min_check_iter),
+            "trusted_check_used": bool(trusted_check_used),
+            "residual_cpu_readbacks": int(
+                check_count + initial_check_count - (1 if trusted_check_used else 0)
+            ),
             "preconditioner": str(preconditioner_name),
             "warm_start_used": bool(warm_start_used),
             "warm_start_accepted": False,
@@ -2402,6 +2423,7 @@ def _wave_backward_uniform_2d(
     gmres_tol=1e-10,
     gmres_check_interval=1,
     gmres_min_check_iter=1,
+    gmres_trust_min_check_iter=False,
     gmres_stats_out=None,
     gmres_preconditioner="none",
     gmres_diagonal_preconditioner_floor=1e-4,
@@ -2636,6 +2658,7 @@ def _wave_backward_uniform_2d(
             fixed_iterations=self_loop_solver == "gmres_fixed",
             check_interval=int(gmres_check_interval),
             min_check_iter=int(gmres_min_check_iter),
+            trust_min_check_iter=bool(gmres_trust_min_check_iter),
             initial_guess=gmres_initial_v,
             right_preconditioner=gmres_right_preconditioner,
             preconditioner_name=gmres_preconditioner_name,
@@ -2854,6 +2877,7 @@ def wave_backward_uniform_fused(
     gmres_tol=1e-10,
     gmres_check_interval=1,
     gmres_min_check_iter=1,
+    gmres_trust_min_check_iter=False,
     gmres_stats_out=None,
     gmres_preconditioner="none",
     gmres_diagonal_preconditioner_floor=1e-4,
@@ -2957,6 +2981,7 @@ def wave_backward_uniform_fused(
         gmres_tol=gmres_tol,
         gmres_check_interval=gmres_check_interval,
         gmres_min_check_iter=gmres_min_check_iter,
+        gmres_trust_min_check_iter=gmres_trust_min_check_iter,
         gmres_stats_out=gmres_stats_out,
         gmres_preconditioner=gmres_preconditioner,
         gmres_diagonal_preconditioner_floor=gmres_diagonal_preconditioner_floor,

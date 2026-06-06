@@ -71,6 +71,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--gmres-trust-check-schedule",
+        action="store_true",
+        help=(
+            "When a reused GMRES check schedule exists, run each wave to the "
+            "scheduled iteration count and skip the residual scalar readback."
+        ),
+    )
+    parser.add_argument(
         "--gmres-reuse-solution",
         action="store_true",
         help=(
@@ -106,6 +114,7 @@ def solver_options_from_args(args: argparse.Namespace) -> SolverOptions:
         gmres_tol=args.gmres_tol,
         gmres_check_interval=args.gmres_check_interval,
         gmres_reuse_check_schedule=args.gmres_reuse_check_schedule,
+        gmres_trust_check_schedule=args.gmres_trust_check_schedule,
         gmres_reuse_solution=args.gmres_reuse_solution,
         gmres_solution_cache_min_iterations=args.gmres_solution_cache_min_iterations,
         gmres_preconditioner=args.gmres_preconditioner,
@@ -210,7 +219,11 @@ class SelfLoopBackwardRecorder:
                 for row in gmres_stats
             ]
             per_wave_checks = [int(row.get("check_count", 0)) for row in gmres_stats]
-            rel_res = [float(row.get("rel_res", 0.0)) for row in gmres_stats]
+            rel_res = [
+                float(row["rel_res"])
+                for row in gmres_stats
+                if "rel_res" in row and not bool(row.get("trusted_check_used", False))
+            ]
             arnoldi_backend_counts: dict[str, int] = {}
             for row in gmres_stats:
                 backend = str(row.get("arnoldi_backend", "unknown"))
@@ -220,8 +233,18 @@ class SelfLoopBackwardRecorder:
             total_iterations = int(sum(per_wave_iterations))
             warm_start_used = sum(1 for row in gmres_stats if bool(row.get("warm_start_used", False)))
             warm_start_accepted = sum(1 for row in gmres_stats if bool(row.get("warm_start_accepted", False)))
+            trusted_check_used = sum(1 for row in gmres_stats if bool(row.get("trusted_check_used", False)))
             residual_probe_applications = sum(
                 int(row.get("residual_probe_a_applications", 0))
+                for row in gmres_stats
+            )
+            residual_cpu_readbacks = sum(
+                int(
+                    row.get(
+                        "residual_cpu_readbacks",
+                        0 if bool(row.get("trusted_check_used", False)) else row.get("check_count", 0),
+                    )
+                )
                 for row in gmres_stats
             )
             return {
@@ -237,8 +260,10 @@ class SelfLoopBackwardRecorder:
                 "gmres_krylov_iterations": total_iterations,
                 "gmres_warm_start_used": int(warm_start_used),
                 "gmres_warm_start_accepted": int(warm_start_accepted),
+                "gmres_trusted_check_used": int(trusted_check_used),
                 "gmres_residual_probe_a_applications": int(residual_probe_applications),
                 "gmres_total_checks": int(sum(per_wave_checks)),
+                "gmres_residual_cpu_readbacks": int(residual_cpu_readbacks),
                 "gmres_mean_checks_per_wave": (
                     sum(per_wave_checks) / wave_solves if wave_solves else None
                 ),

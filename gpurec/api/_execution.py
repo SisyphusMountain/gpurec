@@ -69,6 +69,7 @@ def evaluate_static_loss_grad(
             gmres_tol=static.solver_options.gmres_tol,
             gmres_check_interval=static.solver_options.gmres_check_interval,
             gmres_check_schedule=gmres_check_schedule_for_static(static),
+            gmres_trust_check_schedule=static.solver_options.gmres_trust_check_schedule,
             gmres_solution_cache=gmres_solution_cache_for_static(static),
             gmres_solution_cache_min_iterations=static.solver_options.gmres_solution_cache_min_iterations,
             gmres_preconditioner=static.solver_options.gmres_preconditioner,

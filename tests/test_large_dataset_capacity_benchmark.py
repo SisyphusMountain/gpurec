@@ -44,6 +44,7 @@ def test_run_gpurec_benchmark_wires_gmres_solver_options(tmp_path: Path):
             "--gmres-check-interval",
             "3",
             "--gmres-reuse-check-schedule",
+            "--gmres-trust-check-schedule",
             "--gmres-reuse-solution",
             "--gmres-solution-cache-min-iterations",
             "4",
@@ -61,6 +62,7 @@ def test_run_gpurec_benchmark_wires_gmres_solver_options(tmp_path: Path):
     assert options.gmres_tol == 1e-8
     assert options.gmres_check_interval == 3
     assert options.gmres_reuse_check_schedule is True
+    assert options.gmres_trust_check_schedule is True
     assert options.gmres_reuse_solution is True
     assert options.gmres_solution_cache_min_iterations == 4
     assert options.gmres_preconditioner == "diagonal"
@@ -152,7 +154,42 @@ def test_self_loop_backward_recorder_summarizes_gmres_iterations(tmp_path: Path)
     assert summary["gmres_krylov_iterations"] == 3
     assert summary["gmres_warm_start_used"] == 1
     assert summary["gmres_warm_start_accepted"] == 1
+    assert summary["gmres_trusted_check_used"] == 0
     assert summary["gmres_residual_probe_a_applications"] == 1
     assert summary["gmres_total_checks"] == 3
+    assert summary["gmres_residual_cpu_readbacks"] == 3
     assert summary["gmres_max_rel_res"] == 1e-4
     assert summary["gmres_arnoldi_backend_counts"] == {"triton_split": 1, "warm_start": 1}
+
+
+def test_self_loop_backward_recorder_ignores_trusted_check_residuals(tmp_path: Path):
+    args = parse_args(
+        _base_args(tmp_path)
+        + [
+            "--self-loop-solver",
+            "gmres",
+            "--gmres-max-iter",
+            "10",
+        ]
+    )
+    model = SimpleNamespace(
+        solver_options=solver_options_from_args(args),
+        batch_statics=[SimpleNamespace(wave_layout={"wave_metas": [object()]})],
+    )
+    recorder = SelfLoopBackwardRecorder(model)
+    recorder.backward_pass_count = 1
+    recorder._gmres_stats = [
+        {
+            "iterations": 2,
+            "check_count": 1,
+            "rel_res": 1.0,
+            "trusted_check_used": True,
+            "arnoldi_backend": "triton_large",
+        },
+    ]
+
+    summary = recorder.summary()
+
+    assert summary["gmres_trusted_check_used"] == 1
+    assert summary["gmres_residual_cpu_readbacks"] == 0
+    assert summary["gmres_max_rel_res"] is None

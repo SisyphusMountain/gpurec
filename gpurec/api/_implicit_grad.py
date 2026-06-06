@@ -112,6 +112,7 @@ def implicit_grad_loglik_vjp_wave(
     gmres_tol: float = 1e-10,
     gmres_check_interval: int = 1,
     gmres_check_schedule: list[int] | None = None,
+    gmres_trust_check_schedule: bool = False,
     gmres_solution_cache: list[torch.Tensor | None] | None = None,
     gmres_solution_cache_min_iterations: int = 2,
     gmres_preconditioner: str = "none",
@@ -207,6 +208,11 @@ def implicit_grad_loglik_vjp_wave(
         else None
     )
     next_gmres_check_schedule: list[int] | None = [] if use_gmres_check_schedule else None
+    use_trusted_gmres_check_schedule = (
+        bool(gmres_trust_check_schedule)
+        and previous_gmres_check_schedule is not None
+        and gmres_solution_cache is None
+    )
     use_gmres_solution_cache = (
         gmres_solution_cache is not None
         and self_loop_solver == "gmres"
@@ -316,6 +322,7 @@ def implicit_grad_loglik_vjp_wave(
             gmres_tol=gmres_tol,
             gmres_check_interval=gmres_check_interval,
             gmres_min_check_iter=gmres_min_check_iter,
+            gmres_trust_min_check_iter=use_trusted_gmres_check_schedule,
             gmres_stats_out=gmres_wave_stats,
             gmres_preconditioner=gmres_preconditioner,
             gmres_diagonal_preconditioner_floor=gmres_diagonal_preconditioner_floor,

@@ -15,6 +15,7 @@ def test_solver_options_accept_gmres_fixed():
         gmres_tol=1e-8,
         gmres_check_interval=2,
         gmres_reuse_check_schedule=True,
+        gmres_trust_check_schedule=True,
         gmres_reuse_solution=True,
         gmres_solution_cache_min_iterations=3,
         gmres_preconditioner=" Diagonal ",
@@ -27,6 +28,7 @@ def test_solver_options_accept_gmres_fixed():
     assert options.gmres_tol == 1e-8
     assert options.gmres_check_interval == 2
     assert options.gmres_reuse_check_schedule is True
+    assert options.gmres_trust_check_schedule is True
     assert options.gmres_reuse_solution is True
     assert options.gmres_solution_cache_min_iterations == 3
     assert options.gmres_preconditioner == "diagonal"
@@ -85,6 +87,12 @@ def test_gmres_check_schedule_cache_is_opt_in_and_keyed():
     assert gmres_check_schedule_for_static(static) is schedule
 
     static.solver_options.gmres_tol = 1e-7
+    assert gmres_check_schedule_for_static(static) == []
+    assert static.gmres_check_schedule is not schedule
+
+    schedule = gmres_check_schedule_for_static(static)
+    schedule.extend([2, 1])
+    static.solver_options.gmres_trust_check_schedule = True
     assert gmres_check_schedule_for_static(static) == []
     assert static.gmres_check_schedule is not schedule
 
@@ -705,6 +713,45 @@ def test_gmres_self_loop_triton_split_handles_multi_tile_cuda_float32(monkeypatc
     assert stats[0]["iterations"] == 1
 
 
+def test_gmres_self_loop_triton_split_can_trust_min_check_iter_cuda_float32(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_ARNOLDI", "1")
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        device = torch.device("cuda")
+        idx = torch.arange(513, device=device)
+        diagonal = torch.where(
+            idx % 2 == 0,
+            torch.tensor(1.25, dtype=torch.float32, device=device),
+            torch.tensor(0.85, dtype=torch.float32, device=device),
+        )
+        rhs = torch.linspace(-1.0, 1.0, 513, dtype=torch.float32, device=device)
+
+        def apply_a(vec):
+            return (diagonal * vec.reshape(-1)).reshape_as(vec)
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=4,
+            tol=1e-12,
+            min_check_iter=2,
+            trust_min_check_iter=True,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, rhs / diagonal, rtol=3e-5, atol=3e-5)
+    assert stats and stats[0]["arnoldi_backend"] == "triton_split"
+    assert stats[0]["iterations"] == 2
+    assert stats[0]["trusted_check_schedule"] is True
+    assert stats[0]["trusted_check_used"] is True
+
+
 def test_gmres_self_loop_triton_large_handles_above_cap_cuda_float32(monkeypatch):
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for the Triton GMRES solve path")
@@ -743,6 +790,49 @@ def test_gmres_self_loop_triton_large_handles_above_cap_cuda_float32(monkeypatch
     torch.testing.assert_close(got, expected, rtol=3e-5, atol=3e-5)
     assert stats and stats[0]["arnoldi_backend"] == "triton_large"
     assert stats[0]["iterations"] == 2
+
+
+def test_gmres_self_loop_triton_large_can_trust_min_check_iter_cuda_float32(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for the Triton GMRES solve path")
+
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_ARNOLDI", "1")
+    monkeypatch.setenv("GPUREC_GMRES_TRITON_LARGE_ARNOLDI", "1")
+    old_stats = wave_backward._GMRES_SELF_LOOP_STATS
+    stats = []
+    wave_backward._GMRES_SELF_LOOP_STATS = stats
+    try:
+        device = torch.device("cuda")
+        block_n = wave_backward._GMRES_TRITON_ARNOLDI_BLOCK_N
+        max_tiles = wave_backward._GMRES_TRITON_ARNOLDI_MAX_BLOCK_TILES
+        n = block_n * max_tiles + 17
+        idx = torch.arange(n, device=device)
+        diagonal = torch.where(
+            idx % 2 == 0,
+            torch.tensor(1.25, dtype=torch.float32, device=device),
+            torch.tensor(0.85, dtype=torch.float32, device=device),
+        )
+        rhs = torch.linspace(-1.0, 1.0, n, dtype=torch.float32, device=device)
+
+        def apply_a(vec):
+            return (diagonal * vec.reshape(-1)).reshape_as(vec)
+
+        got = wave_backward._gmres_solve_wave_self_loop(
+            apply_a,
+            rhs,
+            max_iter=4,
+            tol=1e-12,
+            min_check_iter=2,
+            trust_min_check_iter=True,
+        )
+    finally:
+        wave_backward._GMRES_SELF_LOOP_STATS = old_stats
+
+    torch.testing.assert_close(got, rhs / diagonal, rtol=3e-5, atol=3e-5)
+    assert stats and stats[0]["arnoldi_backend"] == "triton_large"
+    assert stats[0]["iterations"] == 2
+    assert stats[0]["trusted_check_schedule"] is True
+    assert stats[0]["trusted_check_used"] is True
 
 
 def test_gmres_self_loop_triton_large_dispatch_boundary_cuda_float32(monkeypatch):
