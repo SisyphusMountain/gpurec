@@ -447,6 +447,8 @@ def _wave_backward_uniform_2d_jt_kernel(
     FIXED_POINT_UPDATE: tl.constexpr,
     DTYPE: tl.constexpr,
     USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
+    OUTPUT_A: tl.constexpr,
+    ACCUMULATE_V: tl.constexpr,
 ):
     """Apply one self-loop J^T term using in-program bottom-up tree reduction."""
     block = tl.program_id(0)
@@ -528,11 +530,6 @@ def _wave_backward_uniform_2d_jt_kernel(
         ).to(DTYPE)
         edge_wt = tl.load(sl1_ptr + offsets, mask=parent_mask, other=0.0).to(DTYPE)
         result = base + parent_term * edge_wt
-        tl.store(
-            term_out_ptr + offsets,
-            tl.where(mask, result, tl.zeros_like(result)),
-            mask=store_mask,
-        )
     else:
         tl.store(term_out_ptr + offsets, tl.where(mask, base, tl.zeros_like(base)), mask=store_mask)
 
@@ -554,6 +551,13 @@ def _wave_backward_uniform_2d_jt_kernel(
 
         result = tl.load(term_out_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
 
+    out_val = term_val - result if OUTPUT_A else result
+    tl.store(
+        term_out_ptr + offsets,
+        tl.where(mask, out_val, tl.zeros_like(out_val)),
+        mask=store_mask,
+    )
+
     if FIXED_POINT_UPDATE:
         rhs_val = tl.load(rhs_update_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
         tl.store(
@@ -561,9 +565,87 @@ def _wave_backward_uniform_2d_jt_kernel(
             tl.where(mask, rhs_val + result, tl.zeros_like(result)),
             mask=store_mask,
         )
-    else:
+    elif ACCUMULATE_V:
         v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
         tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
+
+
+@torch.no_grad()
+def _gmres_solve_wave_self_loop(
+    apply_a,
+    rhs: torch.Tensor,
+    *,
+    max_iter: int,
+) -> torch.Tensor:
+    """Solve ``A v = rhs`` for one wave with fixed-iteration unrestarted GMRES."""
+    max_iter = int(max_iter)
+    if max_iter < 1:
+        return torch.zeros_like(rhs)
+
+    b_norm_t = torch.linalg.vector_norm(rhs)
+    if float(b_norm_t.detach().cpu()) == 0.0:
+        return torch.zeros_like(rhs)
+
+    return _gmres_solve_wave_self_loop_fixed_cgs2(
+        apply_a,
+        rhs,
+        max_iter=max_iter,
+        b_norm_t=b_norm_t,
+    )
+
+
+def _gmres_solve_wave_self_loop_fixed_cgs2(
+    apply_a,
+    rhs: torch.Tensor,
+    *,
+    max_iter: int,
+    b_norm_t: torch.Tensor,
+) -> torch.Tensor:
+    """Fixed-m GMRES Arnoldi using batched CGS with one reorthogonalization."""
+    basis = torch.empty(
+        (max_iter + 1, *rhs.shape),
+        dtype=rhs.dtype,
+        device=rhs.device,
+    )
+    basis_2d = basis.reshape(max_iter + 1, -1)
+    basis_2d[0].copy_(rhs.reshape(-1) / b_norm_t)
+    hessenberg = torch.zeros(
+        (max_iter + 1, max_iter),
+        dtype=rhs.dtype,
+        device=rhs.device,
+    )
+    e1 = torch.zeros((max_iter + 1,), dtype=rhs.dtype, device=rhs.device)
+    e1[0] = b_norm_t
+    coeff_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
+    coeff2_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
+    work = torch.empty_like(rhs).reshape(-1)
+    work2 = torch.empty_like(rhs).reshape(-1)
+
+    for j in range(max_iter):
+        w = apply_a(basis[j]).reshape(-1)
+        q = basis_2d[: j + 1]
+        coeff = coeff_buf[: j + 1]
+        torch.mv(q, w, out=coeff)
+        hessenberg[: j + 1, j].copy_(coeff)
+        torch.addmv(w, q.t(), coeff, beta=1.0, alpha=-1.0, out=work)
+
+        coeff2 = coeff2_buf[: j + 1]
+        torch.mv(q, work, out=coeff2)
+        hessenberg[: j + 1, j].add_(coeff2)
+        torch.addmv(work, q.t(), coeff2, beta=1.0, alpha=-1.0, out=work2)
+
+        next_norm_t = torch.linalg.vector_norm(work2)
+        hessenberg[j + 1, j] = next_norm_t
+        if j + 1 < max_iter:
+            denom = torch.clamp(next_norm_t, min=torch.finfo(rhs.dtype).tiny)
+            torch.div(work2, denom, out=basis_2d[j + 1])
+
+    h_sub = hessenberg[: max_iter + 1, :max_iter]
+    rhs_sub = e1[: max_iter + 1]
+    y = torch.linalg.lstsq(h_sub, rhs_sub).solution
+    out = torch.empty_like(rhs)
+    torch.mv(basis_2d[:max_iter].t(), y, out=out.reshape(-1))
+    return out
 
 
 @triton.jit
@@ -907,6 +989,7 @@ def _wave_backward_uniform_2d(
     use_receiver_weights=True,
     self_loop_grad_targets=None,
     initial_v=None,
+    self_loop_solver="neumann",
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -1042,8 +1125,63 @@ def _wave_backward_uniform_2d(
         **launch_options,
     )
 
+    self_loop_solver = str(self_loop_solver).strip().lower()
     jt_options = {"num_warps": 2}
-    if initial_v is not None:
+    if self_loop_solver == "gmres_fixed":
+        if initial_v is not None:
+            raise ValueError("GMRES self-loop solve does not support initial_v")
+        gmres_a_buf = torch.empty_like(v_k)
+        gmres_rhs = rhs
+        gmres_active_mask = active_mask
+        if active_mask is not None:
+            gmres_active_mask = active_mask.to(device=device, dtype=torch.bool).contiguous()
+            gmres_rhs = rhs * gmres_active_mask[:, None].to(dtype=dtype)
+
+        def _apply_a(term_in: torch.Tensor) -> torch.Tensor:
+            _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
+                term_in,
+                gmres_a_buf,
+                rhs,
+                gmres_active_mask if gmres_active_mask is not None else rhs,
+                aw0,
+                aw1,
+                aw2,
+                aw3,
+                aw4,
+                sp_child1,
+                sp_child2,
+                sp_parent,
+                compact_level_ptr,
+                compact_level_parents,
+                compact_level_child1,
+                compact_level_child2,
+                pibar_corr,
+                v_k,
+                W,
+                S,
+                block_w,
+                block_s,
+                block_nodes,
+                compact_level_ptr.numel() - 1,
+                USE_ACTIVE_MASK=bool(gmres_active_mask is not None),
+                SKIP_INACTIVE_SCRATCH_ZERO=False,
+                FIXED_POINT_UPDATE=False,
+                DTYPE=_tl_float_dtype(dtype),
+                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+                OUTPUT_A=True,
+                ACCUMULATE_V=False,
+                **jt_options,
+            )
+            return gmres_a_buf
+
+        v_k.copy_(
+            _gmres_solve_wave_self_loop(
+                _apply_a,
+                gmres_rhs,
+                max_iter=int(neumann_terms),
+            )
+        )
+    elif self_loop_solver == "neumann" and initial_v is not None:
         if tuple(initial_v.shape) != scratch_shape:
             raise ValueError(
                 f"initial_v shape {tuple(initial_v.shape)} does not match "
@@ -1081,9 +1219,11 @@ def _wave_backward_uniform_2d(
                 FIXED_POINT_UPDATE=True,
                 DTYPE=_tl_float_dtype(dtype),
                 USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+                OUTPUT_A=False,
+                ACCUMULATE_V=True,
                 **jt_options,
             )
-    else:
+    elif self_loop_solver == "neumann":
         for n in range(int(neumann_terms)):
             term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
             term_out = spec_buf if n % 2 == 0 else term_buf
@@ -1117,8 +1257,12 @@ def _wave_backward_uniform_2d(
                 FIXED_POINT_UPDATE=False,
                 DTYPE=_tl_float_dtype(dtype),
                 USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+                OUTPUT_A=False,
+                ACCUMULATE_V=True,
                 **jt_options,
             )
+    else:
+        raise ValueError(f"unsupported self-loop solver {self_loop_solver!r}")
 
     if accum_self_loop_grads:
         (
@@ -1245,6 +1389,7 @@ def wave_backward_uniform_fused(
     use_receiver_weights=True,
     self_loop_grad_targets=None,
     initial_v=None,
+    self_loop_solver="neumann",
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1340,6 +1485,7 @@ def wave_backward_uniform_fused(
         use_receiver_weights=use_receiver_weights,
         self_loop_grad_targets=self_loop_grad_targets,
         initial_v=initial_v,
+        self_loop_solver=self_loop_solver,
     )
 
 

@@ -61,6 +61,7 @@ def evaluate_static_loss_grad(
             specieswise=static.specieswise,
             genewise=static.genewise,
             neumann_terms=static.solver_options.neumann_terms,
+            self_loop_solver=static.solver_options.self_loop_solver,
             bicgstab_max_iter=static.solver_options.bicgstab_max_iter,
             bicgstab_tol=static.solver_options.bicgstab_tol,
             bicgstab_breakdown_tol=static.solver_options.bicgstab_breakdown_tol,

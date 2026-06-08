@@ -107,6 +107,7 @@ def implicit_grad_loglik_vjp_wave(
     specieswise: bool = False,
     genewise: bool = False,
     neumann_terms: int = 3,
+    self_loop_solver: str = "neumann",
     bicgstab_max_iter: int = 500,
     bicgstab_tol: float = 1e-7,
     bicgstab_breakdown_tol: float = 1e-30,
@@ -117,6 +118,9 @@ def implicit_grad_loglik_vjp_wave(
     neumann_terms = int(neumann_terms)
     if neumann_terms < 0:
         raise ValueError("neumann_terms must be non-negative")
+    self_loop_solver = str(self_loop_solver).strip().lower()
+    if self_loop_solver not in ("neumann", "gmres_fixed"):
+        raise ValueError("self_loop_solver must be one of: neumann, gmres_fixed")
     adjoint_pruning_threshold = float(adjoint_pruning_threshold)
     if adjoint_pruning_threshold < 0.0:
         raise ValueError("adjoint_pruning_threshold must be non-negative")
@@ -244,6 +248,7 @@ def implicit_grad_loglik_vjp_wave(
             compact_level_child2=compact_level_child2,
             grad_receiver_log_probs=grad_receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
+            self_loop_solver=self_loop_solver,
         )
         family_rows_for_wave = family_idx[ws : ws + W]
         _scatter_accum(grad_log_pD, family_rows_for_wave, aw0)

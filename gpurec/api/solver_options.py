@@ -10,6 +10,7 @@ class SolverOptions:
     e_tol: float = 1e-8
     pi_iters: int = 6
     neumann_terms: int = 3
+    self_loop_solver: str = "neumann"
     bicgstab_max_iter: int = 500
     bicgstab_tol: float = 1e-7
     bicgstab_breakdown_tol: float = 1e-30
@@ -26,6 +27,10 @@ class SolverOptions:
             raise ValueError("pi_iters must be an even integer at least 2")
         if int(self.neumann_terms) < 0:
             raise ValueError("neumann_terms must be non-negative")
+        self_loop_solver = str(self.self_loop_solver).strip().lower()
+        if self_loop_solver not in ("neumann", "gmres_fixed"):
+            raise ValueError("self_loop_solver must be one of: neumann, gmres_fixed")
+        self.self_loop_solver = self_loop_solver
         if int(self.bicgstab_max_iter) < 1:
             raise ValueError("bicgstab_max_iter must be at least 1")
         if float(self.bicgstab_tol) <= 0.0:
