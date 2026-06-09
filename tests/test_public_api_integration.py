@@ -186,7 +186,7 @@ def test_gene_recon_model_forward_and_backward_on_tiny_example(tmp_path: Path) -
     assert torch.isfinite(model.receiver_weights.grad).all().item()
 
 
-def test_gene_recon_model_backward_accepts_gmres_fixed_solver_options(tmp_path: Path) -> None:
+def test_gene_recon_model_backward_accepts_gmres_solver_options(tmp_path: Path) -> None:
     _require_preprocess_native()
     device = _require_cuda_triton()
     species_tree, gene_trees = _write_tiny_example(tmp_path)
@@ -203,7 +203,7 @@ def test_gene_recon_model_backward_accepts_gmres_fixed_solver_options(tmp_path: 
             e_tol=1e-4,
             pi_iters=2,
             neumann_terms=1,
-            self_loop_solver="gmres_fixed",
+            self_loop_solver="gmres",
         ),
     )
 

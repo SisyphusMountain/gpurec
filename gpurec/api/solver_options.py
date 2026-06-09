@@ -28,8 +28,8 @@ class SolverOptions:
         if int(self.neumann_terms) < 0:
             raise ValueError("neumann_terms must be non-negative")
         self_loop_solver = str(self.self_loop_solver).strip().lower()
-        if self_loop_solver not in ("neumann", "gmres_fixed"):
-            raise ValueError("self_loop_solver must be one of: neumann, gmres_fixed")
+        if self_loop_solver not in ("neumann", "gmres"):
+            raise ValueError("self_loop_solver must be one of: neumann, gmres")
         self.self_loop_solver = self_loop_solver
         if int(self.bicgstab_max_iter) < 1:
             raise ValueError("bicgstab_max_iter must be at least 1")

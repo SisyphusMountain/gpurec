@@ -621,6 +621,8 @@ def _gmres_solve_wave_self_loop_fixed_cgs2(
     work = torch.empty_like(rhs).reshape(-1)
     work2 = torch.empty_like(rhs).reshape(-1)
 
+    effective_iter = max_iter
+    breakdown_tol = torch.finfo(rhs.dtype).eps * torch.clamp(b_norm_t, min=1.0)
     for j in range(max_iter):
         w = apply_a(basis[j]).reshape(-1)
         q = basis_2d[: j + 1]
@@ -636,15 +638,18 @@ def _gmres_solve_wave_self_loop_fixed_cgs2(
 
         next_norm_t = torch.linalg.vector_norm(work2)
         hessenberg[j + 1, j] = next_norm_t
+        if bool((next_norm_t <= breakdown_tol).detach().cpu()):
+            effective_iter = j + 1
+            break
         if j + 1 < max_iter:
             denom = torch.clamp(next_norm_t, min=torch.finfo(rhs.dtype).tiny)
             torch.div(work2, denom, out=basis_2d[j + 1])
 
-    h_sub = hessenberg[: max_iter + 1, :max_iter]
-    rhs_sub = e1[: max_iter + 1]
+    h_sub = hessenberg[: effective_iter + 1, :effective_iter]
+    rhs_sub = e1[: effective_iter + 1]
     y = torch.linalg.lstsq(h_sub, rhs_sub).solution
     out = torch.empty_like(rhs)
-    torch.mv(basis_2d[:max_iter].t(), y, out=out.reshape(-1))
+    torch.mv(basis_2d[:effective_iter].t(), y, out=out.reshape(-1))
     return out
 
 
@@ -1127,7 +1132,7 @@ def _wave_backward_uniform_2d(
 
     self_loop_solver = str(self_loop_solver).strip().lower()
     jt_options = {"num_warps": 2}
-    if self_loop_solver == "gmres_fixed":
+    if self_loop_solver == "gmres":
         if initial_v is not None:
             raise ValueError("GMRES self-loop solve does not support initial_v")
         gmres_a_buf = torch.empty_like(v_k)

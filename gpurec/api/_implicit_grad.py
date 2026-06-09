@@ -119,8 +119,8 @@ def implicit_grad_loglik_vjp_wave(
     if neumann_terms < 0:
         raise ValueError("neumann_terms must be non-negative")
     self_loop_solver = str(self_loop_solver).strip().lower()
-    if self_loop_solver not in ("neumann", "gmres_fixed"):
-        raise ValueError("self_loop_solver must be one of: neumann, gmres_fixed")
+    if self_loop_solver not in ("neumann", "gmres"):
+        raise ValueError("self_loop_solver must be one of: neumann, gmres")
     adjoint_pruning_threshold = float(adjoint_pruning_threshold)
     if adjoint_pruning_threshold < 0.0:
         raise ValueError("adjoint_pruning_threshold must be non-negative")

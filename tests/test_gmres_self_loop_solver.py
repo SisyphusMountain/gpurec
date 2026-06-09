@@ -5,22 +5,21 @@ from gpurec import SolverOptions
 from gpurec.core.kernels import wave_backward
 
 
-def test_solver_options_accept_gmres_fixed():
+def test_solver_options_accept_gmres_self_loop():
     options = SolverOptions(
         neumann_terms=10,
-        self_loop_solver=" GMRES_FIXED ",
+        self_loop_solver=" GMRES ",
     )
 
     options.validate()
 
-    assert options.self_loop_solver == "gmres_fixed"
+    assert options.self_loop_solver == "gmres"
 
 
 @pytest.mark.parametrize(
     "kwargs",
     [
         {"self_loop_solver": "bad"},
-        {"self_loop_solver": "gmres"},
     ],
 )
 def test_solver_options_reject_invalid_gmres_options(kwargs):
@@ -30,7 +29,7 @@ def test_solver_options_reject_invalid_gmres_options(kwargs):
         options.validate()
 
 
-def test_gmres_fixed_self_loop_matches_dense_solve_cpu():
+def test_gmres_self_loop_matches_dense_solve_cpu():
     dtype = torch.float64
     matrix = torch.tensor(
         [
