@@ -22,6 +22,50 @@ def _write_tiny_example(tmp_path: Path) -> tuple[Path, list[Path]]:
     return species_tree, [gene_tree]
 
 
+def _write_tiny_ale_example(tmp_path: Path) -> tuple[Path, list[Path]]:
+    species_tree = tmp_path / "species.nwk"
+    gene_tree = tmp_path / "family_0.ale"
+    species_tree.write_text("((A:1,B:1)AB:1,C:1)Root:1;\n", encoding="utf-8")
+    gene_tree.write_text(
+        """#constructor_string
+A_1,B_1,C_1
+#observations
+120
+#Bip_counts
+4 120
+5 120
+6 120
+#Bip_bls
+1 1
+2 1
+3 1
+4 1
+5 1
+6 1
+#Dip_counts
+4 2 3 120
+5 1 3 120
+6 1 2 120
+#last_leafset_id
+6
+#leaf-id
+A_1 1
+B_1 2
+C_1 3
+#set-id
+1 : 3
+2 : 1
+3 : 2
+4 : 1 2
+5 : 2 3
+6 : 1 3
+#END
+""",
+        encoding="utf-8",
+    )
+    return species_tree, [gene_tree]
+
+
 def _require_preprocess_native() -> None:
     try:
         batching._load_native_module()
@@ -85,6 +129,38 @@ def test_preprocess_dataset_on_tiny_example(tmp_path: Path) -> None:
     assert family["split_leftrights_sorted"] == [1, 2]
     assert raw["batches"] == [[0]]
     assert len(raw["batch_wave_layouts"]) == 1
+
+
+def test_preprocess_dataset_on_tiny_ale_example(tmp_path: Path) -> None:
+    _require_preprocess_native()
+    species_tree, gene_trees = _write_tiny_ale_example(tmp_path)
+
+    raw = preprocess_dataset(
+        species_tree,
+        gene_trees,
+        family_chunk_size=1,
+        clade_budget=None,
+        batch_packing="sequential",
+        max_wave_size=8,
+    )
+
+    family = raw["families"][0]
+    assert family["C"] == 7
+    assert family["N_splits"] == 6
+    assert family["root_clade_id"] == 0
+    assert family["leaf_row_index"] == [1, 2, 3]
+    assert family["leaf_col_index"] == [3, 0, 1]
+    assert family["split_counts"][0] == 3
+
+    root_logp = [
+        logp
+        for parent, logp in zip(
+            family["split_parents_sorted"], family["log_split_probs_sorted"]
+        )
+        if parent == 0
+    ]
+    assert len(root_logp) == 3
+    assert root_logp == pytest.approx([torch.log2(torch.tensor(1 / 3)).item()] * 3)
 
 
 def test_rust_plan_and_python_wave_layout_match_on_tiny_example(tmp_path: Path) -> None:

@@ -210,6 +210,25 @@ struct SplitKey {
     right: usize,
 }
 
+#[derive(Clone, Debug)]
+struct AleDipCount {
+    parent: usize,
+    left: usize,
+    right: usize,
+    count: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AleParsed {
+    constructor_string: Option<String>,
+    observations: Option<f64>,
+    bip_counts: HashMap<usize, f64>,
+    dip_counts: Vec<AleDipCount>,
+    last_leafset_id: Option<usize>,
+    leaf_ids: BTreeMap<usize, String>,
+    set_ids: BTreeMap<usize, Vec<usize>>,
+}
+
 struct GeneNewickParser<'a> {
     text: &'a str,
     pos: usize,
@@ -313,8 +332,7 @@ impl<'a> GeneNewickParser<'a> {
     }
 }
 
-fn parse_gene_newick_file_records(path: &Path) -> Result<Vec<GeneTree>, String> {
-    let text = fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+fn parse_gene_newick_text_records(path: &Path, text: &str) -> Result<Vec<GeneTree>, String> {
     let mut trees = Vec::new();
     for raw in text.split(';') {
         let trimmed = raw.trim();
@@ -728,7 +746,13 @@ fn batch_wave_layout(
 }
 
 fn amalgamate_clades_and_splits(gene_path: &Path) -> Result<(CladeData, Vec<String>), String> {
-    let trees = parse_gene_newick_file_records(gene_path)?;
+    let text =
+        fs::read_to_string(gene_path).map_err(|err| format!("{}: {err}", gene_path.display()))?;
+    if looks_like_ale_file(&text) {
+        return parse_ale_clades_and_splits(gene_path, &text);
+    }
+
+    let trees = parse_gene_newick_text_records(gene_path, &text)?;
     let mut all_leaves = BTreeSet::new();
     for tree in &trees {
         collect_leaf_names(tree, &mut all_leaves);
@@ -886,6 +910,550 @@ fn process_gene_tree(
     Ok(())
 }
 
+fn looks_like_ale_file(text: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .is_some_and(|line| line == "#constructor_string")
+}
+
+fn parse_ale_clades_and_splits(
+    path: &Path,
+    text: &str,
+) -> Result<(CladeData, Vec<String>), String> {
+    let ale = parse_ale_sections(path, text)?;
+    build_ale_clade_data(path, ale)
+}
+
+fn parse_ale_sections(path: &Path, text: &str) -> Result<AleParsed, String> {
+    let mut ale = AleParsed::default();
+    let mut section = String::new();
+
+    for (line_idx, raw_line) in text.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('#') {
+            section.clear();
+            section.push_str(line);
+            if section == "#END" {
+                break;
+            }
+            continue;
+        }
+
+        match section.as_str() {
+            "#constructor_string" => {
+                if ale.constructor_string.is_some() {
+                    return Err(format!(
+                        "{}:{line_no}: duplicate #constructor_string value",
+                        path.display()
+                    ));
+                }
+                ale.constructor_string = Some(line.to_string());
+            }
+            "#observations" => {
+                if ale.observations.is_some() {
+                    return Err(format!(
+                        "{}:{line_no}: duplicate #observations value",
+                        path.display()
+                    ));
+                }
+                let observations = parse_ale_f64(path, line_no, line, "observations")?;
+                if !observations.is_finite() || observations <= 0.0 {
+                    return Err(format!(
+                        "{}:{line_no}: observations must be a positive finite number",
+                        path.display()
+                    ));
+                }
+                ale.observations = Some(observations);
+            }
+            "#Bip_counts" => {
+                let fields = split_ale_fields(path, line_no, line, 2, "Bip_counts")?;
+                let id = parse_ale_usize(path, line_no, fields[0], "bip clade id")?;
+                let count = parse_ale_f64(path, line_no, fields[1], "bip count")?;
+                if id == 0 {
+                    return Err(format!(
+                        "{}:{line_no}: ALE clade id 0 is invalid",
+                        path.display()
+                    ));
+                }
+                if !count.is_finite() || count < 0.0 {
+                    return Err(format!(
+                        "{}:{line_no}: bip count must be non-negative and finite",
+                        path.display()
+                    ));
+                }
+                ale.bip_counts.insert(id, count);
+            }
+            "#Bip_bls" => {}
+            "#Dip_counts" => {
+                let fields = split_ale_fields(path, line_no, line, 4, "Dip_counts")?;
+                let parent = parse_ale_usize(path, line_no, fields[0], "dip parent id")?;
+                let mut left = parse_ale_usize(path, line_no, fields[1], "dip left id")?;
+                let mut right = parse_ale_usize(path, line_no, fields[2], "dip right id")?;
+                let count = parse_ale_f64(path, line_no, fields[3], "dip count")?;
+                if parent == 0 || left == 0 || right == 0 {
+                    return Err(format!(
+                        "{}:{line_no}: ALE clade id 0 is invalid",
+                        path.display()
+                    ));
+                }
+                if !count.is_finite() || count < 0.0 {
+                    return Err(format!(
+                        "{}:{line_no}: dip count must be non-negative and finite",
+                        path.display()
+                    ));
+                }
+                if right < left {
+                    std::mem::swap(&mut left, &mut right);
+                }
+                ale.dip_counts.push(AleDipCount {
+                    parent,
+                    left,
+                    right,
+                    count,
+                });
+            }
+            "#last_leafset_id" => {
+                if ale.last_leafset_id.is_some() {
+                    return Err(format!(
+                        "{}:{line_no}: duplicate #last_leafset_id value",
+                        path.display()
+                    ));
+                }
+                ale.last_leafset_id =
+                    Some(parse_ale_usize(path, line_no, line, "last_leafset_id")?);
+            }
+            "#leaf-id" => {
+                let fields = split_ale_fields(path, line_no, line, 2, "leaf-id")?;
+                let id = parse_ale_usize(path, line_no, fields[1], "leaf id")?;
+                if id == 0 {
+                    return Err(format!(
+                        "{}:{line_no}: ALE leaf id 0 is invalid",
+                        path.display()
+                    ));
+                }
+                if ale.leaf_ids.insert(id, fields[0].to_string()).is_some() {
+                    return Err(format!(
+                        "{}:{line_no}: duplicate ALE leaf id {id}",
+                        path.display()
+                    ));
+                }
+            }
+            "#set-id" => {
+                let (raw_clade_id, raw_leaf_ids) = line.split_once(':').ok_or_else(|| {
+                    format!("{}:{line_no}: set-id line is missing ':'", path.display())
+                })?;
+                let clade_id = parse_ale_usize(path, line_no, raw_clade_id.trim(), "set clade id")?;
+                if clade_id == 0 {
+                    return Err(format!(
+                        "{}:{line_no}: ALE clade id 0 is invalid",
+                        path.display()
+                    ));
+                }
+                let mut leaf_ids = Vec::new();
+                for token in raw_leaf_ids.split_whitespace() {
+                    leaf_ids.push(parse_ale_usize(path, line_no, token, "set leaf id")?);
+                }
+                if leaf_ids.is_empty() {
+                    return Err(format!(
+                        "{}:{line_no}: set-id clade {clade_id} has no leaves",
+                        path.display()
+                    ));
+                }
+                if ale.set_ids.insert(clade_id, leaf_ids).is_some() {
+                    return Err(format!(
+                        "{}:{line_no}: duplicate ALE set-id clade {clade_id}",
+                        path.display()
+                    ));
+                }
+            }
+            "" => {
+                return Err(format!(
+                    "{}:{line_no}: data encountered before an ALE section",
+                    path.display()
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if ale.constructor_string.is_none() {
+        return Err(format!("{}: missing #constructor_string", path.display()));
+    }
+    if ale.observations.is_none() {
+        return Err(format!("{}: missing #observations", path.display()));
+    }
+    if ale.leaf_ids.is_empty() {
+        return Err(format!("{}: missing #leaf-id entries", path.display()));
+    }
+    if ale.set_ids.is_empty() {
+        return Err(format!("{}: missing #set-id entries", path.display()));
+    }
+    Ok(ale)
+}
+
+fn build_ale_clade_data(path: &Path, ale: AleParsed) -> Result<(CladeData, Vec<String>), String> {
+    let observations = ale.observations.expect("validated observations");
+    let max_leaf_id = *ale
+        .leaf_ids
+        .keys()
+        .max()
+        .ok_or_else(|| format!("{}: missing #leaf-id entries", path.display()))?;
+    if max_leaf_id != ale.leaf_ids.len() {
+        return Err(format!(
+            "{}: ALE leaf ids must be contiguous from 1 to N; found {} ids with max id {max_leaf_id}",
+            path.display(),
+            ale.leaf_ids.len()
+        ));
+    }
+    let leaf_names = (1..=max_leaf_id)
+        .map(|leaf_id| {
+            ale.leaf_ids
+                .get(&leaf_id)
+                .cloned()
+                .ok_or_else(|| format!("{}: missing ALE leaf id {leaf_id}", path.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let num_words = bitvec_num_words(leaf_names.len());
+    let root_bits = full_leaf_bits(leaf_names.len(), num_words);
+
+    let mut result = CladeData {
+        clades: CladeRegistry::new(),
+        splits: Vec::new(),
+        root_clade_id: 0,
+    };
+    result.root_clade_id = result.clades.get_or_create(root_bits.clone());
+
+    let max_seen_clade_id = ale
+        .set_ids
+        .keys()
+        .chain(ale.bip_counts.keys())
+        .chain(
+            ale.dip_counts
+                .iter()
+                .flat_map(|dip| [&dip.parent, &dip.left, &dip.right]),
+        )
+        .copied()
+        .max()
+        .unwrap_or(0);
+    if let Some(last_leafset_id) = ale.last_leafset_id {
+        if last_leafset_id < max_seen_clade_id {
+            return Err(format!(
+                "{}: #last_leafset_id {last_leafset_id} is smaller than referenced clade id {max_seen_clade_id}",
+                path.display()
+            ));
+        }
+    }
+
+    let mut ale_to_clade_id = HashMap::new();
+    for (ale_id, leaf_ids) in &ale.set_ids {
+        let bits = ale_leaf_set_bits(path, *ale_id, leaf_ids, leaf_names.len(), num_words)?;
+        let clade_id = result.clades.get_or_create(bits);
+        ale_to_clade_id.insert(*ale_id, clade_id);
+    }
+
+    for leaf_idx in 0..leaf_names.len() {
+        let mut bits = vec![0; num_words];
+        set_bit(&mut bits, leaf_idx);
+        result.clades.get_or_create(bits);
+    }
+
+    let mut split_index_map = HashMap::new();
+    for dip in &ale.dip_counts {
+        if dip.count == 0.0 {
+            continue;
+        }
+        let parent = *ale_to_clade_id.get(&dip.parent).ok_or_else(|| {
+            format!(
+                "{}: Dip_counts references unknown parent clade id {}",
+                path.display(),
+                dip.parent
+            )
+        })?;
+        let left = *ale_to_clade_id.get(&dip.left).ok_or_else(|| {
+            format!(
+                "{}: Dip_counts references unknown left clade id {}",
+                path.display(),
+                dip.left
+            )
+        })?;
+        let right = *ale_to_clade_id.get(&dip.right).ok_or_else(|| {
+            format!(
+                "{}: Dip_counts references unknown right clade id {}",
+                path.display(),
+                dip.right
+            )
+        })?;
+        let parent_size = result.clades.clades[parent].size;
+        let denominator = ale_bip_denominator(
+            path,
+            dip.parent,
+            parent_size,
+            leaf_names.len(),
+            observations,
+            &ale.bip_counts,
+        )?;
+        add_positive_ale_split(
+            path,
+            &mut result,
+            &mut split_index_map,
+            CladeSplit {
+                parent,
+                left,
+                right,
+                weight: dip.count / denominator,
+            },
+        )?;
+    }
+
+    add_ale_synthetic_root_splits(
+        path,
+        &ale,
+        observations,
+        &root_bits,
+        &ale_to_clade_id,
+        &mut result,
+        &mut split_index_map,
+    )?;
+    validate_positive_split_weights(path, &result)?;
+    Ok((result, leaf_names))
+}
+
+fn add_ale_synthetic_root_splits(
+    path: &Path,
+    ale: &AleParsed,
+    observations: f64,
+    root_bits: &[u64],
+    ale_to_clade_id: &HashMap<usize, usize>,
+    result: &mut CladeData,
+    split_index_map: &mut HashMap<SplitKey, usize>,
+) -> Result<(), String> {
+    let num_leaves = result.clades.clades[result.root_clade_id].size;
+    if num_leaves < 2 {
+        return Ok(());
+    }
+    let denominator = observations * 2.0 * (2 * num_leaves - 3) as f64;
+    if !denominator.is_finite() || denominator <= 0.0 {
+        return Err(format!(
+            "{}: invalid synthetic root denominator {denominator}",
+            path.display()
+        ));
+    }
+
+    for ale_id in ale.set_ids.keys() {
+        let clade_id = *ale_to_clade_id.get(ale_id).ok_or_else(|| {
+            format!(
+                "{}: missing clade mapping for ALE id {ale_id}",
+                path.display()
+            )
+        })?;
+        if clade_id == result.root_clade_id {
+            continue;
+        }
+        let clade = &result.clades.clades[clade_id];
+        if clade.size == 0 || clade.size == num_leaves {
+            continue;
+        }
+        let count = ale_bip_count_for_root(
+            *ale_id,
+            clade.size,
+            num_leaves,
+            observations,
+            &ale.bip_counts,
+        );
+        if count == 0.0 {
+            continue;
+        }
+        if !count.is_finite() || count < 0.0 {
+            return Err(format!(
+                "{}: invalid bip count {count} for ALE clade id {ale_id}",
+                path.display()
+            ));
+        }
+        let complement_bits = bit_difference(root_bits, &clade.bits);
+        let complement_id = *result
+            .clades
+            .ids_by_bits
+            .get(&complement_bits)
+            .ok_or_else(|| {
+                format!(
+                    "{}: missing complement clade for ALE clade id {ale_id}",
+                    path.display()
+                )
+            })?;
+        add_positive_ale_split(
+            path,
+            result,
+            split_index_map,
+            CladeSplit {
+                parent: result.root_clade_id,
+                left: clade_id,
+                right: complement_id,
+                weight: count / denominator,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn add_positive_ale_split(
+    path: &Path,
+    result: &mut CladeData,
+    split_index_map: &mut HashMap<SplitKey, usize>,
+    split: CladeSplit,
+) -> Result<(), String> {
+    if !split.weight.is_finite() || split.weight <= 0.0 {
+        return Err(format!(
+            "{}: ALE split {:?} has non-positive or non-finite weight {}",
+            path.display(),
+            split.canonical_key(),
+            split.weight
+        ));
+    }
+    add_or_accumulate_split(result, split_index_map, split);
+    Ok(())
+}
+
+fn validate_positive_split_weights(path: &Path, data: &CladeData) -> Result<(), String> {
+    let mut parent_sums = vec![0.0; data.clades.clades.len()];
+    for split in &data.splits {
+        if split.parent >= data.clades.clades.len()
+            || split.left >= data.clades.clades.len()
+            || split.right >= data.clades.clades.len()
+        {
+            return Err(format!(
+                "{}: ALE split references an invalid clade id",
+                path.display()
+            ));
+        }
+        if !split.weight.is_finite() || split.weight <= 0.0 {
+            return Err(format!(
+                "{}: ALE split has non-positive or non-finite weight {}",
+                path.display(),
+                split.weight
+            ));
+        }
+        parent_sums[split.parent] += split.weight;
+    }
+    for sum in parent_sums.into_iter().filter(|sum| *sum != 0.0) {
+        if !sum.is_finite() || sum <= 0.0 {
+            return Err(format!(
+                "{}: ALE split weights produced an invalid parent sum",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ale_bip_denominator(
+    path: &Path,
+    ale_id: usize,
+    clade_size: usize,
+    num_leaves: usize,
+    observations: f64,
+    bip_counts: &HashMap<usize, f64>,
+) -> Result<f64, String> {
+    let denominator = if clade_size == 1 || clade_size + 1 == num_leaves {
+        observations
+    } else {
+        *bip_counts.get(&ale_id).ok_or_else(|| {
+            format!(
+                "{}: missing Bip_counts denominator for ALE clade id {ale_id}",
+                path.display()
+            )
+        })?
+    };
+    if !denominator.is_finite() || denominator <= 0.0 {
+        return Err(format!(
+            "{}: invalid Bip_counts denominator {denominator} for ALE clade id {ale_id}",
+            path.display()
+        ));
+    }
+    Ok(denominator)
+}
+
+fn ale_bip_count_for_root(
+    ale_id: usize,
+    clade_size: usize,
+    num_leaves: usize,
+    observations: f64,
+    bip_counts: &HashMap<usize, f64>,
+) -> f64 {
+    if clade_size == 1 || clade_size + 1 == num_leaves {
+        observations
+    } else {
+        bip_counts.get(&ale_id).copied().unwrap_or(0.0)
+    }
+}
+
+fn ale_leaf_set_bits(
+    path: &Path,
+    ale_clade_id: usize,
+    leaf_ids: &[usize],
+    num_leaves: usize,
+    num_words: usize,
+) -> Result<Vec<u64>, String> {
+    let mut bits = vec![0; num_words];
+    for leaf_id in leaf_ids {
+        if *leaf_id == 0 || *leaf_id > num_leaves {
+            return Err(format!(
+                "{}: set-id clade {ale_clade_id} references invalid leaf id {leaf_id}",
+                path.display()
+            ));
+        }
+        let index = leaf_id - 1;
+        if bit_is_set(&bits, index) {
+            return Err(format!(
+                "{}: set-id clade {ale_clade_id} repeats leaf id {leaf_id}",
+                path.display()
+            ));
+        }
+        set_bit(&mut bits, index);
+    }
+    Ok(bits)
+}
+
+fn split_ale_fields<'a>(
+    path: &Path,
+    line_no: usize,
+    line: &'a str,
+    expected: usize,
+    section: &str,
+) -> Result<Vec<&'a str>, String> {
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != expected {
+        return Err(format!(
+            "{}:{line_no}: {section} expected {expected} fields, found {}",
+            path.display(),
+            fields.len()
+        ));
+    }
+    Ok(fields)
+}
+
+fn parse_ale_usize(path: &Path, line_no: usize, token: &str, field: &str) -> Result<usize, String> {
+    token.parse::<usize>().map_err(|err| {
+        format!(
+            "{}:{line_no}: could not parse {field} {token:?} as integer: {err}",
+            path.display()
+        )
+    })
+}
+
+fn parse_ale_f64(path: &Path, line_no: usize, token: &str, field: &str) -> Result<f64, String> {
+    token.parse::<f64>().map_err(|err| {
+        format!(
+            "{}:{line_no}: could not parse {field} {token:?} as number: {err}",
+            path.display()
+        )
+    })
+}
+
 fn add_or_accumulate_split(
     data: &mut CladeData,
     split_index_map: &mut HashMap<SplitKey, usize>,
@@ -1008,6 +1576,18 @@ fn set_bit(bits: &mut [u64], index: usize) {
     bits[index >> 6] |= 1u64 << (index & 63);
 }
 
+fn bit_is_set(bits: &[u64], index: usize) -> bool {
+    bits[index >> 6] & (1u64 << (index & 63)) != 0
+}
+
+fn full_leaf_bits(num_leaves: usize, num_words: usize) -> Vec<u64> {
+    let mut bits = vec![0; num_words];
+    for idx in 0..num_leaves {
+        set_bit(&mut bits, idx);
+    }
+    bits
+}
+
 fn first_set_bit(bits: &[u64]) -> Option<usize> {
     bits.iter()
         .enumerate()
@@ -1029,4 +1609,96 @@ fn is_empty(bits: &[u64]) -> bool {
 
 fn bit_count(bits: &[u64]) -> usize {
     bits.iter().map(|word| word.count_ones() as usize).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PERMUTED_THREE_LEAF_ALE: &str = r#"#constructor_string
+A_1,B_1,C_1
+#observations
+120
+#Bip_counts
+4 120
+5 120
+6 120
+#Bip_bls
+1 1
+2 1
+3 1
+4 1
+5 1
+6 1
+#Dip_counts
+4 2 3 120
+5 1 3 120
+6 1 2 120
+#last_leafset_id
+6
+#leaf-id
+A_1 1
+B_1 2
+C_1 3
+#set-id
+1 : 3
+2 : 1
+3 : 2
+4 : 1 2
+5 : 2 3
+6 : 1 3
+#END
+"#;
+
+    fn assert_close(left: f64, right: f64) {
+        assert!(
+            (left - right).abs() < 1e-12,
+            "expected {left} to be close to {right}"
+        );
+    }
+
+    #[test]
+    fn parses_ale_set_ids_independently_from_leaf_ids() {
+        let (data, leaf_names) =
+            parse_ale_clades_and_splits(Path::new("permuted.ale"), PERMUTED_THREE_LEAF_ALE)
+                .unwrap();
+
+        assert_eq!(leaf_names, vec!["A_1", "B_1", "C_1"]);
+        assert_eq!(data.root_clade_id, 0);
+        assert_eq!(data.clades.clades.len(), 7);
+        assert_eq!(first_set_bit(&data.clades.clades[1].bits), Some(2));
+        assert_eq!(first_set_bit(&data.clades.clades[2].bits), Some(0));
+        assert_eq!(first_set_bit(&data.clades.clades[3].bits), Some(1));
+    }
+
+    #[test]
+    fn parses_ale_ccps_with_synthetic_root_splits() {
+        let (data, _) =
+            parse_ale_clades_and_splits(Path::new("permuted.ale"), PERMUTED_THREE_LEAF_ALE)
+                .unwrap();
+        let ccp = build_ccp_arrays(&data);
+
+        assert_eq!(data.splits.len(), 6);
+        assert_eq!(ccp.split_counts[0], 3);
+        assert_eq!(ccp.split_counts.iter().sum::<i64>(), 6);
+
+        let expected_root_logp = (1.0_f64 / 3.0).log2();
+        let mut root_splits = 0;
+        let mut deterministic_splits = 0;
+        for (parent, logp) in ccp
+            .split_parents_sorted
+            .iter()
+            .zip(ccp.log_split_probs_sorted.iter())
+        {
+            if *parent == 0 {
+                root_splits += 1;
+                assert_close(*logp, expected_root_logp);
+            } else {
+                deterministic_splits += 1;
+                assert_close(*logp, 0.0);
+            }
+        }
+        assert_eq!(root_splits, 3);
+        assert_eq!(deterministic_splits, 3);
+    }
 }
