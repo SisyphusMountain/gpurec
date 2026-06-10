@@ -260,13 +260,14 @@ def _leaf_initial_wave_step_kernel(
     sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
     sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
-    pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=DTYPE), NEG_LARGE)
-    pibar_w = tl.where(~descendant, max_transfer + leaf_receiver_logp, NEG_LARGE)
+    leaf_obs_logp = tl.load(leaf_logp_ptr + family * S + leaf_species).to(DTYPE)
+    pi_w = tl.where(leaf_hit, leaf_obs_logp, NEG_LARGE)
+    pibar_w = tl.where(~descendant, max_transfer + leaf_receiver_logp + leaf_obs_logp, NEG_LARGE)
 
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
     c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
-    pi_s1 = tl.where(mask & (c1 == leaf_species), 0.0, NEG_LARGE)
-    pi_s2 = tl.where(mask & (c2 == leaf_species), 0.0, NEG_LARGE)
+    pi_s1 = tl.where(mask & (c1 == leaf_species), leaf_obs_logp, NEG_LARGE)
+    pi_s2 = tl.where(mask & (c2 == leaf_species), leaf_obs_logp, NEG_LARGE)
 
     t0 = dl_const + pi_w
     t1 = pi_w + ebar
