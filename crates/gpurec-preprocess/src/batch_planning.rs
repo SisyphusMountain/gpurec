@@ -20,6 +20,8 @@ pub struct BatchPlanRequest {
     #[serde(default)]
     pub small_family_max_leaves: Option<i64>,
     #[serde(default)]
+    pub family_group_assignments: Option<Vec<i64>>,
+    #[serde(default)]
     pub nonleaf_counts: Option<Vec<i64>>,
     #[serde(default)]
     pub schedule_depths: Option<Vec<i64>>,
@@ -54,6 +56,7 @@ pub fn plan_family_batches_request(
         request.schedule_depths.as_deref(),
         request.max_wave_size,
         request.small_family_max_leaves,
+        request.family_group_assignments.as_deref(),
     )
 }
 
@@ -70,6 +73,7 @@ pub fn plan_family_batches(
     nonleaf_counts: Option<&[i64]>,
     schedule_depths: Option<&[i64]>,
     max_wave_size: Option<i64>,
+    family_group_assignments: Option<&[i64]>,
 ) -> Result<Vec<FamilyBatchPlanOutput>, PreprocessError> {
     plan_family_batches_impl(
         clade_counts,
@@ -84,6 +88,7 @@ pub fn plan_family_batches(
         schedule_depths,
         max_wave_size,
         None,
+        family_group_assignments,
     )
 }
 
@@ -101,6 +106,7 @@ fn plan_family_batches_impl(
     schedule_depths: Option<&[i64]>,
     max_wave_size: Option<i64>,
     small_family_max_leaves: Option<i64>,
+    family_group_assignments: Option<&[i64]>,
 ) -> Result<Vec<FamilyBatchPlanOutput>, PreprocessError> {
     let selected = selected_indices(indices, total, clade_counts.len())?;
     validate_selected_indices(&selected, clade_counts.len())?;
@@ -177,8 +183,24 @@ fn plan_family_batches_impl(
         )?),
         None => None,
     };
-    let selected_groups =
-        selected_groups_by_leaf_count(&selected, small_family_leaf_counts, small_family_max_leaves);
+    // An explicit per-family group assignment takes precedence over leaf-count banding:
+    // each distinct label becomes its own group, packed independently below.
+    let selected_groups = match family_group_assignments {
+        Some(assignments) => {
+            require_indexed_stats(
+                "family_group_assignments",
+                "family_group_assignments",
+                Some(assignments),
+                &selected,
+            )?;
+            selected_groups_by_assignment(&selected, assignments)
+        }
+        None => selected_groups_by_leaf_count(
+            &selected,
+            small_family_leaf_counts,
+            small_family_max_leaves,
+        ),
+    };
 
     let mut plans = Vec::new();
     for group in selected_groups {
@@ -312,6 +334,17 @@ fn selected_groups_by_leaf_count(
         .into_iter()
         .filter(|group| !group.is_empty())
         .collect()
+}
+
+fn selected_groups_by_assignment(selected: &[usize], assignments: &[i64]) -> Vec<Vec<usize>> {
+    // Bucket selected families by their integer group label. BTreeMap keeps a deterministic
+    // (ascending-label) group order; within a group, family order follows `selected`.
+    let mut groups: std::collections::BTreeMap<i64, Vec<usize>> = std::collections::BTreeMap::new();
+    for idx in selected {
+        let label = assignments.get(*idx).copied().unwrap_or(0);
+        groups.entry(label).or_default().push(*idx);
+    }
+    groups.into_values().collect()
 }
 
 fn invalid<T>(message: impl Into<String>) -> Result<T, PreprocessError> {
@@ -597,6 +630,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(plan_indices(&plans), vec![vec![0, 4], vec![1, 3], vec![2]]);
@@ -616,6 +650,7 @@ mod tests {
             Some(&[5, 5, 5, 5, 5]),
             Some(&[10, 9, 2, 1, 1]),
             Some(8),
+            None,
         )
         .unwrap();
         assert_eq!(plan_indices(&plans), vec![vec![0, 1], vec![2, 3], vec![4]]);
@@ -637,6 +672,7 @@ mod tests {
             split_counts: None,
             leaf_counts: Some(vec![9, 4, 7, 2, 6, 4]),
             small_family_max_leaves: Some(4),
+            family_group_assignments: None,
             nonleaf_counts: None,
             schedule_depths: None,
             max_wave_size: None,
@@ -664,6 +700,7 @@ mod tests {
             split_counts: None,
             leaf_counts: Some(vec![4, 5, 8, 9, 16, 33]),
             small_family_max_leaves: Some(4),
+            family_group_assignments: None,
             nonleaf_counts: None,
             schedule_depths: None,
             max_wave_size: None,
@@ -675,5 +712,57 @@ mod tests {
             plan_indices(&plans),
             vec![vec![0], vec![1, 2], vec![3, 4], vec![5]]
         );
+    }
+
+    #[test]
+    fn request_groups_families_by_explicit_assignment() {
+        let request = BatchPlanRequest {
+            clade_counts: vec![2, 2, 2, 2, 2],
+            family_chunk_size: 0,
+            clade_budget: Some(12),
+            batch_packing: "clade_first_fit".to_string(),
+            indices: None,
+            total: Some(5),
+            split_counts: None,
+            leaf_counts: None,
+            small_family_max_leaves: None,
+            family_group_assignments: Some(vec![0, 1, 0, 1, 2]),
+            nonleaf_counts: None,
+            schedule_depths: None,
+            max_wave_size: None,
+        };
+
+        let plans = plan_family_batches_request(&request).unwrap();
+
+        // One group per distinct label, ascending: {0,2}, {1,3}, {4}; each family in a
+        // batch shares its label.
+        let label = [0i64, 1, 0, 1, 2];
+        for plan in &plans {
+            let first = label[plan.indices[0] as usize];
+            assert!(plan.indices.iter().all(|i| label[*i as usize] == first));
+        }
+        assert_eq!(plan_indices(&plans), vec![vec![0, 2], vec![1, 3], vec![4]]);
+    }
+
+    #[test]
+    fn assignment_takes_precedence_over_leaf_bands() {
+        let request = BatchPlanRequest {
+            clade_counts: vec![2, 2, 2, 2],
+            family_chunk_size: 0,
+            clade_budget: Some(12),
+            batch_packing: "clade_first_fit".to_string(),
+            indices: None,
+            total: Some(4),
+            split_counts: None,
+            leaf_counts: Some(vec![1, 1, 1, 1]),
+            small_family_max_leaves: Some(2),
+            family_group_assignments: Some(vec![1, 0, 1, 0]),
+            nonleaf_counts: None,
+            schedule_depths: None,
+            max_wave_size: None,
+        };
+
+        let plans = plan_family_batches_request(&request).unwrap();
+        assert_eq!(plan_indices(&plans), vec![vec![1, 3], vec![0, 2]]);
     }
 }

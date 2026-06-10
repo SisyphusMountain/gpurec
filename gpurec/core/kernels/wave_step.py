@@ -107,6 +107,7 @@ def _wave_step_kernel(
     Pi_new_ptr,
     Pibar_out_ptr,
     pibar_row_max_ptr,
+    pi_residual_out_ptr,
     S: tl.constexpr,
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
@@ -114,6 +115,7 @@ def _wave_step_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_FINAL_PIBAR: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
@@ -129,6 +131,9 @@ def _wave_step_kernel(
     row_max, row_sum = _row_logsumexp(
         Pi_ptr, receiver_log_probs_ptr, pi_base, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE
     )
+
+    if COMPUTE_DIFF:
+        row_max_diff = tl.zeros([1], dtype=tl.float32)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -186,6 +191,16 @@ def _wave_step_kernel(
 
         result = tl.log2(s) + m
         tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
+
+        if COMPUTE_DIFF:
+            # per-row max |Pi_new - Pi_old| over finite lanes = this iteration's update size
+            finite = mask & (result != NEG_LARGE) & (pi_w != NEG_LARGE)
+            diff = tl.where(finite, tl.abs(result - pi_w), tl.zeros_like(result))
+            tile_max = tl.max(diff, axis=0).to(tl.float32)
+            row_max_diff = tl.maximum(row_max_diff, tile_max)
+
+    if COMPUTE_DIFF:
+        tl.store(pi_residual_out_ptr + ws + w, tl.max(row_max_diff, axis=0))
 
     if STORE_FINAL_PIBAR:
         final_row_max, final_row_sum = _row_logsumexp(
@@ -357,10 +372,12 @@ def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
                      store_final_pibar=False,
                      has_leaf_term=True,
                      input_ws=None,
-                     use_receiver_weights=True):
+                     use_receiver_weights=True,
+                     pi_residual_out=None):
     has_splits = DTS_reduced is not None
     block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
     use_leaf_index = bool(has_leaf_term)
+    compute_diff = pi_residual_out is not None
 
     grid = (W,)
     Pi_out_rows = Pi_out.narrow(0, int(ws), int(W))
@@ -378,6 +395,7 @@ def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
         DTS_reduced if has_splits else Pi_in,
         has_splits,
         Pi_out_rows, Pibar, pibar_row_max,
+        pi_residual_out if compute_diff else pibar_row_max,
         S,
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
@@ -385,6 +403,7 @@ def compute_wave_step(Pi_in, Pi_out, Pibar, ws, W, S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=use_leaf_index,
         STORE_FINAL_PIBAR=bool(store_final_pibar),
+        COMPUTE_DIFF=compute_diff,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=8,

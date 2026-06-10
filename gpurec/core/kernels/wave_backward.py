@@ -995,6 +995,7 @@ def _wave_backward_uniform_2d(
     self_loop_grad_targets=None,
     initial_v=None,
     self_loop_solver="neumann",
+    return_last_increment=False,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -1269,6 +1270,27 @@ def _wave_backward_uniform_2d(
     else:
         raise ValueError(f"unsupported self-loop solver {self_loop_solver!r}")
 
+    # Per-row relative size of the last Neumann increment = validated stiffness predictor.
+    # Computed before the param-store kernel runs (which may reuse scratch buffers).
+    last_increment_relres = None
+    if (
+        return_last_increment
+        and self_loop_solver == "neumann"
+        and initial_v is None
+        and int(neumann_terms) > 0
+    ):
+        last_buf = spec_buf if (int(neumann_terms) - 1) % 2 == 0 else term_buf
+        eps = torch.finfo(torch.float32).tiny
+        num = last_buf.float().norm(dim=1)
+        den = v_k.float().norm(dim=1).clamp_min(eps)
+        relres = num / den
+        # Inactive (pruned) rows hold uninitialized scratch — their adjoint is negligible,
+        # so treat them as converged (0) rather than letting garbage pollute the per-family max.
+        if active_mask is not None:
+            row_active = active_mask.reshape(active_mask.shape[0], -1).ne(0).any(dim=1)
+            relres = torch.where(row_active, relres, torch.zeros_like(relres))
+        last_increment_relres = relres
+
     if accum_self_loop_grads:
         (
             grad_log_pD_ptr,
@@ -1365,8 +1387,12 @@ def _wave_backward_uniform_2d(
     )
 
     if accum_self_loop_grads:
-        return v_k, None, None, None, None, None, None
-    return v_k, aw0, aw1, aw2, aw345, aw3, aw4
+        base = (v_k, None, None, None, None, None, None)
+    else:
+        base = (v_k, aw0, aw1, aw2, aw345, aw3, aw4)
+    if return_last_increment:
+        return (*base, last_increment_relres)
+    return base
 
 
 def wave_backward_uniform_fused(
@@ -1395,6 +1421,7 @@ def wave_backward_uniform_fused(
     self_loop_grad_targets=None,
     initial_v=None,
     self_loop_solver="neumann",
+    return_last_increment=False,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1491,6 +1518,7 @@ def wave_backward_uniform_fused(
         self_loop_grad_targets=self_loop_grad_targets,
         initial_v=initial_v,
         self_loop_solver=self_loop_solver,
+        return_last_increment=return_last_increment,
     )
 
 

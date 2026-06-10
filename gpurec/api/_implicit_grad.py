@@ -114,6 +114,7 @@ def implicit_grad_loglik_vjp_wave(
     adjoint_pruning_threshold: float = 1e-6,
     use_adjoint_pruning: bool = True,
     pibar_side_threshold: float = 0.0,
+    collect_backward_relres: bool = False,
 ):
     neumann_terms = int(neumann_terms)
     if neumann_terms < 0:
@@ -181,6 +182,16 @@ def implicit_grad_loglik_vjp_wave(
     compact_level_child2 = species_helpers["compact_level_child2"]
     leaf_species_idx = wave_layout["leaf_species_index"].to(device=device, dtype=torch.int32).contiguous()
 
+    # Diagnostic: per-family max relative size of the last Neumann increment (stiffness).
+    # Uses the true per-clade family map (batch-local), independent of the rate `family_idx`.
+    backward_relres = None
+    backward_vk_mag = None
+    if collect_backward_relres:
+        clade_family = wave_layout["family_idx"].to(device=device, dtype=torch.long)
+        n_fam = int(clade_family.max().item()) + 1 if clade_family.numel() else 0
+        backward_relres = torch.zeros(n_fam, device=device, dtype=torch.float32)
+        backward_vk_mag = torch.zeros(n_fam, device=device, dtype=torch.float32)
+
     for meta in reversed(wave_layout["wave_metas"]):
         ws = int(meta["start"])
         W = int(meta["W"])
@@ -214,7 +225,7 @@ def implicit_grad_loglik_vjp_wave(
             if has_splits
             else None
         )
-        v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
+        backward_out = wave_backward_uniform_fused(
             Pi_star_wave,
             Pibar_star_wave,
             ws,
@@ -249,7 +260,32 @@ def implicit_grad_loglik_vjp_wave(
             grad_receiver_log_probs=grad_receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
             self_loop_solver=self_loop_solver,
+            return_last_increment=collect_backward_relres,
         )
+        if collect_backward_relres:
+            v_k, aw0, aw1, aw2, aw345, aw3, aw4, last_relres = backward_out
+            wave_family = clade_family[ws : ws + W]
+            row_active = active_mask.reshape(active_mask.shape[0], -1).ne(0).any(dim=1)
+            vk_norm = torch.where(
+                row_active, v_k.float().norm(dim=1), torch.zeros(W, device=device, dtype=torch.float32)
+            )
+            backward_vk_mag.scatter_reduce_(
+                0,
+                wave_family,
+                vk_norm,
+                reduce="amax",
+                include_self=True,
+            )
+            if last_relres is not None:
+                backward_relres.scatter_reduce_(
+                    0,
+                    wave_family,
+                    last_relres.to(dtype=torch.float32),
+                    reduce="amax",
+                    include_self=True,
+                )
+        else:
+            v_k, aw0, aw1, aw2, aw345, aw3, aw4 = backward_out
         family_rows_for_wave = family_idx[ws : ws + W]
         _scatter_accum(grad_log_pD, family_rows_for_wave, aw0)
         _scatter_accum(grad_log_pS, family_rows_for_wave, aw345)
@@ -315,6 +351,10 @@ def implicit_grad_loglik_vjp_wave(
                 use_receiver_weights=use_receiver_weights,
                 side_active_threshold=pibar_side_threshold,
             )
+    if collect_backward_relres:
+        # Diagnostic short-circuit: the per-family backward residual is fully accumulated
+        # from the per-wave self-loop solves; the E-adjoint solve is not needed here.
+        return backward_relres, backward_vk_mag
     return _e_adjoint_and_theta_vjp(
         E_star, log_pS, log_pD, log_pL, max_transfer_mat,
         receiver_log_probs,

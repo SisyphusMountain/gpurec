@@ -20,6 +20,7 @@ def pi_wave_forward(
     *,
     family_idx: torch.Tensor,
     pi_iters: int = 6,
+    pi_residual_out: torch.Tensor | None = None,
 ):
     pi_iters = int(pi_iters)
     if pi_iters < 2 or pi_iters % 2 != 0:
@@ -108,6 +109,9 @@ def pi_wave_forward(
                     has_leaf_term=has_leaf_term,
                     input_ws=step_input_ws,
                     use_receiver_weights=use_receiver_weights,
+                    pi_residual_out=(
+                        pi_residual_out if local_iter == pi_iters - 1 else None
+                    ),
                 )
 
     return pi[wave_layout["root_clade_ids"]], pi, pibar, uniform_pibar_row_max

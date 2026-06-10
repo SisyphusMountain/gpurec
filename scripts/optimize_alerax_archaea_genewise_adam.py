@@ -113,6 +113,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=20260609)
     parser.add_argument("--theta-init-rate", type=float, default=0.05)
+    parser.add_argument(
+        "--init-json",
+        type=Path,
+        default=None,
+        help="Initialize theta from a previous output JSON.",
+    )
     parser.add_argument("--min-rate", type=float, default=1e-10)
     parser.add_argument("--max-rate", type=float, default=2.0)
     parser.add_argument(
@@ -140,6 +146,8 @@ def parse_args() -> argparse.Namespace:
         help="Deprecated alias for --optimizer-lr.",
     )
     parser.add_argument("--optimizer-momentum", type=float, default=0.0)
+    parser.add_argument("--adam-beta1", type=float, default=0.9)
+    parser.add_argument("--adam-beta2", type=float, default=0.99)
     parser.add_argument("--rmsprop-alpha", type=float, default=0.99)
     parser.add_argument("--adadelta-rho", type=float, default=0.9)
     parser.add_argument(
@@ -171,33 +179,48 @@ def parse_args() -> argparse.Namespace:
         help="Also apply LR ramping to the first schedule phase.",
     )
     parser.add_argument(
-        "--hierarchical-eb",
+        "--lr-decay-steps",
+        type=int,
+        default=0,
+        help="Number of initial steps in each phase used to decay LR from the schedule value.",
+    )
+    parser.add_argument(
+        "--lr-decay-end-factor",
+        type=float,
+        default=1.0,
+        help="Final LR as a fraction of the schedule value when --lr-decay-steps is positive.",
+    )
+    parser.add_argument(
+        "--penalty-lambda",
+        type=float,
+        default=1.0,
+        help=(
+            "Sanderson roughness-penalty smoothing parameter. The objective is "
+            "NLL + lambda * Phi(theta), where Phi penalizes squared parent-child "
+            "differences in log2-rate across the species tree (specieswise mode)."
+        ),
+    )
+    parser.add_argument(
+        "--cv",
         action="store_true",
-        help="Add a learned hierarchical normal prior over row-wise log2 rates.",
+        help="Choose --penalty-lambda by k-fold cross-validation over gene families first.",
     )
     parser.add_argument(
-        "--prior-initial-sigma",
-        type=float,
-        default=2.0,
-        help="Initial population standard deviation in log2-rate units.",
+        "--cv-folds",
+        type=int,
+        default=5,
+        help="Number of family folds for cross-validation.",
     )
     parser.add_argument(
-        "--prior-min-sigma",
-        type=float,
-        default=0.1,
-        help="Lower bound for learned population standard deviations in log2-rate units.",
+        "--cv-lambda-grid",
+        default="0.1,0.3,1.0,3.0,10.0,30.0,100.0",
+        help="Comma-separated lambda grid scanned by cross-validation.",
     )
     parser.add_argument(
-        "--prior-mu-sigma",
-        type=float,
-        default=10.0,
-        help="Weak normal hyperprior standard deviation for population means.",
-    )
-    parser.add_argument(
-        "--prior-log-sigma-sigma",
-        type=float,
-        default=0.05,
-        help="Normal hyperprior standard deviation for log population sigmas.",
+        "--cv-steps",
+        type=int,
+        default=60,
+        help="Optimization steps per (fold, lambda) fit during cross-validation.",
     )
     parser.add_argument(
         "--schedule",
@@ -300,6 +323,15 @@ def theta_stats(theta: torch.Tensor) -> dict[str, float]:
         }
 
 
+def theta_values(theta: torch.Tensor) -> dict[str, Any]:
+    with torch.no_grad():
+        detached = theta.detach().cpu()
+        return {
+            "theta": detached.tolist(),
+            "rates": torch.exp2(detached).tolist(),
+        }
+
+
 def torch_dtype(dtype_name: str) -> torch.dtype:
     return torch.float64 if dtype_name == "float64" else torch.float32
 
@@ -328,7 +360,7 @@ def make_optimizer(params: list[torch.Tensor], args: argparse.Namespace, lr: flo
     optimizer = str(args.optimizer)
     eps = optimizer_eps(args, optimizer)
     if optimizer == "adam":
-        return torch.optim.Adam(params, lr=lr, eps=eps)
+        return torch.optim.Adam(params, lr=lr, betas=(args.adam_beta1, args.adam_beta2), eps=eps)
     if optimizer == "rmsprop":
         return torch.optim.RMSprop(
             params,
@@ -346,7 +378,7 @@ def make_optimizer(params: list[torch.Tensor], args: argparse.Namespace, lr: flo
     if optimizer == "adafactor":
         return torch.optim.Adafactor(params, lr=lr, eps=(None, eps))
     if optimizer == "adamax":
-        return torch.optim.Adamax(params, lr=lr, eps=eps)
+        return torch.optim.Adamax(params, lr=lr, betas=(args.adam_beta1, args.adam_beta2), eps=eps)
     raise ValueError(f"unsupported optimizer {optimizer!r}")
 
 
@@ -370,6 +402,25 @@ def ramped_lr(target_lr: float, *, phase_step: int, phase_index: int, args: argp
     return start_lr + (target_lr - start_lr) * fraction
 
 
+def decayed_lr(start_lr: float, *, phase_step: int, args: argparse.Namespace) -> float:
+    if args.lr_decay_steps <= 0:
+        return start_lr
+    decay_steps = int(args.lr_decay_steps)
+    end_lr = start_lr * float(args.lr_decay_end_factor)
+    if phase_step >= decay_steps:
+        return end_lr
+    if decay_steps == 1:
+        return end_lr
+    fraction = float(phase_step) / float(decay_steps - 1)
+    return start_lr + (end_lr - start_lr) * fraction
+
+
+def scheduled_step_lr(target_lr: float, *, phase_step: int, phase_index: int, args: argparse.Namespace) -> float:
+    if args.lr_decay_steps > 0:
+        return decayed_lr(target_lr, phase_step=phase_step, args=args)
+    return ramped_lr(target_lr, phase_step=phase_step, phase_index=phase_index, args=args)
+
+
 def optimizer_options(args: argparse.Namespace, lr: float) -> dict[str, Any]:
     options: dict[str, Any] = {
         "name": str(args.optimizer),
@@ -382,92 +433,119 @@ def optimizer_options(args: argparse.Namespace, lr: float) -> dict[str, Any]:
         options["alpha"] = args.rmsprop_alpha
     if args.optimizer == "adadelta":
         options["rho"] = args.adadelta_rho
+    if args.optimizer in {"adam", "adamax"}:
+        options["betas"] = [args.adam_beta1, args.adam_beta2]
     return options
 
 
-def inverse_softplus(value: float) -> float:
-    if value > 20.0:
-        return value
-    return math.log(math.expm1(value))
-
-
-def initialize_hierarchical_prior(
+def load_initial_state_(
     args: argparse.Namespace,
-    theta: torch.Tensor,
-) -> dict[str, Any] | None:
-    if not args.hierarchical_eb:
-        return None
-    if theta.ndim != 2 or theta.shape[1] != 3:
-        raise ValueError("hierarchical EB prior requires row-wise theta with shape (rows, 3)")
-    if args.prior_min_sigma <= 0.0:
-        raise ValueError("--prior-min-sigma must be positive")
-    if args.prior_initial_sigma <= args.prior_min_sigma:
-        raise ValueError("--prior-initial-sigma must be greater than --prior-min-sigma")
-    if args.prior_mu_sigma <= 0.0 or args.prior_log_sigma_sigma <= 0.0:
-        raise ValueError("prior hyperprior standard deviations must be positive")
-
-    mu0_value = math.log2(args.theta_init_rate)
-    raw_sigma_value = inverse_softplus(args.prior_initial_sigma - args.prior_min_sigma)
-    return {
-        "mu": torch.nn.Parameter(torch.full((3,), mu0_value, dtype=theta.dtype, device=theta.device)),
-        "raw_sigma": torch.nn.Parameter(torch.full((3,), raw_sigma_value, dtype=theta.dtype, device=theta.device)),
-        "mu0_value": mu0_value,
-        "log_sigma0_value": math.log(args.prior_initial_sigma),
-        "row_count": int(theta.shape[0]),
-    }
-
-
-def move_hierarchical_prior_(
-    prior: dict[str, Any] | None,
     *,
-    dtype: torch.dtype,
-    device: torch.device,
+    model: GeneReconModel,
 ) -> None:
-    if prior is None:
+    if args.init_json is None:
         return
-    prior["mu"] = torch.nn.Parameter(prior["mu"].detach().to(device=device, dtype=dtype))
-    prior["raw_sigma"] = torch.nn.Parameter(prior["raw_sigma"].detach().to(device=device, dtype=dtype))
-
-
-def hierarchical_prior_parameters(prior: dict[str, Any] | None) -> list[torch.Tensor]:
-    if prior is None:
-        return []
-    return [prior["mu"], prior["raw_sigma"]]
-
-
-def hierarchical_sigma(prior: dict[str, Any], args: argparse.Namespace) -> torch.Tensor:
-    return args.prior_min_sigma + torch.nn.functional.softplus(prior["raw_sigma"])
-
-
-def hierarchical_prior_bits(
-    theta: torch.Tensor,
-    prior: dict[str, Any] | None,
-    args: argparse.Namespace,
-) -> torch.Tensor:
-    if prior is None:
-        return theta.new_zeros(())
-    sigma = hierarchical_sigma(prior, args)
-    centered = (theta - prior["mu"].unsqueeze(0)) / sigma.unsqueeze(0)
-    nll_nats = 0.5 * torch.sum(centered * centered) + theta.shape[0] * torch.sum(torch.log(sigma))
-
-    mu0 = theta.new_tensor(prior["mu0_value"])
-    log_sigma0 = theta.new_tensor(prior["log_sigma0_value"])
-    nll_nats = nll_nats + 0.5 * torch.sum(((prior["mu"] - mu0) / args.prior_mu_sigma) ** 2)
-    nll_nats = nll_nats + 0.5 * torch.sum(
-        ((torch.log(sigma) - log_sigma0) / args.prior_log_sigma_sigma) ** 2
-    )
-    return nll_nats / math.log(2.0)
-
-
-def hierarchical_prior_stats(prior: dict[str, Any] | None, args: argparse.Namespace) -> dict[str, Any]:
-    if prior is None:
-        return {}
+    payload = json.loads(args.init_json.read_text(encoding="utf-8"))
+    if payload.get("mode") != args.mode:
+        raise ValueError(f"--init-json mode {payload.get('mode')!r} does not match requested mode {args.mode!r}")
+    final_theta = payload.get("final_theta")
+    if not final_theta or "theta" not in final_theta:
+        raise ValueError("--init-json does not contain final_theta.theta")
+    theta = torch.as_tensor(final_theta["theta"], dtype=model.theta.dtype, device=model.theta.device)
+    if tuple(theta.shape) != tuple(model.theta.shape):
+        raise ValueError(f"--init-json theta shape {tuple(theta.shape)} does not match model theta {tuple(model.theta.shape)}")
     with torch.no_grad():
-        sigma = hierarchical_sigma(prior, args)
-        return {
-            "prior_mu": [float(value) for value in prior["mu"].detach().cpu()],
-            "prior_sigma": [float(value) for value in sigma.detach().cpu()],
-        }
+        model.theta.copy_(theta)
+
+
+def roughness_penalty(theta: torch.Tensor, species_helpers: dict[str, Any]) -> torch.Tensor:
+    """Sanderson (2002) roughness penalty over the species tree, summed across D/T/L.
+
+    ``theta`` is the specieswise ``[S, 3]`` log2-rate tensor. Penalizes squared
+    parent-child differences in log2-rate for every node except the root and the
+    root's children, plus the variance of the root children's rates (eq. 3).
+    Assumes a binary species tree (the root has exactly two children).
+    """
+    if theta.ndim != 2 or theta.shape[1] != 3:
+        raise ValueError("roughness_penalty requires specieswise theta of shape (S, 3)")
+    sp_parent = species_helpers["sp_parent"].to(theta.device).long()
+    sp_child1 = species_helpers["sp_child1"].to(theta.device).long()
+    sp_child2 = species_helpers["sp_child2"].to(theta.device).long()
+    S = theta.shape[0]
+    idx = torch.arange(S, device=theta.device)
+    root = idx[sp_parent < 0]
+    root_children = torch.cat([sp_child1[root], sp_child2[root]])
+    rc_mask = torch.zeros(S, dtype=torch.bool, device=theta.device)
+    rc_mask[root_children] = True
+    use = (sp_parent >= 0) & (~rc_mask)
+    parent = sp_parent.clamp_min(0)
+    diff = theta[use] - theta[parent[use]]
+    phi = (diff * diff).sum()
+    phi = phi + theta[root_children].var(dim=0, unbiased=False).sum()
+    return phi
+
+
+def kfold_family_indices(n: int, folds: int, *, seed: int = 0) -> list[list[int]]:
+    """Round-robin partition of ``range(n)`` into ``folds`` shuffled folds."""
+    generator = torch.Generator().manual_seed(int(seed))
+    perm = torch.randperm(n, generator=generator).tolist()
+    return [perm[fold::folds] for fold in range(folds)]
+
+
+def cross_validate_lambda(
+    families: list[Path],
+    lambda_grid: list[float],
+    *,
+    folds: int,
+    build_model,
+    fit_theta,
+    eval_nll,
+    seed: int = 0,
+    log=print,
+) -> tuple[float, dict[float, float]]:
+    """k-fold cross-validation over gene families to choose the smoothing lambda.
+
+    For each fold a train and a validation specieswise model are built via
+    ``build_model(families)``. For each lambda (ascending, warm-starting theta
+    across lambdas) ``fit_theta(model_train, lam, warm_start)`` returns a fitted
+    theta, scored on the held-out families with ``eval_nll(model_val, theta)``.
+    The lambda minimizing the summed held-out NLL is returned with the full curve.
+    """
+    fold_members = kfold_family_indices(len(families), folds, seed=seed)
+    grid = sorted(float(lam) for lam in lambda_grid)
+    cv_scores: dict[float, float] = {lam: 0.0 for lam in grid}
+    for fold, val_idx in enumerate(fold_members):
+        val_set = set(val_idx)
+        train_families = [fam for i, fam in enumerate(families) if i not in val_set]
+        val_families = [families[i] for i in val_idx]
+        if not train_families or not val_families:
+            continue
+        model_train = build_model(train_families)
+        model_val = build_model(val_families)
+        warm_start = None
+        for lam in grid:
+            warm_start = fit_theta(model_train, lam, warm_start)
+            score = eval_nll(model_val, warm_start)
+            cv_scores[lam] += score
+            log(
+                f"cv fold={fold + 1}/{folds} lambda={lam:g} "
+                f"held_out_nll={score:.4f}",
+                flush=True,
+            )
+    best_lambda = min(cv_scores, key=cv_scores.get)
+    return best_lambda, cv_scores
+
+
+def gradient_norm(parameters: list[torch.Tensor]) -> float:
+    total = 0.0
+    for parameter in parameters:
+        if parameter.grad is None:
+            continue
+        grad = parameter.grad.detach()
+        if not torch.isfinite(grad).all().item():
+            return float("nan")
+        total += float(torch.sum(grad * grad).cpu())
+    return math.sqrt(total)
 
 
 def event_summary(sample: list[Any]) -> dict[str, Any]:
@@ -516,6 +594,7 @@ def assert_converged(
     tail_slope = fit_line_slope(tail)
     tail_span = max(tail) - min(tail)
     final_projected_grad_norm = float(history[-1]["projected_grad_norm"])
+    final_joint_grad_norm = float(history[-1].get("joint_grad_norm", final_projected_grad_norm))
     if final > best + max(1e-4, abs(best) * 1e-6):
         raise RuntimeError(f"final loss {final:.6f} is not near best loss {best:.6f}")
     if improvement < min_improvement_bits:
@@ -526,9 +605,9 @@ def assert_converged(
         raise RuntimeError(
             f"tail loss slope {tail_slope:.6g} bits/step exceeds tolerance {tail_slope_tol:.6g}"
         )
-    if final_projected_grad_norm > max_projected_grad_norm:
+    if final_joint_grad_norm > max_projected_grad_norm:
         raise RuntimeError(
-            f"final projected gradient norm {final_projected_grad_norm:.6g} "
+            f"final joint gradient norm {final_joint_grad_norm:.6g} "
             f"exceeds tolerance {max_projected_grad_norm:.6g}"
         )
     return {
@@ -539,6 +618,7 @@ def assert_converged(
         "tail_slope_bits_per_step": tail_slope,
         "tail_span_bits": tail_span,
         "final_projected_grad_norm": final_projected_grad_norm,
+        "final_joint_grad_norm": final_joint_grad_norm,
     }
 
 
@@ -556,6 +636,7 @@ def summarize_history(history: list[dict[str, Any]], *, tail_window: int) -> dic
         "tail_slope_bits_per_step": fit_line_slope(tail),
         "tail_span_bits": max(tail) - min(tail),
         "final_projected_grad_norm": float(history[-1]["projected_grad_norm"]),
+        "final_joint_grad_norm": float(history[-1].get("joint_grad_norm", history[-1]["projected_grad_norm"])),
     }
 
 
@@ -565,6 +646,12 @@ def main() -> None:
         raise ValueError("--lr-ramp-steps must be non-negative")
     if not (0.0 < args.lr_ramp_start_factor <= 1.0):
         raise ValueError("--lr-ramp-start-factor must be in (0, 1]")
+    if args.lr_decay_steps < 0:
+        raise ValueError("--lr-decay-steps must be non-negative")
+    if not (0.0 < args.lr_decay_end_factor <= 1.0):
+        raise ValueError("--lr-decay-end-factor must be in (0, 1]")
+    if args.lr_ramp_steps > 0 and args.lr_decay_steps > 0:
+        raise ValueError("use only one of --lr-ramp-steps and --lr-decay-steps")
     torch.manual_seed(args.seed)
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
@@ -610,13 +697,118 @@ def main() -> None:
             clamp_log_rate_(model.theta, min_rate=args.min_rate, max_rate=args.max_rate)
         model.clear_warm_starts()
 
-    hierarchical_prior = initialize_hierarchical_prior(args, model.theta)
-    optimizer_params = [model.theta, *hierarchical_prior_parameters(hierarchical_prior)]
+    load_initial_state_(args, model=model)
+
+    penalty_active = args.mode == "specieswise"
+    if not penalty_active and float(args.penalty_lambda) != 0.0:
+        print(
+            f"warning: roughness penalty requires --mode specieswise; "
+            f"ignoring --penalty-lambda {args.penalty_lambda:g} in mode {args.mode!r}",
+            flush=True,
+        )
+
+    penalty_lambda = float(args.penalty_lambda)
+    cv_result = None
+    if args.cv:
+        if not penalty_active:
+            raise ValueError("--cv with the roughness penalty requires --mode specieswise")
+        lambda_grid = [float(x) for x in str(args.cv_lambda_grid).split(",") if x.strip()]
+
+        def _cv_build_model(fams: list[Path]) -> GeneReconModel:
+            sub = GeneReconModel(
+                species_tree,
+                fams,
+                mode=args.mode,
+                device=device,
+                family_chunk_size=args.family_chunk_size,
+                clade_budget=clade_budget,
+                batch_packing=args.batch_packing,
+                max_wave_size=args.max_wave_size,
+                solver_options=solver_options,
+            )
+            sub.to(dtype=torch_dtype(str(schedule[0]["dtype"])))
+            sub.receiver_weights.requires_grad_(False)
+            return sub
+
+        def _cv_fit_theta(sub: GeneReconModel, lam: float, warm_start: torch.Tensor | None) -> torch.Tensor:
+            with torch.no_grad():
+                if warm_start is not None:
+                    sub.theta.copy_(warm_start.to(sub.theta))
+                else:
+                    sub.theta.fill_(math.log2(args.theta_init_rate))
+                sub.clear_warm_starts()
+            opt = make_optimizer([sub.theta], args, lr)
+            for _ in range(int(args.cv_steps)):
+                opt.zero_grad(set_to_none=True)
+                loss = sub() + lam * roughness_penalty(sub.theta, sub.species_helpers)
+                loss.backward()
+                opt.step()
+            return sub.theta.detach().clone()
+
+        def _cv_eval_nll(sub: GeneReconModel, theta: torch.Tensor) -> float:
+            with torch.no_grad():
+                return float(sub(theta=theta.to(sub.theta)).detach().cpu())
+
+        best_lambda, cv_scores = cross_validate_lambda(
+            ale_families,
+            lambda_grid,
+            folds=int(args.cv_folds),
+            build_model=_cv_build_model,
+            fit_theta=_cv_fit_theta,
+            eval_nll=_cv_eval_nll,
+            seed=args.seed,
+        )
+        penalty_lambda = float(best_lambda)
+        cv_result = {
+            "lambda_grid": lambda_grid,
+            "cv_scores": {str(k): v for k, v in cv_scores.items()},
+            "best_lambda": best_lambda,
+            "folds": int(args.cv_folds),
+            "cv_steps": int(args.cv_steps),
+        }
+        print(f"cv selected penalty_lambda={penalty_lambda:g}", flush=True)
+
+    optimizer_params = [model.theta]
     current_lr = float(schedule[0]["optimizer_lr"] or lr)
     optimizer = make_optimizer(optimizer_params, args, current_lr)
     history: list[dict[str, Any]] = []
     global_step = 0
     t0 = time.perf_counter()
+
+    def loss_backward(
+        *,
+        step_label: int,
+        collect_metrics: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, float]]:
+        optimizer.zero_grad(set_to_none=True)
+        data_loss = model()
+        if penalty_active:
+            penalty_loss = penalty_lambda * roughness_penalty(model.theta, model.species_helpers)
+        else:
+            penalty_loss = data_loss.new_zeros(())
+        loss = data_loss + penalty_loss
+        if not torch.isfinite(loss).item():
+            raise FloatingPointError(
+                f"non-finite loss at step {step_label}: total={loss} data={data_loss} penalty={penalty_loss}"
+            )
+        loss.backward()
+        if model.theta.grad is None or not torch.isfinite(model.theta.grad).all().item():
+            raise FloatingPointError(f"non-finite theta gradient at step {step_label}")
+
+        metrics: dict[str, float] = {}
+        if collect_metrics:
+            metrics["raw_grad_norm"] = float(model.theta.grad.detach().norm().cpu())
+            metrics["theta_grad_max"] = float(model.theta.grad.detach().abs().max().cpu())
+        if use_rate_bounds:
+            project_rate_gradient_(model.theta, min_rate=args.min_rate, max_rate=args.max_rate)
+        if collect_metrics:
+            metrics["projected_grad_norm"] = float(model.theta.grad.detach().norm().cpu())
+        if args.clip_grad_norm > 0.0:
+            torch.nn.utils.clip_grad_norm_([model.theta], args.clip_grad_norm)
+        if collect_metrics:
+            metrics["clipped_grad_norm"] = float(model.theta.grad.detach().norm().cpu())
+        return loss, data_loss, penalty_loss, metrics
+
     for phase_index, phase in enumerate(schedule):
         phase_steps = int(phase["steps"])
         phase_dtype_name = str(phase["dtype"])
@@ -630,12 +822,7 @@ def main() -> None:
         if phase_dtype_name != current_dtype_name:
             model.to(dtype=torch_dtype(phase_dtype_name))
             current_dtype_name = phase_dtype_name
-            move_hierarchical_prior_(
-                hierarchical_prior,
-                dtype=torch_dtype(phase_dtype_name),
-                device=model.theta.device,
-            )
-            optimizer_params = [model.theta, *hierarchical_prior_parameters(hierarchical_prior)]
+            optimizer_params = [model.theta]
             optimizer = make_optimizer(optimizer_params, args, phase_target_lr)
             current_lr = phase_target_lr
             optimizer_reset = True
@@ -648,30 +835,21 @@ def main() -> None:
             current_lr = phase_target_lr
         model.clear_warm_starts()
         for phase_step in range(phase_steps):
-            step_lr = ramped_lr(phase_target_lr, phase_step=phase_step, phase_index=phase_index, args=args)
+            step_lr = scheduled_step_lr(
+                phase_target_lr,
+                phase_step=phase_step,
+                phase_index=phase_index,
+                args=args,
+            )
             if step_lr != current_lr:
                 set_optimizer_lr(optimizer, step_lr)
                 current_lr = step_lr
-            optimizer.zero_grad(set_to_none=True)
             sync(device)
             step_t0 = time.perf_counter()
-            data_loss = model()
-            prior_loss = hierarchical_prior_bits(model.theta, hierarchical_prior, args)
-            loss = data_loss + prior_loss
-            if not torch.isfinite(loss).item():
-                raise FloatingPointError(
-                    f"non-finite loss at step {global_step}: total={loss} data={data_loss} prior={prior_loss}"
-                )
-            loss.backward()
-            if model.theta.grad is None or not torch.isfinite(model.theta.grad).all().item():
-                raise FloatingPointError(f"non-finite theta gradient at step {global_step}")
-            raw_grad_norm = float(model.theta.grad.detach().norm().cpu())
-            if use_rate_bounds:
-                project_rate_gradient_(model.theta, min_rate=args.min_rate, max_rate=args.max_rate)
-            projected_grad_norm = float(model.theta.grad.detach().norm().cpu())
-            if args.clip_grad_norm > 0.0:
-                torch.nn.utils.clip_grad_norm_([model.theta], args.clip_grad_norm)
-            clipped_grad_norm = float(model.theta.grad.detach().norm().cpu())
+            loss, data_loss, penalty_loss, grad_metrics = loss_backward(
+                step_label=global_step,
+                collect_metrics=True,
+            )
             optimizer.step()
             if use_rate_bounds:
                 clamp_log_rate_(model.theta, min_rate=args.min_rate, max_rate=args.max_rate)
@@ -691,13 +869,11 @@ def main() -> None:
                 "dtype": phase_dtype_name,
                 "loss_bits": float(loss.detach().cpu()),
                 "data_loss_bits": float(data_loss.detach().cpu()),
-                "prior_loss_bits": float(prior_loss.detach().cpu()),
-                "raw_grad_norm": raw_grad_norm,
-                "projected_grad_norm": projected_grad_norm,
-                "clipped_grad_norm": clipped_grad_norm,
+                "penalty_bits": float(penalty_loss.detach().cpu()),
+                "penalty_lambda": penalty_lambda,
+                **grad_metrics,
                 "step_s": time.perf_counter() - step_t0,
                 **theta_stats(model.theta),
-                **hierarchical_prior_stats(hierarchical_prior, args),
             }
             history.append(row)
             if global_step == 0 or (global_step + 1) % 20 == 0:
@@ -707,7 +883,8 @@ def main() -> None:
                     f"solver={phase['self_loop_solver']} dtype={phase_dtype_name} "
                     f"opt={args.optimizer} lr={current_lr:g} "
                     f"loss={row['loss_bits']:.6f} data={row['data_loss_bits']:.6f} "
-                    f"prior={row['prior_loss_bits']:.6f} grad={raw_grad_norm:.3g} "
+                    f"penalty={row['penalty_bits']:.6f} "
+                    f"|g_theta|inf={row['theta_grad_max']:.3g} "
                     f"rate=[{row['rate_min']:.3g},{row['rate_max']:.3g}] "
                     f"step_s={row['step_s']:.3f}",
                     flush=True,
@@ -762,19 +939,16 @@ def main() -> None:
             "lr_ramp_steps": args.lr_ramp_steps,
             "lr_ramp_start_factor": args.lr_ramp_start_factor,
             "lr_ramp_first_phase": bool(args.lr_ramp_first_phase),
+            "lr_decay_steps": args.lr_decay_steps,
+            "lr_decay_end_factor": args.lr_decay_end_factor,
         },
         "use_rate_bounds": use_rate_bounds,
-        "hierarchical_eb": bool(args.hierarchical_eb),
-        "hierarchical_prior": {
-            "initial_sigma": args.prior_initial_sigma,
-            "min_sigma": args.prior_min_sigma,
-            "mu_sigma": args.prior_mu_sigma,
-            "log_sigma_sigma": args.prior_log_sigma_sigma,
-            "row_count": hierarchical_prior["row_count"],
-            **hierarchical_prior_stats(hierarchical_prior, args),
-        }
-        if hierarchical_prior is not None
-        else None,
+        "penalty": {
+            "method": "sanderson_roughness",
+            "lambda": penalty_lambda,
+            "active": penalty_active,
+            "cross_validation": cv_result,
+        },
         "clip_grad_norm": args.clip_grad_norm,
         "clade_budget": clade_budget,
         "schedule": schedule,
@@ -783,6 +957,7 @@ def main() -> None:
             "e_tol": solver_options.e_tol,
             "self_loop_solver": solver_options.self_loop_solver,
         },
+        "final_theta": theta_values(model.theta),
         "convergence": convergence,
         "convergence_error": convergence_error,
         "elapsed_s": time.perf_counter() - t0,

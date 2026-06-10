@@ -37,6 +37,7 @@ def preprocess_dataset(
     clade_budget: int | None = 315_000,
     batch_packing: str = "depth_first_fit",
     max_wave_size: int = 8192,
+    family_group_assignments: list[int] | None = None,
 ):
     batch_packing = _normalize_batch_packing(batch_packing, clade_budget)
     raw = json.loads(
@@ -47,6 +48,9 @@ def preprocess_dataset(
             clade_budget,
             batch_packing,
             max_wave_size,
+            [int(label) for label in family_group_assignments]
+            if family_group_assignments is not None
+            else None,
         )
     )
     _validate_schema_version(raw, payload_name="preprocess_dataset")
@@ -133,6 +137,7 @@ def plan_batch_wave_layouts(
     clade_budget: int | None = 315_000,
     batch_packing: str = "depth_first_fit",
     max_wave_size: int = 8192,
+    family_group_assignments: list[int] | None = None,
 ):
     batch_packing = _normalize_batch_packing(batch_packing, clade_budget)
     raw = json.loads(
@@ -142,6 +147,9 @@ def plan_batch_wave_layouts(
             clade_budget,
             batch_packing,
             max_wave_size,
+            [int(label) for label in family_group_assignments]
+            if family_group_assignments is not None
+            else None,
         )
     )
     _validate_schema_version(raw, payload_name="plan_batch_layouts")

@@ -2,6 +2,8 @@ import math
 
 import torch
 
+from gpurec.batched_lbfgs import BatchedLBFGS as BatchedLBFGS
+
 
 def log2_rate_bounds(
     min_rate: float = 1e-10,

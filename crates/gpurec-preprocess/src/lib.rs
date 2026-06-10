@@ -70,7 +70,7 @@ fn species_subtree_intervals(root: usize, child1: &[i32], child2: &[i32]) -> (Ve
 }
 
 #[pyfunction]
-#[pyo3(signature = (species_path, families, family_chunk_size=None, clade_budget=None, batch_packing=None, max_wave_size=8192))]
+#[pyo3(signature = (species_path, families, family_chunk_size=None, clade_budget=None, batch_packing=None, max_wave_size=8192, family_group_assignments=None))]
 fn preprocess_dataset(
     py: Python<'_>,
     species_path: String,
@@ -79,6 +79,7 @@ fn preprocess_dataset(
     clade_budget: Option<usize>,
     batch_packing: Option<String>,
     max_wave_size: usize,
+    family_group_assignments: Option<Vec<i64>>,
 ) -> PyResult<String> {
     let output = py.allow_threads(|| {
         let species_tree = parse_one_newick_file(Path::new(&species_path))?;
@@ -95,6 +96,7 @@ fn preprocess_dataset(
                 clade_budget,
                 batch_packing.as_deref().unwrap_or("depth_first_fit"),
                 max_wave_size,
+                family_group_assignments.as_deref(),
             )
             .map_err(PreprocessError::InvalidInput)?;
             Ok(json!({
@@ -117,13 +119,14 @@ fn gpurec_preprocess(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<
 }
 
 #[pyfunction]
-#[pyo3(signature = (families_json, family_chunk_size=None, clade_budget=None, batch_packing=None, max_wave_size=8192))]
+#[pyo3(signature = (families_json, family_chunk_size=None, clade_budget=None, batch_packing=None, max_wave_size=8192, family_group_assignments=None))]
 fn plan_batch_layouts(
     families_json: String,
     family_chunk_size: Option<usize>,
     clade_budget: Option<usize>,
     batch_packing: Option<String>,
     max_wave_size: usize,
+    family_group_assignments: Option<Vec<i64>>,
 ) -> PyResult<String> {
     let families: Vec<Value> = serde_json::from_str(&families_json)
         .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
@@ -133,6 +136,7 @@ fn plan_batch_layouts(
         clade_budget,
         batch_packing.as_deref().unwrap_or("depth_first_fit"),
         max_wave_size,
+        family_group_assignments.as_deref(),
     )
     .map_err(PyRuntimeError::new_err)?;
     Ok(json!({
@@ -563,6 +567,7 @@ fn plan_batches_and_layouts(
     clade_budget: Option<usize>,
     batch_packing: &str,
     max_wave_size: usize,
+    family_group_assignments: Option<&[i64]>,
 ) -> Result<(Vec<Vec<usize>>, Vec<Value>), String> {
     let effective_batch_packing = if clade_budget.is_none()
         && matches!(batch_packing, "depth_first_fit" | "clade_first_fit")
@@ -606,6 +611,7 @@ fn plan_batches_and_layouts(
         Some(&nonleaf_counts),
         Some(&schedule_depths),
         Some(max_wave_size as i64),
+        family_group_assignments,
     )
     .map_err(|err| err.to_string())?;
 

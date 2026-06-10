@@ -19,6 +19,8 @@ def solve_resident_e_pi(
     receiver_weights: torch.Tensor,
     *,
     warm_start_E: torch.Tensor | None = None,
+    pi_iters: int | None = None,
+    pi_residual_out: torch.Tensor | None = None,
 ):
     solver_options = static.solver_options
     solver_options.validate()
@@ -74,7 +76,8 @@ def solve_resident_e_pi(
         receiver_log_probs=receiver_log_probs,
         use_receiver_weights=use_receiver_weights,
         family_idx=static.rate_family_idx,
-        pi_iters=solver_options.pi_iters,
+        pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
+        pi_residual_out=pi_residual_out,
     )
     return (
         E,
@@ -93,10 +96,47 @@ def solve_resident_e_pi(
     )
 
 
-def nll_from_root_rows(root_rows: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
+def solve_forward_residual(
+    static,
+    theta: torch.Tensor,
+    receiver_weights: torch.Tensor,
+    *,
+    pi_iters: int,
+    warm_start_E: torch.Tensor | None = None,
+):
+    """Per-family forward Pi convergence residual at a (high) ``pi_iters``.
+
+    Runs the forward solve and captures the final iteration's per-clade
+    ``max_s |Pi_new - Pi_old|`` (= the size of the last Pi update). Returns a 1-D
+    float tensor of length ``n_families_in_batch`` (batch-local index), holding the
+    max residual over each family's clades. Diagnostic only; meaningful only at a
+    converged forward, hence the caller supplies a high ``pi_iters``.
+    """
+    C = int(static.wave_layout["leaf_species_index"].numel())
+    pi_residual = torch.zeros(C, device=theta.device, dtype=torch.float32)
+    solve_resident_e_pi(
+        static,
+        theta,
+        receiver_weights,
+        warm_start_E=warm_start_E,
+        pi_iters=pi_iters,
+        pi_residual_out=pi_residual,
+    )
+    fam_local = static.wave_layout["family_idx"].to(device=pi_residual.device, dtype=torch.long)
+    n_fam = int(static.family_index_tensor.numel())
+    per_family = torch.zeros(n_fam, device=pi_residual.device, dtype=torch.float32)
+    per_family.scatter_reduce_(0, fam_local, pi_residual, reduce="amax", include_self=True)
+    return per_family
+
+
+def nll_vector_from_root_rows(root_rows: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
     survival = (1 - torch.exp2(E).mean(dim=-1)).clamp_min(torch.finfo(E.dtype).tiny)
     return -(
         logsumexp2(root_rows, dim=-1)
         - math.log2(root_rows.shape[-1])
         - torch.log2(survival)
-    ).sum()
+    )
+
+
+def nll_from_root_rows(root_rows: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
+    return nll_vector_from_root_rows(root_rows, E).sum()
