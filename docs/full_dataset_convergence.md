@@ -105,17 +105,20 @@ That is **true convergence to float32 precision**.
 2. **float64 / Kahan accumulation of the family-sum** (loss **and** gradient reduction) —
    to go below the 1.66 float32 floor near the minimum. Mean-vs-sum scaling does **not**
    help (float32 *relative* precision is scale-invariant — only more bits help).
+   **NB: not a runtime flag** — the model's float64 *backward* is currently a
+   silent-corruption bug (see "float64 attempt" below), so this requires kernel work.
 3. **Optimizer: LBFGS** (line search) reaches the float32 floor cleanly; plain GD diverges
    on the stiff directions. The bottleneck beyond 1.66 is *precision*, not the optimizer.
 
 ## Suggested directions
 
-- **Implement the float64 family-reduction (highest value for "true" convergence).** The
-  dominant quantization is the **within-batch** reduction over thousands of families, which
-  lives in the adjoint / root-row-NLL **kernels** (`scatter_lse`, the NLL sum), so a
-  Python-level cross-batch float64 sum (25 terms) is *not* enough — accumulate in float64 /
-  compensated-sum inside the reduction. Expected: `|g|` drops well below 1.66, revealing the
-  next (gradient-computation) floor.
+- **Fix the float64 adjoint first, then implement the float64 family-reduction.** Running
+  the model in float64 today returns a *garbage* gradient (the backward is broken — see
+  below), so float64 is not yet usable. The dominant quantization is the **within-batch**
+  reduction over thousands of families, which lives in the adjoint / root-row-NLL
+  **kernels** (`scatter_lse`, the NLL sum); a Python-level cross-batch float64 sum (25
+  terms) is *not* enough (it moves `|g|` by 1.7e-4). Once the float64 backward works (or the
+  float32 reduction uses compensated/Kahan summation), `|g|` should drop below 1.66.
 - **Centering won't help; precision will.** Confirmed analytically and by the probe.
 - **Keep the per-tier-frozen schedule, not per-step adapt.** Re-check stiffness on a cadence
   (e.g. every 8–20 steps); the stiff set is stable near the optimum (205, no drift/oscillation).
@@ -125,10 +128,39 @@ That is **true convergence to float32 precision**.
   already converges every family's contribution to the float32 floor; the wall above is the
   loss/gradient precision, addressed by lever 2.
 
+## float64 attempt: the adjoint is broken in float64 (and the floor is confirmed real)
+
+Tried one BFGS/GD step in float64 from the 1.66 checkpoint
+(`diagnose_float64_step.py`, `diagnose_float64_full.py`, `diagnose_fd_gradcheck.py`):
+
+- **Full float64 forward works** — loss 358567.617 vs float32 358567.594 (~1 ULP apart).
+- **Full float64 backward is broken** — it returns a garbage gradient: `|g|inf` = **60**
+  then **83** on reruns (non-deterministic), with wrong signs, and `−g64` is an *ascent*
+  direction (loss rises monotonically along it: +6e-5, +3e-3, +0.041, +0.37, +4.2). **No
+  error is raised — it silently corrupts.**
+- **Finite differences (float64 forward loss) confirm the true gradient ≈ the float32
+  gradient.** Dominant coords: species 2/L `g32=−1.61`, FD = −1.66 (ε=1e-2) / −1.53
+  (ε=1e-3) (the ε=1e-1 −3.6 is large-step curvature); species 19/T `g32=−1.01`, FD = −1.09.
+  The float64 analytic values (+5.4, −5.7) match nothing. → **float32 gradient is accurate,
+  the 1.66 floor is real.**
+- **Cross-batch (Python-level) float64 doesn't help** — accumulating per-batch
+  losses/gradients in float64 changes the gradient by only **1.7e-4**; the floor is the
+  *in-kernel* float32 family reduction, not the 25-term cross-batch sum.
+- A plain line-searched GD step from theta* also blows `|g|` up (1.6 → 9.7): the residual
+  lives in a stiff (high-curvature) direction, so it is **ill-conditioned** as well as
+  precision-limited (hence LBFGS, not GD).
+
+**Consequences:** (1) the 1.66 float32 floor is genuine — convergence is achieved to float32
+precision; (2) the float64 lever needs the **float64 adjoint kernels fixed** (a real,
+independently-worth-fixing silent-corruption bug) — it is not a runtime flag; (3) even with
+float64 you must keep a curvature optimizer for the stiff direction.
+
 ## Scripts (this investigation)
 
 - `scripts/converge_full_archaea.py` — **the recipe**: build → base-optimize → adapt-once
   (per-tier frozen) → finish → verify; attains `|g|inf ≈ 1.66`.
+- `scripts/diagnose_float64_step.py`, `diagnose_float64_full.py`, `diagnose_fd_gradcheck.py`
+  — the float64 attempt + the finite-difference referee (above).
 - `scripts/diagnose_full_convergence.py` — Phase A: base plateau + solver-accuracy sweeps +
   `convergence_report` (isolates the `neumann_terms` lever).
 - `scripts/diagnose_full_convergence_phaseC.py` — per-tier-frozen convergence to 1.66.
