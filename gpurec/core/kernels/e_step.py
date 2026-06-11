@@ -183,6 +183,13 @@ def _e_step_backward_prepare_2d_kernel(
 
     tl.store(grad_E_ptr + base + offs, 2.0 * q1 + q2, mask=mask)
 
+    # Cross-warp lost-update fix: the plain stores above (grad_E here, excluded_u earlier)
+    # and the atomic_adds below target overlapping row addresses (a state's children/
+    # ancestors are other states handled by other warps of the same CTA). Without a barrier
+    # a warp's atomic_add can land before another warp's initializing store, which then
+    # overwrites it -> dropped gradient contribution. Order stores-then-atomics.
+    tl.debug_barrier()
+
     c1 = tl.load(sp_child1_ptr + offs, mask=mask, other=-1)
     c2 = tl.load(sp_child2_ptr + offs, mask=mask, other=-1)
     c1_valid = mask & (c1 >= 0) & (c1 < S)
