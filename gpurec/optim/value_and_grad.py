@@ -83,7 +83,7 @@ def forward_solve(batch_statics, theta, receiver_weights, *, warm_E=None):
 
 
 def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, grad_avg_K: int = 1,
-                        prior=None):
+                        prior=None, tree_penalty=None):
     """Return ``f(theta_vec, *, warm_E=None, want_grad=True) -> (loss, g_vec, saved, warm_E_out)``.
 
     The single ``(theta_vec -> value, grad)`` contract the gpurec optimization layer sits on.
@@ -99,9 +99,17 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
     ``grad_avg_K`` averages the (atomically nondeterministic) backward over K passes to suppress
     its noise floor -- used by the HVP/CG path; default 1 (no extra cost).
 
-    ``prior`` adds the MAP / ridge term ``(lam/2)||theta - theta_ref||^2`` to loss and gradient:
-    pass ``(lam: float, theta_ref: tensor)`` (``theta_ref`` is flattened). This is the penalty the
-    cross-validation harness (:mod:`gpurec.optim.map_cv`) sweeps lambda over.
+    ``prior`` adds the centered MAP / ridge term ``(lam/2)||theta - theta_ref||^2`` to loss and
+    gradient: pass ``(lam: float, theta_ref: tensor)`` (``theta_ref`` is flattened).
+
+    ``tree_penalty`` adds the Sanderson-style autocorrelated-rates (GBM) roughness term
+    ``(lam_tree/2) * sum_{edges (child,parent)} ||theta[child] - theta[parent]||^2`` -- a tree
+    graph-Laplacian quadratic that shrinks each species' rates toward its PARENT's (no arbitrary
+    center; lam_tree -> infinity gives the clock with the common rate set by the data). Pass
+    ``(lam_tree: float, sp_parent: int tensor [S])`` where ``sp_parent[s]`` is the parent species
+    index (``< 0`` at the root). This is the penalty the CV homotopy sweeps lam_tree over; it
+    composes with ``prior`` (both can be set). Its Hessian is ``lam_tree * L`` (PSD), so it keeps
+    the certified-PD structure of the centered ridge.
     """
     statics = _as_static_list(batch_statics)
     genewise = statics[0].genewise
@@ -110,6 +118,14 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
     theta_shape = tuple(theta_shape)
     lam = None if prior is None else float(prior[0])
     theta_ref_flat = None if prior is None else prior[1].detach().reshape(-1).contiguous()
+
+    # GBM / tree-Laplacian penalty: precompute the edge (child, parent) index pair once.
+    lam_tree = None if tree_penalty is None else float(tree_penalty[0])
+    tp_child = tp_parent = None
+    if tree_penalty is not None:
+        sp_parent = tree_penalty[1].detach().reshape(-1).long()
+        tp_child = (sp_parent >= 0).nonzero(as_tuple=True)[0].contiguous()   # [E] non-root species
+        tp_parent = sp_parent[tp_child].contiguous()                         # [E] their parents
 
     def f(theta_vec: torch.Tensor, *, warm_E=None, want_grad: bool = True):
         tvec = theta_vec.detach().reshape(-1)
@@ -126,6 +142,11 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
         if lam is not None:
             d = tvec - theta_ref_flat.to(device=tvec.device, dtype=tvec.dtype)
             loss_val = loss_val + 0.5 * lam * float((d * d).sum())
+        tdiff = None
+        if lam_tree is not None:
+            ts = theta  # [S, 3]
+            tdiff = ts.index_select(0, tp_child) - ts.index_select(0, tp_parent)  # [E, 3]
+            loss_val = loss_val + 0.5 * lam_tree * float((tdiff * tdiff).sum())
         g_vec = None
         if want_grad:
             if int(grad_avg_K) > 1:
@@ -139,6 +160,13 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
             g_vec = g_theta.reshape(-1)
             if lam is not None:
                 g_vec = g_vec + lam * d
+            if lam_tree is not None:
+                # d/dtheta of (lam_tree/2) sum_e ||theta[c]-theta[p]||^2: +g on child, -g on parent
+                gpen = torch.zeros_like(theta)
+                step = lam_tree * tdiff
+                gpen.index_add_(0, tp_child, step)
+                gpen.index_add_(0, tp_parent, -step)
+                g_vec = g_vec + gpen.reshape(-1)
             g_vec = g_vec.contiguous()
         return loss_val, g_vec, None, None
 

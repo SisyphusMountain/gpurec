@@ -1,0 +1,315 @@
+"""Sanderson-style penalized-likelihood cross-validation on the 1055-family hogenom set.
+
+Penalty = autocorrelated-rates (GBM) tree roughness  R(theta) = 1/2 sum_edges ||theta_c - theta_p||^2
+(graph Laplacian over the species tree; no arbitrary center -- lam->inf gives the clock with the
+common rate set by the data). The CV objective is the held-out predictive NLL; we sweep lam over a
+descending homotopy (large lam -> small lam, warm-started), k-fold over families, pick lam* = argmin
+mean held-out NLL, then refit on all families along the same homotopy. Each refit is certified a true
+local minimum post-hoc by certify.py (Lanczos min-eig of H + lam*L via the ANALYTIC exact-HVP summed
+over batches -- NOT an FD HVP, which cannot resolve the near-zero bottom eigenvalue).
+
+Design decisions (see docs/optim/sanderson_cv.md):
+  * init theta = 0  -> all DTL probs 0.25 (the empirically better basin).
+  * converged solver pi=64/neumann=64 (pi=16 gradient is biased ~5%, would corrupt the optima).
+  * homotopy high->low lam, warm-started, so each fit starts inside the previous (more convex) basin.
+  * scipy unconstrained L-BFGS-B (bounds=None): the prior regularizes, theta is NOT boxed.
+  * robustness: lam-level theta checkpoints + state.pt + JSONL event log -> resumable; wandb timing.
+
+Run:
+  GPUREC_PREPROCESS_PATH=<.../libgpurec_preprocess.so> \
+  python experiments/sanderson_cv/run_cv.py --families 1055 --k 5 [--no-wandb] [--smoke N]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from gpurec import GeneReconModel, SolverOptions
+from gpurec.optim.optimize import Schedule
+from gpurec.optim.value_and_grad import make_value_and_grad
+
+HERE = Path(__file__).resolve().parent
+ROOT = Path("/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom")
+SP_TREE = (ROOT / "runs/MFP/true_start_ufboot1000/"
+           "run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/"
+           "starting_species_tree.newick")
+
+_CV_SO = dict(
+    e_init=-1000.0, e_max_iter=2000, e_tol=1e-8, pi_iters=64, neumann_terms=64,
+    self_loop_solver="neumann", bicgstab_max_iter=500, bicgstab_tol=1e-7,
+    bicgstab_breakdown_tol=1e-30, adjoint_pruning_threshold=1e-6,
+    use_adjoint_pruning=True, pibar_side_threshold=0.0,
+)
+
+
+# ----------------------------------------------------------------------------------------------
+# data / model
+# ----------------------------------------------------------------------------------------------
+def family_paths(n=None):
+    fams = [ln.strip() for ln in open(HERE / "families_1055.txt") if ln.strip()]
+    if n is not None:
+        fams = fams[:n]
+    return [str(ROOT / "families" / f / "gene_trees" / "ufboot1000.MFP.geneTree.newick") for f in fams]
+
+
+def build_model(paths, so):
+    return GeneReconModel(str(SP_TREE), [str(p) for p in paths], mode="specieswise",
+                          device="cuda", solver_options=so)
+
+
+def kfold_indices(n, k, seed=0):
+    g = torch.Generator().manual_seed(int(seed))
+    perm = torch.randperm(n, generator=g).tolist()
+    folds = [perm[i::k] for i in range(k)]            # round-robin -> balanced sizes
+    return [(sorted(j for f in range(k) if f != i for j in folds[f]), sorted(folds[i]))
+            for i in range(k)]
+
+
+# ----------------------------------------------------------------------------------------------
+# fit / eval / certify
+# ----------------------------------------------------------------------------------------------
+def theta_stats(theta):
+    t = theta.detach().reshape(-1).float()
+    return dict(mean=float(t.mean()), std=float(t.std()), absmax=float(t.abs().max()),
+                frac_extreme=float((t.abs() > 5).float().mean()))  # boundary-saturation indicator
+
+
+def gbm_fit(batch_statics, theta0, rw, sp_parent, *, lam_tree, adam_steps=40, adam_lr=1.0,
+            lbfgs_iters=120, maxcor=50, log=None, tag="", solve_dtype=torch.float32):
+    """argmin_theta  sum NLL_i + (lam_tree/2) sum_edges ||theta_c - theta_p||^2,  from theta0.
+
+    Adam (basin entry) -> scipy unconstrained L-BFGS-B (penalized endgame). The SOLVER runs in
+    ``solve_dtype`` (fp32 default -- on a consumer 4090 fp64 is ~27x slower with bit-identical loss;
+    use fp64 only on an A100). scipy's quasi-Newton bookkeeping stays fp64 on the CPU. Returns
+    (theta_hat, stats). ``log(d)`` is called per logged iteration with a scalar dict."""
+    from scipy.optimize import minimize
+
+    S3 = tuple(theta0.shape)
+    f = make_value_and_grad(batch_statics, rw, theta_shape=S3, tree_penalty=(lam_tree, sp_parent))
+    dev = theta0.device
+    t_start = time.perf_counter()
+    n_solves = 0
+
+    theta = theta0.detach().reshape(S3).float().clone()
+    if adam_steps > 0:
+        leaf = theta.clone().requires_grad_(True)
+        opt = torch.optim.Adam([leaf], lr=adam_lr)
+        sched = Schedule("adaptive", adam_lr, t_max=adam_steps)
+        for it in range(int(adam_steps)):
+            loss, g, _sv, _ = f(leaf.detach().reshape(-1)); n_solves += 1
+            lr = sched.update(loss, g)
+            opt.param_groups[0]["lr"] = lr
+            leaf.grad = g.reshape(S3)
+            opt.step()
+            if log and (it % 5 == 0 or it == adam_steps - 1):
+                log(dict(phase="adam", it=it, loss=loss, gnorm=float(g.norm()), lr=lr,
+                         t=time.perf_counter() - t_start, **{f"theta_{k}": v for k, v in
+                         theta_stats(leaf).items()}), tag=tag)
+        theta = leaf.detach()
+
+    state = {"loss": math.nan, "gnorm": math.nan}
+
+    def fun(x_np):
+        nonlocal n_solves
+        x = torch.tensor(x_np, device=dev, dtype=solve_dtype)  # solver in fp32 (fp64 = 27x on 4090)
+        loss, g, _sv, _ = f(x); n_solves += 1
+        state["loss"], state["gnorm"] = float(loss), float(g.norm())
+        return float(loss), g.double().cpu().numpy().astype(np.float64)  # scipy bookkeeping fp64
+
+    it_box = {"n": 0}
+
+    def cb(xk):
+        it_box["n"] += 1
+        if log and (it_box["n"] % 3 == 0):
+            log(dict(phase="lbfgs", it=it_box["n"], loss=state["loss"], gnorm=state["gnorm"],
+                     t=time.perf_counter() - t_start,
+                     **{f"theta_{k}": v for k, v in
+                        theta_stats(torch.tensor(xk).reshape(S3)).items()}), tag=tag)
+
+    x0 = theta.reshape(-1).double().cpu().numpy().astype(np.float64)
+    res = minimize(fun, x0, jac=True, method="L-BFGS-B", bounds=None, callback=cb,
+                   options={"maxiter": lbfgs_iters, "maxfun": lbfgs_iters * 2,
+                            "maxcor": maxcor, "ftol": 1e-12, "gtol": 1e-8})
+    theta_hat = torch.tensor(res.x, device=dev, dtype=torch.float32).reshape(S3)
+    stats = dict(final_loss=float(res.fun), final_gnorm=float(np.linalg.norm(res.jac)),
+                 nit=int(res.nit), n_solves=n_solves, wall_s=time.perf_counter() - t_start,
+                 **theta_stats(theta_hat))
+    return theta_hat, stats
+
+
+def heldout_nll(batch_statics, theta, rw):
+    """Pure predictive NLL sum_i NLL_i(theta) over the families in batch_statics (no penalty, no grad)."""
+    from gpurec.api._execution import stream_batches
+    loss, _g, _gr = stream_batches(batch_statics, theta, rw, genewise=False, need_grad=False)
+    return float(loss)
+
+
+# PD certificate (smallest eigenvalue of H + lam*L) is done by the ANALYTIC exact-HVP summed over
+# batches -- see certify.py:make_exact_multibatch_hvp. We do NOT use an FD-of-gradient HVP: at a
+# GBM-penalized min the bottom eigenvalue is near-zero (~0.02) and FD's ~0.5%*||H|| truncation floor
+# cannot resolve it (it sign-flips). run_cv defers certification to certify.py (run on the saved
+# refit thetas, fp64 on the A100 for the authoritative pass); here we only log the gradient norm
+# (the cheap first-order necessary condition) on every fit.
+
+
+# ----------------------------------------------------------------------------------------------
+# driver with checkpoint/resume + wandb
+# ----------------------------------------------------------------------------------------------
+class Run:
+    def __init__(self, outdir, use_wandb, wandb_cfg):
+        self.outdir = Path(outdir)
+        (self.outdir / "ckpt").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.outdir / "state.pt"
+        self.log_path = self.outdir / "events.jsonl"
+        self.state = torch.load(self.state_path, weights_only=False) if self.state_path.exists() else {
+            "cells": {}, "folds_done": [], "global_step": 0, "refit": {}}
+        self.wandb = None
+        if use_wandb:
+            try:
+                import wandb
+                self.wandb = wandb.init(project="gpurec-sanderson-cv", config=wandb_cfg,
+                                        dir=str(self.outdir), resume="allow",
+                                        id=wandb_cfg.get("run_id"))
+            except Exception as exc:  # noqa: BLE001 -- never let wandb kill a multi-hour run
+                print(f"[wandb] init failed ({exc}); continuing with events.jsonl only")
+
+    def log(self, d, tag=""):
+        self.state["global_step"] += 1
+        step = self.state["global_step"]
+        rec = {"step": step, "tag": tag, "wall_clock": time.time(), **d}
+        with open(self.log_path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+        if self.wandb:
+            self.wandb.log({f"{tag}/{k}" if tag else k: v for k, v in d.items()
+                            if isinstance(v, (int, float))}, step=step)
+        if d.get("phase") in (None, "summary") or d.get("it", 1) == 0:
+            print(f"  [{tag}] " + "  ".join(f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}"
+                                            for k, v in d.items() if k != "wall_clock"))
+
+    def save(self):
+        tmp = self.state_path.with_suffix(".pt.tmp")
+        torch.save(self.state, tmp)
+        tmp.replace(self.state_path)  # atomic
+
+
+def run_cv(*, n_families, k, lambdas, seed, outdir, use_wandb=True, adam_steps=40,
+           lbfgs_iters=120):
+    so = SolverOptions(**_CV_SO); so.validate()
+    paths = family_paths(n_families)
+    n = len(paths)
+    lambdas = sorted({float(x) for x in lambdas}, reverse=True)  # descending homotopy
+    cfg = dict(n_families=n, k=k, lambdas=lambdas, seed=seed, adam_steps=adam_steps,
+               lbfgs_iters=lbfgs_iters, solver="pi64_neu64",
+               penalty="gbm_tree_laplacian", init="theta0", run_id=f"sandcv_n{n}_k{k}_s{seed}")
+    run = Run(outdir, use_wandb, cfg)
+    print(f"[run_cv] n={n} families, k={k}, lambdas(desc)={lambdas}\n  outdir={outdir}  "
+          f"resume: {len(run.state['folds_done'])} folds + {len(run.state['refit'])} refit-lams done")
+
+    # full model: source of sp_parent / rw / S and the final refit; built once.
+    full = build_model(paths, so)
+    S = int(full.species_helpers["S"])
+    rw = full.receiver_weights.detach().clone()
+    sp_parent = full.species_helpers["sp_parent"].detach().clone()
+    theta0 = torch.zeros((S, 3), device="cuda", dtype=torch.float32)
+    folds = kfold_indices(n, k, seed)
+
+    # ---- k-fold CV ----
+    for fi, (tr, te) in enumerate(folds):
+        if fi in run.state["folds_done"]:
+            print(f"[fold {fi}] already done -> skip"); continue
+        print(f"[fold {fi}/{k}] train={len(tr)} test={len(te)}")
+        train = build_model([paths[i] for i in tr], so)
+        test = build_model([paths[i] for i in te], so)
+        # resume within fold: continue homotopy from the last checkpointed lam
+        theta = theta0.clone()
+        start_li = 0
+        for li in range(len(lambdas)):
+            ck = run.outdir / "ckpt" / f"fold{fi}_lam{li}.pt"
+            if ck.exists() and f"{fi},{li}" in run.state["cells"]:
+                theta = torch.load(ck, weights_only=False)["theta"].cuda()
+                start_li = li + 1
+        for li in range(start_li, len(lambdas)):
+            lam = lambdas[li]
+            t0 = time.perf_counter()
+            theta, st = gbm_fit(train.batch_statics, theta, rw, sp_parent, lam_tree=lam,
+                                adam_steps=adam_steps, lbfgs_iters=lbfgs_iters,
+                                log=run.log, tag=f"fold{fi}/lam{lam:g}")
+            ho = heldout_nll(test.batch_statics, theta, rw)
+            run.state["cells"][f"{fi},{li}"] = dict(fold=fi, lam=lam, heldout=ho, per_fam=ho/max(1, len(te)),
+                                                    **st)
+            torch.save({"theta": theta.cpu(), "lam": lam, "fold": fi}, run.outdir/"ckpt"/f"fold{fi}_lam{li}.pt")
+            run.log(dict(phase="summary", fold=fi, lam=lam, heldout=ho, per_fam=ho/max(1, len(te)),
+                         final_loss=st["final_loss"], final_gnorm=st["final_gnorm"],
+                         frac_extreme=st["frac_extreme"], n_solves=st["n_solves"],
+                         fit_wall_s=time.perf_counter()-t0), tag=f"fold{fi}/lam{lam:g}")
+            run.save()
+        run.state["folds_done"].append(fi)
+        run.save()
+        del train, test; torch.cuda.empty_cache()
+
+    # ---- CV curve + lam* ----
+    cv = {}
+    for li, lam in enumerate(lambdas):
+        vals = [c["heldout"] for c in run.state["cells"].values() if c["lam"] == lam and math.isfinite(c["heldout"])]
+        if len(vals) == k:
+            cv[lam] = sum(vals) / k
+    lam_star = min(cv, key=cv.get) if cv else None
+    run.state["cv"] = cv; run.state["lam_star"] = lam_star; run.save()
+    print("\n=== CV curve (mean held-out NLL) ===")
+    for lam in sorted(cv, reverse=True):
+        print(f"  lam={lam:<10.4g} CV={cv[lam]:.4f}{'   <- lam*' if lam == lam_star else ''}")
+
+    # ---- all-data refit along the homotopy (PD certificate is run post-hoc by certify.py, which
+    #      uses the ANALYTIC exact-HVP summed over batches -- see the note above) ----
+    print(f"\n=== all-data refit (lam* = {lam_star}); certify with certify.py afterwards ===")
+    theta = theta0.clone()
+    for li, lam in enumerate(lambdas):
+        if str(lam) in run.state["refit"]:
+            theta = torch.load(run.outdir/"ckpt"/f"refit_lam{li}.pt", weights_only=False)["theta"].cuda()
+            continue
+        theta, st = gbm_fit(full.batch_statics, theta, rw, sp_parent, lam_tree=lam,
+                            adam_steps=adam_steps, lbfgs_iters=lbfgs_iters, log=run.log,
+                            tag=f"refit/lam{lam:g}")
+        torch.save({"theta": theta.cpu(), "lam": lam}, run.outdir/"ckpt"/f"refit_lam{li}.pt")
+        run.state["refit"][str(lam)] = dict(lam=lam, final_loss=st["final_loss"],
+            final_gnorm=st["final_gnorm"], frac_extreme=st["frac_extreme"],
+            lam_min=None, ritz_resid=None, certified_pd=None)  # filled by certify.py
+        run.log(dict(phase="summary", lam=lam, final_loss=st["final_loss"],
+                     final_gnorm=st["final_gnorm"], frac_extreme=st["frac_extreme"]),
+                tag=f"refit/lam{lam:g}")
+        run.save()
+        print(f"  lam={lam:<10.4g} F={st['final_loss']:.2f} |g|={st['final_gnorm']:.2e} "
+              f"frac|theta|>5={st['frac_extreme']:.2f}  (PD cert deferred to certify.py)")
+
+    print(f"\n[run_cv] DONE. lam*={lam_star}  state={run.state_path}")
+    if run.wandb:
+        run.wandb.finish()
+    return run.state
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--families", type=int, default=1055)
+    ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--lambdas", type=float, nargs="+", default=[1000, 100, 10, 1, 0.1, 0.0])
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--outdir", default=str(HERE / "runs" / "cv_1055"))
+    ap.add_argument("--no-wandb", action="store_true")
+    ap.add_argument("--adam-steps", type=int, default=40)
+    ap.add_argument("--lbfgs-iters", type=int, default=120)
+    ap.add_argument("--cert-m", type=int, default=0, help="ignored; certification is post-hoc via certify.py")
+    ap.add_argument("--smoke", type=int, default=0, help="override n_families for a quick smoke")
+    args = ap.parse_args()
+    n = args.smoke if args.smoke else args.families
+    run_cv(n_families=n, k=args.k, lambdas=args.lambdas, seed=args.seed, outdir=args.outdir,
+           use_wandb=not args.no_wandb, adam_steps=args.adam_steps, lbfgs_iters=args.lbfgs_iters)
+
+
+if __name__ == "__main__":
+    main()

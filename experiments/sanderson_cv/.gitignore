@@ -1,0 +1,4 @@
+# experiment outputs (checkpoints, wandb, event logs, captures) -- data, not code
+runs/
+*.pt
+__pycache__/
