@@ -1,0 +1,158 @@
+"""Saddle-escape + Newton-polish for a Sanderson-CV checkpoint, via the analytic exact-HVP.
+
+If a CV refit is only a saddle (lam_min<0 -- which Adam->L-BFGS cannot escape, since L-BFGS keeps a
+PD Hessian model), this descends the most-negative-curvature eigenvector, L-BFGS re-converges, then
+takes ONE Newton step (delta = -H^-1 g, H now PD) to drive |g|->0, and re-certifies.
+
+EFFICIENCY: the exact-HVP cache is built ONCE per point and the operator only APPLIES it. (The early
+ad-hoc version rebuilt forward_solve+make_exact_hvp on every Lanczos iteration -- ~3x slower; fixed
+here.) For small p the exact Hessian is formed (definitive eigh); for large p, converged Lanczos.
+
+Capture-driven so it runs locally (archaea) or on the cluster (hogenom). Env: CAP, THETA, LAM,
+[FULL_HESSIAN=1|0 default auto: full if p<=1200].
+"""
+from __future__ import annotations
+import os, time
+import numpy as np
+import torch
+from scipy.optimize import minimize
+from gpurec.optim.value_and_grad import forward_solve, make_value_and_grad
+from gpurec.optim.hvp_exact import make_exact_hvp
+from gpurec.optim.cg import lanczos_min_eigpair
+from gpurec.api._execution import stream_batches
+
+DEV = "cuda"
+
+
+def make_lap(child, par, lam):
+    def lap(v):
+        u = v.reshape(-1, 3); out = torch.zeros_like(u)
+        d = u.index_select(0, child) - u.index_select(0, par)
+        out.index_add_(0, child, d); out.index_add_(0, par, -d)
+        return (lam * out).reshape(-1)
+    return lap
+
+
+def build_hvp_once(batch_statics, theta2d, rw, lap, p):
+    """Build per-batch exact-HVP caches ONCE at theta2d; return Av(v) that only APPLIES them."""
+    hvps = []
+    for st in batch_statics:
+        _l, sv = forward_solve([st], theta2d, rw)
+        hvps.append(make_exact_hvp([st], theta2d, rw, sv))
+    def Av(v):
+        acc = torch.zeros(p, dtype=torch.float64, device=DEV)
+        for h in hvps:
+            acc += h(v).double()
+        return acc + lap(v)
+    return Av
+
+
+def bottom(Av, p, full):
+    """Return (lam_min, v_min, info). full=True forms the exact Hessian (eigh, info=n_neg);
+    else converged Lanczos (info=ritz_residual)."""
+    if full:
+        H = torch.zeros(p, p, dtype=torch.float64, device=DEV)
+        I = torch.eye(p, dtype=torch.float64, device=DEV)
+        for i in range(p):
+            H[:, i] = Av(I[:, i])
+        asym = float((H - H.T).abs().max()); H = 0.5 * (H + H.T)
+        mu, V = torch.linalg.eigh(H)
+        return float(mu[0]), V[:, 0], dict(n_neg=int((mu < 0).sum()), asym=asym, H=H, mu=mu)
+    lam, v = lanczos_min_eigpair(Av, p, m=min(300, p), seed=0)
+    return lam, v, dict(resid=float((Av(v) - lam * v).norm()))
+
+
+def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None):
+    p = 3 * S
+    rw = rw.to(DEV).double(); sp = sp.to(DEV).long()
+    child = (sp >= 0).nonzero(as_tuple=True)[0].contiguous(); par = sp[child].contiguous()
+    lap = make_lap(child, par, lam)
+    if full is None:
+        full = p <= 1200
+    theta = torch.load(theta_path, map_location=DEV, weights_only=False)["theta"].to(DEV).double()
+    fg = make_value_and_grad(bs, rw, theta_shape=(S, 3), tree_penalty=(lam, sp))
+    grad = lambda thf: fg(thf)[1].double()
+    def loss(thf):
+        l, _, _ = stream_batches(bs, thf.reshape(S, 3), rw, genewise=False, need_grad=False)
+        d = thf.reshape(S, 3); diff = d.index_select(0, child) - d.index_select(0, par)
+        return float(l) + 0.5 * lam * float((diff * diff).sum())
+
+    print(f"[saddle_escape] p={p} batches={len(bs)} lam={lam} full_hessian={full}", flush=True)
+    tsf = theta.reshape(-1)
+    t0 = time.time()
+    Av0 = build_hvp_once(bs, theta, rw, lap, p)               # built ONCE
+    lam_min, v0, info = bottom(Av0, p, full)
+    F0 = loss(tsf); g0n = float(grad(tsf).norm())
+    print(f"  checkpoint: F={F0:.4f} |g|={g0n:.4e} "
+          f"lam_min={lam_min:+.5e} {info if 'H' not in info else {k:info[k] for k in info if k not in ('H','mu')}} ({time.time()-t0:.0f}s)", flush=True)
+    if lam_min >= 0:
+        print("  -> already PD (not a saddle); nothing to escape.")
+        if out_path:
+            torch.save(dict(theta_saddle=theta.reshape(S, 3).cpu(), lam=lam, lam_min_saddle=lam_min,
+                            gnorm_saddle=g0n, loss_saddle=F0, is_saddle=False, meta=meta or {}), out_path)
+        return
+
+    # escape: line-search the true loss along +/- v0, L-BFGS re-converge
+    cand = min(((loss(tsf + a * v0), a) for a in (-4, -2, -1, 1, 2, 4)), key=lambda z: z[0])
+    def lbfgs(x0):
+        def fun(x):
+            x = torch.tensor(x, device=DEV, dtype=torch.float64); l, g, _, _ = fg(x)
+            return float(l), g.double().cpu().numpy()
+        r = minimize(fun, x0.cpu().numpy(), jac=True, method="L-BFGS-B", bounds=None,
+                     options=dict(maxiter=300, maxcor=50, ftol=1e-16, gtol=1e-12))
+        return torch.tensor(r.x, device=DEV, dtype=torch.float64)
+    th_new = lbfgs(tsf + cand[1] * v0); g_new = grad(th_new)
+    print(f"  escaped (a={cand[1]:+g}) + reconverged: F={loss(th_new):.4f} |g|={float(g_new.norm()):.4e}", flush=True)
+
+    # Newton polish: build HVP ONCE at the escaped point, one step delta=-H^-1 g
+    Av_new = build_hvp_once(bs, th_new.reshape(S, 3), rw, lap, p)
+    lm_new, _, info_new = bottom(Av_new, p, full)
+    if full:
+        delta = torch.linalg.solve(info_new["H"], -g_new)
+    else:                                                     # large p: CG on H (PD) for the Newton solve
+        from gpurec.optim.cg import cg_solve
+        delta, _it, _conv = cg_solve(Av_new, -g_new, tol=1e-8, max_iter=200)
+    th_star = th_new + delta; g_star = grad(th_star)
+    Av_star = build_hvp_once(bs, th_star.reshape(S, 3), rw, lap, p)
+    lm_star, _, info_star = bottom(Av_star, p, full)
+    print(f"  Newton step ||delta||={float(delta.norm()):.4f}: |g| {float(g_new.norm()):.3e}->{float(g_star.norm()):.3e}", flush=True)
+    gsn = float(g_star.norm()); F_star = loss(th_star)
+    tag = "ZERO-GRAD + PD (true local min)" if gsn < 1e-2 and lm_star > 0 else "not fully there"
+    print(f"\n=== ESCAPE+NEWTON (lam={lam}): F {F0:.4f} -> {F_star:.4f}   "
+          f"lam_min {lam_min:+.5e} -> {lm_star:+.6e}   |g|->{gsn:.3e}   -> {tag} ===", flush=True)
+    if out_path:
+        torch.save(dict(
+            theta_saddle=theta.reshape(S, 3).cpu(), theta_escaped=th_new.reshape(S, 3).cpu(),
+            theta_newton=th_star.reshape(S, 3).cpu(), lam=lam, full_hessian=full, is_saddle=True,
+            lam_min_saddle=lam_min, lam_min_escaped=lm_new, lam_min_newton=lm_star,
+            gnorm_saddle=g0n, gnorm_escaped=float(g_new.norm()), gnorm_newton=gsn,
+            loss_saddle=F0, loss_escaped=loss(th_new), loss_newton=F_star,
+            delta_norm=float(delta.norm()), n_neg_newton=info_star.get("n_neg"),
+            ritz_resid_newton=info_star.get("resid"), meta=meta or {}), out_path)
+        print(f"  saved checkpoint -> {out_path}", flush=True)
+
+
+def _model_from_env():
+    """Resolve (batch_statics, rw, sp, S, meta) from CAP (a capture) or from the in-repo DATASET."""
+    if os.environ.get("CAP"):
+        cap = torch.load(os.environ["CAP"], map_location=DEV, weights_only=False)
+        return (cap["batch_statics"], cap["rw"], cap["sp_parent"], int(cap["S"]),
+                dict(source="capture", cap=os.environ["CAP"]))
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from run_cv import DATASETS, _CV_SO
+    from gpurec import GeneReconModel, SolverOptions
+    ds = os.environ.get("DATASET", "archaea"); n = int(os.environ.get("FAMILIES", "256"))
+    so = SolverOptions(**_CV_SO); so.validate()
+    m = GeneReconModel(str(DATASETS[ds]["species_tree"]), [str(x) for x in DATASETS[ds]["families"](n)],
+                       mode="specieswise", device=DEV, solver_options=so)
+    return (m.batch_statics, m.receiver_weights.detach(), m.species_helpers["sp_parent"],
+            int(m.species_helpers["S"]), dict(source="dataset", dataset=ds, families=n))
+
+
+if __name__ == "__main__":
+    fenv = os.environ.get("FULL_HESSIAN")
+    bs, rw, sp, S, meta = _model_from_env()
+    run(bs, rw, sp, S, os.environ["THETA"], float(os.environ.get("LAM", "0.03")), out_path=os.environ.get("OUT"),
+        meta=meta,
+        full=(None if fenv is None else bool(int(fenv))))
