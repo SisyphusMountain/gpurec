@@ -85,15 +85,6 @@ def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None):
     F0 = loss(tsf); g0n = float(grad(tsf).norm())
     print(f"  checkpoint: F={F0:.4f} |g|={g0n:.4e} "
           f"lam_min={lam_min:+.5e} {info if 'H' not in info else {k:info[k] for k in info if k not in ('H','mu')}} ({time.time()-t0:.0f}s)", flush=True)
-    if lam_min >= 0:
-        print("  -> already PD (not a saddle); nothing to escape.")
-        if out_path:
-            torch.save(dict(theta_saddle=theta.reshape(S, 3).cpu(), lam=lam, lam_min_saddle=lam_min,
-                            gnorm_saddle=g0n, loss_saddle=F0, is_saddle=False, meta=meta or {}), out_path)
-        return
-
-    # escape: line-search the true loss along +/- v0, L-BFGS re-converge
-    cand = min(((loss(tsf + a * v0), a) for a in (-4, -2, -1, 1, 2, 4)), key=lambda z: z[0])
     def lbfgs(x0):
         def fun(x):
             x = torch.tensor(x, device=DEV, dtype=torch.float64); l, g, _, _ = fg(x)
@@ -101,35 +92,45 @@ def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None):
         r = minimize(fun, x0.cpu().numpy(), jac=True, method="L-BFGS-B", bounds=None,
                      options=dict(maxiter=300, maxcor=50, ftol=1e-16, gtol=1e-12))
         return torch.tensor(r.x, device=DEV, dtype=torch.float64)
-    th_new = lbfgs(tsf + cand[1] * v0); g_new = grad(th_new)
-    print(f"  escaped (a={cand[1]:+g}) + reconverged: F={loss(th_new):.4f} |g|={float(g_new.norm()):.4e}", flush=True)
 
-    # Newton polish: build HVP ONCE at the escaped point, one step delta=-H^-1 g
-    Av_new = build_hvp_once(bs, th_new.reshape(S, 3), rw, lap, p)
-    lm_new, _, info_new = bottom(Av_new, p, full)
-    if full:
-        delta = torch.linalg.solve(info_new["H"], -g_new)
-    else:                                                     # large p: CG on H (PD) for the Newton solve
+    is_saddle = lam_min < 0
+    if is_saddle:                        # descend the most-negative-curvature eigenvector, re-converge
+        a_best = min(((loss(tsf + a * v0), a) for a in (-4, -2, -1, 1, 2, 4)), key=lambda z: z[0])[1]
+        th_cur = lbfgs(tsf + a_best * v0)
+        Av_cur = build_hvp_once(bs, th_cur.reshape(S, 3), rw, lap, p)
+        lm_cur, _, info_cur = bottom(Av_cur, p, full)
+        print(f"  escaped (a={a_best:+g}): F={loss(th_cur):.4f} |g|={float(grad(th_cur).norm()):.4e} lam_min={lm_cur:+.5e}", flush=True)
+    else:                                # already PD -- just Newton-polish to |g|->0
+        th_cur, Av_cur, lm_cur, info_cur = tsf.clone(), Av0, lam_min, info
+        print("  already PD; Newton-polishing to drive |g|->0", flush=True)
+    g_cur = grad(th_cur)
+
+    if full:                             # Newton step delta = -H^-1 g  (H now PD)
+        delta = torch.linalg.solve(info_cur["H"], -g_cur)
+    else:                                # large p: CG on H (PD) for the Newton solve
         from gpurec.optim.cg import cg_solve
-        delta, _it, _conv = cg_solve(Av_new, -g_new, tol=1e-8, max_iter=200)
-    th_star = th_new + delta; g_star = grad(th_star)
+        delta, _it, _conv = cg_solve(Av_cur, -g_cur, tol=1e-8, max_iter=200)
+    th_star = th_cur + delta; g_star = grad(th_star)
     Av_star = build_hvp_once(bs, th_star.reshape(S, 3), rw, lap, p)
     lm_star, _, info_star = bottom(Av_star, p, full)
-    print(f"  Newton step ||delta||={float(delta.norm()):.4f}: |g| {float(g_new.norm()):.3e}->{float(g_star.norm()):.3e}", flush=True)
+    print(f"  Newton step ||delta||={float(delta.norm()):.4f}: |g| {float(g_cur.norm()):.3e}->{float(g_star.norm()):.3e}", flush=True)
     gsn = float(g_star.norm()); F_star = loss(th_star)
-    tag = "ZERO-GRAD + PD (true local min)" if gsn < 1e-2 and lm_star > 0 else "not fully there"
-    print(f"\n=== ESCAPE+NEWTON (lam={lam}): F {F0:.4f} -> {F_star:.4f}   "
+    certified = gsn < 1e-2 and lm_star > 0
+    tag = "ZERO-GRAD + PD (true local min)" if certified else "not fully there"
+    print(f"\n=== {'ESCAPE+' if is_saddle else ''}NEWTON (lam={lam}): F {F0:.4f} -> {F_star:.4f}   "
           f"lam_min {lam_min:+.5e} -> {lm_star:+.6e}   |g|->{gsn:.3e}   -> {tag} ===", flush=True)
+    res = dict(
+        lam=lam, full_hessian=full, is_saddle=is_saddle, certified=certified,
+        theta_saddle=theta.reshape(S, 3).cpu(), theta_escaped=th_cur.reshape(S, 3).cpu(),
+        theta_newton=th_star.reshape(S, 3).cpu(),
+        lam_min_saddle=lam_min, lam_min_escaped=lm_cur, lam_min_newton=lm_star,
+        gnorm_saddle=g0n, gnorm_escaped=float(g_cur.norm()), gnorm_newton=gsn,
+        loss_saddle=F0, loss_escaped=loss(th_cur), loss_newton=F_star,
+        delta_norm=float(delta.norm()), n_neg_newton=info_star.get("n_neg"),
+        ritz_resid_newton=info_star.get("resid"), meta=meta or {})
     if out_path:
-        torch.save(dict(
-            theta_saddle=theta.reshape(S, 3).cpu(), theta_escaped=th_new.reshape(S, 3).cpu(),
-            theta_newton=th_star.reshape(S, 3).cpu(), lam=lam, full_hessian=full, is_saddle=True,
-            lam_min_saddle=lam_min, lam_min_escaped=lm_new, lam_min_newton=lm_star,
-            gnorm_saddle=g0n, gnorm_escaped=float(g_new.norm()), gnorm_newton=gsn,
-            loss_saddle=F0, loss_escaped=loss(th_new), loss_newton=F_star,
-            delta_norm=float(delta.norm()), n_neg_newton=info_star.get("n_neg"),
-            ritz_resid_newton=info_star.get("resid"), meta=meta or {}), out_path)
-        print(f"  saved checkpoint -> {out_path}", flush=True)
+        torch.save(res, out_path); print(f"  saved checkpoint -> {out_path}", flush=True)
+    return res
 
 
 def _model_from_env():
