@@ -1,0 +1,88 @@
+[certify_all] dataset=archaea n=256 S=119 p=357 batches=1 lambdas=[10.0, 3.0, 1.0, 0.3, 0.1, 0.03, 0.0] (model built 2s)
+
+########## lambda = 10.0  (refit_lam0.pt) ##########
+[saddle_escape] p=357 batches=1 lam=10.0 full_hessian=True
+  checkpoint: F=27713.9066 |g|=2.6027e-01 lam_min=+7.32213e-01 {'n_neg': 0, 'asym': 0.0013075603196699426} (157s)
+  already PD; Newton-polishing to drive |g|->0
+    [newton] iter 1: alpha=1  |g|->4.739e-04
+  Newton polish: 1 line-searched iters, total step 0.0680, |g| 2.603e-01->4.739e-04
+
+=== NEWTON (lam=10.0): F 27713.9066 -> 27713.9024   lam_min +7.32213e-01 -> +7.372699e-01   |g|->4.739e-04   -> ZERO-GRAD + PD (true local min) ===
+  saved checkpoint -> /work/SzollosiU/enzo-marsot/archaea_cv/certified_v2/archaea_lam10.0_certified.pt
+
+########## lambda = 3.0  (refit_lam1.pt) ##########
+[saddle_escape] p=357 batches=1 lam=3.0 full_hessian=True
+  checkpoint: F=27342.5618 |g|=9.4395e-02 lam_min=+4.61587e-01 {'n_neg': 0, 'asym': 0.001359344759263692} (152s)
+  already PD; Newton-polishing to drive |g|->0
+    [newton] iter 1: alpha=1  |g|->1.364e-04
+  Newton polish: 1 line-searched iters, total step 0.0419, |g| 9.440e-02->1.364e-04
+
+=== NEWTON (lam=3.0): F 27342.5618 -> 27342.5610   lam_min +4.61587e-01 -> +4.599946e-01   |g|->1.364e-04   -> ZERO-GRAD + PD (true local min) ===
+  saved checkpoint -> /work/SzollosiU/enzo-marsot/archaea_cv/certified_v2/archaea_lam3.0_certified.pt
+
+########## lambda = 1.0  (refit_lam2.pt) ##########
+[saddle_escape] p=357 batches=1 lam=1.0 full_hessian=True
+  checkpoint: F=27036.1103 |g|=1.0177e-01 lam_min=+2.22124e-01 {'n_neg': 0, 'asym': 0.0015927798720900554} (143s)
+  already PD; Newton-polishing to drive |g|->0
+    [newton] iter 1: alpha=1  |g|->4.936e-04
+  Newton polish: 1 line-searched iters, total step 0.0988, |g| 1.018e-01->4.936e-04
+
+=== NEWTON (lam=1.0): F 27036.1103 -> 27036.1083   lam_min +2.22124e-01 -> +2.210966e-01   |g|->4.936e-04   -> ZERO-GRAD + PD (true local min) ===
+  saved checkpoint -> /work/SzollosiU/enzo-marsot/archaea_cv/certified_v2/archaea_lam1.0_certified.pt
+
+########## lambda = 0.3  (refit_lam3.pt) ##########
+[saddle_escape] p=357 batches=1 lam=0.3 full_hessian=True
+  checkpoint: F=26768.1805 |g|=2.1614e-01 lam_min=+4.27809e-02 {'n_neg': 0, 'asym': 0.001972873682745707} (153s)
+  already PD; Newton-polishing to drive |g|->0
+    [newton] iter 1: alpha=0.5  |g|->1.203e-01
+    [newton] iter 2: alpha=1  |g|->7.335e-02
+    [newton] iter 3: alpha=1  |g|->4.873e-04
+  Newton polish: 3 line-searched iters, total step 1.1520, |g| 2.161e-01->4.873e-04
+
+=== NEWTON (lam=0.3): F 26768.1805 -> 26768.1476   lam_min +4.27809e-02 -> +5.610298e-02   |g|->4.873e-04   -> ZERO-GRAD + PD (true local min) ===
+  saved checkpoint -> /work/SzollosiU/enzo-marsot/archaea_cv/certified_v2/archaea_lam0.3_certified.pt
+
+########## lambda = 0.1  (refit_lam4.pt) ##########
+[saddle_escape] p=357 batches=1 lam=0.1 full_hessian=True
+  checkpoint: F=26604.1862 |g|=2.8866e-01 lam_min=+3.62356e-02 {'n_neg': 0, 'asym': 0.0031072832879154993} (140s)
+  already PD; Newton-polishing to drive |g|->0
+    [newton] iter 1: alpha=1  |g|->1.123e-02
+    [newton] iter 2: alpha=1  |g|->2.718e-05
+  Newton polish: 2 line-searched iters, total step 0.7606, |g| 2.887e-01->2.718e-05
+
+=== NEWTON (lam=0.1): F 26604.1862 -> 26604.1635   lam_min +3.62356e-02 -> +3.560592e-02   |g|->2.718e-05   -> ZERO-GRAD + PD (true local min) ===
+  saved checkpoint -> /work/SzollosiU/enzo-marsot/archaea_cv/certified_v2/archaea_lam0.1_certified.pt
+
+########## lambda = 0.03  (refit_lam5.pt) ##########
+[saddle_escape] p=357 batches=1 lam=0.03 full_hessian=True
+  checkpoint: F=26500.9418 |g|=2.8799e-01 lam_min=-1.92476e-02 {'n_neg': 2, 'asym': 0.0033486619913637022} (149s)
+  escaped (a=+2): F=26500.6448 |g|=2.6441e-02 lam_min=+1.37432e-02
+    [newton] iter 1: alpha=1  |g|->1.446e-04
+  Newton polish: 1 line-searched iters, total step 0.1417, |g| 2.644e-02->1.446e-04
+
+=== ESCAPE+NEWTON (lam=0.03): F 26500.9418 -> 26500.6446   lam_min -1.92476e-02 -> +1.379963e-02   |g|->1.446e-04   -> ZERO-GRAD + PD (true local min) ===
+  saved checkpoint -> /work/SzollosiU/enzo-marsot/archaea_cv/certified_v2/archaea_lam0.03_certified.pt
+
+########## lambda = 0.0  (refit_lam6.pt) ##########
+[saddle_escape] p=357 batches=1 lam=0.0 full_hessian=True
+  checkpoint: F=26407.7808 |g|=4.5101e-01 lam_min=-1.23444e-02 {'n_neg': 1, 'asym': 0.003876583921385901} (146s)
+  escaped (a=+2): F=26407.4082 |g|=3.6450e-02 lam_min=-1.42941e-03
+    [newton] iter 1: alpha=0.000976562  |g|->3.640e-02
+    [newton] iter 2: no ||g||-decreasing step; stop at |g|=3.640e-02
+  Newton polish: 1 line-searched iters, total step 0.0944, |g| 3.645e-02->3.640e-02
+
+=== ESCAPE+NEWTON (lam=0.0): F 26407.7808 -> 26407.4080   lam_min -1.23444e-02 -> -1.510771e-03   |g|->3.640e-02   -> not fully there ===
+  saved checkpoint -> /work/SzollosiU/enzo-marsot/archaea_cv/certified_v2/archaea_lam0.0_certified.pt
+
+================= CERTIFIED-MINIMUM SUMMARY =================
+  lambda refit_saddle?  lam_min(refit)  lam_min(final)   |g|(final)     F(refit)     F(final)  certified
+      10         False    +7.32213e-01   +7.372699e-01    4.739e-04   27713.9066   27713.9024       True
+       3         False    +4.61587e-01   +4.599946e-01    1.364e-04   27342.5618   27342.5610       True
+       1         False    +2.22124e-01   +2.210966e-01    4.936e-04   27036.1103   27036.1083       True
+     0.3         False    +4.27809e-02   +5.610298e-02    4.873e-04   26768.1805   26768.1476       True
+     0.1         False    +3.62356e-02   +3.560592e-02    2.718e-05   26604.1862   26604.1635       True
+    0.03          True    -1.92476e-02   +1.379963e-02    1.446e-04   26500.9418   26500.6446       True
+       0          True    -1.23444e-02   -1.510771e-03    3.640e-02   26407.7808   26407.4080      False
+
+[certify_all] DONE  (3884s)
+JOB_DONE rc=0

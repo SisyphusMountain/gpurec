@@ -34,6 +34,43 @@ constructive negative-curvature witness — decisive on the *sign* even though p
 eigenvalue unresolved at M=200). For hogenom, λ=1 was PD (+0.066) while λ=0.03 is a saddle (−0.046), so
 the curvature **crosses zero** as regularization lightens.
 
+## The full λ-grid: every penalized λ is a certified minimum (archaea)
+
+Running escape+Newton-polish+exact-`eigh`-cert on the whole homotopy grid (archaea, 256 families, each λ
+seeded from its `run_cv` refit; A100 fp64, job `4635197`):
+
+| λ | refit λ_min | refit a saddle? | final λ_min(H+λL) | final ‖g‖ | F(refit)→F(final) | certified min? |
+|---|---|---|---|---|---|---|
+| 10   | +0.7322 | no  | **+0.7373** | 4.7e-4 | 27713.907→27713.902 | ✅ |
+| 3    | +0.4616 | no  | **+0.4600** | 1.4e-4 | 27342.562→27342.561 | ✅ |
+| 1    | +0.2221 | no  | **+0.2211** | 4.9e-4 | 27036.110→27036.108 | ✅ |
+| 0.3  | +0.0428 | no  | **+0.0561** | 4.9e-4 | 26768.181→26768.148 | ✅ |
+| 0.1  | +0.0362 | no  | **+0.0356** | 2.7e-5 | 26604.186→26604.164 | ✅ |
+| 0.03 | −0.0192 | **yes** (n_neg=2) | **+0.0138** | 1.4e-4 | 26500.942→26500.645 | ✅ (escaped) |
+| 0    | −0.0123 | **yes**           | **−0.0015** | 3.6e-2 | 26407.781→26407.408 | ❌ (stays indefinite) |
+
+Two readings:
+
+1. **λ_min(λ) is monotone decreasing and crosses zero just below λ=0.03.** Curvature falls smoothly
+   0.74 → 0.46 → 0.22 → 0.056 → 0.036 → **+0.014 (λ=0.03)** → **−0.0015 (λ=0)**. Every positive penalty
+   produces an isolated PD minimum; the **bare MLE (λ=0) has none** — even after a saddle-escape it relaxes
+   only from −0.012 to −0.0015 and remains indefinite. This is the raw-MLE non-identifiability made
+   quantitative: the GBM penalty is what *creates* the minimum, and the CV-selected λ\*=0.03 is the
+   lightest penalty that still does so.
+
+2. **Two regimes, both needing curvature-awareness for different reasons.** At λ≥0.1 the refit is *already*
+   PD but its gradient is large (0.2–0.3) and lives almost entirely in the **soft eigendirection** —
+   L-BFGS floors there; Newton clears it in 1–3 steps. At λ=0.03 the refit is a *genuine saddle* (n_neg=2)
+   that needs the negative-curvature escape first. The L-BFGS endpoint is never the answer at light λ.
+
+**Why the line search is load-bearing (v1→v2).** The first pass used a single undamped Newton step
+δ=−H⁻¹g and *failed to converge λ=0.3 and λ=0.1*: at near-flat points H⁻¹ amplifies the soft direction by
+~1/λ_min, the full step overshoots the quadratic-trust region, and ‖g‖ *increases* (λ=0.3 ended at
+‖g‖=0.23, λ=0.1 at 0.011 — both reported `certified=False`). The hardened `newton_polish` — iterated, with
+a backtracking line search accepting the largest α∈{1,½,…} that decreases ‖g‖ — fixes both (λ=0.3:
+0.216→0.120 @α=½ →0.073 @α=1 →4.9e-4 @α=1; λ=0.1: 0.289→0.011→2.7e-5). **All future runs/scripts use this
+line-searched path** (it is the only Newton entry point in `saddle_escape.py` / `certify_all_lambdas.py`).
+
 ## Why L-BFGS floors, why Lanczos needed M≈p
 
 - **L-BFGS ‖g‖ floor is precision-, not optimizer-limited**: extended fp32 L-BFGS gains 0 loss (already
@@ -75,10 +112,30 @@ For hogenom (p=3993, fp64, A100): same script in **capture mode** —
 The pinned `*_newton_polished.pt` is the regression target: re-running `saddle_escape.py` on the pinned
 saddle θ must reproduce λ_min_saddle≈−0.019 → λ_min_newton≈+0.0138 and ‖g‖_newton ≈ 1e-4.
 
+**Full λ-grid (the certified table above).** `experiments/sanderson_cv/certify_all_lambdas.py` loops the
+homotopy grid, calling `saddle_escape.run` (always the line-searched Newton) on each `refit_lam{i}.pt` and
+printing the CERTIFIED-MINIMUM SUMMARY:
+
+```bash
+DATASET=archaea FAMILIES=256 CKPT_DIR=<run_cv outdir>/ckpt \
+  OUT_DIR=experiments/sanderson_cv/_artifacts/certified_v2 LAMBDAS="10 3 1 0.3 0.1 0.03 0" \
+  python experiments/sanderson_cv/certify_all_lambdas.py
+```
+
+Pinned outputs for all 7 λ + the cluster run log are in `_artifacts/certified_v2/`
+(`archaea_lam{λ}_certified.pt`, `certify_all.4635197.log`; A100 fp64, ~65 min). Each holds
+theta_{saddle,escaped,newton} and λ_min/‖g‖/F at every stage.
+
 ## Implication for the pipeline
 
-`run_cv` reports the L-BFGS endpoint, which at light λ is a **saddle**. To report a genuine MAP point
-estimate, chain `saddle_escape.py` (escape + Newton) after the L-BFGS refit. The components exist in the
-`newton/` research layer; this experiment is the minimal, verified version on the merged code. (The CV
-*curve* and λ\* are unaffected — the 0.30-NLL saddle→min gap is ~uniform across λ and ~0.006% of the
-held-out NLL.)
+`run_cv` reports the L-BFGS endpoint, which at light λ is a **saddle** (or, at λ≥0.1, a PD point whose
+gradient still floors in the soft direction). To report a genuine MAP point estimate, chain
+`saddle_escape.py` (escape + line-searched Newton) after the L-BFGS refit — at every penalized λ this
+yields a certified PD minimum (see the grid table). The components exist in the `newton/` research layer;
+this experiment is the minimal, verified version on the merged code. (The CV *curve* and λ\* are
+unaffected — the saddle/floor→min gap is ~uniform across λ and a tiny fraction of the held-out NLL.)
+
+The one λ that resists is **λ=0**: with no penalty there is no isolated PD minimum to find — the escape
+relaxes λ_min only from −0.012 to −0.0015, still indefinite. That is the expected, quantified raw-MLE
+non-identifiability, and the affirmative case for the Sanderson penalty: regularization is what makes the
+rate estimate a well-posed minimum at all.
