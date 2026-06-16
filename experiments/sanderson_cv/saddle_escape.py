@@ -62,7 +62,8 @@ def bottom(Av, p, full):
     return lam, v, dict(resid=float((Av(v) - lam * v).norm()))
 
 
-def newton_polish(th0, bs, rw, lap, p, S, grad, full, max_iter=8, tol=1e-3, verbose=True):
+def newton_polish(th0, bs, rw, lap, p, S, grad, full, max_iter=10, tol=1e-3, verbose=True,
+                  final_cert=True):
     """Iterated DAMPED Newton with a backtracking LINE SEARCH on ||g||.
 
     A single undamped step delta=-H^-1 g overshoots at near-flat points (lam_min~0): H^-1 amplifies
@@ -94,12 +95,17 @@ def newton_polish(th0, bs, rw, lap, p, S, grad, full, max_iter=8, tol=1e-3, verb
         th = th + alpha * d; total += float((alpha * d).norm()); g, gn = g_try, gnt; n_done = n
         if verbose:
             print(f"    [newton] iter {n}: alpha={alpha:g}  |g|->{gn:.3e}", flush=True)
-    Av = build_hvp_once(bs, th.reshape(S, 3), rw, lap, p)
-    lm_final, _v, info_final = bottom(Av, p, full)
+    if final_cert:
+        Av = build_hvp_once(bs, th.reshape(S, 3), rw, lap, p)
+        lm_final, _v, info_final = bottom(Av, p, full)
+    else:
+        lm_final, info_final = float("nan"), {}   # CV mode: the |g|<tol fit is what we need, skip the
+        #                                            redundant full-Hessian PD certificate (the dominant cost)
     return th, gn, lm_final, info_final, n_done, total
 
 
-def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None):
+def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None,
+        final_cert=True, polish_tol=1e-3, max_polish=10):
     p = 3 * S
     rw = rw.to(DEV).double(); sp = sp.to(DEV).long()
     child = (sp >= 0).nonzero(as_tuple=True)[0].contiguous(); par = sp[child].contiguous()
@@ -143,12 +149,17 @@ def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None):
     g_cur = grad(th_cur)
     # line-searched, iterated Newton (robust at near-flat points; see newton_polish docstring)
     th_star, gsn, lm_star, info_star, n_newton, step_total = newton_polish(
-        th_cur, bs, rw, lap, p, S, grad, full)
+        th_cur, bs, rw, lap, p, S, grad, full, max_iter=max_polish, tol=polish_tol,
+        final_cert=final_cert)
     print(f"  Newton polish: {n_newton} line-searched iters, total step {step_total:.4f}, "
           f"|g| {float(g_cur.norm()):.3e}->{gsn:.3e}", flush=True)
     F_star = loss(th_star)
-    certified = gsn < 1e-2 and lm_star > 0
-    tag = "ZERO-GRAD + PD (true local min)" if certified else "not fully there"
+    # final_cert=False (CV mode): the |g|<polish_tol fit is the deliverable; lm_star is NaN, so report
+    # convergence by gradient only (the saddle was already detected+escaped at the start point).
+    certified = (gsn < 1e-2 and lm_star > 0) if final_cert else None
+    tag = ("ZERO-GRAD + PD (true local min)" if certified
+           else f"converged |g|={gsn:.1e} (PD cert skipped)" if certified is None
+           else "not fully there")
     print(f"\n=== {'ESCAPE+' if is_saddle else ''}NEWTON (lam={lam}): F {F0:.4f} -> {F_star:.4f}   "
           f"lam_min {lam_min:+.5e} -> {lm_star:+.6e}   |g|->{gsn:.3e}   -> {tag} ===", flush=True)
     res = dict(

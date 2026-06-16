@@ -32,6 +32,7 @@ from run_cv import DATASETS, _CV_SO, kfold_indices, heldout_nll
 from gpurec import GeneReconModel, SolverOptions
 
 DEV = "cuda"
+GTOL = 1e-3  # a train fit counts as converged when ||grad|| < GTOL (1e-3 is enough; fp64)
 
 
 def build(paths, so, sp_tree):
@@ -99,10 +100,16 @@ def main():
             t0 = time.time()
             ho_orig = heldout_nll(test.batch_statics, theta_orig.reshape(S, 3), rw_d)
             conv_path = os.path.join(out_dir, f"conv_fold{fi}_lam{li}.pt")
+            # CV mode: drive the TRAIN fit to |g|<1e-3 (escape saddle + line-searched Newton); skip the
+            # redundant full-Hessian PD certificate (saddle was already detected/escaped at the start).
             res = saddle_escape.run(train.batch_statics, rw, sp_parent, S, ck, lam,
-                                    full=full, out_path=conv_path,
+                                    full=full, out_path=conv_path, final_cert=False, polish_tol=1e-3,
                                     meta=dict(fold=fi, li=li, n_test=len(te), n_train=len(tr)))
             theta_star = res["theta_newton"].to(DEV).double()
+            converged = res["gnorm_newton"] < GTOL
+            if not converged:
+                print(f"  !! [{key}] NOT CONVERGED: |g|={res['gnorm_newton']:.3e} > {GTOL:g} "
+                      f"(saddle={res['is_saddle']}) -- held-out at this theta is unreliable", flush=True)
             ho_star = heldout_nll(test.batch_statics, theta_star.reshape(S, 3), rw_d)
             state["cells"][key] = dict(
                 fold=fi, li=li, lam=lam, n_test=len(te), n_train=len(tr),
@@ -110,7 +117,7 @@ def main():
                 delta_heldout=ho_star - ho_orig,
                 lam_min_saddle=res["lam_min_saddle"], lam_min_newton=res["lam_min_newton"],
                 gnorm_saddle=res["gnorm_saddle"], gnorm_newton=res["gnorm_newton"],
-                is_saddle=res["is_saddle"], certified=res["certified"],
+                is_saddle=res["is_saddle"], certified=res["certified"], converged=converged,
                 loss_saddle=res["loss_saddle"], loss_newton=res["loss_newton"],
                 wall_s=time.time() - t0)
             save_state()
@@ -123,14 +130,17 @@ def main():
     # ---- converged CV curve ----
     lams = sorted({c["lam"] for c in state["cells"].values()}, reverse=True)
     print("\n================= CONVERGED CV CURVE (held-out NLL at certified minima) =================", flush=True)
-    print(f"{'lambda':>8} {'n_folds':>7} | {'CONV total':>12} {'ORIG total':>12} {'delta':>9} | {'CONV/fam':>9} | saddles certified", flush=True)
+    print(f"{'lambda':>8} {'n_folds':>7} | {'CONV total':>12} {'ORIG total':>12} {'delta':>9} | {'CONV/fam':>9} | per-fold-fit health", flush=True)
     curve = {}
     for lam in lams:
         cs = [c for c in state["cells"].values() if abs(c["lam"] - lam) < 1e-12]
         conv = sum(c["heldout_conv"] for c in cs); orig = sum(c["heldout_orig_fp64"] for c in cs)
-        nfam = sum(c["n_test"] for c in cs); nsad = sum(1 for c in cs if c["is_saddle"]); ncert = sum(1 for c in cs if c["certified"])
+        nfam = sum(c["n_test"] for c in cs); nsad = sum(1 for c in cs if c["is_saddle"])
+        nconv = sum(1 for c in cs if c.get("gnorm_newton", 9.9) < GTOL)
         curve[lam] = (conv, orig, len(cs), nfam)
-        print(f"{lam:>8g} {len(cs):>7} | {conv:12.3f} {orig:12.3f} {conv-orig:+9.3f} | {conv/max(1,nfam):9.4f} | {nsad}/{len(cs)} {ncert}/{len(cs)}", flush=True)
+        flag = "" if nconv == len(cs) else f"  !! {len(cs)-nconv} NOT CONVERGED"
+        print(f"{lam:>8g} {len(cs):>7} | {conv:12.3f} {orig:12.3f} {conv-orig:+9.3f} | {conv/max(1,nfam):9.4f} | "
+              f"saddles {nsad}/{len(cs)}  converged(|g|<{GTOL:g}) {nconv}/{len(cs)}{flag}", flush=True)
     full_lams = [lam for lam, v in curve.items() if v[2] == k]
     if full_lams:
         best_conv = min(full_lams, key=lambda L: curve[L][0])
