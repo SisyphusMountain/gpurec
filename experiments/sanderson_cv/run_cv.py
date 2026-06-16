@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from pathlib import Path
 
@@ -35,10 +36,10 @@ from gpurec.optim.optimize import Schedule
 from gpurec.optim.value_and_grad import make_value_and_grad
 
 HERE = Path(__file__).resolve().parent
-ROOT = Path("/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom")
-SP_TREE = (ROOT / "runs/MFP/true_start_ufboot1000/"
-           "run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/"
-           "starting_species_tree.newick")
+DATA = Path("/home/enzo/Documents/git/gpurec/gpurec/tests/data")
+HOGENOM_ROOT = Path(os.environ.get("GPUREC_HOGENOM_ROOT", DATA / "alerax_hogenom_core/hogenom"))
+# archaea data root is env-overridable so the same code runs on the cluster (data shipped to /work)
+ARCHAEA_ROOT = Path(os.environ.get("GPUREC_ARCHAEA_ROOT", DATA / "alerax_archaea_davin2017"))
 
 _CV_SO = dict(
     e_init=-1000.0, e_max_iter=2000, e_tol=1e-8, pi_iters=64, neumann_terms=64,
@@ -49,17 +50,34 @@ _CV_SO = dict(
 
 
 # ----------------------------------------------------------------------------------------------
-# data / model
+# datasets: each maps to a species tree + a family-path resolver. Add a dataset here to run CV on it.
 # ----------------------------------------------------------------------------------------------
-def family_paths(n=None):
+def _hogenom_families(n):
     fams = [ln.strip() for ln in open(HERE / "families_1055.txt") if ln.strip()]
     if n is not None:
         fams = fams[:n]
-    return [str(ROOT / "families" / f / "gene_trees" / "ufboot1000.MFP.geneTree.newick") for f in fams]
+    return [str(HOGENOM_ROOT / "families" / f / "gene_trees" / "ufboot1000.MFP.geneTree.newick") for f in fams]
+
+
+def _archaea_families(n):
+    import glob
+    fs = sorted(glob.glob(str(ARCHAEA_ROOT / "ale_gene_tree_distributions/main_families_ge4seq/*.ale")))
+    return fs[:n] if n is not None else fs
+
+
+DATASETS = {
+    "hogenom": dict(species_tree=HOGENOM_ROOT / "runs/MFP/true_start_ufboot1000/"
+                    "run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/"
+                    "starting_species_tree.newick", families=_hogenom_families),
+    "archaea": dict(species_tree=ARCHAEA_ROOT / "species_reference/reference_species_tree.newick",
+                    families=_archaea_families),
+}
+
+_SP_TREE = None  # species tree path; set by run_cv() from the chosen dataset
 
 
 def build_model(paths, so):
-    return GeneReconModel(str(SP_TREE), [str(p) for p in paths], mode="specieswise",
+    return GeneReconModel(str(_SP_TREE), [str(p) for p in paths], mode="specieswise",
                           device="cuda", solver_options=so)
 
 
@@ -198,17 +216,21 @@ class Run:
         tmp.replace(self.state_path)  # atomic
 
 
-def run_cv(*, n_families, k, lambdas, seed, outdir, use_wandb=True, adam_steps=40,
+def run_cv(*, n_families, k, lambdas, seed, outdir, dataset="hogenom", use_wandb=True, adam_steps=40,
            lbfgs_iters=120):
+    global _SP_TREE
+    ds = DATASETS[dataset]
+    _SP_TREE = ds["species_tree"]
     so = SolverOptions(**_CV_SO); so.validate()
-    paths = family_paths(n_families)
+    paths = ds["families"](n_families)
     n = len(paths)
     lambdas = sorted({float(x) for x in lambdas}, reverse=True)  # descending homotopy
-    cfg = dict(n_families=n, k=k, lambdas=lambdas, seed=seed, adam_steps=adam_steps,
+    cfg = dict(dataset=dataset, n_families=n, k=k, lambdas=lambdas, seed=seed, adam_steps=adam_steps,
                lbfgs_iters=lbfgs_iters, solver="pi64_neu64",
-               penalty="gbm_tree_laplacian", init="theta0", run_id=f"sandcv_n{n}_k{k}_s{seed}")
+               penalty="gbm_tree_laplacian", init="theta0",
+               run_id=f"sandcv_{dataset}_n{n}_k{k}_s{seed}_nl{len(lambdas)}_it{lbfgs_iters}")
     run = Run(outdir, use_wandb, cfg)
-    print(f"[run_cv] n={n} families, k={k}, lambdas(desc)={lambdas}\n  outdir={outdir}  "
+    print(f"[run_cv] dataset={dataset}  n={n} families, k={k}, lambdas(desc)={lambdas}\n  outdir={outdir}  "
           f"resume: {len(run.state['folds_done'])} folds + {len(run.state['refit'])} refit-lams done")
 
     # full model: source of sp_parent / rw / S and the final refit; built once.
@@ -295,11 +317,12 @@ def run_cv(*, n_families, k, lambdas, seed, outdir, use_wandb=True, adam_steps=4
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--families", type=int, default=1055)
+    ap.add_argument("--dataset", choices=sorted(DATASETS), default="hogenom")
+    ap.add_argument("--families", type=int, default=None, help="number of families (default: all in the dataset)")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--lambdas", type=float, nargs="+", default=[1000, 100, 10, 1, 0.1, 0.0])
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--outdir", default=str(HERE / "runs" / "cv_1055"))
+    ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-wandb", action="store_true")
     ap.add_argument("--adam-steps", type=int, default=40)
     ap.add_argument("--lbfgs-iters", type=int, default=120)
@@ -307,8 +330,10 @@ def main():
     ap.add_argument("--smoke", type=int, default=0, help="override n_families for a quick smoke")
     args = ap.parse_args()
     n = args.smoke if args.smoke else args.families
-    run_cv(n_families=n, k=args.k, lambdas=args.lambdas, seed=args.seed, outdir=args.outdir,
-           use_wandb=not args.no_wandb, adam_steps=args.adam_steps, lbfgs_iters=args.lbfgs_iters)
+    outdir = args.outdir or str(HERE / "runs" / f"cv_{args.dataset}_n{n or 'all'}")
+    run_cv(n_families=n, k=args.k, lambdas=args.lambdas, seed=args.seed, outdir=outdir,
+           dataset=args.dataset, use_wandb=not args.no_wandb, adam_steps=args.adam_steps,
+           lbfgs_iters=args.lbfgs_iters)
 
 
 if __name__ == "__main__":
