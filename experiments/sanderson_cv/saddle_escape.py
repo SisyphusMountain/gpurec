@@ -62,6 +62,43 @@ def bottom(Av, p, full):
     return lam, v, dict(resid=float((Av(v) - lam * v).norm()))
 
 
+def newton_polish(th0, bs, rw, lap, p, S, grad, full, max_iter=8, tol=1e-3, verbose=True):
+    """Iterated DAMPED Newton with a backtracking LINE SEARCH on ||g||.
+
+    A single undamped step delta=-H^-1 g overshoots at near-flat points (lam_min~0): H^-1 amplifies
+    the soft direction by ~1/lam_min, the full step leaves the quadratic-trust region and ||g|| can
+    *increase*. So each iteration rebuilds the (PD) Hessian, computes the Newton direction, and accepts
+    the largest alpha in {1,1/2,1/4,...} that DECREASES ||g|| (d=-H^-1 g is a descent direction for
+    1/2||g||^2). Iterates until ||g||<tol or no alpha helps. Returns (theta, gnorm, lam_min, info,
+    n_iter, total_step)."""
+    from gpurec.optim.cg import cg_solve
+    th = th0.clone().reshape(-1); total = 0.0; n_done = 0
+    g = grad(th); gn = float(g.norm())
+    for n in range(1, max_iter + 1):
+        if gn < tol:
+            break
+        # CG-solve the Newton direction via the HVP operator (cheap -- no full 357x357 Hessian
+        # in the loop; the definitive eigh-cert is formed once after the loop). H is PD here.
+        Av = build_hvp_once(bs, th.reshape(S, 3), rw, lap, p)
+        d, _it, _conv = cg_solve(Av, -g, tol=1e-8, max_iter=400)
+        alpha, ok, g_try, gnt = 1.0, False, g, gn
+        for _ in range(30):
+            g_try = grad(th + alpha * d); gnt = float(g_try.norm())
+            if gnt < gn:
+                ok = True; break
+            alpha *= 0.5
+        if not ok:
+            if verbose:
+                print(f"    [newton] iter {n}: no ||g||-decreasing step; stop at |g|={gn:.3e}", flush=True)
+            break
+        th = th + alpha * d; total += float((alpha * d).norm()); g, gn = g_try, gnt; n_done = n
+        if verbose:
+            print(f"    [newton] iter {n}: alpha={alpha:g}  |g|->{gn:.3e}", flush=True)
+    Av = build_hvp_once(bs, th.reshape(S, 3), rw, lap, p)
+    lm_final, _v, info_final = bottom(Av, p, full)
+    return th, gn, lm_final, info_final, n_done, total
+
+
 def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None):
     p = 3 * S
     rw = rw.to(DEV).double(); sp = sp.to(DEV).long()
@@ -104,17 +141,12 @@ def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None):
         th_cur, Av_cur, lm_cur, info_cur = tsf.clone(), Av0, lam_min, info
         print("  already PD; Newton-polishing to drive |g|->0", flush=True)
     g_cur = grad(th_cur)
-
-    if full:                             # Newton step delta = -H^-1 g  (H now PD)
-        delta = torch.linalg.solve(info_cur["H"], -g_cur)
-    else:                                # large p: CG on H (PD) for the Newton solve
-        from gpurec.optim.cg import cg_solve
-        delta, _it, _conv = cg_solve(Av_cur, -g_cur, tol=1e-8, max_iter=200)
-    th_star = th_cur + delta; g_star = grad(th_star)
-    Av_star = build_hvp_once(bs, th_star.reshape(S, 3), rw, lap, p)
-    lm_star, _, info_star = bottom(Av_star, p, full)
-    print(f"  Newton step ||delta||={float(delta.norm()):.4f}: |g| {float(g_cur.norm()):.3e}->{float(g_star.norm()):.3e}", flush=True)
-    gsn = float(g_star.norm()); F_star = loss(th_star)
+    # line-searched, iterated Newton (robust at near-flat points; see newton_polish docstring)
+    th_star, gsn, lm_star, info_star, n_newton, step_total = newton_polish(
+        th_cur, bs, rw, lap, p, S, grad, full)
+    print(f"  Newton polish: {n_newton} line-searched iters, total step {step_total:.4f}, "
+          f"|g| {float(g_cur.norm()):.3e}->{gsn:.3e}", flush=True)
+    F_star = loss(th_star)
     certified = gsn < 1e-2 and lm_star > 0
     tag = "ZERO-GRAD + PD (true local min)" if certified else "not fully there"
     print(f"\n=== {'ESCAPE+' if is_saddle else ''}NEWTON (lam={lam}): F {F0:.4f} -> {F_star:.4f}   "
@@ -126,7 +158,7 @@ def run(bs, rw, sp, S, theta_path, lam, full=None, out_path=None, meta=None):
         lam_min_saddle=lam_min, lam_min_escaped=lm_cur, lam_min_newton=lm_star,
         gnorm_saddle=g0n, gnorm_escaped=float(g_cur.norm()), gnorm_newton=gsn,
         loss_saddle=F0, loss_escaped=loss(th_cur), loss_newton=F_star,
-        delta_norm=float(delta.norm()), n_neg_newton=info_star.get("n_neg"),
+        newton_step_total=step_total, newton_iters=n_newton, n_neg_newton=info_star.get("n_neg"),
         ritz_resid_newton=info_star.get("resid"), meta=meta or {})
     if out_path:
         torch.save(res, out_path); print(f"  saved checkpoint -> {out_path}", flush=True)
