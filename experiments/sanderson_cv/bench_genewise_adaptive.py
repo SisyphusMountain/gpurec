@@ -52,18 +52,24 @@ MIN_RATE = float(os.environ.get("MIN_RATE", "1e-6")); MAX_RATE = float(os.enviro
 TOL = float(os.environ.get("TOL", "1e-3")); FD_EPS = float(os.environ.get("FD_EPS", "1e-2"))
 ADAM = int(os.environ.get("ADAM", "20")); TIER_NEWTON = int(os.environ.get("TIER_NEWTON", "30"))
 HESS_EVERY = int(os.environ.get("HESS_EVERY", "5")); MU = 1e-2; TRUST = 2.0
+# Backward (adjoint) neumann is DECOUPLED from pi: the optimization runs cheap NEU_OPT with adjoint
+# WARM-START (GPUREC_WARM_ADJOINT, scoped to each tier's newton_bounded), which recovers NEU_CERT-quality
+# gradients at NEU_OPT cost (measured on hogenom-5k: |Pg| 15 at neu16-warm vs 12 at neu64, 29 at neu16-cold;
+# ~1.37x faster). Certificates (graduation verify + final) run NEU_CERT COLD -> authoritative & no warm cache.
+NEU_OPT = int(os.environ.get("NEU_OPT", "16")); NEU_CERT = int(os.environ.get("NEU_CERT", "64"))
+CHECK_EVERY = int(os.environ.get("CHECK_EVERY", "3")); PATIENCE = int(os.environ.get("PATIENCE", "3"))
 TH_LO, TH_HI = log2_rate_bounds(MIN_RATE, MAX_RATE)
 R = dict(meta=dict(dataset=DATASET, families=_FAM, pis=PIS, min_rate=MIN_RATE, max_rate=MAX_RATE, tol=TOL))
 print(f"=== genewise ADAPTIVE-REBATCH {DATASET} fam={_FAM}  pi-tiers={PIS}  rate in [{MIN_RATE},{MAX_RATE}] ===", flush=True)
 
 
-def sopts(pi):
-    return SolverOptions(**{**_CV_SO, "pi_iters": pi, "neumann_terms": pi})
+def sopts(pi, neu):
+    return SolverOptions(**{**_CV_SO, "pi_iters": pi, "neumann_terms": neu})
 
 
-def build(paths, pi):
+def build(paths, pi, neu):
     m = GeneReconModel(str(DATASETS[DATASET]["species_tree"]), [str(x) for x in paths],
-                       mode="genewise", device=DEV, solver_options=sopts(pi), clade_budget=80000)
+                       mode="genewise", device=DEV, solver_options=sopts(pi, neu), clade_budget=80000)
     m.receiver_weights.requires_grad_(False)
     return m
 
@@ -83,8 +89,8 @@ def clamp_(th):
     clamp_log_rate_(th, min_rate=MIN_RATE, max_rate=MAX_RATE); return th
 
 
-def newton_bounded(m, theta, steps, F, t0, adam=0):
-    """Bounded projected trust-region Newton (clamp each step, no line search). Returns theta."""
+def newton_bounded(m, theta, steps, F, t0, adam=0, tag=""):
+    """Bounded projected trust-region Newton (clamp each step, no line search). Returns (theta, n_steps)."""
     leaf = theta.clone()
     if adam:
         lf = leaf.clone().requires_grad_(True); ad = torch.optim.Adam([lf], lr=0.05)
@@ -93,9 +99,26 @@ def newton_bounded(m, theta, steps, F, t0, adam=0):
             with torch.no_grad():
                 clamp_(lf)
         leaf = lf.detach().clone()
-    Hd = None
+    Hd = None; best_nconv = -1; since = 0; n_steps = 0
     for it in range(steps):
-        lv, g = lg(m, leaf)
+        lv, g = lg(m, leaf); n_steps += 1
+        # convergence check every CHECK_EVERY iters (projected gradient is free -- we already have g).
+        # Key on the CONVERGED COUNT, not |Pg|max: a tier's job is to converge the families it CAN at this
+        # pi; once no NEW family is crossing tol (count plateaus for PATIENCE checks), the rest are stiff
+        # and get escalated -- so stop. (|Pg|max never drops in tier 0 because the to-be-promoted families
+        # keep it high, so it's the wrong signal.)
+        if it % CHECK_EVERY == 0:
+            pgm = project_rate_gradient_(leaf, g.clone(), min_rate=MIN_RATE, max_rate=MAX_RATE).abs().amax(dim=1)
+            nconv = int((pgm < TOL).sum())
+            print(f"      [{tag} it{it:2d}] conv={nconv}/{F} |Pg|max={float(pgm.max()):.2e}", flush=True)
+            if nconv == F:
+                break
+            if nconv > best_nconv:
+                best_nconv = nconv; since = 0
+            else:
+                since += 1
+                if since >= PATIENCE:
+                    break
         if it % HESS_EVERY == 0:
             H = torch.zeros(F, 3, 3, device=DEV, dtype=DT)
             for j in range(3):
@@ -114,7 +137,7 @@ def newton_bounded(m, theta, steps, F, t0, adam=0):
         delta = -torch.linalg.solve(Hred, g_red.unsqueeze(-1)).squeeze(-1)
         dn = delta.norm(dim=1, keepdim=True); delta = delta * (TRUST / dn.clamp(min=TRUST))
         leaf = clamp_(leaf + delta)
-    return leaf.detach()
+    return leaf.detach(), n_steps
 
 
 t0 = time.perf_counter()
@@ -130,14 +153,17 @@ for i, pi in enumerate(PIS):
         break
     paths = [fam_paths[j] for j in active.tolist()]
     tb = time.perf_counter()
-    m = build(paths, pi); n = active.numel()
+    m = build(paths, pi, NEU_OPT); n = active.numel()
     sub_theta = theta.index_select(0, active).clone()
-    sub_theta = newton_bounded(m, sub_theta, TIER_NEWTON, n, t0, adam=ADAM if i == 0 else 0)
+    os.environ["GPUREC_WARM_ADJOINT"] = "1"   # warm-start the adjoint across this tier's optimization steps
+    sub_theta, n_steps = newton_bounded(m, sub_theta, TIER_NEWTON, n, t0, adam=ADAM if i == 0 else 0, tag=f"pi{pi}")
+    os.environ.pop("GPUREC_WARM_ADJOINT", None)
     theta.index_copy_(0, active, sub_theta)
+    # certify at NEU_CERT COLD (authoritative, no warm cache): reconfigure m's backward, verify next-pi stability
+    m.solver_options = sopts(pi, NEU_CERT)
     pg_here = proj_gmax(m, sub_theta)
-    # verify stability at the NEXT pi (truncation guard) -- graduate only if converged at both
     if i + 1 < len(PIS):
-        m2 = build(paths, PIS[i + 1])
+        m2 = build(paths, PIS[i + 1], NEU_CERT)
         pg_next = proj_gmax(m2, sub_theta)
         ok = (pg_here < TOL) & (pg_next < TOL)
         del m2
@@ -146,9 +172,10 @@ for i, pi in enumerate(PIS):
     grad_idx = active[ok]; graduated_tier[grad_idx] = pi
     promoted = int((~ok).sum())
     dt = time.perf_counter() - tb
-    print(f"[tier {i} pi={pi:4d}] {n} families -> graduated {int(ok.sum())} (stable<= pi{PIS[i+1] if i+1<len(PIS) else pi}), "
+    print(f"[tier {i} pi={pi:4d}] {n} families, {n_steps} newton steps (early-stop of {TIER_NEWTON}) -> "
+          f"graduated {int(ok.sum())} (stable<= pi{PIS[i+1] if i+1<len(PIS) else pi}), "
           f"promote {promoted}  |Pg|max_here={float(pg_here.max()):.2e}  {dt:.0f}s", flush=True)
-    tier_log.append(dict(tier=i, pi=pi, n_in=int(n), graduated=int(ok.sum()), promoted=promoted, secs=dt))
+    tier_log.append(dict(tier=i, pi=pi, n_in=int(n), newton_steps=n_steps, graduated=int(ok.sum()), promoted=promoted, secs=dt))
     active = active[~ok]
     del m; torch.cuda.empty_cache()
 
@@ -156,7 +183,7 @@ for i, pi in enumerate(PIS):
 TOP = PIS[-1]
 print(f"\n[final cert pi={TOP}] FD 3x3 + projected gradient over all {F_all} families ...", flush=True)
 tc = time.perf_counter()
-mfull = build(fam_paths, TOP)
+mfull = build(fam_paths, TOP, NEU_CERT)
 pg = proj_gmax(mfull, theta)
 H = torch.zeros(F_all, 3, 3, device=DEV, dtype=DT)
 for j in range(3):

@@ -1,3 +1,5 @@
+import os
+
 import torch
 
 from gpurec.api._batch_state import _BatchStatic
@@ -44,6 +46,14 @@ def evaluate_static_loss_grad(
         if not need_grad:
             return loss, None, None
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
+        # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
+        # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
+        if os.environ.get("GPUREC_WARM_ADJOINT"):
+            if static.warm_v is None:
+                static.warm_v = {}
+            _warm_v = static.warm_v
+        else:
+            _warm_v = None
         grad_theta, grad_receiver = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -73,6 +83,7 @@ def evaluate_static_loss_grad(
             adjoint_pruning_threshold=static.solver_options.adjoint_pruning_threshold,
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
+            warm_v=_warm_v,
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
@@ -177,6 +188,14 @@ def evaluate_static_loss_vector_grad(
         if not need_grad:
             return loss_vec, None, None
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
+        # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
+        # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
+        if os.environ.get("GPUREC_WARM_ADJOINT"):
+            if static.warm_v is None:
+                static.warm_v = {}
+            _warm_v = static.warm_v
+        else:
+            _warm_v = None
         grad_theta, grad_receiver = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -206,6 +225,7 @@ def evaluate_static_loss_vector_grad(
             adjoint_pruning_threshold=static.solver_options.adjoint_pruning_threshold,
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
+            warm_v=_warm_v,
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()

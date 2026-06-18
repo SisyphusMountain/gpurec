@@ -17,6 +17,7 @@ class _BatchStatic:
     family_index_tensor: torch.Tensor
     solver_options: SolverOptions
     warm_E: torch.Tensor | None = None
+    warm_v: dict | None = None   # per-wave backward Pi-adjoint warm-start cache (keyed by wave-start ws)
 
 
 def build_batch_static(

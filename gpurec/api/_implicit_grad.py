@@ -115,6 +115,7 @@ def implicit_grad_loglik_vjp_wave(
     use_adjoint_pruning: bool = True,
     pibar_side_threshold: float = 0.0,
     collect_backward_relres: bool = False,
+    warm_v: dict | None = None,
 ):
     neumann_terms = int(neumann_terms)
     if neumann_terms < 0:
@@ -195,6 +196,7 @@ def implicit_grad_loglik_vjp_wave(
     for meta in reversed(wave_layout["wave_metas"]):
         ws = int(meta["start"])
         W = int(meta["W"])
+        init_v = warm_v.get(ws) if warm_v is not None else None   # per-wave adjoint warm-start
         rhs_k = accumulated_rhs[ws : ws + W]
         active_mask = active_mask_from_rhs_absmax_fused(
             rhs_k,
@@ -261,6 +263,7 @@ def implicit_grad_loglik_vjp_wave(
             use_receiver_weights=use_receiver_weights,
             self_loop_solver=self_loop_solver,
             return_last_increment=collect_backward_relres,
+            initial_v=init_v,
         )
         if collect_backward_relres:
             v_k, aw0, aw1, aw2, aw345, aw3, aw4, last_relres = backward_out
@@ -286,6 +289,16 @@ def implicit_grad_loglik_vjp_wave(
                 )
         else:
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = backward_out
+        if warm_v is not None:
+            # Cache the solved adjoint for next call's warm-start, but ZERO the pruned/inactive rows first
+            # -- they hold uninitialized scratch, and reusing that garbage as initial_v poisons the next
+            # solve (NaN in the downstream E-adjoint), especially when the active set shifts between thetas.
+            # NaN-safe select (NOT multiply: inactive rows hold uninitialized scratch = NaN/inf, and
+            # 0.0 * NaN = NaN, which would poison the next warm-start). torch.where drops them cleanly.
+            _row_active = active_mask.reshape(active_mask.shape[0], -1).ne(0).any(dim=1)
+            warm_v[ws] = torch.where(
+                _row_active.unsqueeze(-1), v_k, torch.zeros((), dtype=v_k.dtype, device=v_k.device)
+            ).detach()
         family_rows_for_wave = family_idx[ws : ws + W]
         _scatter_accum(grad_log_pD, family_rows_for_wave, aw0)
         _scatter_accum(grad_log_pS, family_rows_for_wave, aw345)
