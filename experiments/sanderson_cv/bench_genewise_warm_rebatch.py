@@ -39,6 +39,11 @@ CHECK = int(os.environ.get("CHECK", "4")); FRAC = float(os.environ.get("FRAC", "
 # already computed each Newton step) or by LIKELIHOOD plateau |loss(it)-loss(it-CHECK)|<CONV_TOL. Measured:
 # loss-plateau drops ~22% of hogenom families PREMATURELY (flat-loss region != minimum); grad does not.
 DROP_BY = os.environ.get("DROP_BY", "grad")
+# Warm-start cache is ~active_clades*S*4 bytes; on a big initial batch that can exceed GPU memory (full
+# hogenom: 12408 fam -> 19.5GB). Gate it: warm ON only once the active batch <= WARM_MAX_FAM. The big
+# early batch runs cold (its easy families are NOT stiff, and cold |Pg| is conservatively high so they
+# never drop prematurely); warm engages for the small stiff tail, where it matters and the cache is small.
+WARM_MAX_FAM = int(os.environ.get("WARM_MAX_FAM", "1000000000"))
 ADAM = int(os.environ.get("ADAM", "20")); MAXIT = int(os.environ.get("MAXIT", "120")); HESS_EVERY = int(os.environ.get("HESS_EVERY", "5"))
 CLADE_BUDGET = int(os.environ.get("CLADE_BUDGET", "80000"))
 TH_LO, TH_HI = log2_rate_bounds(MIN_RATE, MAX_RATE)
@@ -55,6 +60,9 @@ def lg(m, th):
     lv, g, _ = m.genewise_loss_vector_and_grad(theta=th, need_grad=True); return lv.to(DT), g.to(DT)
 def pgmax(th, g): return project_rate_gradient_(th, g.clone(), min_rate=MIN_RATE, max_rate=MAX_RATE).abs().amax(dim=1)
 def clamp_(th): clamp_log_rate_(th, min_rate=MIN_RATE, max_rate=MAX_RATE); return th
+def set_warm(n):                                       # enable warm-start only when the active batch fits in memory
+    if n <= WARM_MAX_FAM: os.environ["GPUREC_WARM_ADJOINT"] = "1"
+    else: os.environ.pop("GPUREC_WARM_ADJOINT", None)
 
 
 t0 = time.perf_counter()
@@ -63,7 +71,7 @@ theta = torch.zeros(F_all, 3, device=DEV, dtype=DT); clamp_(theta)
 active = torch.arange(F_all, device=DEV)
 was_dropped = torch.zeros(F_all, dtype=torch.bool, device=DEV)   # dropped mid-run (vs optimized to the end)
 
-os.environ["GPUREC_WARM_ADJOINT"] = "1"                          # warm-start the optimization adjoint
+set_warm(active.numel())                                        # warm-start the optimization adjoint (gated by size)
 m = build([fam_paths[j] for j in active.tolist()], NEU_OPT)
 sub = theta.index_select(0, active).clone()
 lf = sub.clone().requires_grad_(True); ad = torch.optim.Adam([lf], lr=0.05)
@@ -91,6 +99,7 @@ for it in range(MAXIT):
             active = active[~conv]; sub = sub[~conv].clone()
             rebatch_log.append(dict(it=it, dropped=int(conv.sum()), remain=int(active.numel())))
             del m; torch.cuda.empty_cache()
+            set_warm(active.numel())                             # re-gate warm-start for the (smaller) survivor batch
             m = build([fam_paths[j] for j in active.tolist()], NEU_OPT)   # rebatch survivors (warm cache resets)
             Hd = None; loss_ref = None; continue
         loss_ref = lv.clone()

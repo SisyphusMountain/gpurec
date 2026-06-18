@@ -59,6 +59,15 @@ def _hogenom_families(n):
     return [str(HOGENOM_ROOT / "families" / f / "gene_trees" / "ufboot1000.MFP.geneTree.newick") for f in fams]
 
 
+def _hogenom_full_families(n):
+    # full prepared hogenom family list (12408) from the large_dataset_capacity benchmark manifest
+    allf = DATA.parent.parent / "benchmarks/large_dataset_capacity/generated/alerax_hogenom_core_all_families.txt"
+    fams = [ln[2:].strip() for ln in open(allf) if ln.startswith("- CLU_")]
+    if n is not None:
+        fams = fams[:n]
+    return [str(HOGENOM_ROOT / "families" / f / "gene_trees" / "ufboot1000.MFP.geneTree.newick") for f in fams]
+
+
 def _archaea_families(n):
     import glob
     fs = sorted(glob.glob(str(ARCHAEA_ROOT / "ale_gene_tree_distributions/main_families_ge4seq/*.ale")))
@@ -69,6 +78,9 @@ DATASETS = {
     "hogenom": dict(species_tree=HOGENOM_ROOT / "runs/MFP/true_start_ufboot1000/"
                     "run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/"
                     "starting_species_tree.newick", families=_hogenom_families),
+    "hogenom_full": dict(species_tree=HOGENOM_ROOT / "runs/MFP/true_start_ufboot1000/"
+                    "run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/"
+                    "starting_species_tree.newick", families=_hogenom_full_families),
     "archaea": dict(species_tree=ARCHAEA_ROOT / "species_reference/reference_species_tree.newick",
                     families=_archaea_families),
 }

@@ -58,6 +58,10 @@ HESS_EVERY = int(os.environ.get("HESS_EVERY", "5")); MU = 1e-2; TRUST = 2.0
 # ~1.37x faster). Certificates (graduation verify + final) run NEU_CERT COLD -> authoritative & no warm cache.
 NEU_OPT = int(os.environ.get("NEU_OPT", "16")); NEU_CERT = int(os.environ.get("NEU_CERT", "64"))
 CHECK_EVERY = int(os.environ.get("CHECK_EVERY", "3")); PATIENCE = int(os.environ.get("PATIENCE", "3"))
+# warm-start cache ~ tier_clades*S*4 bytes; on the big low-pi tier-0 that can exceed GPU memory (full hogenom
+# tier-0 = 12408 fam -> ~20GB). Gate it: warm ON only when the tier's batch <= WARM_MAX_FAM. Tier-0's easy
+# families converge fine cold at low pi anyway; warm matters for the small stiff high-pi tiers, where it fits.
+WARM_MAX_FAM = int(os.environ.get("WARM_MAX_FAM", "1000000000"))
 TH_LO, TH_HI = log2_rate_bounds(MIN_RATE, MAX_RATE)
 R = dict(meta=dict(dataset=DATASET, families=_FAM, pis=PIS, min_rate=MIN_RATE, max_rate=MAX_RATE, tol=TOL))
 print(f"=== genewise ADAPTIVE-REBATCH {DATASET} fam={_FAM}  pi-tiers={PIS}  rate in [{MIN_RATE},{MAX_RATE}] ===", flush=True)
@@ -155,7 +159,8 @@ for i, pi in enumerate(PIS):
     tb = time.perf_counter()
     m = build(paths, pi, NEU_OPT); n = active.numel()
     sub_theta = theta.index_select(0, active).clone()
-    os.environ["GPUREC_WARM_ADJOINT"] = "1"   # warm-start the adjoint across this tier's optimization steps
+    if n <= WARM_MAX_FAM:                      # warm-start this tier's adjoint only if the cache fits (else cold)
+        os.environ["GPUREC_WARM_ADJOINT"] = "1"
     sub_theta, n_steps = newton_bounded(m, sub_theta, TIER_NEWTON, n, t0, adam=ADAM if i == 0 else 0, tag=f"pi{pi}")
     os.environ.pop("GPUREC_WARM_ADJOINT", None)
     theta.index_copy_(0, active, sub_theta)
