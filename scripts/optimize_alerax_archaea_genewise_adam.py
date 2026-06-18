@@ -670,7 +670,6 @@ def main() -> None:
     )
     schedule = parse_schedule(args.schedule, default_self_loop_solver=args.self_loop_solver)
     solver_options = SolverOptions(
-        e_init=-1000.0,
         e_max_iter=args.e_max_iter,
         e_tol=args.e_tol,
         pi_iters=int(schedule[0]["pi_iters"]),

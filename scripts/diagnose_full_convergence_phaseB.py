@@ -47,7 +47,7 @@ _spec.loader.exec_module(archaea_opt)
 
 
 def solver(pi: int, nt: int) -> SolverOptions:
-    return SolverOptions(e_init=-1000.0, e_max_iter=4000, e_tol=1e-10,
+    return SolverOptions(e_max_iter=4000, e_tol=1e-10,
                          pi_iters=pi, neumann_terms=nt, self_loop_solver="neumann")
 
 

@@ -94,7 +94,6 @@ def select_families(gene_tree_dir: Path, *, max_families: int, val_families: int
 
 def build_model(args: argparse.Namespace, families: list[Path]) -> GeneReconModel:
     solver_options = SolverOptions(
-        e_init=-1000.0,
         e_max_iter=2000,
         e_tol=1e-8,
         pi_iters=args.pi_iters,

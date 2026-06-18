@@ -53,7 +53,7 @@ _spec.loader.exec_module(archaea_opt)
 
 
 def base_solver() -> SolverOptions:
-    return SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    return SolverOptions(e_max_iter=2000, e_tol=1e-8,
                          pi_iters=16, neumann_terms=16, self_loop_solver="neumann")
 
 
@@ -76,7 +76,7 @@ def penalty(th, model):
 def grad_at(model: GeneReconModel, theta_fixed: torch.Tensor, pi: int, nt: int,
             solver: str = "neumann") -> tuple[float, float, float]:
     """Gradient norms at a FIXED theta with a given (pi_iters, neumann_terms) solver."""
-    model.solver_options = SolverOptions(e_init=-1000.0, e_max_iter=4000, e_tol=1e-10,
+    model.solver_options = SolverOptions(e_max_iter=4000, e_tol=1e-10,
                                          pi_iters=pi, neumann_terms=nt, self_loop_solver=solver)
     model.clear_warm_starts()
     with torch.no_grad():

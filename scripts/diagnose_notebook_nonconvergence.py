@@ -57,7 +57,7 @@ def build_model() -> tuple[GeneReconModel, int]:
     families, _ = archaea_opt.select_families(
         FAM_DIR, max_families=MAX_FAMILIES, family_order=FAMILY_ORDER,
         min_leaves=MIN_LEAVES, recursive=False)
-    opts = SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    opts = SolverOptions(e_max_iter=2000, e_tol=1e-8,
                          pi_iters=16, neumann_terms=16, self_loop_solver="neumann")
     model = GeneReconModel(SP_TREE, [str(f) for f in families], mode="specieswise",
                            device=DEVICE, solver_options=opts)
@@ -70,7 +70,7 @@ def reset(model: GeneReconModel) -> None:
     with torch.no_grad():
         model.theta.copy_(torch.full_like(model.theta, float(np.log2(INIT_RATE))))
     # restore the base single-batch fixed solver (undo any prior adapt rebatching)
-    model.solver_options = SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    model.solver_options = SolverOptions(e_max_iter=2000, e_tol=1e-8,
                                          pi_iters=16, neumann_terms=16, self_loop_solver="neumann")
     model.replan_batches(family_group_assignments=None)
     model.clear_warm_starts()

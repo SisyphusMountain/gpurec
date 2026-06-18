@@ -52,7 +52,7 @@ _spec.loader.exec_module(archaea_opt)
 def build(n: int) -> tuple[GeneReconModel, int]:
     families, _ = archaea_opt.select_families(
         FAM_DIR, max_families=n, family_order=FAMILY_ORDER, min_leaves=MIN_LEAVES, recursive=False)
-    opts = SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    opts = SolverOptions(e_max_iter=2000, e_tol=1e-8,
                          pi_iters=16, neumann_terms=16, self_loop_solver="neumann")
     model = GeneReconModel(SP_TREE, [str(f) for f in families], mode="specieswise",
                            device=DEVICE, solver_options=opts)

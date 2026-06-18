@@ -61,7 +61,7 @@ def select_stiff(n: int) -> tuple[list[str], list[int]]:
 
 def build() -> tuple[GeneReconModel, int, list[int]]:
     fams, lvs = select_stiff(N_FAMILIES)
-    opts = SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    opts = SolverOptions(e_max_iter=2000, e_tol=1e-8,
                          pi_iters=16, neumann_terms=16, self_loop_solver="neumann")
     # drop any unparsable straggler one at a time
     while True:
@@ -81,7 +81,7 @@ def reset(model: GeneReconModel) -> None:
     torch.manual_seed(SEED)
     with torch.no_grad():
         model.theta.copy_(torch.full_like(model.theta, float(np.log2(INIT_RATE))))
-    model.solver_options = SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    model.solver_options = SolverOptions(e_max_iter=2000, e_tol=1e-8,
                                          pi_iters=16, neumann_terms=16, self_loop_solver="neumann")
     model.replan_batches(family_group_assignments=None)
     model.clear_warm_starts()

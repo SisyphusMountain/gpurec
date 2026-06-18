@@ -46,7 +46,7 @@ def solve_resident_e_pi(
     E0 = (
         warm_start_E.detach().to(theta).contiguous()
         if warm_start_E is not None
-        else theta.new_full(e_shape, float(solver_options.e_init))
+        else theta.new_full(e_shape, torch.finfo(theta.dtype).min)
     )
     E, E_s1, E_s2, Ebar = e_fixed_point_triton(
         E0,

@@ -169,10 +169,10 @@ def endpoint_gradient_at_high_accuracy(model: GeneReconModel) -> dict:
         loss.backward()
         return hi.theta.grad.detach().clone()
 
-    g_train = grad_at(SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    g_train = grad_at(SolverOptions(e_max_iter=2000, e_tol=1e-8,
                                     pi_iters=PI_ITERS, neumann_terms=NEUMANN_TERMS,
                                     self_loop_solver="neumann"))
-    g_hi = grad_at(SolverOptions(e_init=-1000.0, e_max_iter=4000, e_tol=1e-10,
+    g_hi = grad_at(SolverOptions(e_max_iter=4000, e_tol=1e-10,
                                  pi_iters=PI_ITERS_HI, neumann_terms=NEUMANN_TERMS_HI,
                                  self_loop_solver="neumann"))
     diff = (g_train - g_hi).abs().max()
@@ -195,7 +195,7 @@ def build_at(template: GeneReconModel, opts: SolverOptions) -> GeneReconModel:
 def main() -> None:
     torch.manual_seed(SEED)
     print(f"device={DEVICE}  families<= {MAX_FAMILIES} ({FAMILY_ORDER})  lambda={PENALTY_LAMBDA}")
-    train_opts = SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    train_opts = SolverOptions(e_max_iter=2000, e_tol=1e-8,
                                pi_iters=PI_ITERS, neumann_terms=NEUMANN_TERMS,
                                self_loop_solver="neumann")
     model, fams = build_model(train_opts)

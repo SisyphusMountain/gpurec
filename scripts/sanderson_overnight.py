@@ -156,7 +156,7 @@ def optimizer_namespace(args: argparse.Namespace) -> SimpleNamespace:
 # --------------------------------------------------------------------------- #
 def build_model(args: argparse.Namespace, families: list[Path], schedule: list[dict], dtype_name: str) -> GeneReconModel:
     solver = SolverOptions(
-        e_init=-1000.0, e_max_iter=args.e_max_iter, e_tol=args.e_tol,
+        e_max_iter=args.e_max_iter, e_tol=args.e_tol,
         pi_iters=int(schedule[0]["pi_iters"]), neumann_terms=int(schedule[0]["neumann_terms"]),
         self_loop_solver=str(schedule[0]["self_loop_solver"]),
     )

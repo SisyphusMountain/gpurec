@@ -36,7 +36,7 @@ _spec.loader.exec_module(archaea_opt)
 
 
 def sopts(pi, nt):
-    return SolverOptions(e_init=-1000.0, e_max_iter=2000, e_tol=1e-8,
+    return SolverOptions(e_max_iter=2000, e_tol=1e-8,
                          pi_iters=pi, neumann_terms=nt, self_loop_solver="neumann")
 
 

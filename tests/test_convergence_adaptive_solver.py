@@ -87,7 +87,7 @@ def _build(tmp_path: Path, k: int, *, device, neumann_terms: int = 16) -> GeneRe
         mode="specieswise",
         device=device,
         solver_options=SolverOptions(
-            e_init=-1000.0, e_max_iter=2000, e_tol=1e-10, pi_iters=16, neumann_terms=neumann_terms
+            e_max_iter=2000, e_tol=1e-10, pi_iters=16, neumann_terms=neumann_terms
         ),
     )
 
@@ -107,7 +107,7 @@ def _build_archaea(k: int, *, device, neumann_terms: int = 16) -> GeneReconModel
         pytest.skip("archaea reference dataset is unavailable")
     families = [str(p) for p in sorted(fam_dir.glob("*.ale"))[: k + 10]]
     options = SolverOptions(
-        e_init=-1000.0, e_max_iter=4000, e_tol=1e-10, pi_iters=16, neumann_terms=neumann_terms
+        e_max_iter=4000, e_tol=1e-10, pi_iters=16, neumann_terms=neumann_terms
     )
     while families:
         try:

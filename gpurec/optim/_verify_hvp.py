@@ -28,7 +28,7 @@ _SP = (f"{_ROOT}/runs/MFP/true_start_ufboot1000/"
        "run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/"
        "starting_species_tree.newick")
 # converged solver: pi/neumann/tangent-self high enough that fwd & bwd are both converged
-_SO = dict(e_init=-1000.0, e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64,
+_SO = dict(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64,
            self_loop_solver="neumann", bicgstab_max_iter=500, bicgstab_tol=1e-10,
            bicgstab_breakdown_tol=1e-30, adjoint_pruning_threshold=1e-6,
            use_adjoint_pruning=True, pibar_side_threshold=0.0)

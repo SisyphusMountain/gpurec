@@ -5,11 +5,10 @@ from dataclasses import dataclass
 class SolverOptions:
     """Runtime-tunable solver controls for fixed-point and series solves."""
 
-    e_init: float = -1.0
     e_max_iter: int = 2000
     e_tol: float = 1e-8
-    pi_iters: int = 6
-    neumann_terms: int = 3
+    pi_iters: int = 64
+    neumann_terms: int = 64
     self_loop_solver: str = "neumann"
     bicgstab_max_iter: int = 500
     bicgstab_tol: float = 1e-7

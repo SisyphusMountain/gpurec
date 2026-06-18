@@ -286,7 +286,6 @@ def main() -> None:
     theta_final = run_dir / "theta_final.pt"
 
     solver_options = SolverOptions(
-        e_init=-1000.0,
         e_max_iter=2000,
         e_tol=1e-8,
         pi_iters=args.pi_iters,
