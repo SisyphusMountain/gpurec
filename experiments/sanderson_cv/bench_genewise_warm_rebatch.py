@@ -30,7 +30,14 @@ from gpurec.optimization import clamp_log_rate_, project_rate_gradient_, log2_ra
 DEV = "cuda"; DT = torch.float32
 DATASET = os.environ.get("DATASET", "hogenom")
 _FAM = os.environ.get("FAMILIES", "all"); N_FAM = None if _FAM in ("all", "0", "") else int(_FAM)
-PI = int(os.environ.get("PI", "64")); NEU_OPT = int(os.environ.get("NEU_OPT", "16")); NEU_CERT = int(os.environ.get("NEU_CERT", "64"))
+# pi-ESCALATION: run convergence-drop at PIS[0]; families that STALL (stiff -- need higher pi to converge)
+# escalate to PIS[1], etc. Drops + final cert are verified at CERT_PI (the authoritative high pi) so a family
+# is never frozen on a low-pi-truncated optimum. PIS defaults to the single PI (backward compatible).
+PIS = [int(x) for x in os.environ.get("PIS", os.environ.get("PI", "64")).split(",")]
+CERT_PI = int(os.environ.get("CERT_PI", str(max(PIS))))
+ESC_PATIENCE = int(os.environ.get("ESC_PATIENCE", "3"))   # checks with no drop AFTER a drop -> escalate
+STUCK_MAX = int(os.environ.get("STUCK_MAX", "10"))        # checks with no drop at all -> escalate (fallback)
+NEU_OPT = int(os.environ.get("NEU_OPT", "16")); NEU_CERT = int(os.environ.get("NEU_CERT", "64"))
 MIN_RATE = float(os.environ.get("MIN_RATE", "1e-6")); MAX_RATE = float(os.environ.get("MAX_RATE", "2"))
 TOL = float(os.environ.get("TOL", "1e-3")); FD_EPS = 1e-2; MU = 1e-2; TRUST = 2.0
 CONV_TOL = float(os.environ.get("CONV_TOL", "1e-2"))   # per-family loss-plateau threshold (DROP_BY=loss only)
@@ -51,14 +58,14 @@ VERIFY_DROP = os.environ.get("VERIFY_DROP", "1") != "0"
 ADAM = int(os.environ.get("ADAM", "20")); MAXIT = int(os.environ.get("MAXIT", "120")); HESS_EVERY = int(os.environ.get("HESS_EVERY", "5"))
 CLADE_BUDGET = int(os.environ.get("CLADE_BUDGET", "80000"))
 TH_LO, TH_HI = log2_rate_bounds(MIN_RATE, MAX_RATE)
-print(f"=== genewise WARM + CONVERGENCE-REBATCH {DATASET} fam={_FAM}  pi={PI} neu_opt={NEU_OPT}(warm) "
-      f"neu_cert={NEU_CERT}  drop>|loss|<{CONV_TOL}/{CHECK}it when >{FRAC*100:.0f}% plateau ===", flush=True)
+print(f"=== genewise WARM + CONVERGENCE-REBATCH {DATASET} fam={_FAM}  pi-tiers={PIS} cert_pi={CERT_PI} "
+      f"neu_opt={NEU_OPT}(warm) neu_cert={NEU_CERT}  drop |Pg|<{TOL} when >{FRAC*100:.0f}% (verify={VERIFY_DROP}) ===", flush=True)
 
 
-def sopts(neu): return SolverOptions(**{**_CV_SO, "pi_iters": PI, "neumann_terms": neu})
-def build(paths, neu):
+def sopts(pi, neu): return SolverOptions(**{**_CV_SO, "pi_iters": pi, "neumann_terms": neu})
+def build(paths, pi, neu):
     m = GeneReconModel(str(DATASETS[DATASET]["species_tree"]), [str(x) for x in paths],
-                       mode="genewise", device=DEV, solver_options=sopts(neu), clade_budget=CLADE_BUDGET)
+                       mode="genewise", device=DEV, solver_options=sopts(pi, neu), clade_budget=CLADE_BUDGET)
     m.receiver_weights.requires_grad_(False); return m
 def lg(m, th):
     lv, g, _ = m.genewise_loss_vector_and_grad(theta=th, need_grad=True); return lv.to(DT), g.to(DT)
@@ -75,65 +82,76 @@ theta = torch.zeros(F_all, 3, device=DEV, dtype=DT); clamp_(theta)
 active = torch.arange(F_all, device=DEV)
 was_dropped = torch.zeros(F_all, dtype=torch.bool, device=DEV)   # dropped mid-run (vs optimized to the end)
 
-set_warm(active.numel())                                        # warm-start the optimization adjoint (gated by size)
-m = build([fam_paths[j] for j in active.tolist()], NEU_OPT)
-sub = theta.index_select(0, active).clone()
-lf = sub.clone().requires_grad_(True); ad = torch.optim.Adam([lf], lr=0.05)
-for _ in range(ADAM):                                            # Adam warmup on the full batch
-    _, g = lg(m, lf.detach()); lf.grad = g; ad.step()
-    with torch.no_grad(): clamp_(lf)
-sub = lf.detach().clone()
+rebatch_log = []
+def build_active(pi):                                            # build over the current `active` at pi (warm-gated)
+    set_warm(active.numel())
+    return build([fam_paths[j] for j in active.tolist()], pi, NEU_OPT)
 
-Hd = None; loss_ref = None; rebatch_log = []
-for it in range(MAXIT):
+for pi_idx, PI_CUR in enumerate(PIS):                            # ascending pi tiers; stiff residual escalates
     if active.numel() == 0: break
-    lv, g = lg(m, sub)
-    if it % CHECK == 0:                                          # convergence-based drop check
-        pgm = pgmax(sub, g)
-        if DROP_BY == "loss":                                    # likelihood plateau (the proposed proxy; loose)
-            conv = ((loss_ref - lv).abs() < CONV_TOL) if (loss_ref is not None and loss_ref.shape[0] == lv.shape[0]) \
-                else torch.zeros_like(pgm, dtype=torch.bool)
-        else:                                                    # projected gradient |Pg|<TOL (reliable, free)
-            conv = pgm < TOL
-        frac = float(conv.float().mean())
-        print(f"  [it{it:3d}] active={active.numel():5d} converged={frac*100:4.0f}% |Pg|max={float(pgm.max()):.2e} "
-              f"t={time.perf_counter()-t0:.0f}s", flush=True)
-        do_drop = frac > FRAC and conv.any() and not conv.all()
-        if do_drop and VERIFY_DROP:                             # re-verify the converged subset at NEU_CERT cold
-            _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
-            m.solver_options = sopts(NEU_CERT)
-            conv = conv & (pgmax(sub, lg(m, sub)[1]) < TOL)
-            m.solver_options = sopts(NEU_OPT)
-            if _w: os.environ["GPUREC_WARM_ADJOINT"] = _w
-            do_drop = bool(conv.any()) and not bool(conv.all())
-        if do_drop:
-            theta.index_copy_(0, active[conv], sub[conv]); was_dropped[active[conv]] = True
-            active = active[~conv]; sub = sub[~conv].clone()
-            rebatch_log.append(dict(it=it, dropped=int(conv.sum()), remain=int(active.numel())))
-            del m; torch.cuda.empty_cache()
-            set_warm(active.numel())                             # re-gate warm-start for the (smaller) survivor batch
-            m = build([fam_paths[j] for j in active.tolist()], NEU_OPT)   # rebatch survivors (warm cache resets)
-            Hd = None; loss_ref = None; continue
-        loss_ref = lv.clone()
-    if it % HESS_EVERY == 0 or Hd is None or Hd.shape[0] != sub.shape[0]:
-        H = torch.zeros(sub.shape[0], 3, 3, device=DEV, dtype=DT)
-        for j in range(3):
-            tp = sub.clone(); tp[:, j] += FD_EPS; _, gp = lg(m, tp)
-            tm = sub.clone(); tm[:, j] -= FD_EPS; _, gm = lg(m, tm)
-            H[:, :, j] = (gp - gm) / (2 * FD_EPS)
-        H = 0.5 * (H + H.transpose(1, 2)); e, V = torch.linalg.eigh(H)
-        Hd = V @ torch.diag_embed(e.clamp(min=MU)) @ V.transpose(1, 2)
-    fixed = ((sub >= TH_HI - 1e-6) & (g < 0)) | ((sub <= TH_LO + 1e-6) & (g > 0)); free = (~fixed).float()
-    Hred = Hd * free.unsqueeze(1) * free.unsqueeze(2) + torch.diag_embed(1.0 - free)
-    delta = -torch.linalg.solve(Hred, (g * free).unsqueeze(-1)).squeeze(-1)
-    dn = delta.norm(dim=1, keepdim=True); sub = clamp_(sub + delta * (TRUST / dn.clamp(min=TRUST)))
-if active.numel() > 0: theta.index_copy_(0, active, sub)
+    last_tier = pi_idx == len(PIS) - 1
+    m = build_active(PI_CUR)
+    sub = theta.index_select(0, active).clone()
+    if pi_idx == 0:                                             # Adam warmup once, on the full batch
+        lf = sub.clone().requires_grad_(True); ad = torch.optim.Adam([lf], lr=0.05)
+        for _ in range(ADAM):
+            _, g = lg(m, lf.detach()); lf.grad = g; ad.step()
+            with torch.no_grad(): clamp_(lf)
+        sub = lf.detach().clone()
+    Hd = None; loss_ref = None; since_drop = 0; had_drop = False
+    for it in range(MAXIT):
+        if active.numel() == 0: break
+        lv, g = lg(m, sub)
+        if it % CHECK == 0:                                     # convergence-based drop check
+            pgm = pgmax(sub, g)
+            if DROP_BY == "loss":
+                conv = ((loss_ref - lv).abs() < CONV_TOL) if (loss_ref is not None and loss_ref.shape[0] == lv.shape[0]) \
+                    else torch.zeros_like(pgm, dtype=torch.bool)
+            else:                                              # projected gradient |Pg|<TOL (reliable, free)
+                conv = pgm < TOL
+            frac = float(conv.float().mean())
+            print(f"  [pi{PI_CUR:3d} it{it:3d}] active={active.numel():5d} conv={frac*100:4.0f}% "
+                  f"|Pg|max={float(pgm.max()):.2e} t={time.perf_counter()-t0:.0f}s", flush=True)
+            do_drop = frac > FRAC and bool(conv.any()) and not bool(conv.all())
+            if do_drop and VERIFY_DROP:                        # verify converged subset at (CERT_PI, NEU_CERT) cold
+                _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
+                m.solver_options = sopts(CERT_PI, NEU_CERT)
+                conv = conv & (pgmax(sub, lg(m, sub)[1]) < TOL)
+                m.solver_options = sopts(PI_CUR, NEU_OPT)
+                if _w: os.environ["GPUREC_WARM_ADJOINT"] = _w
+                do_drop = bool(conv.any()) and not bool(conv.all())
+            if do_drop:
+                theta.index_copy_(0, active[conv], sub[conv]); was_dropped[active[conv]] = True
+                active = active[~conv]; sub = sub[~conv].clone()
+                rebatch_log.append(dict(pi=PI_CUR, it=it, dropped=int(conv.sum()), remain=int(active.numel())))
+                had_drop = True; since_drop = 0
+                del m; torch.cuda.empty_cache(); m = build_active(PI_CUR)
+                Hd = None; loss_ref = None; continue
+            since_drop += 1
+            if not last_tier and ((had_drop and since_drop >= ESC_PATIENCE) or since_drop >= STUCK_MAX):
+                print(f"  [pi{PI_CUR}] stalled, {active.numel()} stiff -> escalate to pi{PIS[pi_idx+1]}", flush=True)
+                break
+            loss_ref = lv.clone()
+        if it % HESS_EVERY == 0 or Hd is None or Hd.shape[0] != sub.shape[0]:
+            H = torch.zeros(sub.shape[0], 3, 3, device=DEV, dtype=DT)
+            for j in range(3):
+                tp = sub.clone(); tp[:, j] += FD_EPS; _, gp = lg(m, tp)
+                tm = sub.clone(); tm[:, j] -= FD_EPS; _, gm = lg(m, tm)
+                H[:, :, j] = (gp - gm) / (2 * FD_EPS)
+            H = 0.5 * (H + H.transpose(1, 2)); e, V = torch.linalg.eigh(H)
+            Hd = V @ torch.diag_embed(e.clamp(min=MU)) @ V.transpose(1, 2)
+        fixed = ((sub >= TH_HI - 1e-6) & (g < 0)) | ((sub <= TH_LO + 1e-6) & (g > 0)); free = (~fixed).float()
+        Hred = Hd * free.unsqueeze(1) * free.unsqueeze(2) + torch.diag_embed(1.0 - free)
+        delta = -torch.linalg.solve(Hred, (g * free).unsqueeze(-1)).squeeze(-1)
+        dn = delta.norm(dim=1, keepdim=True); sub = clamp_(sub + delta * (TRUST / dn.clamp(min=TRUST)))
+    if active.numel() > 0: theta.index_copy_(0, active, sub)    # carry the residual theta into the next tier
+    del m; torch.cuda.empty_cache()
 os.environ.pop("GPUREC_WARM_ADJOINT", None)
 opt_s = time.perf_counter() - t0
 
-# ---- final cert at NEU_CERT COLD over ALL families ----------------------------------------------
+# ---- final cert at (CERT_PI, NEU_CERT) COLD over ALL families -----------------------------------
 tc = time.perf_counter()
-mfull = build(fam_paths, NEU_CERT)
+mfull = build(fam_paths, CERT_PI, NEU_CERT)
 _, g = lg(mfull, theta); pg = pgmax(theta, g)
 H = torch.zeros(F_all, 3, 3, device=DEV, dtype=DT)
 for j in range(3):
@@ -144,15 +162,15 @@ H = 0.5 * (H + H.transpose(1, 2)); lam_min = torch.linalg.eigvalsh(H)[:, 0]
 at_lo = (theta <= TH_LO + 1e-6); at_hi = (theta >= TH_HI - 1e-6); bound_active = (at_lo | at_hi).any(dim=1)
 conv = pg < TOL; pd = lam_min > TOL; total = time.perf_counter() - t0
 premature = int((was_dropped & ~conv).sum())
-print(f"\n{'='*72}\nWARM + CONVERGENCE-REBATCH  ({DATASET} F={F_all}, pi={PI} neu_opt={NEU_OPT}-warm neu_cert={NEU_CERT})\n{'='*72}", flush=True)
+print(f"\n{'='*72}\nWARM + CONVERGENCE-REBATCH  ({DATASET} F={F_all}, pi-tiers={PIS} cert_pi={CERT_PI} neu_opt={NEU_OPT}-warm)\n{'='*72}", flush=True)
 for r in rebatch_log:
-    print(f"  rebatch @it{r['it']:3d}: dropped {r['dropped']:5d} -> {r['remain']:5d} remain", flush=True)
+    print(f"  drop @pi{r['pi']:3d} it{r['it']:3d}: dropped {r['dropped']:5d} -> {r['remain']:5d} remain", flush=True)
 print(f"  drops={len(rebatch_log)}  total dropped mid-run={int(was_dropped.sum())}  optimize={opt_s:.0f}s  cert={time.perf_counter()-tc:.0f}s", flush=True)
 print(f"  CONVERGED (|Pg|<{TOL}) = {int(conv.sum())}/{F_all}   |Pg|max={float(pg.max()):.2e}", flush=True)
 print(f"  interior PD = {int((conv & pd & ~bound_active).sum())}   bound-active = {int(bound_active.sum())}   "
       f"unconverged = {int((~conv).sum())}   (of which dropped-prematurely = {premature})", flush=True)
 print(f"  TOTAL = {total:.0f}s", flush=True)
-R = dict(dataset=DATASET, F=F_all, pi=PI, neu_opt=NEU_OPT, neu_cert=NEU_CERT, conv_tol=CONV_TOL, frac=FRAC,
+R = dict(dataset=DATASET, F=F_all, pis=PIS, cert_pi=CERT_PI, neu_opt=NEU_OPT, neu_cert=NEU_CERT, conv_tol=CONV_TOL, frac=FRAC,
          opt_s=opt_s, total_s=total, n_conv=int(conv.sum()), n_interior_pd=int((conv & pd & ~bound_active).sum()),
          n_bound_active=int(bound_active.sum()), n_unconv=int((~conv).sum()), n_dropped=int(was_dropped.sum()),
          n_premature=premature, rebatches=rebatch_log)
