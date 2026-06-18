@@ -44,6 +44,10 @@ DROP_BY = os.environ.get("DROP_BY", "grad")
 # early batch runs cold (its easy families are NOT stiff, and cold |Pg| is conservatively high so they
 # never drop prematurely); warm engages for the small stiff tail, where it matters and the cache is small.
 WARM_MAX_FAM = int(os.environ.get("WARM_MAX_FAM", "1000000000"))
+# The opt |Pg| uses NEU_OPT (cold neu16 on the big batch), which can be biased BELOW tol -> premature drops
+# (measured: 383/12408 on full hogenom). VERIFY_DROP re-checks the converged subset at NEU_CERT cold before
+# freezing, so a family is dropped only if it is genuinely converged by the authoritative backward.
+VERIFY_DROP = os.environ.get("VERIFY_DROP", "1") != "0"
 ADAM = int(os.environ.get("ADAM", "20")); MAXIT = int(os.environ.get("MAXIT", "120")); HESS_EVERY = int(os.environ.get("HESS_EVERY", "5"))
 CLADE_BUDGET = int(os.environ.get("CLADE_BUDGET", "80000"))
 TH_LO, TH_HI = log2_rate_bounds(MIN_RATE, MAX_RATE)
@@ -94,7 +98,15 @@ for it in range(MAXIT):
         frac = float(conv.float().mean())
         print(f"  [it{it:3d}] active={active.numel():5d} converged={frac*100:4.0f}% |Pg|max={float(pgm.max()):.2e} "
               f"t={time.perf_counter()-t0:.0f}s", flush=True)
-        if frac > FRAC and conv.any() and not conv.all():
+        do_drop = frac > FRAC and conv.any() and not conv.all()
+        if do_drop and VERIFY_DROP:                             # re-verify the converged subset at NEU_CERT cold
+            _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
+            m.solver_options = sopts(NEU_CERT)
+            conv = conv & (pgmax(sub, lg(m, sub)[1]) < TOL)
+            m.solver_options = sopts(NEU_OPT)
+            if _w: os.environ["GPUREC_WARM_ADJOINT"] = _w
+            do_drop = bool(conv.any()) and not bool(conv.all())
+        if do_drop:
             theta.index_copy_(0, active[conv], sub[conv]); was_dropped[active[conv]] = True
             active = active[~conv]; sub = sub[~conv].clone()
             rebatch_log.append(dict(it=it, dropped=int(conv.sum()), remain=int(active.numel())))
