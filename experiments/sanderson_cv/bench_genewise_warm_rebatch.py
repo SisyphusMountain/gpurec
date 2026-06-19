@@ -11,8 +11,12 @@ also flags any family that was dropped PREMATURELY (loss plateaued but |Pg| stil
 Why this beats pi-tier escalation here: warm-start already gives the stiff families an accurate gradient at
 neu16, so the only adaptivity left worth paying for is shrinking the batch as families converge.
 
-Env: DATASET=hogenom|archaea FAMILIES=all|N PI=64 NEU_OPT=16 NEU_CERT=64 MIN_RATE=1e-6 MAX_RATE=2 TOL=1e-3
-     CONV_TOL=1e-2 CHECK=4 FRAC=0.30 ADAM=20 MAXIT=120 HESS_EVERY=5 CLADE_BUDGET=80000 OUT_JSON=
+DEFAULT recipe = PIS=16,64 + REBATCH_RESID=1: run the bulk at pi=16, escalate ONLY the forward-stiff families
+(forward residual > FWD_TOL) to pi=64. Full hogenom 12408: 1507s vs 2003s pi64-single, identical convergence.
+Set REBATCH_RESID=0 (or PIS=64) to recover the single-tier convergence-drop recipe.
+
+Env: DATASET=hogenom|hogenom_full|archaea FAMILIES=all|N PIS=16,64 REBATCH_RESID=1 FWD_TOL=1e-3 NEU_OPT=16
+     NEU_CERT=64 MIN_RATE=1e-6 MAX_RATE=2 TOL=1e-3 CHECK=4 FRAC=0.30 ADAM=20 MAXIT=160 CLADE_BUDGET=80000 OUT_JSON=
 
   WT=$(git rev-parse --show-toplevel)
   GPUREC_PREPROCESS_PATH=$WT/crates/gpurec-preprocess/target/release/libgpurec_preprocess.so PYTHONPATH=$WT \
@@ -34,7 +38,7 @@ _FAM = os.environ.get("FAMILIES", "all"); N_FAM = None if _FAM in ("all", "0", "
 # pi-ESCALATION: run convergence-drop at PIS[0]; families that STALL (stiff -- need higher pi to converge)
 # escalate to PIS[1], etc. Drops + final cert are verified at CERT_PI (the authoritative high pi) so a family
 # is never frozen on a low-pi-truncated optimum. PIS defaults to the single PI (backward compatible).
-PIS = [int(x) for x in os.environ.get("PIS", os.environ.get("PI", "64")).split(",")]
+PIS = [int(x) for x in os.environ.get("PIS", os.environ.get("PI", "16,64")).split(",")]
 CERT_PI = int(os.environ.get("CERT_PI", str(max(PIS))))
 ESC_PATIENCE = int(os.environ.get("ESC_PATIENCE", "3"))   # checks with no drop AFTER a drop -> escalate
 STUCK_MAX = int(os.environ.get("STUCK_MAX", "10"))        # checks with no drop at all -> escalate (fallback)
@@ -65,7 +69,7 @@ CLADE_BUDGET = int(os.environ.get("CLADE_BUDGET", "80000"))
 # escalate ONLY the families that are both (a) forward-stiff (resid > FWD_TOL => the pi=16 gradient is
 # truncation-biased so |Pg| can never reach tol) and (b) stuck (|Pg| stopped dropping). Non-stiff slow families
 # keep converging at the low pi. Eager: defers the moment the residual flags a family, not at a global counter.
-REBATCH_RESID = os.environ.get("REBATCH_RESID", "0") != "0"
+REBATCH_RESID = os.environ.get("REBATCH_RESID", "1") != "0"   # DEFAULT ON: the fastest full-hogenom recipe
 FWD_TOL = float(os.environ.get("FWD_TOL", "1e-3"))           # forward last-update > this => under-converged at pi
 IMPROVE_FRAC = float(os.environ.get("IMPROVE_FRAC", "0.8"))  # |Pg|(it) > IMPROVE_FRAC*|Pg|(it-CHECK) => stuck
 TH_LO, TH_HI = log2_rate_bounds(MIN_RATE, MAX_RATE)
@@ -169,9 +173,8 @@ for pi_idx, PI_CUR in enumerate(PIS):                            # ascending pi 
                                   f"pi{PIS[pi_idx+1]}", flush=True)
                         keep = ~(drop | defer)
                         active = active[keep]; sub = sub[keep].clone()
-                        del m; torch.cuda.empty_cache()
-                        if active.numel() == 0: break
-                        m = build_active(PI_CUR)
+                        if active.numel() == 0: break          # all done this tier; tier-end frees the (stale) m
+                        del m; torch.cuda.empty_cache(); m = build_active(PI_CUR)
                         Hd = None; loss_ref = None; continue
                 loss_ref = lv.clone()
             else:
