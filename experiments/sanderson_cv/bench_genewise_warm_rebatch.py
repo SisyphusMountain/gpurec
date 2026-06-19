@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from run_cv import DATASETS, _CV_SO
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.optimization import clamp_log_rate_, project_rate_gradient_, log2_rate_bounds
+from gpurec.core.inference.solver import solve_forward_residual
 
 DEV = "cuda"; DT = torch.float32
 DATASET = os.environ.get("DATASET", "hogenom")
@@ -57,6 +58,16 @@ WARM_MAX_FAM = int(os.environ.get("WARM_MAX_FAM", "1000000000"))
 VERIFY_DROP = os.environ.get("VERIFY_DROP", "1") != "0"
 ADAM = int(os.environ.get("ADAM", "20")); MAXIT = int(os.environ.get("MAXIT", "120")); HESS_EVERY = int(os.environ.get("HESS_EVERY", "5"))
 CLADE_BUDGET = int(os.environ.get("CLADE_BUDGET", "80000"))
+# REBATCH BY RESIDUAL (opt-in). The pi-tier escalation (STUCK_MAX/ESC_PATIENCE) escalates the WHOLE stalled
+# batch to the next pi -- but most stalled families are not truncation-stiff, they just need more Newton steps,
+# so bumping their pi (and clearing their warm cache) is wasted work (this is why PIS=16,64 churned 750 families
+# and lost to single-tier). Instead: measure each family's FORWARD fixed-point residual at the current pi, and
+# escalate ONLY the families that are both (a) forward-stiff (resid > FWD_TOL => the pi=16 gradient is
+# truncation-biased so |Pg| can never reach tol) and (b) stuck (|Pg| stopped dropping). Non-stiff slow families
+# keep converging at the low pi. Eager: defers the moment the residual flags a family, not at a global counter.
+REBATCH_RESID = os.environ.get("REBATCH_RESID", "0") != "0"
+FWD_TOL = float(os.environ.get("FWD_TOL", "1e-3"))           # forward last-update > this => under-converged at pi
+IMPROVE_FRAC = float(os.environ.get("IMPROVE_FRAC", "0.8"))  # |Pg|(it) > IMPROVE_FRAC*|Pg|(it-CHECK) => stuck
 TH_LO, TH_HI = log2_rate_bounds(MIN_RATE, MAX_RATE)
 print(f"=== genewise WARM + CONVERGENCE-REBATCH {DATASET} fam={_FAM}  pi-tiers={PIS} cert_pi={CERT_PI} "
       f"neu_opt={NEU_OPT}(warm) neu_cert={NEU_CERT}  drop |Pg|<{TOL} when >{FRAC*100:.0f}% (verify={VERIFY_DROP}) ===", flush=True)
@@ -82,14 +93,25 @@ theta = torch.zeros(F_all, 3, device=DEV, dtype=DT); clamp_(theta)
 active = torch.arange(F_all, device=DEV)
 was_dropped = torch.zeros(F_all, dtype=torch.bool, device=DEV)   # dropped mid-run (vs optimized to the end)
 
-rebatch_log = []
+rebatch_log = []; defer_log = []
 def build_active(pi):                                            # build over the current `active` at pi (warm-gated)
     set_warm(active.numel())
     return build([fam_paths[j] for j in active.tolist()], pi, NEU_OPT)
+def forward_resid(m, th, pi):                                   # per-family forward last-update residual at pi
+    out = torch.zeros(len(m.families), device=DEV, dtype=torch.float32)  # |pi_k - pi_{k-1}| max over each fam's clades
+    rw = m.receiver_weights.detach()
+    with torch.no_grad():
+        for static in m.batch_statics:
+            r = solve_forward_residual(static, m._theta_for_static(static, th), rw, pi_iters=pi)
+            out[static.family_index_tensor.to(DEV)] = r.to(DEV)
+    return out
 
+carry = None                                                    # families deferred to the NEXT pi tier (REBATCH_RESID)
 for pi_idx, PI_CUR in enumerate(PIS):                            # ascending pi tiers; stiff residual escalates
+    if REBATCH_RESID and carry is not None: active = carry      # this tier works only the deferred-stiff carry-over
     if active.numel() == 0: break
     last_tier = pi_idx == len(PIS) - 1
+    carry = active[:0].clone()                                  # reset: deferred families accumulate here this tier
     m = build_active(PI_CUR)
     sub = theta.index_select(0, active).clone()
     if pi_idx == 0:                                             # Adam warmup once, on the full batch
@@ -98,7 +120,7 @@ for pi_idx, PI_CUR in enumerate(PIS):                            # ascending pi 
             _, g = lg(m, lf.detach()); lf.grad = g; ad.step()
             with torch.no_grad(): clamp_(lf)
         sub = lf.detach().clone()
-    Hd = None; loss_ref = None; since_drop = 0; had_drop = False
+    Hd = None; loss_ref = None; since_drop = 0; had_drop = False; pg_prev = None
     for it in range(MAXIT):
         if active.numel() == 0: break
         lv, g = lg(m, sub)
@@ -112,26 +134,67 @@ for pi_idx, PI_CUR in enumerate(PIS):                            # ascending pi 
             frac = float(conv.float().mean())
             print(f"  [pi{PI_CUR:3d} it{it:3d}] active={active.numel():5d} conv={frac*100:4.0f}% "
                   f"|Pg|max={float(pgm.max()):.2e} t={time.perf_counter()-t0:.0f}s", flush=True)
-            do_drop = frac > FRAC and bool(conv.any()) and not bool(conv.all())
-            if do_drop and VERIFY_DROP:                        # verify converged subset at (CERT_PI, NEU_CERT) cold
-                _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
-                m.solver_options = sopts(CERT_PI, NEU_CERT)
-                conv = conv & (pgmax(sub, lg(m, sub)[1]) < TOL)
-                m.solver_options = sopts(PI_CUR, NEU_OPT)
-                if _w: os.environ["GPUREC_WARM_ADJOINT"] = _w
-                do_drop = bool(conv.any()) and not bool(conv.all())
-            if do_drop:
-                theta.index_copy_(0, active[conv], sub[conv]); was_dropped[active[conv]] = True
-                active = active[~conv]; sub = sub[~conv].clone()
-                rebatch_log.append(dict(pi=PI_CUR, it=it, dropped=int(conv.sum()), remain=int(active.numel())))
-                had_drop = True; since_drop = 0
-                del m; torch.cuda.empty_cache(); m = build_active(PI_CUR)
-                Hd = None; loss_ref = None; continue
-            since_drop += 1
-            if not last_tier and ((had_drop and since_drop >= ESC_PATIENCE) or since_drop >= STUCK_MAX):
-                print(f"  [pi{PI_CUR}] stalled, {active.numel()} stiff -> escalate to pi{PIS[pi_idx+1]}", flush=True)
-                break
-            loss_ref = lv.clone()
+            if REBATCH_RESID:
+                # At a drop event (frac>FRAC), split the cheap-converged families with the cert + forward residual:
+                #   DROP   = cheap-converged AND cert-converged                      -> truly at the minimum, freeze
+                #   ESCALATE = cheap-converged but FAILS cert AND forward-stiff      -> the pi gradient is truncation-
+                #              (resid>FWD_TOL)                                           biased, can't certify here ->
+                #                                                                        defer to the next (higher) pi.
+                # Both are decided at the SAME event so escalation is batched (no one-family-per-check trickle), and
+                # forward-stiff families leave immediately instead of churning the low-pi tier to MAXIT.
+                if frac > FRAC and bool(conv.any()):
+                    cert_ok = conv.clone()
+                    if VERIFY_DROP:                            # authoritative |Pg| at (CERT_PI, NEU_CERT) cold
+                        _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
+                        m.solver_options = sopts(CERT_PI, NEU_CERT)
+                        cert_ok = conv & (pgmax(sub, lg(m, sub)[1]) < TOL)
+                        m.solver_options = sopts(PI_CUR, NEU_OPT)
+                        if _w: os.environ["GPUREC_WARM_ADJOINT"] = _w
+                    drop = cert_ok
+                    defer = torch.zeros_like(conv)
+                    reject = conv & ~cert_ok                   # look converged but fail cert -> maybe forward-stiff
+                    if not last_tier and bool(reject.any()):
+                        resid = forward_resid(m, sub, PI_CUR)
+                        defer = reject & (resid > FWD_TOL)     # forward under-converged at this pi -> escalate
+                    if bool(drop.any()) or bool(defer.any()):
+                        if bool(drop.any()):
+                            theta.index_copy_(0, active[drop], sub[drop]); was_dropped[active[drop]] = True
+                            rebatch_log.append(dict(pi=PI_CUR, it=it, dropped=int(drop.sum()),
+                                                    remain=int((~drop & ~defer).sum())))
+                        if bool(defer.any()):
+                            theta.index_copy_(0, active[defer], sub[defer]); carry = torch.cat([carry, active[defer]])
+                            defer_log.append(dict(pi=PI_CUR, it=it, deferred=int(defer.sum()), to=PIS[pi_idx + 1],
+                                                  stay=int((~drop & ~defer).sum()), resid_max=float(resid.max())))
+                            print(f"  [pi{PI_CUR}] defer {int(defer.sum())} stiff (resid>{FWD_TOL:g}) -> "
+                                  f"pi{PIS[pi_idx+1]}", flush=True)
+                        keep = ~(drop | defer)
+                        active = active[keep]; sub = sub[keep].clone()
+                        del m; torch.cuda.empty_cache()
+                        if active.numel() == 0: break
+                        m = build_active(PI_CUR)
+                        Hd = None; loss_ref = None; continue
+                loss_ref = lv.clone()
+            else:
+                do_drop = frac > FRAC and bool(conv.any()) and not bool(conv.all())
+                if do_drop and VERIFY_DROP:                    # verify converged subset at (CERT_PI, NEU_CERT) cold
+                    _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
+                    m.solver_options = sopts(CERT_PI, NEU_CERT)
+                    conv = conv & (pgmax(sub, lg(m, sub)[1]) < TOL)
+                    m.solver_options = sopts(PI_CUR, NEU_OPT)
+                    if _w: os.environ["GPUREC_WARM_ADJOINT"] = _w
+                    do_drop = bool(conv.any()) and not bool(conv.all())
+                if do_drop:
+                    theta.index_copy_(0, active[conv], sub[conv]); was_dropped[active[conv]] = True
+                    active = active[~conv]; sub = sub[~conv].clone()
+                    rebatch_log.append(dict(pi=PI_CUR, it=it, dropped=int(conv.sum()), remain=int(active.numel())))
+                    had_drop = True; since_drop = 0
+                    del m; torch.cuda.empty_cache(); m = build_active(PI_CUR)
+                    Hd = None; loss_ref = None; continue
+                since_drop += 1
+                if not last_tier and ((had_drop and since_drop >= ESC_PATIENCE) or since_drop >= STUCK_MAX):
+                    print(f"  [pi{PI_CUR}] stalled, {active.numel()} stiff -> escalate to pi{PIS[pi_idx+1]}", flush=True)
+                    break
+                loss_ref = lv.clone()
         if it % HESS_EVERY == 0 or Hd is None or Hd.shape[0] != sub.shape[0]:
             H = torch.zeros(sub.shape[0], 3, 3, device=DEV, dtype=DT)
             for j in range(3):
@@ -145,6 +208,7 @@ for pi_idx, PI_CUR in enumerate(PIS):                            # ascending pi 
         delta = -torch.linalg.solve(Hred, (g * free).unsqueeze(-1)).squeeze(-1)
         dn = delta.norm(dim=1, keepdim=True); sub = clamp_(sub + delta * (TRUST / dn.clamp(min=TRUST)))
     if active.numel() > 0: theta.index_copy_(0, active, sub)    # carry the residual theta into the next tier
+    if REBATCH_RESID and active.numel() > 0: carry = torch.cat([carry, active])  # leftover -> next tier (safety net)
     del m; torch.cuda.empty_cache()
 os.environ.pop("GPUREC_WARM_ADJOINT", None)
 opt_s = time.perf_counter() - t0
@@ -165,6 +229,9 @@ premature = int((was_dropped & ~conv).sum())
 print(f"\n{'='*72}\nWARM + CONVERGENCE-REBATCH  ({DATASET} F={F_all}, pi-tiers={PIS} cert_pi={CERT_PI} neu_opt={NEU_OPT}-warm)\n{'='*72}", flush=True)
 for r in rebatch_log:
     print(f"  drop @pi{r['pi']:3d} it{r['it']:3d}: dropped {r['dropped']:5d} -> {r['remain']:5d} remain", flush=True)
+for r in defer_log:
+    print(f"  defer @pi{r['pi']:3d} it{r['it']:3d}: {r['deferred']:5d} stiff -> pi{r['to']} ({r['stay']} stay)  "
+          f"resid_max={r['resid_max']:.2e}", flush=True)
 print(f"  drops={len(rebatch_log)}  total dropped mid-run={int(was_dropped.sum())}  optimize={opt_s:.0f}s  cert={time.perf_counter()-tc:.0f}s", flush=True)
 print(f"  CONVERGED (|Pg|<{TOL}) = {int(conv.sum())}/{F_all}   |Pg|max={float(pg.max()):.2e}", flush=True)
 print(f"  interior PD = {int((conv & pd & ~bound_active).sum())}   bound-active = {int(bound_active.sum())}   "
@@ -173,7 +240,8 @@ print(f"  TOTAL = {total:.0f}s", flush=True)
 R = dict(dataset=DATASET, F=F_all, pis=PIS, cert_pi=CERT_PI, neu_opt=NEU_OPT, neu_cert=NEU_CERT, conv_tol=CONV_TOL, frac=FRAC,
          opt_s=opt_s, total_s=total, n_conv=int(conv.sum()), n_interior_pd=int((conv & pd & ~bound_active).sum()),
          n_bound_active=int(bound_active.sum()), n_unconv=int((~conv).sum()), n_dropped=int(was_dropped.sum()),
-         n_premature=premature, rebatches=rebatch_log)
+         n_premature=premature, rebatches=rebatch_log, rebatch_resid=REBATCH_RESID, fwd_tol=FWD_TOL,
+         improve_frac=IMPROVE_FRAC, defers=defer_log)
 OUT = os.environ.get("OUT_JSON")
 if OUT:
     torch.save(dict(theta=theta.cpu(), lam_min=lam_min.cpu(), pg=pg.cpu(), was_dropped=was_dropped.cpu()), OUT.replace(".json", "_theta.pt"))
