@@ -41,7 +41,7 @@ def _wave_step_tangent_kernel(
     E_ptr, dE_ptr,
     SL1_ptr, dSL1_ptr,
     SL2_ptr, dSL2_ptr,
-    col_log_probs_ptr,
+    col_log_probs_ptr, dcol_log_probs_ptr,
     node_child1_ptr, node_child2_ptr, node_parent_ptr,
     leaf_state_ptr, leaf_logp_ptr, dleaf_logp_ptr,
     item_idx_ptr,
@@ -75,14 +75,20 @@ def _wave_step_tangent_kernel(
     dpi_w = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
     if USE_COL_WEIGHTS:
         colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
+        dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)
         weighted = colw + pi_w
+        # col a variable: the pibar denom weights p'=2^(colw+pi-rm) gain a col-row tangent ->
+        # d(weighted)=dpi+dcol enters dRS/dAS (row_max FROZEN -> cancels). The +ln2 p' dcol of
+        # the SO kernel; here ln2 cancels in the log2-denom tangent (dpibar=(dRS-dAS)/denom).
+        dweighted = dpi_w + dcolw
     else:
         weighted = pi_w
+        dweighted = dpi_w
     row_max = tl.max(weighted, axis=0)
     row_max_safe = tl.where(row_max != NEG, row_max, tl.zeros([1], dtype=DTYPE))
     r = tl.where(mask, tl.exp2(weighted - row_max_safe), zero)
     row_sum = tl.sum(r, axis=0)
-    dRS = tl.sum(tl.where(mask, r * dpi_w, zero), axis=0)
+    dRS = tl.sum(tl.where(mask, r * dweighted, zero), axis=0)
 
     cur = s_offs
     ancestor_sum = zero
@@ -93,11 +99,14 @@ def _wave_step_tangent_kernel(
         dpi_anc = tl.load(dPi_ptr + pi_base + cur, mask=cv, other=0.0)
         if USE_COL_WEIGHTS:
             col_anc = tl.load(col_log_probs_ptr + cur, mask=cv, other=NEG)
+            dcol_anc = tl.load(dcol_log_probs_ptr + cur, mask=cv, other=0.0)
             r_anc = tl.where(cv, tl.exp2(col_anc + pi_anc - row_max_safe), zero)
+            dweighted_anc = dpi_anc + dcol_anc
         else:
             r_anc = tl.where(cv, tl.exp2(pi_anc - row_max_safe), zero)
+            dweighted_anc = dpi_anc
         ancestor_sum += r_anc
-        dAS += r_anc * dpi_anc
+        dAS += r_anc * dweighted_anc
         cur = tl.load(node_parent_ptr + cur, mask=cv, other=-1).to(tl.int32)
 
     const_offsets = const_base + s_offs
@@ -187,7 +196,7 @@ def _wave_step_tangent_selfloop_kernel(
     E_ptr, dE_ptr,
     SL1_ptr, dSL1_ptr,
     SL2_ptr, dSL2_ptr,
-    col_log_probs_ptr,
+    col_log_probs_ptr, dcol_log_probs_ptr,
     node_child1_ptr, node_child2_ptr, node_parent_ptr,
     leaf_state_ptr, leaf_logp_ptr, dleaf_logp_ptr,
     item_idx_ptr,
@@ -232,8 +241,11 @@ def _wave_step_tangent_selfloop_kernel(
     pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
     if USE_COL_WEIGHTS:
         colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
+        dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)  # invariant col seed
         weighted = colw + pi_w
     else:
+        colw = pi_w  # unused
+        dcolw = zero
         weighted = pi_w
     row_max = tl.max(weighted, axis=0)
     row_max_safe = tl.where(row_max != NEG, row_max, tl.zeros([1], dtype=DTYPE))
@@ -318,14 +330,17 @@ def _wave_step_tangent_selfloop_kernel(
     dpi_w = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
     dpibar = zero
     for _it in range(0, n_iters):
-        dRS = tl.sum(tl.where(mask, r * dpi_w, zero), axis=0)
+        # col a variable -> d(weighted)=dpi+dcol in the Ebar/pibar denom tangent (dcolw invariant)
+        dweighted = dpi_w + dcolw
+        dRS = tl.sum(tl.where(mask, r * dweighted, zero), axis=0)
         cur = s_offs
         dAS = zero
         for _ in range(0, MAX_ANCESTOR_DEPTH):
             cv = mask & (cur >= 0) & (cur < S)
             r_anc = tl.where(cv, tl.gather(r, tl.where(cv, cur, 0), axis=0), zero)
             dpi_anc = tl.where(cv, tl.gather(dpi_w, tl.where(cv, cur, 0), axis=0), zero)
-            dAS += r_anc * dpi_anc
+            dcol_anc = tl.where(cv, tl.gather(dcolw, tl.where(cv, cur, 0), axis=0), zero)
+            dAS += r_anc * (dpi_anc + dcol_anc)
             cur = tl.load(node_parent_ptr + cur, mask=cv, other=-1).to(tl.int32)
         dpibar = tl.where(pos, (dRS - dAS) * inv_denom + dmc, zero)
         dpi_s1 = tl.where(c1_valid, tl.gather(dpi_w, tl.where(c1_valid, c1, 0), axis=0), zero)
@@ -349,24 +364,29 @@ def compute_wave_step_tangent_selfloop(
     col_log_probs, node_child1, node_child2, node_parent, max_ancestor_depth,
     DTS_reduced=None, dDTS=None,
     *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx,
-    dPibar_out=None, has_leaf_term=True, use_col_weights=True,
+    dPibar_out=None, has_leaf_term=True, use_col_weights=True, dcol_log_probs=None,
 ):
     """Run the fixed-count tangent self-loop (``n_iters`` in-place Jacobi steps) for one wave in a
     SINGLE kernel launch. Overwrites ``dPi_io[ws:ws+W]`` with the final tangent and, if
     ``dPibar_out`` is given, writes ``dPibar_out[ws:ws+W]`` from the last iteration. Numerically
-    identical to looping ``compute_wave_step_tangent`` ``n_iters`` times in-place."""
+    identical to looping ``compute_wave_step_tangent`` ``n_iters`` times in-place.
+
+    ``dcol_log_probs`` ([S] tangent of receiver_log_probs) is the alpha SEED; when
+    ``use_col_weights`` it enters the pibar-denom tangent alongside dPi (loop-invariant)."""
     has_splits = DTS_reduced is not None
     _, const_row_stride = _prepare_wave_launch(S, DL)
     block_s = int(triton.next_power_of_2(S))
     store_pibar = dPibar_out is not None
     dPi_out_rows = dPi_io.narrow(0, int(ws), int(W))
     dummy = Pi_in
+    dcol = (col_log_probs if dcol_log_probs is None
+            else dcol_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype).reshape(S).contiguous())
     _wave_step_tangent_selfloop_kernel[(int(W),)](
         Pi_in, dPi_io,
         ws, ws,
         max_coupling_mat, dMC,
         DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
-        col_log_probs,
+        col_log_probs, dcol,
         node_child1, node_child2, node_parent,
         leaf_state_idx, leaf_logp, dleaf_logp,
         item_idx,
@@ -395,21 +415,25 @@ def compute_wave_step_tangent(
     col_log_probs, node_child1, node_child2, node_parent, max_ancestor_depth,
     DTS_reduced=None, dDTS=None,
     *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx,
-    dPibar_out=None, has_leaf_term=True, input_ws=None, use_col_weights=True,
+    dPibar_out=None, has_leaf_term=True, input_ws=None, use_col_weights=True, dcol_log_probs=None,
 ):
-    """One tangent application of the wave step. Writes dPi_out[ws:ws+W]; optionally dPibar_out."""
+    """One tangent application of the wave step. Writes dPi_out[ws:ws+W]; optionally dPibar_out.
+
+    ``dcol_log_probs`` ([S] tangent of receiver_log_probs): the alpha SEED into the pibar denom."""
     has_splits = DTS_reduced is not None
     _, const_row_stride = _prepare_wave_launch(S, DL)
     block_s = int(triton.next_power_of_2(S))
     store_pibar = dPibar_out is not None
     dPi_out_rows = dPi_out.narrow(0, int(ws), int(W))
     dummy = Pi_in  # unused placeholder for None pointers
+    dcol = (col_log_probs if dcol_log_probs is None
+            else dcol_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype).reshape(S).contiguous())
     _wave_step_tangent_kernel[(int(W),)](
         Pi_in, dPi_in,
         ws, ws if input_ws is None else int(input_ws),
         max_coupling_mat, dMC,
         DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
-        col_log_probs,
+        col_log_probs, dcol,
         node_child1, node_child2, node_parent,
         leaf_state_idx, leaf_logp, dleaf_logp,
         item_idx,
