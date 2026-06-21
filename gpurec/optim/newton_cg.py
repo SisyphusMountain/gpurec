@@ -47,8 +47,15 @@ def _fd_hessian_hvp(vg, theta_vec, warm_E, *, eps=1e-5):
 def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=1e-4, lanczos_m=10,
                    nu=1.5, omega=1.5, max_bumps=3, eta_max=0.1, max_cg=40, c1=1e-4, ls_max=25,
                    gtol=1e-2, max_newton=40, fd_eps=1e-5, lam=0.0, theta_ref=None,
-                   lanczos_refresh=0, ftol=1e-9, hvp_mode="fd", verbose=True):
+                   lanczos_refresh=0, ftol=1e-9, hvp_mode="fd", verbose=True,
+                   with_receiver=False):
     """Lanczos-initialized, witness-corrected damped Newton descent ("Newton-gradient descent").
+
+    The joint (theta, alpha) receiver-weight optimization is NOT supported here: the Newton step is
+    driven by the theta-space HVP (``make_exact_hvp`` / ``_fd_hessian_hvp``), and the matching
+    (theta, alpha) HVP is a separate effort. ``with_receiver`` is rejected so callers don't silently
+    get a Newton step that ignores the alpha curvature -- run the joint first-order stage
+    (``first_order(..., with_receiver=True)``) instead.
 
     lam_damp interpolates between Newton (small) and scaled gradient descent (large). It is
     initialized by the cheap spectral rule ``lam_damp = sigma * lam_max`` (m~10 Lanczos: only
@@ -66,6 +73,12 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
     Returns (theta, history); history rows carry loss/F, ||gF||, lam_damp, cg iters/status,
     witness certificates, alpha, and cumulative gradient-eval count.
     """
+    if with_receiver:
+        raise NotImplementedError(
+            "newton_lanczos does not support joint (theta, alpha) optimization: the Newton step is "
+            "driven by the theta-space HVP and the (theta, alpha) HVP is a separate effort. Use "
+            "first_order(..., with_receiver=True) for the joint first-order stage."
+        )
     S = int((static[0] if isinstance(static, (list, tuple)) else static).species_helpers["S"])
     theta_vec = theta0.reshape(-1).clone()
     p_dim = theta_vec.numel()

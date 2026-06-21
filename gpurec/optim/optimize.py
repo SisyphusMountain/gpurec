@@ -106,36 +106,76 @@ class Schedule:
 # ----------------------------------------------------------------------------------------------
 def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr0=1.0,
                 schedule="adaptive", max_steps=300, rtol=0.05, window=20, loss_rtol=1e-5,
-                lr_floor_frac=1e-3, verbose=True, t0_wall=None, return_best=False, early_stop=True):
+                lr_floor_frac=1e-3, verbose=True, t0_wall=None, return_best=False, early_stop=True,
+                with_receiver=False, alpha0=None):
     """Run a torch.optim optimizer with a pluggable LR schedule. Returns (theta, hist, warm).
 
     ``return_best=True`` appends the LOWEST-loss theta visited (a 4th return value): on this fixture
     the low-loss valley floor is *visited mid-trajectory* by an oscillating (e.g. constant-LR) run but
     is not the final iterate, and that valley floor is the right hand-off point for the L-BFGS stage.
     ``early_stop=False`` disables the relative flat/grad stop (let an oscillating dive run its course).
+
+    ``with_receiver=True`` jointly optimizes the per-species receiver logits ``alpha`` (in R^S,
+    S=receiver_weights.numel()) alongside ``theta``. The single optimizer leaf is the combined vector
+    ``z = [theta.reshape(-1); alpha]``; its gradient is the production VJP's gauge-respecting
+    ``g_z = [dNLL/dtheta; dNLL/dalpha]`` (via ``make_value_and_grad(..., optimize_receiver=True)``).
+    ``alpha0`` is the starting logits (defaults to ``receiver_weights``). GAUGE: the NLL is exactly
+    invariant under ``alpha -> alpha + c*1`` (alpha enters only via a full log_softmax), so the
+    all-ones mode is unconstrained; after EACH step the alpha block is re-centered
+    ``alpha := alpha - mean(alpha)`` (== projecting out the all-ones mode, P = I - 11^T/S) to pin the
+    gauge. The theta-only path (``with_receiver=False``) is unchanged. When set, the 1st return value
+    is ``(theta, alpha)`` and ``return_best`` appends ``(best_theta, best_alpha)``.
     """
     theta_shape = tuple(theta0.shape)
-    theta = theta0.detach().reshape(theta_shape).float().clone().requires_grad_(True)
-    f = make_value_and_grad(batch_statics, receiver_weights, theta_shape=theta_shape)
-    opt = _OPTIMIZERS[optimizer](theta, lr0)
+    theta_numel = 1
+    for _d in theta_shape:
+        theta_numel *= int(_d)
+
+    if with_receiver:
+        S = int(receiver_weights.numel())
+        a0 = (receiver_weights if alpha0 is None else alpha0).detach().reshape(-1).float()
+        a0 = a0 - a0.mean()  # start on the gauge slice (mean 0)
+        z0 = torch.cat([theta0.detach().reshape(-1).float(), a0])
+        x = z0.clone().requires_grad_(True)
+        f = make_value_and_grad(batch_statics, receiver_weights, theta_shape=theta_shape,
+                                optimize_receiver=True)
+        opt = _OPTIMIZERS[optimizer](x, lr0)
+    else:
+        x = theta0.detach().reshape(theta_shape).float().clone().requires_grad_(True)
+        f = make_value_and_grad(batch_statics, receiver_weights, theta_shape=theta_shape)
+        opt = _OPTIMIZERS[optimizer](x, lr0)
     sched = Schedule(schedule, lr0, t_max=max_steps,
                      lr_min=lr0 * lr_floor_frac, patience=max(5, window // 2))
     lr_floor = lr0 * lr_floor_frac
 
+    def _split(x_flat):
+        """Return (theta [theta_shape], alpha [S] or None) from the current leaf."""
+        if with_receiver:
+            return (x_flat[:theta_numel].reshape(theta_shape).clone(),
+                    x_flat[theta_numel:].clone())
+        return x_flat.reshape(theta_shape).clone(), None
+
     hist, warm, g0 = [], None, None
-    best_loss, best_theta = float("inf"), theta.detach().reshape(theta_shape).clone()
+    best_loss = float("inf")
+    best_theta, best_alpha = _split(x.detach().reshape(-1))
     t_start = time.perf_counter() if t0_wall is None else t0_wall
     for step in range(int(max_steps)):
-        loss, g, _sv, warm = f(theta.detach().reshape(-1), warm_E=warm)
+        loss, g, _sv, warm = f(x.detach().reshape(-1), warm_E=warm)
         gn = float(g.norm())
         if g0 is None:
             g0 = max(gn, 1e-30)
-        if loss < best_loss:                       # the current theta attains `loss` (pre-step)
-            best_loss, best_theta = loss, theta.detach().reshape(theta_shape).clone()
+        if loss < best_loss:                       # the current x attains `loss` (pre-step)
+            best_loss = loss
+            best_theta, best_alpha = _split(x.detach().reshape(-1))
         lr = sched.update(loss, g)
         opt.param_groups[0]["lr"] = lr
-        theta.grad = g.reshape(theta_shape)
+        x.grad = g.reshape(x.shape)
         opt.step()
+        if with_receiver:
+            # GAUGE: project out the all-ones mode in the alpha block (re-center to mean 0).
+            with torch.no_grad():
+                a = x[theta_numel:]
+                a -= a.mean()
         wall = time.perf_counter() - t_start
         hist.append({"stage": "first", "step": step, "loss": loss, "gnorm": gn,
                      "lr": lr, "wall_s": wall})
@@ -152,9 +192,12 @@ def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr
                     print(f"  [{optimizer}/{schedule}] stop@{step} ({why}) loss={loss:.4f} "
                           f"||g||={gn:.3e}")
                 break
+    theta_out, alpha_out = _split(x.detach().reshape(-1))
+    first = (theta_out, alpha_out) if with_receiver else theta_out
     if return_best:
-        return theta.detach().reshape(theta_shape), hist, warm, best_theta
-    return theta.detach().reshape(theta_shape), hist, warm
+        best = (best_theta, best_alpha) if with_receiver else best_theta
+        return first, hist, warm, best
+    return first, hist, warm
 
 
 # ----------------------------------------------------------------------------------------------

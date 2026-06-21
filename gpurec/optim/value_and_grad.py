@@ -83,13 +83,25 @@ def forward_solve(batch_statics, theta, receiver_weights, *, warm_E=None):
 
 
 def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, grad_avg_K: int = 1,
-                        prior=None, tree_penalty=None):
+                        prior=None, tree_penalty=None, optimize_receiver: bool = False):
     """Return ``f(theta_vec, *, warm_E=None, want_grad=True) -> (loss, g_vec, saved, warm_E_out)``.
 
     The single ``(theta_vec -> value, grad)`` contract the gpurec optimization layer sits on.
     ``batch_statics`` is ``model.batch_statics`` (a length-1 list for a single batch).
     ``loss`` is a Python float; ``g_vec`` is a flat tensor matching ``theta_vec`` (or None when
     ``want_grad=False``). The genewise/specieswise mode is read off the batch statics.
+
+    ``optimize_receiver`` switches the optimization variable to the joint vector
+    ``z = [theta.reshape(-1); alpha]`` of length ``theta.numel() + S``, where ``S =
+    receiver_weights.numel()`` and ``alpha`` are the per-species receiver logits (in R^S). When set,
+    ``f`` splits ``z`` into ``theta = z[:theta.numel()].reshape(theta_shape)`` and ``alpha =
+    z[theta.numel():]``, passes ``alpha`` as ``receiver_weights`` into the forward/backward EACH call
+    (the closure ``receiver_weights`` arg is then used only to fix ``S``/dtype/device, not as a stale
+    value), and returns ``g_z = cat([g_theta_flat (+ theta penalties), grad_receiver])``. The
+    receiver-weight block of the gradient is the production VJP's ``grad_receiver`` (already a correct,
+    alpha-space, gauge-respecting ``dNLL/dalpha``: the softmax Jacobian alpha->w is applied inside the
+    head autograd). ``theta`` penalties (``prior``/``tree_penalty``) do NOT touch the alpha block.
+    Default ``False`` preserves the legacy theta-only contract (``theta_vec`` is just ``theta``).
 
     ``warm_E`` is accepted for signature parity with kernel-bench but is a no-op: gpurec carries
     the E warm-start on each ``static.warm_E`` and refreshes it internally every evaluation.
@@ -113,9 +125,13 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
     """
     statics = _as_static_list(batch_statics)
     genewise = statics[0].genewise
+    S = int(receiver_weights.numel())  # number of receiver logits; kept EXPLICIT (theta may be [F,3])
     if theta_shape is None:
-        theta_shape = (int(receiver_weights.numel()), 3)
+        theta_shape = (S, 3)
     theta_shape = tuple(theta_shape)
+    theta_numel = 1
+    for _d in theta_shape:
+        theta_numel *= int(_d)
     lam = None if prior is None else float(prior[0])
     theta_ref_flat = None if prior is None else prior[1].detach().reshape(-1).contiguous()
 
@@ -128,14 +144,21 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
         tp_parent = sp_parent[tp_child].contiguous()                         # [E] their parents
 
     def f(theta_vec: torch.Tensor, *, warm_E=None, want_grad: bool = True):
-        tvec = theta_vec.detach().reshape(-1)
+        zvec = theta_vec.detach().reshape(-1)
+        if optimize_receiver:
+            tvec = zvec[:theta_numel]
+            alpha = zvec[theta_numel:].contiguous()  # [S] per-species receiver logits
+            recv = alpha  # pass the LIVE alpha into the forward/backward each call
+        else:
+            tvec = zvec
+            recv = receiver_weights
         theta = tvec.reshape(theta_shape).contiguous()
         if want_grad:
             # the backward's scratch gate reads driver-free memory; return any stale cached
             # blocks (e.g. from another dtype's stage) before it runs
             free_cuda_cache_if_tight()
-        loss, g_theta, _g_recv = stream_batches(
-            statics, theta, receiver_weights, genewise=genewise, need_grad=want_grad,
+        loss, g_theta, g_recv = stream_batches(
+            statics, theta, recv, genewise=genewise, need_grad=want_grad,
         )
         loss_val = float(loss)
         d = None
@@ -151,12 +174,17 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
         if want_grad:
             if int(grad_avg_K) > 1:
                 acc = g_theta
+                acc_recv = g_recv
                 for _ in range(int(grad_avg_K) - 1):
-                    _l, gk, _gr = stream_batches(
-                        statics, theta, receiver_weights, genewise=genewise, need_grad=True,
+                    _l, gk, grk = stream_batches(
+                        statics, theta, recv, genewise=genewise, need_grad=True,
                     )
                     acc = acc + gk
+                    if optimize_receiver:
+                        acc_recv = acc_recv + grk
                 g_theta = acc / float(grad_avg_K)
+                if optimize_receiver:
+                    g_recv = acc_recv / float(grad_avg_K)
             g_vec = g_theta.reshape(-1)
             if lam is not None:
                 g_vec = g_vec + lam * d
@@ -167,6 +195,10 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
                 gpen.index_add_(0, tp_child, step)
                 gpen.index_add_(0, tp_parent, -step)
                 g_vec = g_vec + gpen.reshape(-1)
+            if optimize_receiver:
+                # alpha block: production grad_receiver is already dNLL/dalpha (softmax Jacobian
+                # applied inside the head autograd); no theta penalties touch it.
+                g_vec = torch.cat([g_vec.reshape(-1), g_recv.reshape(-1)])
             g_vec = g_vec.contiguous()
         return loss_val, g_vec, None, None
 
