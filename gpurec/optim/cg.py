@@ -13,14 +13,23 @@ from __future__ import annotations
 import torch
 
 
-def _lanczos_tridiag(Av, p, *, m, seed=0, device="cuda", dtype=torch.float64):
+def _lanczos_tridiag(Av, p, *, m, seed=0, device="cuda", dtype=torch.float64, start=None):
     """m-step Lanczos with FULL reorthogonalization. Returns ``(Q, alphas, betas)``: the orthonormal
     Krylov basis (list of length-``p`` vectors) and the symmetric-tridiagonal diagonals
     (``len(betas) == len(alphas)-1`` unless an early breakdown). Matrix-free — only ``len(Q)`` HVPs.
     Shared core for ``lanczos_extremes`` (eigenvalues) and ``lanczos_min_eigpair`` (+ Ritz vector).
+
+    ``start`` optionally fixes the (un-normalized) starting vector instead of the seeded random one:
+    pass a vector already projected into a subspace (e.g. the gauge-fixed / free subspace) so the
+    ENTIRE Krylov basis stays in that subspace and the bottom Ritz value never picks up an exact-zero
+    eigenvalue living outside it (the alpha gauge null, a constrained-active coord). Default ``None``
+    reproduces the seeded-random behaviour bit-for-bit.
     """
-    gen = torch.Generator(device=device).manual_seed(seed)
-    q = torch.randn(p, generator=gen, device=device, dtype=dtype)
+    if start is None:
+        gen = torch.Generator(device=device).manual_seed(seed)
+        q = torch.randn(p, generator=gen, device=device, dtype=dtype)
+    else:
+        q = start.to(device=device, dtype=dtype).clone()
     q /= q.norm()
     Q, alphas, betas = [], [], []
     beta, q_prev = 0.0, torch.zeros_like(q)
@@ -40,21 +49,23 @@ def _lanczos_tridiag(Av, p, *, m, seed=0, device="cuda", dtype=torch.float64):
     return Q, alphas, betas
 
 
-def lanczos_extremes(Av, p, *, m=40, seed=0, device="cuda", dtype=torch.float64):
+def lanczos_extremes(Av, p, *, m=40, seed=0, device="cuda", dtype=torch.float64, start=None):
     """Estimate (lambda_min, lambda_max) of the operator via m Lanczos iterations with full
     reorthogonalization. Matrix-free: only m HVPs. Note: the lambda_min Ritz estimate converges
     from ABOVE (optimistic) — on this problem's clustered bottom edge m≈40 is needed for an
     accurate value (m=10 can even miss the sign); lambda_max is accurate by m≈10.
+
+    ``start`` (see :func:`_lanczos_tridiag`) pins the start vector into a subspace.
     """
     import numpy as np
     from scipy.linalg import eigh_tridiagonal
 
-    _, alphas, betas = _lanczos_tridiag(Av, p, m=m, seed=seed, device=device, dtype=dtype)
+    _, alphas, betas = _lanczos_tridiag(Av, p, m=m, seed=seed, device=device, dtype=dtype, start=start)
     ev = eigh_tridiagonal(np.array(alphas), np.array(betas[: len(alphas) - 1]), eigvals_only=True)
     return float(ev[0]), float(ev[-1])
 
 
-def lanczos_min_eigpair(Av, p, *, m=120, seed=0, device="cuda", dtype=torch.float64):
+def lanczos_min_eigpair(Av, p, *, m=120, seed=0, device="cuda", dtype=torch.float64, start=None):
     """Smallest eigenvalue AND its Ritz vector via m-step Lanczos with full reorthogonalization.
 
     Returns ``(lam_min, v_min)`` with ``v_min`` a unit ``dtype`` tensor on ``device`` (the Ritz
@@ -62,11 +73,14 @@ def lanczos_min_eigpair(Av, p, *, m=120, seed=0, device="cuda", dtype=torch.floa
     tridiagonal ``T``). ``m`` must resolve the bottom edge — on this problem's clustered/low-rank
     bottom ``m≈120`` is needed (``m=20`` misses the sign). Verify the Ritz residual
     ``||A v_min - lam_min v_min||`` is small before trusting ``v_min`` as a curvature direction.
+
+    ``start`` (see :func:`_lanczos_tridiag`) pins the start vector into a subspace so the bottom Ritz
+    value is the subspace's smallest eigenvalue (used for the gauge-fixed reduced-Hessian PD cert).
     """
     import numpy as np
     from scipy.linalg import eigh_tridiagonal
 
-    Q, alphas, betas = _lanczos_tridiag(Av, p, m=m, seed=seed, device=device, dtype=dtype)
+    Q, alphas, betas = _lanczos_tridiag(Av, p, m=m, seed=seed, device=device, dtype=dtype, start=start)
     w, S = eigh_tridiagonal(np.array(alphas), np.array(betas[: len(alphas) - 1]), eigvals_only=False)
     s = torch.tensor(S[:, 0], device=device, dtype=dtype)  # bottom eigenvector of T (len == len(Q))
     v = torch.zeros(p, device=device, dtype=dtype)
