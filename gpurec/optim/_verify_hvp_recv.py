@@ -135,42 +135,31 @@ def _static_theta_alpha_from_live(n_families, device, seed=0, init_rate=0.1):
     return static, theta, alpha, S, vm0
 
 
-def _embed_theta_hvp(hvp_theta, theta_numel: int, p: int):
-    """Wrap the CURRENT theta-only ``make_exact_hvp`` into a joint R^{4S}->R^{4S} operator.
+# ------------------------------------------------------------------------------------ S8 gate core
+def _gate_at(static, theta, alpha, S, *, label, device, seed, tangent_self_iters, eps, n_each):
+    """End-to-end S8 gate at a single (theta, alpha) point: analytic ``make_exact_hvp`` (now the
+    full 4S joint operator) vs ``_fd_hessian_hvp`` over the joint ``z = [theta; alpha]`` (4S).
 
-    Today the analytic HVP only knows H_tt: it takes ``u_theta`` (R^{theta_numel}) and returns
-    ``H_tt u_theta`` (R^{theta_numel}). We feed it ONLY ``u[:theta_numel]`` (so H_ta u_alpha is
-    dropped -> implicitly 0) and emit a length-p vector with the alpha block zeroed (H_at=H_aa=0).
-    This is the literal "alpha block missing" analytic operator the baseline must expose.
+    All comparisons are P_z-projected on BOTH sides AND in the denominator (correction 1). Returns
+    a dict with the per-block rels, the symmetry rel, and the null-space leakage for both sides.
     """
-    def hvp(u: torch.Tensor) -> torch.Tensor:
-        u = u.double()
-        Ht = hvp_theta(u[:theta_numel].contiguous()).double()  # R^{theta_numel}
-        out = torch.zeros(p, device=u.device, dtype=torch.float64)
-        out[:theta_numel] = Ht.reshape(-1)
-        return out
-    return hvp
-
-
-# --------------------------------------------------------------------------------------------- gate
-def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128, eps=1e-5, n_each=3):
-    static, theta, alpha, S, vm0 = _static_theta_alpha_from_live(n_families, device, seed=seed)
-    theta_numel = 3 * S
+    theta_numel = int(theta.numel())
     p = theta_numel + S  # 4S
     nonuniform = not receiver_weights_are_uniform(alpha)
-    print(f"[recv-hvp gate {n_families}-family] S={S} theta_numel={theta_numel} p(4S)={p} "
-          f"fp64 converged(pi={_SO['pi_iters']},neu={_SO['neumann_terms']},tself={tangent_self_iters}) "
-          f"nonuniform={nonuniform} valid_mass_min={vm0:.4f}")
+    assert nonuniform, "base alpha is uniform -> alpha paths dead, gate certifies nothing"
+    vm0 = _valid_mass_min(static, alpha)
+    assert vm0 > 1e-3, f"valid_mass too small at base alpha: {vm0}"
+    print(f"  [{label}] theta_numel={theta_numel} p(4S)={p} nonuniform={nonuniform} "
+          f"valid_mass_min={vm0:.4f}")
 
-    # ---- analytic side (CURRENT theta-only make_exact_hvp), embedded into R^{4S}
+    # ---- analytic side: the FULL joint 4S->4S make_exact_hvp (S3..S8 wired)
     _loss, sv = forward_solve([static], theta, alpha)
     _gt, _gc, cache = build_point_cache([static], theta, alpha, sv)
-    hvp_theta = make_exact_hvp([static], theta, alpha, sv, cache=cache,
-                               tangent_self_iters=tangent_self_iters)
-    Ha_op = _embed_theta_hvp(hvp_theta, theta_numel, p)
+    Ha_op = make_exact_hvp([static], theta, alpha, sv, cache=cache,
+                           tangent_self_iters=tangent_self_iters)
 
-    # ---- FD side: joint z=[theta; alpha] in R^{4S} (carries all four blocks)
-    vg = make_value_and_grad([static], alpha, theta_shape=(S, 3), optimize_receiver=True)
+    # ---- FD side: joint z=[theta; alpha] in R^{4S} (carries all four blocks; the oracle)
+    vg = make_value_and_grad([static], alpha, theta_shape=tuple(theta.shape), optimize_receiver=True)
     z = torch.cat([theta.reshape(-1), alpha]).contiguous()
     Hf_op = _fd_hessian_hvp(vg, z, None, eps=eps)
 
@@ -200,50 +189,33 @@ def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128, eps=1e-5, n
 
     results = {}
     leaks_ana, leaks_fd = [], []
-    # THETA-MILESTONE: the H_tt block on a pure-theta direction (u_alpha=0). The analytic op
-    # emits ONLY the theta row (the alpha row H_at is the SEPARATE alpha-block run S4-S8, zeroed
-    # by _embed_theta_hvp), so the FOUNDATION quantity proven here is |H_tt u_t - FD_theta_row| /
-    # |FD_theta_row| on the theta directions -- the weighted forward-over-reverse THETA block.
-    theta_block_rels = []
-    ana_failed = False  # the CURRENT theta-only analytic HVP may NaN at a non-uniform base (see below)
+    theta_block_rels = []  # H_tt block on pure-theta dir (the foundation, also reported)
+    # cache the analytic+FD HVPs of the pure directions so the symmetry test reuses them
+    Ha_cache, Hf_cache = {}, {}
     for kind in ("theta", "alpha", "mixed"):
         rels = []
         for k in range(n_each):
             u = block_dirs(kind, k)
             assert_valid_along(u)
             Hf = Hf_op(u)
+            Ha = Ha_op(u)
+            Ha_cache[(kind, k)] = Ha
+            Hf_cache[(kind, k)] = Hf
             leaks_fd.append(_alpha_leak(Hf, theta_numel))
-            try:
-                Ha = Ha_op(u)
-            except RuntimeError as e:
-                # The theta-only make_exact_hvp's tangent E-adjoint BiCGSTAB diverges at a
-                # non-uniform base (the tangent forward sweep linearizes the UNIFORM forward,
-                # inconsistent with the weighted primal fixed point -> dPi/dE -> inf/NaN). This is
-                # the S3+S7 prerequisite the gate exposes; report it instead of crashing.
-                ana_failed = True
-                print(f"  {kind:5s} dir {k}: analytic HVP RAISED ({str(e).splitlines()[0][:80]})")
-                rels.append(float("inf"))
-                if kind == "theta":
-                    theta_block_rels.append(float("inf"))
-                continue
-            finite_a = bool(torch.isfinite(Ha).all())
-            if not finite_a:
-                ana_failed = True
             leaks_ana.append(_alpha_leak(Ha, theta_numel))
+            finite_a = bool(torch.isfinite(Ha).all())
             PHa = proj_z(Ha, theta_numel)
             PHf = proj_z(Hf, theta_numel)
             num = float((PHa - PHf).norm())
             den = max(float(PHf.norm()), 1e-30)
             rel = num / den if finite_a else float("inf")
             rels.append(rel)
-            # per-block sub-rel (which block dominates the mismatch)
             dt = float((PHa[:theta_numel] - PHf[:theta_numel]).norm())
             da = float((PHa[theta_numel:] - PHf[theta_numel:]).norm())
-            # theta-block (H_tt) relative error on the pure-theta direction = the milestone quantity
             if kind == "theta":
                 den_tt = max(float(PHf[:theta_numel].norm()), 1e-30)
                 theta_block_rels.append((dt / den_tt) if finite_a else float("inf"))
-            print(f"  {kind:5s} dir {k}: finite_a={finite_a} |PHa|={float(PHa.norm()):.4f} "
+            print(f"    {kind:5s} dir {k}: finite_a={finite_a} |PHa|={float(PHa.norm()):.4f} "
                   f"|PHf|={float(PHf.norm()):.4f} rel={rel:.3e}  "
                   f"(theta-part_err={dt:.3e} alpha-part_err={da:.3e})")
         results[kind] = max(rels)
@@ -251,57 +223,100 @@ def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128, eps=1e-5, n
 
     leak_ana = max(leaks_ana) if leaks_ana else float("nan")
     leak_fd = max(leaks_fd)
-    print(f"  null-space leakage |1^T(Hu)_a|/sqrt(S):  analytic_max={leak_ana:.3e}  fd_max={leak_fd:.3e}")
-    if ana_failed:
-        print("  NOTE: the CURRENT theta-only make_exact_hvp could not produce a finite HVP at the "
-              "non-uniform base (tangent E-adjoint diverged). This is the S3+S7 prerequisite the "
-              "joint gate exposes; see the blocker in the report.")
+    print(f"    null-space leakage |1^T(Hu)_a|/sqrt(S):  analytic_max={leak_ana:.3e}  fd_max={leak_fd:.3e}")
+
+    # ---- symmetry under P_z (the real test of S4..S8 block consistency: H_ta == H_at^T).
+    # Use the analytic operator: a^T P_z H P_z b == b^T P_z H P_z a, since H(P_z x) is the operator
+    # the CG/Lanczos PD cert applies. Cross theta vs alpha vs mixed so H_ta/H_at are exercised.
+    asyms = []
+    sym_pairs = [(("theta", 0), ("alpha", 0)), (("theta", 1), ("mixed", 0)),
+                 (("alpha", 1), ("mixed", 1))]
+    for (ka, ia), (kb, ib) in sym_pairs:
+        a = block_dirs(ka, ia)
+        b = block_dirs(kb, ib)
+        Pa = proj_z(a, theta_numel)
+        Pb = proj_z(b, theta_numel)
+        HPa = proj_z(Ha_op(Pa), theta_numel)
+        HPb = proj_z(Ha_op(Pb), theta_numel)
+        bHa = float((Pb * HPa).sum())
+        aHb = float((Pa * HPb).sum())
+        denom = max(abs(bHa), abs(aHb), 1e-30)
+        asym = abs(bHa - aHb) / denom
+        asyms.append(asym)
+        print(f"    symmetry {ka}{ia} vs {kb}{ib}: bHa={bHa:.6e} aHb={aHb:.6e} rel_asym={asym:.3e}")
+    rel_asym = max(asyms) if asyms else float("inf")
 
     theta_ok = results["theta"] <= 5e-4
     alpha_ok = results["alpha"] <= 5e-4
     mixed_ok = results["mixed"] <= 5e-4
-    # THETA-MILESTONE gate: the H_tt block on the pure-theta direction. This is the FOUNDATION
-    # (S7+S3) result -- the weighted forward-over-reverse THETA block matches FD at the non-uniform
-    # base. The full-vector theta-block `results["theta"]` ALSO carries the alpha ROW (H_at u_t),
-    # which the analytic op zeros until the alpha-block run (S4-S8); so the milestone is gated on
-    # theta_block_rel = |H_tt u_t - FD_theta_row|/|FD_theta_row|, NOT the full 4S vector.
     theta_block_ok = theta_block_rel <= 5e-4
-    print(f"  THETA-MILESTONE  H_tt block (pure-theta dir) rel={theta_block_rel:.3e} "
-          f"[{'PASS' if theta_block_ok else 'FAIL'}]  (<=5e-4: weighted fwd-over-reverse theta block)")
-    print(f"  BLOCK rel (full 4S, incl. not-yet-built alpha row):  "
+    sym_ok = rel_asym <= 5e-3
+    all_green = theta_ok and alpha_ok and mixed_ok and sym_ok
+    print(f"  [{label}] BLOCK rel (full 4S, P_z both sides):  "
           f"theta={results['theta']:.3e} [{'PASS' if theta_ok else 'FAIL'}]  "
           f"alpha={results['alpha']:.3e} [{'PASS' if alpha_ok else 'FAIL'}]  "
           f"mixed={results['mixed']:.3e} [{'PASS' if mixed_ok else 'FAIL'}]")
-
-    # The FD side (joint optimize_receiver=True) DOES carry the alpha block; confirm it is
-    # non-trivial so the gate genuinely probes H_aa/H_at (not a zero direction).
-    gen = torch.Generator(device=device).manual_seed(seed + 999)
-    ua = torch.randn(S, generator=gen, device=device, dtype=torch.float64); ua /= ua.norm()
-    uA = torch.cat([torch.zeros(theta_numel, device=device, dtype=torch.float64), ua])
-    HfA = Hf_op(uA)
-    fd_alpha_block_norm = float(proj_z(HfA, theta_numel)[theta_numel:].norm())
-    print(f"  FD pure-alpha H_aa+H_at block norm (P-projected) = {fd_alpha_block_norm:.4e} "
-          f"(must be >> 0: the missing block the effort must reproduce)")
-
-    all_green = theta_ok and alpha_ok and mixed_ok
-    # S2 ok_to_proceed: the harness DISCRIMINATES. The current analytic op has NO alpha block AND
-    # (proven) cannot even evaluate at a non-uniform base -> the alpha/mixed gates FAIL while the
-    # FD side carries a real alpha block. theta_block_state is reported separately.
-    fd_carries_alpha = fd_alpha_block_norm > 1e-6
-    baseline_discriminates = (not all_green) and fd_carries_alpha and (not alpha_ok)
-    print(f"[recv-hvp gate] theta_milestone={theta_block_ok}  all_green={all_green}  "
-          f"ana_failed={ana_failed}  fd_carries_alpha={fd_carries_alpha}  "
-          f"discriminates={baseline_discriminates}")
+    print(f"  [{label}] theta_block(H_tt) rel={theta_block_rel:.3e} [{'PASS' if theta_block_ok else 'FAIL'}]  "
+          f"symmetry rel_asym={rel_asym:.3e} [{'PASS' if sym_ok else 'FAIL'} (<=5e-3)]  "
+          f"all_green={all_green}")
     return dict(theta=results["theta"], alpha=results["alpha"], mixed=results["mixed"],
                 theta_ok=theta_ok, alpha_ok=alpha_ok, mixed_ok=mixed_ok,
                 theta_block_rel=theta_block_rel, theta_block_ok=theta_block_ok,
-                leak_ana=leak_ana, leak_fd=leak_fd, all_green=all_green, ana_failed=ana_failed,
-                fd_alpha_block_norm=fd_alpha_block_norm,
-                baseline_discriminates=baseline_discriminates)
+                rel_asym=rel_asym, sym_ok=sym_ok,
+                leak_ana=leak_ana, leak_fd=leak_fd, all_green=all_green)
+
+
+# --------------------------------------------------------------------------------------------- gate
+def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128, eps=1e-5, n_each=3,
+        endgame=True, endgame_steps=40):
+    """Full S8 end-to-end gate: the analytic joint (theta, alpha) HVP vs FD at 4S, P_z-projected,
+    for pure-theta / pure-alpha / mixed + block symmetry, at the INIT non-uniform base AND (when
+    ``endgame=True``) at a NEAR-MINIMUM alpha reached by a short joint first-order descent (where
+    H_aa is near-singular off the gauge -- the regime the PD cert actually runs in)."""
+    static, theta, alpha, S, vm0 = _static_theta_alpha_from_live(n_families, device, seed=seed)
+    print(f"[recv-hvp S8 gate {n_families}-family] S={S} "
+          f"fp64 converged(pi={_SO['pi_iters']},neu={_SO['neumann_terms']},tself={tangent_self_iters})")
+
+    print("[INIT non-uniform base]")
+    r_init = _gate_at(static, theta, alpha, S, label="init", device=device, seed=seed,
+                      tangent_self_iters=tangent_self_iters, eps=eps, n_each=n_each)
+
+    r_end = None
+    if endgame:
+        # move alpha (and theta) off init with a short joint first-order descent -> a near-minimum
+        # where H_aa is near-singular off the gauge. Re-gate there (the endgame, not just the start).
+        from gpurec.optim.optimize import first_order
+        print(f"[ENDGAME] short joint first_order(with_receiver=True, max_steps={endgame_steps}) "
+              "to move alpha off init...")
+        # first return value is (theta, alpha) when with_receiver=True
+        (theta_e, alpha_e), *_ = first_order(
+            [static], theta.float(), alpha.float(), optimizer="adam", lr0=0.3,
+            schedule="cosine", max_steps=endgame_steps, verbose=False,
+            with_receiver=True, alpha0=alpha.float(), early_stop=False)
+        theta_e = theta_e.detach().double().reshape(theta.shape).contiguous()
+        alpha_e = alpha_e.detach().double().reshape(-1).contiguous()
+        alpha_e = alpha_e - alpha_e.mean()  # pin the gauge slice
+        moved = float((alpha_e - alpha).norm())
+        print(f"[ENDGAME] alpha moved |alpha_e - alpha_init| = {moved:.4f} "
+              f"(theta moved {float((theta_e - theta).norm()):.4f})")
+        if not receiver_weights_are_uniform(alpha_e) and _valid_mass_min(static, alpha_e) > 1e-3:
+            r_end = _gate_at(static, theta_e, alpha_e, S, label="endgame", device=device,
+                             seed=seed + 7, tangent_self_iters=tangent_self_iters, eps=eps,
+                             n_each=n_each)
+        else:
+            print("[ENDGAME] moved alpha is uniform or valid_mass collapsed -> skipping endgame gate")
+
+    init_green = r_init["all_green"]
+    end_green = (r_end is None) or r_end["all_green"]
+    overall = init_green and end_green
+    print(f"[recv-hvp S8 gate] init all_green={init_green}  "
+          f"endgame all_green={(r_end['all_green'] if r_end else 'skipped')}  OVERALL={overall}")
+    return dict(init=r_init, endgame=r_end, init_green=init_green, end_green=end_green,
+                overall=overall)
 
 
 if __name__ == "__main__":
     r = run()
-    # THETA-MILESTONE success == the H_tt block (pure-theta dir) matches FD at the non-uniform base
-    # (S7+S3 done). The alpha/mixed blocks remain FAIL until the alpha-block run (S4-S8).
-    raise SystemExit(0 if r["theta_block_ok"] else 1)
+    # S8 success == every block (pure-theta regression, pure-alpha H_aa+H_at, mixed) and the
+    # symmetry are green at BOTH the init non-uniform base AND the near-minimum endgame alpha.
+    raise SystemExit(0 if r["overall"] else 1)

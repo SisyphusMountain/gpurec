@@ -200,7 +200,13 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
     mt_hi = as_family_species(mt_h.squeeze(-1) if mt_h.ndim == pS_h.ndim + 1 else mt_h, S, G)
     phi1 = ((pS_hp * cot_pS).sum() + (pD_hp * cot_pD).sum() + (pL_hi * cot_pL).sum()
             + (mt_hi * cot_mc).sum() + (col_h * cot_col).sum())
-    (g1,) = torch.autograd.grad(phi1, theta_req, create_graph=True)
+    # S8: grad phi1 w.r.t. BOTH (theta_req, col_req). g1_col carries the col-row of the first-order
+    # head VJP (through col_h(col_req) = log_softmax and mt_h(col_req) via receiver_norm). Autograd
+    # returns each partial independently, so g1_theta is bit-for-bit the legacy single-target grad
+    # (the u_alpha=0 regression is preserved). create_graph so the second grad below can pass
+    # through the softmax/receiver_norm curvature ONCE (no double-count with the kernels' dcol-linear
+    # cotangent). col_req always requires_grad here, so allow_unused is False.
+    g1_theta, g1_col = torch.autograd.grad(phi1, (theta_req, col_req), create_graph=True)
     _head_grad_ctx.__exit__(None, None, None)
 
     def hvp(u_vec):
@@ -210,7 +216,11 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
         u_vec = u_vec.to(theta.dtype)
         theta_numel = theta.numel()
         u = u_vec[:theta_numel].reshape(theta.shape)
-        if u_vec.numel() > theta_numel:
+        # joint=True iff the caller passed the full 4S vector. When False (legacy theta-only /
+        # milestone contract: a length-theta_numel u_vec) u_alpha=0 AND the return is the
+        # theta-only (theta_numel) vector BIT-FOR-BIT -- the _verify_hvp uniform gate depends on it.
+        joint = u_vec.numel() > theta_numel
+        if joint:
             u_alpha = u_vec[theta_numel:].contiguous()
         else:
             u_alpha = torch.zeros(S, device=theta.device, dtype=theta.dtype)
@@ -229,6 +239,10 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             dPi, dPibar = full["dPi"], full["dPibar"]
             dpS_m, dpD_m, dpL_m = item(full["dlog_pS"]), item(full["dlog_pD"]), item(full["dlog_pL"])
             dmc_m = item(full["dmax_coupling"].squeeze(-1))
+            # S4: the alpha (col) tangent seed = softmax-Jacobian . u_alpha, exposed by S3's
+            # weighted jvp. At a uniform base the weighted path is off and there is no dcol key
+            # -> dcol=None (the e_step_backward_so dcol slot then zero-fills; bit-for-bit legacy).
+            dcol = full.get("dreceiver_log_probs") if use_col_weights else None
             dE, dEbar_e = full["dE"], full["dEbar"]
             dE_s1, dE_s2 = full["dE_s1"], full["dE_s2"]
 
@@ -273,15 +287,19 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                 has_leaf = wave["has_leaf_term"]
                 # (a) second-order contraction at fixed v_k; d_rhs folds the wave's rhs cotangent
                 # into d_Av so it IS the solve seed (= d_rhs[ws:ws+W] + d_Av), no host add
-                d_Av, c_aw0, c_aw1, c_aw2, c_aw345, c_aw3, c_aw4 = wave_backward_so(
+                d_Av, c_aw0, c_aw1, c_aw2, c_aw345, c_aw3, c_aw4, c_gcol = wave_backward_so(
                     sv["pi_wave"], dPi, sv["pibar_wave"], dPibar, v_k, ws, W, S,
                     prm, cst["mc"], cst["dl"], dcst["dDL"], cst["ebar"], dcst["dEbar"],
                     cst["e"], dcst["dE"], cst["sl1"], dcst["dSL1"], cst["sl2"], dcst["dSL2"],
                     col, c1, c2, parent, mad, dts_r, d_dts,
                     leaf_state_idx=leaf_state_idx, leaf_logp=cst["leaf"], dleaf_logp=dcst["dleaf"],
                     item_idx=item_idx, has_leaf_term=has_leaf, use_col_weights=use_col_weights,
-                    d_rhs=d_rhs,
+                    d_rhs=d_rhs, dcol=dcol,
                 )
+                # S5: accumulate the wave-SO col-cotangent (tangent of the wave self-loop
+                # receiver-grad). Zero when use_col_weights is off -> bit-for-bit legacy.
+                if use_col_weights:
+                    d_gcol = d_gcol + c_gcol
                 # (b) tangent-adjoint solve with the SAME operator and cached mask
                 seed = d_Av
                 dv, l_aw0, l_aw1, l_aw2, l_aw345, l_aw3, l_aw4 = wave_backward_uniform_fused(
@@ -354,7 +372,7 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                         compact_level_parents=sh["compact_level_parents"],
                         compact_level_child1=sh["compact_level_child1"],
                         compact_level_child2=sh["compact_level_child2"],
-                        use_col_weights=use_col_weights,
+                        use_col_weights=use_col_weights, dcol=dcol,
                     )
 
             # ---- E-side ---- (the big tangent buffers are no longer needed)
@@ -364,7 +382,10 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             x_args = (E_star.contiguous(), E_star.contiguous(), sv["E_s1"], sv["E_s2"],
                       sv["Ebar"], pS_m, pD_m, pL_m, col.contiguous(),
                       parent, c1, c2, mad)
-            dx = (dE, dE, dE_s1, dE_s2, dEbar_e, dpS_m, dpD_m, dpL_m, None)
+            # S4: the 9th dx slot is dcol (e_step_backward_so signature ...,dlog_pL, dcol). Was
+            # hardcoded None (col tangent dead); thread the S3 seed so the e-step SO contraction
+            # carries the alpha->E col dependence. None at a uniform base (legacy bit-for-bit).
+            dx = (dE, dE, dE_s1, dE_s2, dEbar_e, dpS_m, dpD_m, dpL_m, dcol)
             zero_g = zeros_state()
             # tangent of aux_to_e: linear part + contraction + norm-term closed form
             aux_lin = aux_T(d_gEs1, d_gEs2, d_gEbar)
@@ -392,6 +413,7 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                     d_gE=d_gE.clone(), d_gpD=d_gpD.clone(), d_gpS=d_gpS.clone(),
                     d_gmc=d_gmc.clone(), d_gEbar=d_gEbar.clone(), d_gEs1=d_gEs1.clone(),
                     d_gEs2=d_gEs2.clone(), dq_E=dq_E.clone(), dwE=dwE.clone(),
+                    d_gcol=d_gcol.clone(),
                 )
 
             # tangent param-cotangents from the e-step head: linear (tangent cotangents,
@@ -412,10 +434,30 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
         with torch.enable_grad():
             phi2 = ((pS_hp * d_cot_pS).sum() + (pD_hp * d_cot_pD).sum() + (pL_hi * d_cot_pL).sum()
                     + (mt_hi * d_cot_mc).sum() + (col_h * d_cot_col).sum())
-            # head Hessian term + linear term in ONE backward (they share the forward graph);
-            # retain_graph so the hoisted forward graph + g1 survive for the next hvp(u) call
-            (out,) = torch.autograd.grad((g1 * u).sum() + phi2, theta_req, retain_graph=True)
-        return out.reshape(-1)
+            # S8: grad w.r.t. BOTH (theta_req, col_req) of
+            #   (g1_theta * u_theta).sum() + (g1_col * u_alpha).sum() + phi2.
+            # - out_theta = H_tt u_theta + H_ta u_alpha (theta row of H u).
+            # - out_col   = H_at u_theta + H_aa u_alpha (alpha row of H u).
+            # The alpha-alpha softmax curvature + receiver_norm->max_transfer curvature are captured
+            # HERE ONCE (col_h(col_req)/mt_h(col_req) differentiated twice via g1's create_graph);
+            # the kernels carry ONLY the dcol-LINEAR cotangent (d_cot_col), so no double-count.
+            # u_theta = u (the reshaped theta tangent); with u_alpha=0 the (g1_col*u_alpha) term
+            # vanishes and out_theta is bit-for-bit the legacy grad (regression guard). retain_graph
+            # so the hoisted forward graph + g1 survive for the next hvp(u) call.
+            if not joint:
+                # legacy theta-only contract: EXACT legacy graph -- grad of (g1_theta*u).sum()+phi2
+                # w.r.t. theta_req ONLY (no (g1_col*u_alpha) node, no col grad target). g1_theta is
+                # autograd's independent partial of phi1, so it equals the old single-target g1
+                # bit-for-bit -> out reproduces the theta-only HVP BIT-FOR-BIT (the _verify_hvp
+                # uniform gate + the non-uniform milestone depend on this).
+                (out_theta,) = torch.autograd.grad((g1_theta * u).sum() + phi2, theta_req,
+                                                   retain_graph=True)
+                return out_theta.reshape(-1)
+            # joint contract: grad of (g1_theta*u_theta).sum()+(g1_col*u_alpha).sum()+phi2 w.r.t.
+            # BOTH (theta_req, col_req) -> (out_theta=H_tt u_t+H_ta u_a, out_col=H_at u_t+H_aa u_a).
+            head = (g1_theta * u).sum() + (g1_col * u_alpha).sum() + phi2
+            out_theta, out_col = torch.autograd.grad(head, (theta_req, col_req), retain_graph=True)
+        return torch.cat([out_theta.reshape(-1), out_col.reshape(-1)])
 
     return hvp
 

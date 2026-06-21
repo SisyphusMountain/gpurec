@@ -41,12 +41,12 @@ def _wave_so_kernel(
     pibar_row_max_ptr,
     mc_ptr, DL_ptr, dDL_ptr, Ebar_ptr, dEbar_ptr, E_ptr, dE_ptr,
     SL1_ptr, dSL1_ptr, SL2_ptr, dSL2_ptr,
-    col_log_probs_ptr,
+    col_log_probs_ptr, dcol_ptr,
     node_child1_ptr, node_child2_ptr, node_parent_ptr,
     leaf_state_ptr, leaf_logp_ptr, dleaf_logp_ptr,
     item_idx_ptr,
     DTS_ptr, dDTS_ptr, has_splits: tl.constexpr,
-    d_out_ptr, d_rhs_ptr,
+    d_out_ptr, d_rhs_ptr, d_grad_col_ptr,
     d_aw0_ptr, d_aw1_ptr, d_aw2_ptr, d_aw345_ptr, d_aw3_ptr, d_aw4_ptr,
     sub_ptr, dsub_ptr,
     CONST_ROW_STRIDE: tl.constexpr,
@@ -79,10 +79,13 @@ def _wave_so_kernel(
 
     if USE_COL_WEIGHTS:
         colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
+        dcolw = tl.load(dcol_ptr + s_offs, mask=mask, other=0.0)
         p_prime = tl.where(mask, tl.exp2(colw + pi_w - rm_safe), zero)
+        # col is a variable: p' = exp2(colw + pi_w - rm), so dp' = ln2 p' (dpi_w + dcolw)
+        dp_prime = LN2 * p_prime * (dpi_w + dcolw)  # rm frozen
     else:
         p_prime = tl.where(mask, tl.exp2(pi_w - rm_safe), zero)
-    dp_prime = LN2 * p_prime * dpi_w  # rm frozen
+        dp_prime = LN2 * p_prime * dpi_w  # rm frozen
     row_sum = tl.sum(p_prime, axis=0)
     drow_sum = tl.sum(dp_prime, axis=0)
 
@@ -96,11 +99,13 @@ def _wave_so_kernel(
         dpi_a = tl.load(dPi_ptr + pi_base + cur, mask=cv, other=0.0)
         if USE_COL_WEIGHTS:
             col_a = tl.load(col_log_probs_ptr + cur, mask=cv, other=NEG)
+            dcol_a = tl.load(dcol_ptr + cur, mask=cv, other=0.0)
             pa = tl.where(cv, tl.exp2(col_a + pi_a - rm_safe), zero)
+            danc += LN2 * pa * (dpi_a + dcol_a)
         else:
             pa = tl.where(cv, tl.exp2(pi_a - rm_safe), zero)
+            danc += LN2 * pa * dpi_a
         anc += pa
-        danc += LN2 * pa * dpi_a
         cur = tl.load(node_parent_ptr + cur, mask=cv, other=-1).to(tl.int32)
 
     denom = row_sum - anc
@@ -227,7 +232,20 @@ def _wave_so_kernel(
     dsub = tl.load(dsub_ptr + out_base + s_offs, mask=mask, other=0.0)
 
     d_diag = dw_L * (w0 + w1) + w_L * (dw0 + dw1)
+    # NOTE: keep d_self's add association EXACTLY as the legacy line (a+b)+c so the uniform /
+    # u_alpha=0 path is bit-for-bit (float add is not associative).
     d_self = v * d_diag + dp_prime * (A - sub) + p_prime * (dA - dsub)
+    # col-cotangent scatter (NEW, USE_COL_WEIGHTS only): atomic-add the per-row pibar tangent into
+    # d_grad_col[s]. The col enters p'/pa exactly like pi, so the first-order receiver-grad is
+    # g_col[s] = p'[s] (A - sub[s]) (summed over rows, _receiver_grad_from_pibar_self_loop_kernel);
+    # its tangent at fixed v is dp'(A-sub)+p'(dA-dsub) = the pibar part of d_self. The atomics across
+    # programs (one per wave row w) accumulate sum_w, mirroring the primal's axis=1 reduction.
+    # dcol already enters dp'/danc above (items 1-2), so this picks up the full col tangent; do NOT
+    # double-count -- the pibar routing's col dependence flows through dA/dsub here. Computed under
+    # the guard so the uniform path stores nothing into the (zero) buffer.
+    if USE_COL_WEIGHTS:
+        d_pibar = dp_prime * (A - sub) + p_prime * (dA - dsub)
+        tl.atomic_add(d_grad_col_ptr + s_offs, d_pibar, sem="relaxed", mask=mask)
     # fold the existing rhs cotangent for this wave row directly into the seed buffer so the
     # caller can hand d_out straight to the frozen solve (saves a host `d_rhs[ws:ws+W] + d_Av`):
     # this row's d_rhs is not read again after the seed is built, and the child-scatter atomics
@@ -249,14 +267,19 @@ def wave_backward_so(
     col_log_probs, node_child1, node_child2, node_parent, max_ancestor_depth,
     dts_r=None, d_dts=None,
     *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx, has_leaf_term=True,
-    use_col_weights=False, d_rhs=None,
+    use_col_weights=False, d_rhs=None, dcol=None,
 ):
     """Second-order contraction at fixed adjoint v. Returns
-    (d_Av [W,S], d_aw0, d_aw1, d_aw2, d_aw345, d_aw3, d_aw4).
+    (d_Av [W,S], d_aw0, d_aw1, d_aw2, d_aw345, d_aw3, d_aw4, d_grad_col [S]).
 
     If ``d_rhs`` [C,S] is given, the wave's own rhs cotangent (rows ``ws:ws+W``) is folded into
     the returned ``d_Av`` so it can be used directly as the frozen solve seed (= d_rhs + d_Av),
     saving a host add.
+
+    ``dcol`` [S] is the alpha (receiver_log_probs) tangent seed; with ``use_col_weights=True`` it
+    enters ``p'``/``pa`` (items S5.1-2) and the returned ``d_grad_col`` is the per-wave tangent of
+    the first-order receiver-grad (sum over this wave's rows). When ``use_col_weights=False`` the
+    col path is dead: ``dcol`` is ignored and ``d_grad_col`` is all-zero (bit-for-bit legacy).
     """
     has_splits = dts_r is not None
     fold_rhs = d_rhs is not None
@@ -267,20 +290,23 @@ def wave_backward_so(
     d_aws = tuple(torch.empty((W, S), device=dev, dtype=dt) for _ in range(6))
     sub = torch.empty((W, S), device=dev, dtype=dt)
     dsub = torch.empty((W, S), device=dev, dtype=dt)
+    # col-cotangent accumulator: atomics across rows (one program per wave row) sum into [S].
+    # Always allocated (cheap) but only written when use_col_weights -> zero under the legacy path.
+    d_grad_col = torch.zeros((S,), device=dev, dtype=dt)
     dummy = Pi_star
     _wave_so_kernel[(int(W),)](
         Pi_star, dPi, Pibar_star, dPibar, v,
         ws, S, S,
         pibar_row_max,
         mc, DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
-        col_log_probs,
+        col_log_probs, dcol if dcol is not None else dummy,
         node_child1, node_child2, node_parent,
         leaf_state_idx, leaf_logp, dleaf_logp,
         item_idx,
         dts_r if has_splits else dummy,
         d_dts if has_splits else dummy,
         has_splits,
-        d_out, d_rhs if fold_rhs else dummy, *d_aws, sub, dsub,
+        d_out, d_rhs if fold_rhs else dummy, d_grad_col, *d_aws, sub, dsub,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
@@ -290,4 +316,4 @@ def wave_backward_so(
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         num_warps=8,
     )
-    return (d_out, *d_aws)
+    return (d_out, *d_aws, d_grad_col)
