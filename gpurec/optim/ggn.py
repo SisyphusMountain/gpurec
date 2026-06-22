@@ -204,7 +204,7 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         int(root_ids.numel()), theta, receiver_weights, species_helpers,
         specieswise=specieswise, genewise=genewise, drop_norm=drop_norm,
         bicgstab_max_iter=so.bicgstab_max_iter,
-        bicgstab_tol=float(so.bicgstab_tol if bicgstab_tol is None else bicgstab_tol),
+        bicgstab_tol=(so.bicgstab_tol if bicgstab_tol is None else bicgstab_tol),
         bicgstab_breakdown_tol=so.bicgstab_breakdown_tol,
         cache=cache,
     )
@@ -214,7 +214,7 @@ def _e_adjoint_and_theta_vjp(
     E_star, log_pS, log_pD, log_pL, max_transfer_mat, receiver_log_probs, use_receiver_weights,
     grad_E, grad_Ebar, grad_E_s1, grad_E_s2, grad_log_pD, grad_log_pS, grad_max_transfer_mat,
     grad_receiver_log_probs, n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
-    drop_norm, bicgstab_max_iter=500, bicgstab_tol=1e-7, bicgstab_breakdown_tol=1e-30,
+    drop_norm, bicgstab_max_iter=500, bicgstab_tol=None, bicgstab_breakdown_tol=None,
     cache=None,
 ):
     topology_args = (

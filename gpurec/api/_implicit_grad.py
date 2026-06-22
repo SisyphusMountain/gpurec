@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
@@ -25,31 +27,99 @@ def _safe_exp2_ratio(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.where(neg_inf, torch.zeros_like(a), torch.exp2(a_safe - b_safe))
 
 
+def _bicgstab_rel_tol_default(dtype) -> float:
+    """Dtype-matched relative-residual target for the E-adjoint BiCGSTAB solve.
+
+    The target must sit ABOVE the finite-precision stagnation floor (a few * the
+    unit roundoff ``eps``) yet stay BELOW the ~2e-4 downstream gradient atomic-noise
+    floor, so the solve is as tight as the working precision *reliably* allows
+    without wasting iterations. These are exactly the values used elsewhere in
+    the codebase for the same purpose (``gpurec.optim.forward_tangent._default_tol``):
+
+      * fp32: ``1e-6`` (~8.4x fp32 eps 1.19e-7).  The historical default ``1e-7``
+        was 0.84x fp32 eps -- i.e. *below* the achievable fp32 floor -- so the
+        solve stagnated at ~1.1*eps and raised (the N=128 CV crash).
+      * fp64: ``1e-12`` (~4.5e3x fp64 eps 2.2e-16; tight but trivially reachable).
+    """
+    return 1e-12 if dtype == torch.float64 else 1e-6
+
+
+def _bicgstab_rel_tol_floor(dtype) -> float:
+    """Tightest relative residual the iteration can reach in a given dtype.
+
+    A small multiple of the unit roundoff. Any requested target below this is
+    physically unreachable, so we clamp up to it (with a warning) rather than
+    spin to ``max_iter`` and raise on a solve that is, in fact, fully converged.
+    """
+    return 4.0 * float(torch.finfo(dtype).eps)
+
+
 @torch.no_grad()
 def _bicgstab(
     Av,
     b: torch.Tensor,
     *,
     max_iter: int = 500,
-    tol: float = 1e-7,
-    breakdown_tol: float = 1e-30,
+    tol=None,
+    breakdown_tol=None,
 ):
+    """BiCGSTAB for the E-adjoint / GGN linear solve, dtype-aware and fail-safe.
+
+    ``tol`` is a RELATIVE residual target (``||r||/max(||b||,1)``). ``None`` ->
+    the dtype-matched default (:func:`_bicgstab_rel_tol_default`). A caller value
+    below the dtype floor (:func:`_bicgstab_rel_tol_floor`) is clamped up with a
+    warning -- a tighter relative residual is unreachable in that precision.
+
+    ``breakdown_tol`` is a dimensionless RELATIVE factor: each Krylov inner
+    product is tested against this factor times its operand norms, so a breakdown
+    fires only on genuine loss-of-orthogonality / a near-null direction -- never
+    on the small-but-valid inner products that occur near convergence (the old
+    absolute ``1e-30`` either never tripped in fp32, or tripped spuriously near
+    convergence and the solve then raised on an essentially-converged iterate).
+    ``None`` -> ``eps``.
+
+    On exit (max_iter or breakdown) the BEST iterate seen is returned whenever it
+    reached the working-precision floor; only a genuinely non-converged solve
+    raises ``RuntimeError``.
+    """
     max_iter = int(max_iter)
-    tol = float(tol)
-    breakdown_tol = float(breakdown_tol)
     if max_iter < 1:
         raise ValueError("max_iter must be at least 1")
-    if tol <= 0.0:
-        raise ValueError("tol must be positive")
-    if breakdown_tol <= 0.0:
+
+    eps = float(torch.finfo(b.dtype).eps)
+    floor = _bicgstab_rel_tol_floor(b.dtype)
+    if tol is None:
+        target = _bicgstab_rel_tol_default(b.dtype)
+    else:
+        target = float(tol)
+        if target <= 0.0:
+            raise ValueError("tol must be positive")
+        if target < floor:
+            warnings.warn(
+                f"bicgstab tol={target:.2e} is below the {b.dtype} finite-precision "
+                f"residual floor {floor:.2e}; clamping to the floor. A tighter "
+                f"relative residual is unreachable in this precision -- use fp64.",
+                RuntimeWarning, stacklevel=2,
+            )
+            target = floor
+    # Accept any iterate that reaches the dtype's natural floor as 'converged to
+    # working precision', so a near-floor stall/breakdown is success, not a crash.
+    accept = max(target, _bicgstab_rel_tol_default(b.dtype))
+    bd = eps if breakdown_tol is None else float(breakdown_tol)
+    if bd <= 0.0:
         raise ValueError("breakdown_tol must be positive")
 
     x = torch.zeros_like(b)
     r = b - Av(x)
     bnorm = max(float(torch.linalg.vector_norm(b).detach().cpu()), 1.0)
-    rel_res = float(torch.linalg.vector_norm(r).detach().cpu()) / bnorm
-    if rel_res <= tol:
+    rhat_norm = float(torch.linalg.vector_norm(r).detach().cpu())
+    r_norm = rhat_norm
+    rel_res = r_norm / bnorm
+    if rel_res <= target:
         return x
+
+    best_x = x
+    best_res = rel_res
 
     r_hat = r.clone()
     rho_old = torch.ones((), dtype=b.dtype, device=b.device)
@@ -58,40 +128,68 @@ def _bicgstab(
     v = torch.zeros_like(b)
     p = torch.zeros_like(b)
 
+    broke = False
     for k in range(1, max_iter + 1):
         rho = torch.dot(r_hat, r)
-        if float(rho.abs().detach().cpu()) <= breakdown_tol:
+        # Relative breakdown: r_hat and r have lost their inner product (cosine
+        # below machine precision) -> classic BiCGSTAB breakdown.
+        if float(rho.abs().detach().cpu()) <= bd * rhat_norm * max(r_norm, eps):
+            broke = True
             break
 
         beta = (rho / rho_old) * (alpha / omega)
         p = r + beta * (p - omega * v)
         v = Av(p)
+        v_norm = float(torch.linalg.vector_norm(v).detach().cpu())
         denom = torch.dot(r_hat, v)
-        if float(denom.abs().detach().cpu()) <= breakdown_tol:
+        if float(denom.abs().detach().cpu()) <= bd * rhat_norm * max(v_norm, eps):
+            broke = True
             break
 
         alpha = rho / denom
         s = r - alpha * v
-        rel_s = float(torch.linalg.vector_norm(s).detach().cpu()) / bnorm
-        if rel_s <= tol:
-            return x + alpha * p
+        s_norm = float(torch.linalg.vector_norm(s).detach().cpu())
+        rel_s = s_norm / bnorm
+        xs = x + alpha * p
+        if rel_s < best_res:
+            best_res = rel_s
+            best_x = xs
+        if rel_s <= target:
+            return xs
 
         t = Av(s)
         tt = torch.dot(t, t)
-        if float(tt.abs().detach().cpu()) <= breakdown_tol:
+        # Relative breakdown: A s ~ 0 with s != 0 (near-null direction); also
+        # guards the omega = <t,s>/tt division below.
+        if float(tt.detach().cpu()) <= (bd * max(s_norm, eps)) ** 2:
+            broke = True
             break
 
         omega = torch.dot(t, s) / tt
-        x = x + alpha * p + omega * s
+        x = xs + omega * s
         r = s - omega * t
-        rel_res = float(torch.linalg.vector_norm(r).detach().cpu()) / bnorm
-        if rel_res <= tol:
+        r_norm = float(torch.linalg.vector_norm(r).detach().cpu())
+        rel_res = r_norm / bnorm
+        if rel_res < best_res:
+            best_res = rel_res
+            best_x = x
+        if rel_res <= target:
             return x
-        if float(omega.abs().detach().cpu()) <= breakdown_tol:
+        # omega is the divisor of the next iteration's beta; guard against the
+        # alpha/omega blow-up when omega collapses relative to alpha.
+        if float(omega.abs().detach().cpu()) <= bd * max(float(alpha.abs().detach().cpu()), eps):
+            broke = True
             break
         rho_old = rho
 
-    raise RuntimeError(f"E-adjoint BiCGSTAB solve failed after {k} iterations (relative residual {rel_res:.3e})")
+    if best_res <= accept:
+        return best_x
+    why = "broke down" if broke else f"hit max_iter={max_iter}"
+    raise RuntimeError(
+        f"E-adjoint BiCGSTAB solve {why} at relative residual {best_res:.3e} "
+        f"(target {target:.3e}, dtype {b.dtype}); the operator is likely singular "
+        f"or too ill-conditioned to solve in this precision."
+    )
 
 
 @torch.no_grad()
@@ -109,8 +207,8 @@ def implicit_grad_loglik_vjp_wave(
     neumann_terms: int = 3,
     self_loop_solver: str = "neumann",
     bicgstab_max_iter: int = 500,
-    bicgstab_tol: float = 1e-7,
-    bicgstab_breakdown_tol: float = 1e-30,
+    bicgstab_tol=None,
+    bicgstab_breakdown_tol=None,
     adjoint_pruning_threshold: float = 1e-6,
     use_adjoint_pruning: bool = True,
     pibar_side_threshold: float = 0.0,
@@ -389,8 +487,8 @@ def _e_adjoint_and_theta_vjp(
     grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
     n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
     bicgstab_max_iter: int = 500,
-    bicgstab_tol: float = 1e-7,
-    bicgstab_breakdown_tol: float = 1e-30,
+    bicgstab_tol=None,
+    bicgstab_breakdown_tol=None,
 ):
     topology_args = (
         species_helpers["sp_parent"],
