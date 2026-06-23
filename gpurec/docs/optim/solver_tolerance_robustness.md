@@ -119,6 +119,32 @@ as *non-convergent* on the representative fixture (`+33` NLL, ~`2.6×` gradient 
 — so an ad-hoc caller silently got a wrong Hessian. It now falls back to the
 validated floor of **64** and emits a `RuntimeWarning`.
 
+### 6. `forward_tangent.jvp_root_scores` self-loop: fail-loud on silent truncation
+
+The GGN tangent self-loop (`jvp_root_scores`, the `self_iters=None` convergence
+path) iterated up to `self_max_iter=200` and, if it **didn't** converge, *silently*
+fell through and wrote the non-converged tangent — so the Jvp / HVP / GGN curvature
+(and any PD certificate built on it) was wrong with no signal. It now tracks a
+`converged` flag and emits a one-time `RuntimeWarning` on truncation (same fail-loud
+treatment as the bicgstab solve and the `tangent_self_iters` fallback).
+
+Verified on the 256-fam archaea fixture that the warning is **selective**, firing
+only on genuine non-convergence (it surfaces a real silent truncation rather than
+adding noise):
+
+| evaluation point | dtype | self-loop |
+|---|---|---|
+| easy (rate 0.1 uniform) | fp32 & fp64 | converges, **no warning** |
+| certified κ≈38k optimum | fp64 | converges, **no warning** |
+| certified κ≈38k optimum | **fp32** | truncates → **warning** |
+| forced `self_max_iter=1` | — | truncates → **warning** |
+
+This is the same fp32-near-degeneracy precision wall as the bicgstab solve: in fp64
+the loop converges; in fp32 at a κ≈38k optimum it cannot reach `self_tol` in 200
+steps, and now says so instead of returning a truncated curvature. (The fix is the
+*signal*; raising `self_max_iter`/`self_tol` or using fp64 is the cure, left to the
+caller.) The default `self_max_iter=200` value is unchanged — only the silence is.
+
 ## Why these specific numbers are *not* arbitrary
 
 - `eps = torch.finfo(dtype).eps` — the unit roundoff, the only principled scale for
