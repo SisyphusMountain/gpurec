@@ -48,7 +48,7 @@ def evaluate_static_loss_grad(
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
         # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
-        if os.environ.get("GPUREC_WARM_ADJOINT"):
+        if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
             if static.warm_v is None:
                 static.warm_v = {}
             _warm_v = static.warm_v
@@ -190,7 +190,7 @@ def evaluate_static_loss_vector_grad(
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
         # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
-        if os.environ.get("GPUREC_WARM_ADJOINT"):
+        if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
             if static.warm_v is None:
                 static.warm_v = {}
             _warm_v = static.warm_v

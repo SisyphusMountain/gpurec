@@ -16,6 +16,7 @@ Phases:
      second-order (needs the SO/tangent Triton kernels in ``gpurec.core.kernels``).
 """
 
+from gpurec.optim.genewise_fit import fit_genewise
 from gpurec.optim.value_and_grad import (
     FORWARD_SAVED_NAMES,
     forward_solve,
@@ -25,6 +26,7 @@ from gpurec.optim.value_and_grad import (
 
 __all__ = [
     "FORWARD_SAVED_NAMES",
+    "fit_genewise",
     "forward_solve",
     "free_cuda_cache_if_tight",
     "make_value_and_grad",

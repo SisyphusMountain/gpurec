@@ -90,6 +90,42 @@ class GeneReconModel(torch.nn.Module):
         self.wave_layout = first.wave_layout
         self.rate_family_idx = first.rate_family_idx
         self.warm_E = first.warm_E
+        self._resolve_warm_adjoint_gate()
+
+    def _resolve_warm_adjoint_gate(self) -> None:
+        """Memory-gate the GPUREC_WARM_ADJOINT cache by the clades x species product.
+
+        The warm-adjoint cache (``static.warm_v``) is resident at ~``total_clades * S * dtype`` and on
+        large family sets dwarfs both the static base (~0.25 GiB) and one batch's transient scratch
+        (~1.8 GiB) -- full Hogenom ~19 GiB. Decide ONCE per (re)build whether it (plus the largest
+        batch's backward scratch) fits the free-memory budget; if not, mark every batch static so
+        ``_execution`` ignores the warm-adjoint env and runs cold. Small/medium sets (e.g. Hogenom-1055
+        ~5.5 GiB) keep warm and its speed. This is the right gate (clades x species) vs a family count.
+        """
+        device = self.theta.device
+        if device.type != "cuda":
+            return
+        from gpurec.core.memory_policy import warm_adjoint_fits
+
+        S = int(self.species_helpers["S"])
+        batch_clades = [
+            sum(int(self.families[i]["C"]) for i in batch) for batch in self.family_batches
+        ]
+        total_clades = sum(batch_clades)
+        ok, cache, scratch, budget = warm_adjoint_fits(
+            total_clades, S, self.theta.dtype, device=device, max_batch_clades=max(batch_clades, default=0)
+        )
+        for static in self.batch_statics:
+            static.warm_adjoint_ok = ok
+        self.warm_adjoint_ok = ok
+        if not ok:
+            gib = 1024 ** 3
+            print(
+                f"[gpurec] warm-adjoint disabled (running cold): cache {cache / gib:.1f} GiB + scratch "
+                f"{scratch / gib:.1f} GiB > budget {(budget or 0) / gib:.1f} GiB "
+                f"[{total_clades:,} clades x {S} species, {len(self.family_batches)} batches]",
+                flush=True,
+            )
 
     def _make_batch_static(self, batch, plan=None, *, device: torch.device, max_wave_size: int) -> _BatchStatic:
         return build_batch_static(
@@ -224,6 +260,7 @@ class GeneReconModel(torch.nn.Module):
         self.wave_layout = self.batch_statics[0].wave_layout
         self.rate_family_idx = self.batch_statics[0].rate_family_idx
         self.warm_E = self.batch_statics[0].warm_E
+        self._resolve_warm_adjoint_gate()
         return self.family_batches
 
     def set_batch_solver_options(self, per_group_options):

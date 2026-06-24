@@ -79,3 +79,40 @@ def proposal0_memory_gate(
     if budget is None:
         return True, required, budget
     return required <= budget, required, budget
+
+
+def warm_adjoint_cache_bytes(total_clades: int, S: int, dtype: torch.dtype) -> int:
+    """Resident bytes of the GPUREC_WARM_ADJOINT per-wave adjoint cache (``warm_v``).
+
+    The cache stores one adjoint vector per clade-row per species node, accumulated over every wave of
+    every batch and held resident for the whole run, so it scales as ``total_clades * S * dtype`` -- the
+    SAME clades x species product as the per-batch backward scratch, but resident rather than transient.
+    On large family sets this is the dominant consumer (full Hogenom: ~3.6M clades x 1331 species x 4 B
+    ~ 19 GiB), far larger than the static base (~0.25 GiB) or one batch's scratch (~1.8 GiB).
+    """
+    return _nonnegative_int("total_clades", total_clades) * _positive_int("S", S) * dtype_nbytes(dtype)
+
+
+def warm_adjoint_fits(
+    total_clades: int,
+    S: int,
+    dtype: torch.dtype,
+    *,
+    device: torch.device | int | None = None,
+    max_batch_clades: int = 0,
+) -> tuple[bool, int, int, int | None]:
+    """Decide whether the warm-adjoint cache + one batch's backward scratch fit the memory budget.
+
+    Returns ``(ok, cache_bytes, scratch_bytes, budget_bytes)``. ``ok`` is True (warm allowed) when the
+    resident warm-adjoint cache PLUS the largest single batch's transient backward scratch fit within
+    ``cuda_memory_budget_bytes`` (free - reserve, capped at a fraction of total). When it does not fit,
+    the caller should run COLD -- the cache, not the clade batcher, is what exhausts memory on large
+    family sets. This gates GPUREC_WARM_ADJOINT by the right quantity (clades x species x dtype) instead
+    of a family count.
+    """
+    cache = warm_adjoint_cache_bytes(total_clades, S, dtype)
+    scratch = proposal0_wave_scratch_bytes(max_batch_clades, S, dtype) if max_batch_clades else 0
+    budget = cuda_memory_budget_bytes(device)
+    if budget is None:
+        return True, cache, scratch, budget
+    return (cache + scratch) <= budget, cache, scratch, budget
