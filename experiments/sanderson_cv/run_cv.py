@@ -12,7 +12,9 @@ Design decisions (see docs/optim/sanderson_cv.md):
   * init theta = 0  -> all DTL probs 0.25 (the empirically better basin).
   * converged solver pi=64/neumann=64 (pi=16 gradient is biased ~5%, would corrupt the optima).
   * homotopy high->low lam, warm-started, so each fit starts inside the previous (more convex) basin.
-  * scipy unconstrained L-BFGS-B (bounds=None): the prior regularizes, theta is NOT boxed.
+  * scipy L-BFGS-B: by default unconstrained (bounds=None) -- the prior alone regularizes; pass
+    --min-rate/--max-rate to ALSO box theta=log2(rate) (rho in [min,max]), i.e. the bounded CV that
+    pairs the lambda penalty with the box on theta of Sec. "certified optimality" (rho in [0.05,2.0]).
   * robustness: lam-level theta checkpoints + state.pt + JSONL event log -> resumable; wandb timing.
 
 Run:
@@ -104,20 +106,31 @@ def kfold_indices(n, k, seed=0):
 # ----------------------------------------------------------------------------------------------
 # fit / eval / certify
 # ----------------------------------------------------------------------------------------------
-def theta_stats(theta):
+def theta_stats(theta, bounds=None):
     t = theta.detach().reshape(-1).float()
-    return dict(mean=float(t.mean()), std=float(t.std()), absmax=float(t.abs().max()),
-                frac_extreme=float((t.abs() > 5).float().mean()))  # boundary-saturation indicator
+    d = dict(mean=float(t.mean()), std=float(t.std()), absmax=float(t.abs().max()),
+             frac_extreme=float((t.abs() > 5).float().mean()))  # boundary-saturation indicator
+    if bounds is not None:                                       # box-constrained run: report active set
+        lo, hi = bounds
+        tol = 1e-3 * max(hi - lo, 1e-12)
+        d["frac_active"] = float(((t <= lo + tol) | (t >= hi - tol)).float().mean())  # rates pinned at the box
+    return d
 
 
 def gbm_fit(batch_statics, theta0, rw, sp_parent, *, lam_tree, adam_steps=40, adam_lr=1.0,
-            lbfgs_iters=120, maxcor=50, log=None, tag="", solve_dtype=torch.float32):
+            lbfgs_iters=120, maxcor=50, log=None, tag="", solve_dtype=torch.float32,
+            theta_bounds=None):
     """argmin_theta  sum NLL_i + (lam_tree/2) sum_edges ||theta_c - theta_p||^2,  from theta0.
 
-    Adam (basin entry) -> scipy unconstrained L-BFGS-B (penalized endgame). The SOLVER runs in
+    Adam (basin entry) -> scipy L-BFGS-B (penalized endgame). The SOLVER runs in
     ``solve_dtype`` (fp32 default -- on a consumer 4090 fp64 is ~27x slower with bit-identical loss;
     use fp64 only on an A100). scipy's quasi-Newton bookkeeping stays fp64 on the CPU. Returns
-    (theta_hat, stats). ``log(d)`` is called per logged iteration with a scalar dict."""
+    (theta_hat, stats). ``log(d)`` is called per logged iteration with a scalar dict.
+
+    ``theta_bounds=(lo, hi)`` (in theta=log2(rate) space) imposes the box rho in [2^lo, 2^hi] as a
+    HARD constraint -- the Adam warmup is clamped to the box each step and L-BFGS-B runs box-bounded.
+    The CV objective then selects lambda for the penalized AND bounded problem (lambda penalty + the
+    bound on theta together). ``None`` (default) is the original unconstrained behaviour."""
     from scipy.optimize import minimize
 
     S3 = tuple(theta0.shape)
@@ -127,6 +140,8 @@ def gbm_fit(batch_statics, theta0, rw, sp_parent, *, lam_tree, adam_steps=40, ad
     n_solves = 0
 
     theta = theta0.detach().reshape(S3).float().clone()
+    if theta_bounds is not None:
+        theta.clamp_(theta_bounds[0], theta_bounds[1])
     if adam_steps > 0:
         leaf = theta.clone().requires_grad_(True)
         opt = torch.optim.Adam([leaf], lr=adam_lr)
@@ -137,10 +152,13 @@ def gbm_fit(batch_statics, theta0, rw, sp_parent, *, lam_tree, adam_steps=40, ad
             opt.param_groups[0]["lr"] = lr
             leaf.grad = g.reshape(S3)
             opt.step()
+            if theta_bounds is not None:                        # project the warmup back into the box
+                with torch.no_grad():
+                    leaf.clamp_(theta_bounds[0], theta_bounds[1])
             if log and (it % 5 == 0 or it == adam_steps - 1):
                 log(dict(phase="adam", it=it, loss=loss, gnorm=float(g.norm()), lr=lr,
                          t=time.perf_counter() - t_start, **{f"theta_{k}": v for k, v in
-                         theta_stats(leaf).items()}), tag=tag)
+                         theta_stats(leaf, theta_bounds).items()}), tag=tag)
         theta = leaf.detach()
 
     state = {"loss": math.nan, "gnorm": math.nan}
@@ -160,16 +178,17 @@ def gbm_fit(batch_statics, theta0, rw, sp_parent, *, lam_tree, adam_steps=40, ad
             log(dict(phase="lbfgs", it=it_box["n"], loss=state["loss"], gnorm=state["gnorm"],
                      t=time.perf_counter() - t_start,
                      **{f"theta_{k}": v for k, v in
-                        theta_stats(torch.tensor(xk).reshape(S3)).items()}), tag=tag)
+                        theta_stats(torch.tensor(xk).reshape(S3), theta_bounds).items()}), tag=tag)
 
     x0 = theta.reshape(-1).double().cpu().numpy().astype(np.float64)
-    res = minimize(fun, x0, jac=True, method="L-BFGS-B", bounds=None, callback=cb,
+    bnds = None if theta_bounds is None else [(theta_bounds[0], theta_bounds[1])] * x0.size
+    res = minimize(fun, x0, jac=True, method="L-BFGS-B", bounds=bnds, callback=cb,
                    options={"maxiter": lbfgs_iters, "maxfun": lbfgs_iters * 2,
                             "maxcor": maxcor, "ftol": 1e-12, "gtol": 1e-8})
     theta_hat = torch.tensor(res.x, device=dev, dtype=torch.float32).reshape(S3)
     stats = dict(final_loss=float(res.fun), final_gnorm=float(np.linalg.norm(res.jac)),
                  nit=int(res.nit), n_solves=n_solves, wall_s=time.perf_counter() - t_start,
-                 **theta_stats(theta_hat))
+                 **theta_stats(theta_hat, theta_bounds))
     return theta_hat, stats
 
 
@@ -229,7 +248,7 @@ class Run:
 
 
 def run_cv(*, n_families, k, lambdas, seed, outdir, dataset="hogenom", use_wandb=True, adam_steps=40,
-           lbfgs_iters=120):
+           lbfgs_iters=120, theta_bounds=None):
     global _SP_TREE
     ds = DATASETS[dataset]
     _SP_TREE = ds["species_tree"]
@@ -237,10 +256,12 @@ def run_cv(*, n_families, k, lambdas, seed, outdir, dataset="hogenom", use_wandb
     paths = ds["families"](n_families)
     n = len(paths)
     lambdas = sorted({float(x) for x in lambdas}, reverse=True)  # descending homotopy
+    bnd_tag = "" if theta_bounds is None else f"_box{theta_bounds[0]:.3g},{theta_bounds[1]:.3g}"
     cfg = dict(dataset=dataset, n_families=n, k=k, lambdas=lambdas, seed=seed, adam_steps=adam_steps,
                lbfgs_iters=lbfgs_iters, solver="pi64_neu64",
                penalty="gbm_tree_laplacian", init="theta0",
-               run_id=f"sandcv_{dataset}_n{n}_k{k}_s{seed}_nl{len(lambdas)}_it{lbfgs_iters}")
+               theta_bounds=theta_bounds, bounded=theta_bounds is not None,
+               run_id=f"sandcv_{dataset}_n{n}_k{k}_s{seed}_nl{len(lambdas)}_it{lbfgs_iters}{bnd_tag}")
     run = Run(outdir, use_wandb, cfg)
     print(f"[run_cv] dataset={dataset}  n={n} families, k={k}, lambdas(desc)={lambdas}\n  outdir={outdir}  "
           f"resume: {len(run.state['folds_done'])} folds + {len(run.state['refit'])} refit-lams done")
@@ -273,14 +294,15 @@ def run_cv(*, n_families, k, lambdas, seed, outdir, dataset="hogenom", use_wandb
             t0 = time.perf_counter()
             theta, st = gbm_fit(train.batch_statics, theta, rw, sp_parent, lam_tree=lam,
                                 adam_steps=adam_steps, lbfgs_iters=lbfgs_iters,
-                                log=run.log, tag=f"fold{fi}/lam{lam:g}")
+                                log=run.log, tag=f"fold{fi}/lam{lam:g}", theta_bounds=theta_bounds)
             ho = heldout_nll(test.batch_statics, theta, rw)
             run.state["cells"][f"{fi},{li}"] = dict(fold=fi, lam=lam, heldout=ho, per_fam=ho/max(1, len(te)),
                                                     **st)
             torch.save({"theta": theta.cpu(), "lam": lam, "fold": fi}, run.outdir/"ckpt"/f"fold{fi}_lam{li}.pt")
             run.log(dict(phase="summary", fold=fi, lam=lam, heldout=ho, per_fam=ho/max(1, len(te)),
                          final_loss=st["final_loss"], final_gnorm=st["final_gnorm"],
-                         frac_extreme=st["frac_extreme"], n_solves=st["n_solves"],
+                         frac_extreme=st["frac_extreme"], frac_active=st.get("frac_active"),
+                         n_solves=st["n_solves"],
                          fit_wall_s=time.perf_counter()-t0), tag=f"fold{fi}/lam{lam:g}")
             run.save()
         run.state["folds_done"].append(fi)
@@ -309,17 +331,19 @@ def run_cv(*, n_families, k, lambdas, seed, outdir, dataset="hogenom", use_wandb
             continue
         theta, st = gbm_fit(full.batch_statics, theta, rw, sp_parent, lam_tree=lam,
                             adam_steps=adam_steps, lbfgs_iters=lbfgs_iters, log=run.log,
-                            tag=f"refit/lam{lam:g}")
+                            tag=f"refit/lam{lam:g}", theta_bounds=theta_bounds)
         torch.save({"theta": theta.cpu(), "lam": lam}, run.outdir/"ckpt"/f"refit_lam{li}.pt")
         run.state["refit"][str(lam)] = dict(lam=lam, final_loss=st["final_loss"],
-            final_gnorm=st["final_gnorm"], frac_extreme=st["frac_extreme"],
+            final_gnorm=st["final_gnorm"], frac_extreme=st["frac_extreme"], frac_active=st.get("frac_active"),
             lam_min=None, ritz_resid=None, certified_pd=None)  # filled by certify.py
         run.log(dict(phase="summary", lam=lam, final_loss=st["final_loss"],
-                     final_gnorm=st["final_gnorm"], frac_extreme=st["frac_extreme"]),
+                     final_gnorm=st["final_gnorm"], frac_extreme=st["frac_extreme"],
+                     frac_active=st.get("frac_active")),
                 tag=f"refit/lam{lam:g}")
         run.save()
+        act = "" if st.get("frac_active") is None else f" frac_active={st['frac_active']:.2f}"
         print(f"  lam={lam:<10.4g} F={st['final_loss']:.2f} |g|={st['final_gnorm']:.2e} "
-              f"frac|theta|>5={st['frac_extreme']:.2f}  (PD cert deferred to certify.py)")
+              f"frac|theta|>5={st['frac_extreme']:.2f}{act}  (PD cert deferred to certify.py)")
 
     print(f"\n[run_cv] DONE. lam*={lam_star}  state={run.state_path}")
     if run.wandb:
@@ -338,14 +362,24 @@ def main():
     ap.add_argument("--no-wandb", action="store_true")
     ap.add_argument("--adam-steps", type=int, default=40)
     ap.add_argument("--lbfgs-iters", type=int, default=120)
+    ap.add_argument("--min-rate", type=float, default=None,
+                    help="lower box on rate rho: theta>=log2(min_rate). Giving --min-rate/--max-rate "
+                         "switches CV to the BOUNDED problem (lambda penalty + box on theta).")
+    ap.add_argument("--max-rate", type=float, default=None, help="upper box on rate rho: theta<=log2(max_rate).")
     ap.add_argument("--cert-m", type=int, default=0, help="ignored; certification is post-hoc via certify.py")
     ap.add_argument("--smoke", type=int, default=0, help="override n_families for a quick smoke")
     args = ap.parse_args()
     n = args.smoke if args.smoke else args.families
-    outdir = args.outdir or str(HERE / "runs" / f"cv_{args.dataset}_n{n or 'all'}")
+    theta_bounds = None
+    if args.min_rate is not None or args.max_rate is not None:
+        lo = math.log2(args.min_rate) if args.min_rate is not None else -float("inf")
+        hi = math.log2(args.max_rate) if args.max_rate is not None else float("inf")
+        theta_bounds = (lo, hi)
+    suffix = "_bounded" if theta_bounds is not None else ""
+    outdir = args.outdir or str(HERE / "runs" / f"cv_{args.dataset}_n{n or 'all'}{suffix}")
     run_cv(n_families=n, k=args.k, lambdas=args.lambdas, seed=args.seed, outdir=outdir,
            dataset=args.dataset, use_wandb=not args.no_wandb, adam_steps=args.adam_steps,
-           lbfgs_iters=args.lbfgs_iters)
+           lbfgs_iters=args.lbfgs_iters, theta_bounds=theta_bounds)
 
 
 if __name__ == "__main__":
