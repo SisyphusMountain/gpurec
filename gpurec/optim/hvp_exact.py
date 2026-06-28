@@ -94,8 +94,24 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
         _env = os.environ.get("NEWTON_TANGENT_SELF_ITERS")
         if _env:
             tangent_self_iters = int(_env)
+        elif getattr(so, "pi_iters", None):
+            # Match the primal forward's truncation so the HVP is the exact
+            # Hessian of the *truncated* objective.
+            tangent_self_iters = int(so.pi_iters)
         else:
-            tangent_self_iters = int(so.pi_iters) if getattr(so, "pi_iters", None) else 16
+            # No primal pi_iters to match (ad-hoc caller). 16 is documented as
+            # non-convergent on the representative fixture (+33 NLL, ~2.6x grad
+            # bias), so fall back to the validated floor of 64 and warn rather
+            # than silently returning a wrong curvature.
+            import warnings
+            tangent_self_iters = 64
+            warnings.warn(
+                "hvp_exact: no tangent_self_iters / NEWTON_TANGENT_SELF_ITERS / "
+                "solver_options.pi_iters provided; defaulting to 64 (the validated "
+                "convergence floor). Pass tangent_self_iters to match your primal "
+                "forward truncation.",
+                RuntimeWarning, stacklevel=2,
+            )
     # How often to run free_cuda_cache_if_tight() in the reverse sweep. It is a blocking
     # cudaMemGetInfo round-trip (~7.9us) and on a large-free GPU never empties the pool, so
     # firing once per wave is ~142 wasted driver calls/HVP. Gate it to every K waves; it stays
@@ -406,7 +422,7 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                 return (w_flat.view(E_shape) - gE).reshape(-1)
 
             dwE = _bicgstab(AG_flat, rhs_E, max_iter=so.bicgstab_max_iter,
-                            tol=float(so.bicgstab_tol), breakdown_tol=so.bicgstab_breakdown_tol
+                            tol=so.bicgstab_tol, breakdown_tol=so.bicgstab_breakdown_tol
                             ).view(E_shape)
             if debug_out is not None:
                 debug_out.update(

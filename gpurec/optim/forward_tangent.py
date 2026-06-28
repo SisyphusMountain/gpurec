@@ -14,6 +14,8 @@ existing backward (see ``newton/ggn.py``).
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 from torch.func import jvp
 
@@ -264,14 +266,26 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=200, e
             step(dpi, dts_r, d_dts, ws, W, has_leaf, store=True)  # last step writes dpibar
         else:
             prev = dpi.narrow(0, ws, W).clone()
+            converged = False
             for _ in range(int(self_max_iter)):
                 step(dpi, dts_r, d_dts, ws, W, has_leaf, store=False)  # in-place Jacobi on dpi[ws:ws+W]
                 cur = dpi.narrow(0, ws, W)
                 diff = float((cur - prev).abs().max())
                 scale = float(cur.abs().max())
                 if diff <= self_tol * max(1.0, scale):
+                    converged = True
                     break
                 prev = cur.clone()
+            if not converged:
+                # Silent truncation here returns a NON-converged tangent -> the Jvp
+                # (hence the HVP / GGN curvature, and any PD certificate built on it)
+                # is wrong. Fail loud. Constant message so warnings dedupes to once.
+                warnings.warn(
+                    "jvp_root_scores tangent self-loop hit self_max_iter without "
+                    "converging; the tangent (Jvp/HVP/GGN curvature) is truncated and "
+                    "may be inaccurate. Raise self_max_iter (default 200) or self_tol.",
+                    RuntimeWarning, stacklevel=2,
+                )
             step(dpi, dts_r, d_dts, ws, W, has_leaf, store=True)  # write converged dpibar[ws:ws+W]
 
     roots = dpi.index_select(0, wl["root_clade_ids"])
