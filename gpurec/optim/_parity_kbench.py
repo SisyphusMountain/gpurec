@@ -15,6 +15,7 @@ backward's atomic-noise floor (~2e-4 relative).
 
 from __future__ import annotations
 
+import inspect
 import sys
 
 import torch
@@ -52,7 +53,12 @@ def gpurec_static_from_capture(cap, device):
     st = cap["static"]
     species_helpers = {_SH_INV.get(k, k): _to_dev(v, device) for k, v in st["state_helpers"].items()}
     wave_layout = {_WL_INV.get(k, k): _to_dev(v, device) for k, v in st["wave_layout"].items()}
-    so = SolverOptions(**cap["meta"]["solver_options"])
+    # Drop any keys no longer accepted by SolverOptions (e.g. the long-removed ``e_init``) so
+    # an older frozen capture still rebuilds; those removed kwargs' old defaults are now the
+    # built-in defaults, so the reconstructed solver is numerically identical.
+    _accepted = set(inspect.signature(SolverOptions).parameters)
+    so_kw = {k: v for k, v in cap["meta"]["solver_options"].items() if k in _accepted}
+    so = SolverOptions(**so_kw)
     so.validate()
     n_items = int(cap["meta"]["n_items"])
     return _BatchStatic(
