@@ -37,6 +37,7 @@ def _e_step_tangent_2d_kernel(
     log_pL_ptr,
     max_coupling_ptr,
     col_log_probs_ptr,
+    dcol_log_probs_ptr,
     dlog_pS_ptr,
     dlog_pD_ptr,
     dlog_pL_ptr,
@@ -62,14 +63,19 @@ def _e_step_tangent_2d_kernel(
     dE = tl.load(dE_ptr + base + offs, mask=mask, other=0.0)
     if USE_COL_WEIGHTS:
         col_logp = tl.load(col_log_probs_ptr + offs, mask=mask, other=neg_inf)
+        dcol = tl.load(dcol_log_probs_ptr + offs, mask=mask, other=0.0)
         weighted_E = col_logp + E
+        # col is now a variable: d(weighted_E) = dE + dcol (the col-row tangent enters the
+        # Ebar denom alongside dE). row_max FROZEN (Ebar normalizer-invariant), so it cancels.
+        dweighted = dE + dcol
     else:
         weighted_E = E
+        dweighted = dE
     row_max = tl.max(weighted_E, axis=0)
     row_max_safe = tl.where(row_max != neg_inf, row_max, tl.zeros([1], dtype=DTYPE))
     r = tl.where(mask, tl.exp2(weighted_E - row_max_safe), zero)
     row_sum = tl.sum(r, axis=0)
-    dRS = tl.sum(tl.where(mask, r * dE, zero), axis=0)
+    dRS = tl.sum(tl.where(mask, r * dweighted, zero), axis=0)
 
     cur = offs
     ancestor_sum = zero
@@ -80,11 +86,14 @@ def _e_step_tangent_2d_kernel(
         dE_anc = tl.load(dE_ptr + base + cur, mask=cur_valid, other=0.0)
         if USE_COL_WEIGHTS:
             col_anc = tl.load(col_log_probs_ptr + cur, mask=cur_valid, other=neg_inf)
+            dcol_anc = tl.load(dcol_log_probs_ptr + cur, mask=cur_valid, other=0.0)
             r_anc = tl.where(cur_valid, tl.exp2(col_anc + E_anc - row_max_safe), zero)
+            dweighted_anc = dE_anc + dcol_anc
         else:
             r_anc = tl.where(cur_valid, tl.exp2(E_anc - row_max_safe), zero)
+            dweighted_anc = dE_anc
         ancestor_sum += r_anc
-        dAS += r_anc * dE_anc
+        dAS += r_anc * dweighted_anc
         cur = tl.load(node_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int32)
 
     c1 = tl.load(node_child1_ptr + offs, mask=mask, other=-1)
@@ -145,7 +154,7 @@ def _e_step_tangent_2d_kernel(
 
 
 def _launch_e_step_tangent_2d(
-    E, dE, log_pS_mat, log_pD_mat, log_pL_mat, max_coupling_mat, col_log_probs,
+    E, dE, log_pS_mat, log_pD_mat, log_pL_mat, max_coupling_mat, col_log_probs, dcol_log_probs,
     dlog_pS_mat, dlog_pD_mat, dlog_pL_mat, dmax_coupling_mat,
     node_parent, node_child1, node_child2, max_ancestor_depth,
     *, out=None, max_diff_out=None, use_col_weights=True,
@@ -157,7 +166,7 @@ def _launch_e_step_tangent_2d(
     _e_step_tangent_2d_kernel[(G,)](
         E, dE, dE_new, dE_s1, dE_s2, dEbar,
         dE_new if max_diff_out is None else max_diff_out,
-        log_pS_mat, log_pD_mat, log_pL_mat, max_coupling_mat, col_log_probs,
+        log_pS_mat, log_pD_mat, log_pL_mat, max_coupling_mat, col_log_probs, dcol_log_probs,
         dlog_pS_mat, dlog_pD_mat, dlog_pL_mat, dmax_coupling_mat,
         node_parent, node_child1, node_child2,
         S,
@@ -176,16 +185,23 @@ def e_tangent_fixed_point(
     dlog_pS, dlog_pD, dlog_pL, dmax_coupling,
     log_pS, log_pD, log_pL, max_coupling, col_log_probs,
     node_parent, node_child1, node_child2, max_ancestor_depth,
-    *, max_iter=2000, tol=1e-9, use_col_weights=True, dE0=None,
+    *, max_iter=2000, tol=1e-9, use_col_weights=True, dE0=None, dcol_log_probs=None,
 ):
-    """Solve (I - J_E^EE) dE* = J_E^Ep dp at the frozen E*; return (dE*, dE_s1, dE_s2, dEbar)."""
+    """Solve (I - J_E^EE) dE* = J_E^Ep dp at the frozen E*; return (dE*, dE_s1, dE_s2, dEbar).
+
+    ``dcol_log_probs`` ([S] tangent of receiver_log_probs) is the alpha SEED: when
+    ``use_col_weights`` it enters the Ebar-denominator tangent alongside dE (the col-row tangent
+    of the self-normalizing E update). Must be threaded consistently with the wave tangent
+    (an inconsistency there -> O(1) FD failure)."""
     E_a = E_star.contiguous()
     S = int(E_a.shape[1])
     item_rows = int(E_a.shape[0])
     mats = tuple(as_family_species(p, S, item_rows) for p in (log_pS, log_pD, log_pL, max_coupling))
     dmats = tuple(as_family_species(p, S, item_rows) for p in (dlog_pS, dlog_pD, dlog_pL, dmax_coupling))
     col = col_log_probs.contiguous()
-    args = (*mats, col, *dmats, node_parent, node_child1, node_child2, int(max_ancestor_depth))
+    dcol = (torch.zeros_like(col) if dcol_log_probs is None
+            else dcol_log_probs.to(device=col.device, dtype=col.dtype).reshape(S).contiguous())
+    args = (*mats, col, dcol, *dmats, node_parent, node_child1, node_child2, int(max_ancestor_depth))
 
     dE_a = torch.zeros_like(E_a) if dE0 is None else dE0.contiguous().clone()
     dE_b, dE_s1, dE_s2, dEbar = (torch.empty_like(E_a) for _ in range(4))

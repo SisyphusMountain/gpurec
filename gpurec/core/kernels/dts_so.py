@@ -143,7 +143,7 @@ def _dts_split_so_kernel(
 
 @triton.jit
 def _dts_tree_so_kernel(
-    Pi_ptr, dPi_ptr, col_log_probs_ptr,
+    Pi_ptr, dPi_ptr, col_log_probs_ptr, dcol_ptr,
     ud_ptr, dud_ptr,
     sl_ptr, sr_ptr,
     pibar_row_max_ptr,
@@ -218,11 +218,16 @@ def _dts_tree_so_kernel(
         dpi_val = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
         if USE_COL_WEIGHTS:
             col_logp = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
+            dcol_val = tl.load(dcol_ptr + s_offs, mask=mask, other=0.0)
             p_prime = tl.exp2(col_logp + pi_val - rm_safe)
+            p_prime = tl.where(pi_val != NEG, p_prime, tl.zeros_like(p_prime))
+            # col is a variable: p' = exp2(col + pi - rm), so dp' = ln2 p' (dpi + dcol) (rm frozen).
+            # The contrib at :228 then carries +ln2 p' dcol into BOTH d_rhs and d_grad_col scatters.
+            dp_prime = LN2 * p_prime * (dpi_val + dcol_val)
         else:
             p_prime = tl.exp2(pi_val - rm_safe)
-        p_prime = tl.where(pi_val != NEG, p_prime, tl.zeros_like(p_prime))
-        dp_prime = LN2 * p_prime * dpi_val
+            p_prime = tl.where(pi_val != NEG, p_prime, tl.zeros_like(p_prime))
+            dp_prime = LN2 * p_prime * dpi_val
         sub = tl.load(ud_ptr + row_base + s_offs, mask=mask, other=0.0)
         dsub = tl.load(dud_ptr + row_base + s_offs, mask=mask, other=0.0)
         contrib = dp_prime * (A - sub) + p_prime * (dA - dsub)
@@ -238,12 +243,17 @@ def dts_backward_so(
     d_rhs, d_grad_pD, d_grad_pS, d_grad_mt, d_grad_col,
     *, compact_level_ptr=None, compact_level_parents=None,
     compact_level_child1=None, compact_level_child2=None,
-    use_col_weights=False,
+    use_col_weights=False, dcol=None,
 ):
     """Second-order contraction of the dts backward + pibar tree at fixed adjoint v.
 
     Accumulates into d_rhs [C,S] (tangent of the cross-wave rhs scatters and tree contribs) and
     the d_grad_* buffers in-place. ``meta`` is the wave's layout dict (sl, sr, reduce_idx, ...).
+
+    ``dcol`` [S] is the alpha (receiver_log_probs) tangent seed; with ``use_col_weights=True`` it
+    enters the tree kernel's ``p'`` via ``dp' = ln2 p' (dpi + dcol)`` (mirrors S5 wave_so), so the
+    col-derivative ``+ln2 p' dcol`` lands in BOTH the d_rhs and d_grad_col scatters. When
+    ``use_col_weights=False`` the col path is dead: ``dcol`` is ignored (bit-for-bit legacy).
     """
     sl, sr = meta["sl"], meta["sr"]
     N = int(sl.numel())
@@ -286,7 +296,7 @@ def dts_backward_so(
         raise ValueError("dts_backward_so requires compact_level_* tables for the tree kernel")
     n_levels = int(compact_level_ptr.numel()) - 1
     _dts_tree_so_kernel[(2 * N,)](
-        Pi, dPi, col_log_probs,
+        Pi, dPi, col_log_probs, dcol if dcol is not None else Pi,
         ud, dud, sl, sr,
         pibar_row_max,
         compact_level_ptr.contiguous(), compact_level_parents.contiguous(),

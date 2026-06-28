@@ -19,6 +19,7 @@ import math
 import torch
 
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
+from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.kernels.dts_fused import compute_dts_forward
 from gpurec.core.kernels.e_step import e_step_triton_autograd
 from gpurec.core.kernels.wave_backward import (
@@ -55,7 +56,10 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
     neumann_terms = int(so.neumann_terms if neumann_terms is None else neumann_terms)
     use_pruning = bool(so.use_adjoint_pruning if use_pruning is None else use_pruning)
     self_loop_solver = so.self_loop_solver
-    use_receiver_weights = False  # theta-only, uniform receiver_weights fixture
+    # S7: derive from the base alpha's non-uniformity, exactly as production
+    # (solver.py:27, _execution.py:48). At a non-uniform base the weighted receiver
+    # paths must be LIVE or the backward/cache diverges (E-adjoint -> 1e18).
+    use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
 
     Pi_star_wave = sv["pi_wave"]
     Pibar_star_wave = sv["pibar_wave"]
