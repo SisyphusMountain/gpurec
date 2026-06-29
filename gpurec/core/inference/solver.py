@@ -5,11 +5,20 @@ import torch
 from gpurec.core.inference.forward import pi_wave_forward
 from gpurec.core.inference.logspace import logsumexp2
 from gpurec.core.kernels.e_step import e_fixed_point_triton
-from gpurec.core.parameters.extract_parameters import extract_parameters_uniform, extract_parameters_weighted_receivers
+from gpurec.core.parameters.extract_parameters import (
+    extract_parameters_uniform,
+    extract_parameters_weighted_receivers,
+    origination_log_probs_from_weights,
+)
 
 
 def receiver_weights_are_uniform(receiver_weights: torch.Tensor) -> bool:
     flat = receiver_weights.detach().reshape(-1)
+    return bool(torch.all(flat == flat[0]).item())
+
+
+def origination_weights_are_uniform(origination_weights: torch.Tensor) -> bool:
+    flat = origination_weights.detach().reshape(-1)
     return bool(torch.all(flat == flat[0]).item())
 
 
@@ -129,14 +138,64 @@ def solve_forward_residual(
     return per_family
 
 
-def nll_vector_from_root_rows(root_rows: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
-    survival = (1 - torch.exp2(E).mean(dim=-1)).clamp_min(torch.finfo(E.dtype).tiny)
+def nll_vector_from_root_rows(
+    root_rows: torch.Tensor,
+    E: torch.Tensor,
+    *,
+    origination_log_probs: torch.Tensor | None = None,
+    origination_probs: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Per-family negative log-likelihood from the root Pi-rows and extinction E.
+
+    Default (``origination_log_probs is None``): the uniform origination prior — every candidate
+    origination branch carries equal weight ``1/S`` (the ``- log2(S)`` term) and survival is the
+    unweighted mean ``1 - mean_s 2^{E_s}``. When ``origination_log_probs`` (= base-2 log of the
+    softmax over the S species nodes) and ``origination_probs`` (= ``2**origination_log_probs``) are
+    supplied, each branch ``s`` instead carries weight ``origination_probs[s]`` in BOTH the
+    origination prior (numerator) and the survival normalizer. The weighted form reduces exactly to
+    the uniform form when the weights are equal.
+    """
+    if origination_log_probs is None:
+        survival = (1 - torch.exp2(E).mean(dim=-1)).clamp_min(torch.finfo(E.dtype).tiny)
+        return -(
+            logsumexp2(root_rows, dim=-1)
+            - math.log2(root_rows.shape[-1])
+            - torch.log2(survival)
+        )
+    survival = (1 - (origination_probs * torch.exp2(E)).sum(dim=-1)).clamp_min(torch.finfo(E.dtype).tiny)
     return -(
-        logsumexp2(root_rows, dim=-1)
-        - math.log2(root_rows.shape[-1])
+        logsumexp2(root_rows + origination_log_probs, dim=-1)
         - torch.log2(survival)
     )
 
 
-def nll_from_root_rows(root_rows: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
-    return nll_vector_from_root_rows(root_rows, E).sum()
+def nll_from_root_rows(
+    root_rows: torch.Tensor,
+    E: torch.Tensor,
+    *,
+    origination_log_probs: torch.Tensor | None = None,
+    origination_probs: torch.Tensor | None = None,
+) -> torch.Tensor:
+    return nll_vector_from_root_rows(
+        root_rows, E, origination_log_probs=origination_log_probs, origination_probs=origination_probs
+    ).sum()
+
+
+def origination_grad_from_root_rows(
+    root_rows: torch.Tensor, E: torch.Tensor, origination_weights: torch.Tensor
+) -> torch.Tensor:
+    """``d(sum_families NLL)/d(origination_weights)`` at fixed ``root_rows``, ``E``.
+
+    Origination weights enter ONLY this aggregation (never the fixed-point solve or the kernels), so
+    their gradient is an exact, cheap autograd pass with ``root_rows`` and ``E`` held constant.
+    Returns a length-S tensor in ``origination_weights``' dtype.
+    """
+    ow = origination_weights.detach().to(device=root_rows.device, dtype=root_rows.dtype).requires_grad_(True)
+    with torch.enable_grad():
+        olp = origination_log_probs_from_weights(ow)
+        op = torch.exp2(olp)
+        loss = nll_vector_from_root_rows(
+            root_rows.detach(), E.detach(), origination_log_probs=olp, origination_probs=op
+        ).sum()
+        (g,) = torch.autograd.grad(loss, ow)
+    return g.to(dtype=origination_weights.dtype)

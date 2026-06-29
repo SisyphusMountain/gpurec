@@ -76,14 +76,16 @@ def forward_solve(batch_statics, theta, receiver_weights, *, warm_E=None):
             saved = dict(zip(FORWARD_SAVED_NAMES, out))
             loss = nll_from_root_rows(saved["root_rows"], saved["E"])
             return loss, saved
-        loss, _g, _gr = stream_batches(
-            statics, theta, receiver_weights, genewise=statics[0].genewise, need_grad=False,
+        loss, _g, _gr, _go = stream_batches(
+            statics, theta, receiver_weights, torch.zeros_like(receiver_weights),
+            genewise=statics[0].genewise, need_grad=False,
         )
         return loss, None
 
 
 def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, grad_avg_K: int = 1,
-                        prior=None, tree_penalty=None, optimize_receiver: bool = False):
+                        prior=None, tree_penalty=None, optimize_receiver: bool = False,
+                        origination_weights=None, optimize_origination: bool = False):
     """Return ``f(theta_vec, *, warm_E=None, want_grad=True) -> (loss, g_vec, saved, warm_E_out)``.
 
     The single ``(theta_vec -> value, grad)`` contract the gpurec optimization layer sits on.
@@ -135,6 +137,15 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
     lam = None if prior is None else float(prior[0])
     theta_ref_flat = None if prior is None else prior[1].detach().reshape(-1).contiguous()
 
+    # Per-species origination logits. When optimize_origination, the live values are carried in the
+    # tail block of z (after theta and, if present, alpha); otherwise this fixed (default uniform)
+    # vector is used. Enters ONLY the NLL aggregation, so it adds no kernel/fixed-point cost.
+    base_origination = (
+        receiver_weights.new_zeros(S)
+        if origination_weights is None
+        else origination_weights.detach().reshape(-1).to(device=receiver_weights.device, dtype=receiver_weights.dtype)
+    )
+
     # GBM / tree-Laplacian penalty: precompute the edge (child, parent) index pair once.
     lam_tree = None if tree_penalty is None else float(tree_penalty[0])
     tp_child = tp_parent = None
@@ -145,20 +156,27 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
 
     def f(theta_vec: torch.Tensor, *, warm_E=None, want_grad: bool = True):
         zvec = theta_vec.detach().reshape(-1)
+        # joint layout: [theta_numel] [+ S alpha if optimize_receiver] [+ S origination if optimize_origination]
+        tvec = zvec[:theta_numel]
+        off = theta_numel
         if optimize_receiver:
-            tvec = zvec[:theta_numel]
-            alpha = zvec[theta_numel:].contiguous()  # [S] per-species receiver logits
-            recv = alpha  # pass the LIVE alpha into the forward/backward each call
+            recv = zvec[off:off + S].contiguous()  # LIVE per-species receiver logits
+            off += S
         else:
-            tvec = zvec
             recv = receiver_weights
+        if optimize_origination:
+            orig = zvec[off:off + S].contiguous()  # LIVE per-species origination logits
+            off += S
+        else:
+            orig = base_origination
         theta = tvec.reshape(theta_shape).contiguous()
         if want_grad:
             # the backward's scratch gate reads driver-free memory; return any stale cached
             # blocks (e.g. from another dtype's stage) before it runs
             free_cuda_cache_if_tight()
-        loss, g_theta, g_recv = stream_batches(
-            statics, theta, recv, genewise=genewise, need_grad=want_grad,
+        loss, g_theta, g_recv, g_orig = stream_batches(
+            statics, theta, recv, orig, genewise=genewise, need_grad=want_grad,
+            need_origination_grad=optimize_origination,
         )
         loss_val = float(loss)
         d = None
@@ -175,16 +193,22 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
             if int(grad_avg_K) > 1:
                 acc = g_theta
                 acc_recv = g_recv
+                acc_orig = g_orig
                 for _ in range(int(grad_avg_K) - 1):
-                    _l, gk, grk = stream_batches(
-                        statics, theta, recv, genewise=genewise, need_grad=True,
+                    _l, gk, grk, gok = stream_batches(
+                        statics, theta, recv, orig, genewise=genewise, need_grad=True,
+                        need_origination_grad=optimize_origination,
                     )
                     acc = acc + gk
                     if optimize_receiver:
                         acc_recv = acc_recv + grk
+                    if optimize_origination:
+                        acc_orig = acc_orig + gok
                 g_theta = acc / float(grad_avg_K)
                 if optimize_receiver:
                     g_recv = acc_recv / float(grad_avg_K)
+                if optimize_origination:
+                    g_orig = acc_orig / float(grad_avg_K)
             g_vec = g_theta.reshape(-1)
             if lam is not None:
                 g_vec = g_vec + lam * d
@@ -195,10 +219,12 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
                 gpen.index_add_(0, tp_child, step)
                 gpen.index_add_(0, tp_parent, -step)
                 g_vec = g_vec + gpen.reshape(-1)
+            # alpha / origination blocks: stream_batches already returns dNLL/dalpha and dNLL/dorig
+            # (softmax Jacobians applied inside the head autograd); theta penalties don't touch them.
             if optimize_receiver:
-                # alpha block: production grad_receiver is already dNLL/dalpha (softmax Jacobian
-                # applied inside the head autograd); no theta penalties touch it.
                 g_vec = torch.cat([g_vec.reshape(-1), g_recv.reshape(-1)])
+            if optimize_origination:
+                g_vec = torch.cat([g_vec.reshape(-1), g_orig.reshape(-1)])
             g_vec = g_vec.contiguous()
         return loss_val, g_vec, None, None
 

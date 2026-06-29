@@ -7,21 +7,34 @@ from gpurec.api._implicit_grad import implicit_grad_loglik_vjp_wave
 from gpurec.core.inference.solver import (
     nll_from_root_rows,
     nll_vector_from_root_rows,
+    origination_grad_from_root_rows,
+    origination_weights_are_uniform,
     receiver_weights_are_uniform,
     solve_resident_e_pi,
 )
+from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
 
 
 def theta_for_static(static: _BatchStatic, theta: torch.Tensor, *, genewise: bool) -> torch.Tensor:
     return theta.index_select(0, static.family_index_tensor) if genewise else theta
 
 
+def _origination_log_probs(origination_weights: torch.Tensor, *, like: torch.Tensor):
+    """(log2-probs, probs) for non-uniform origination weights, else (None, None) for the fast path."""
+    if origination_weights_are_uniform(origination_weights):
+        return None, None
+    o_lp = origination_log_probs_from_weights(origination_weights.to(device=like.device, dtype=like.dtype))
+    return o_lp, torch.exp2(o_lp)
+
+
 def evaluate_static_loss_grad(
     static: _BatchStatic,
     theta: torch.Tensor,
     receiver_weights: torch.Tensor,
+    origination_weights: torch.Tensor,
     *,
     need_grad: bool,
+    need_origination_grad: bool = False,
 ):
     with torch.no_grad():
         (
@@ -41,10 +54,11 @@ def evaluate_static_loss_grad(
         ) = solve_resident_e_pi(
             static, theta, receiver_weights, warm_start_E=static.warm_E
         )
-        loss = nll_from_root_rows(root_rows, E).detach()
+        o_lp, o_p = _origination_log_probs(origination_weights, like=theta)
+        loss = nll_from_root_rows(root_rows, E, origination_log_probs=o_lp, origination_probs=o_p).detach()
         static.warm_E = E.detach()
         if not need_grad:
-            return loss, None, None
+            return loss, None, None, None
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
         # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
@@ -84,10 +98,17 @@ def evaluate_static_loss_grad(
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
             warm_v=_warm_v,
+            origination_log_probs=o_lp,
+            origination_probs=o_p,
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
-    return loss, grad_theta, grad_receiver
+        grad_origination = (
+            origination_grad_from_root_rows(root_rows, E, origination_weights).detach()
+            if need_origination_grad
+            else None
+        )
+    return loss, grad_theta, grad_receiver, grad_origination
 
 
 def evaluate_static_convergence(
@@ -158,9 +179,11 @@ def evaluate_static_loss_vector_grad(
     static: _BatchStatic,
     theta: torch.Tensor,
     receiver_weights: torch.Tensor,
+    origination_weights: torch.Tensor,
     *,
     need_grad: bool,
     update_warm_start: bool,
+    need_origination_grad: bool = False,
 ):
     if not static.genewise:
         raise ValueError("per-family loss vectors require genewise mode")
@@ -182,11 +205,14 @@ def evaluate_static_loss_vector_grad(
         ) = solve_resident_e_pi(
             static, theta, receiver_weights, warm_start_E=static.warm_E
         )
-        loss_vec = nll_vector_from_root_rows(root_rows, E).detach()
+        o_lp, o_p = _origination_log_probs(origination_weights, like=theta)
+        loss_vec = nll_vector_from_root_rows(
+            root_rows, E, origination_log_probs=o_lp, origination_probs=o_p
+        ).detach()
         if update_warm_start:
             static.warm_E = E.detach()
         if not need_grad:
-            return loss_vec, None, None
+            return loss_vec, None, None, None
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
         # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
@@ -226,30 +252,44 @@ def evaluate_static_loss_vector_grad(
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
             warm_v=_warm_v,
+            origination_log_probs=o_lp,
+            origination_probs=o_p,
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
-    return loss_vec, grad_theta, grad_receiver
+        grad_origination = (
+            origination_grad_from_root_rows(root_rows, E, origination_weights).detach()
+            if need_origination_grad
+            else None
+        )
+    return loss_vec, grad_theta, grad_receiver, grad_origination
 
 
 def stream_batches(
     batch_statics: list[_BatchStatic],
     theta: torch.Tensor,
     receiver_weights: torch.Tensor,
+    origination_weights: torch.Tensor,
     *,
     genewise: bool,
     need_grad: bool,
+    need_origination_grad: bool = False,
 ):
     total = torch.zeros((), dtype=theta.dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None
     grad_receiver_total = torch.zeros_like(receiver_weights) if need_grad else None
+    grad_origination_total = (
+        torch.zeros_like(origination_weights) if (need_grad and need_origination_grad) else None
+    )
     for static in batch_statics:
         theta_batch = theta_for_static(static, theta, genewise=genewise)
-        loss_i, grad_i, grad_receiver_i = evaluate_static_loss_grad(
+        loss_i, grad_i, grad_receiver_i, grad_origination_i = evaluate_static_loss_grad(
             static,
             theta_batch,
             receiver_weights,
+            origination_weights,
             need_grad=need_grad,
+            need_origination_grad=need_origination_grad,
         )
         total = total + loss_i.to(device=theta.device, dtype=theta.dtype)
         if need_grad:
@@ -262,10 +302,15 @@ def stream_batches(
             grad_receiver_total.add_(
                 grad_receiver_i.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
             )
+            if grad_origination_total is not None and grad_origination_i is not None:
+                grad_origination_total.add_(
+                    grad_origination_i.to(device=origination_weights.device, dtype=origination_weights.dtype)
+                )
     return (
         total.detach(),
         None if grad_total is None else grad_total.detach(),
         None if grad_receiver_total is None else grad_receiver_total.detach(),
+        None if grad_origination_total is None else grad_origination_total.detach(),
     )
 
 
@@ -273,25 +318,32 @@ def stream_genewise_loss_vector_grad(
     batch_statics: list[_BatchStatic],
     theta: torch.Tensor,
     receiver_weights: torch.Tensor,
+    origination_weights: torch.Tensor,
     *,
     need_grad: bool,
     update_warm_starts: bool = False,
+    need_origination_grad: bool = False,
 ):
     if theta.ndim < 1:
         raise ValueError("genewise theta must have a family batch dimension")
     loss_total = torch.empty((int(theta.shape[0]),), dtype=theta.dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None
     grad_receiver_total = torch.zeros_like(receiver_weights) if need_grad else None
+    grad_origination_total = (
+        torch.zeros_like(origination_weights) if (need_grad and need_origination_grad) else None
+    )
     for static in batch_statics:
         if not static.genewise:
             raise ValueError("per-family loss vectors require genewise mode")
         theta_batch = theta_for_static(static, theta, genewise=True)
-        loss_i, grad_i, grad_receiver_i = evaluate_static_loss_vector_grad(
+        loss_i, grad_i, grad_receiver_i, grad_origination_i = evaluate_static_loss_vector_grad(
             static,
             theta_batch,
             receiver_weights,
+            origination_weights,
             need_grad=need_grad,
             update_warm_start=update_warm_starts,
+            need_origination_grad=need_origination_grad,
         )
         loss_total.index_copy_(
             0,
@@ -305,8 +357,13 @@ def stream_genewise_loss_vector_grad(
             grad_receiver_total.add_(
                 grad_receiver_i.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
             )
+            if grad_origination_total is not None and grad_origination_i is not None:
+                grad_origination_total.add_(
+                    grad_origination_i.to(device=origination_weights.device, dtype=origination_weights.dtype)
+                )
     return (
         loss_total.detach(),
         None if grad_total is None else grad_total.detach(),
         None if grad_receiver_total is None else grad_receiver_total.detach(),
+        None if grad_origination_total is None else grad_origination_total.detach(),
     )

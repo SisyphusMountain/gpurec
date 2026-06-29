@@ -214,6 +214,8 @@ def implicit_grad_loglik_vjp_wave(
     pibar_side_threshold: float = 0.0,
     collect_backward_relres: bool = False,
     warm_v: dict | None = None,
+    origination_log_probs: torch.Tensor | None = None,
+    origination_probs: torch.Tensor | None = None,
 ):
     neumann_terms = int(neumann_terms)
     if neumann_terms < 0:
@@ -249,11 +251,15 @@ def implicit_grad_loglik_vjp_wave(
     )
     root_ids = wave_layout["root_clade_ids"]
     root_Pi = Pi_star_wave.index_select(0, root_ids)
-    root_lse = _logsumexp2(root_Pi, dim=-1, keepdim=True)
+    # Numerator seed = -softmax over the origination-weighted root rows. Uniform default
+    # (origination_log_probs is None) is the plain softmax(root_Pi); a constant origination_log_probs
+    # is only a shift, which softmax ignores, so this is identical at uniform.
+    root_Pi_w = root_Pi if origination_log_probs is None else root_Pi + origination_log_probs
+    root_lse = _logsumexp2(root_Pi_w, dim=-1, keepdim=True)
     accumulated_rhs.index_copy_(
         0,
         root_ids,
-        -_safe_exp2_ratio(root_Pi, root_lse),
+        -_safe_exp2_ratio(root_Pi_w, root_lse),
     )
     def _scatter_accum(acc: torch.Tensor, family_rows_for_wave: torch.Tensor, contrib: torch.Tensor) -> None:
         if contrib.dtype != acc.dtype:
@@ -478,6 +484,7 @@ def implicit_grad_loglik_vjp_wave(
         bicgstab_max_iter=bicgstab_max_iter,
         bicgstab_tol=bicgstab_tol,
         bicgstab_breakdown_tol=bicgstab_breakdown_tol,
+        origination_probs=origination_probs,
     )
 
 
@@ -489,6 +496,7 @@ def _e_adjoint_and_theta_vjp(
     bicgstab_max_iter: int = 500,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
+    origination_probs=None,
 ):
     topology_args = (
         species_helpers["sp_parent"],
@@ -509,7 +517,12 @@ def _e_adjoint_and_theta_vjp(
             *topology_args,
             use_receiver_weights=use_receiver_weights,
         )
-        survival = (1 - torch.exp2(E_req).mean(dim=-1)).clamp_min(torch.finfo(E_req.dtype).tiny)
+        if origination_probs is None:
+            survival = (1 - torch.exp2(E_req).mean(dim=-1)).clamp_min(torch.finfo(E_req.dtype).tiny)
+        else:
+            survival = (1 - (origination_probs * torch.exp2(E_req)).sum(dim=-1)).clamp_min(
+                torch.finfo(E_req.dtype).tiny
+            )
         denom = torch.log2(survival)
         direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
         (aux_to_e,) = torch.autograd.grad(

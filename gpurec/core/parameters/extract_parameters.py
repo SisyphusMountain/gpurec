@@ -38,6 +38,16 @@ def receiver_log_probs_from_weights(receiver_weights: torch.Tensor) -> torch.Ten
     return torch.log_softmax(receiver_weights, dim=-1) / _LN2
 
 
+def origination_log_probs_from_weights(origination_weights: torch.Tensor) -> torch.Tensor:
+    """Base-2 log of the per-branch origination distribution (softmax over the S species nodes).
+
+    Mirrors ``receiver_log_probs_from_weights``: ``origination_weights`` are unconstrained logits,
+    gauge-fixed by the softmax (invariant under a constant shift). The default all-equal weights
+    give ``-log2(S)`` everywhere, i.e. the uniform origination prior the model assumes by default.
+    """
+    return torch.log_softmax(origination_weights, dim=-1) / _LN2
+
+
 def receiver_valid_log_normalizer(
     receiver_log_probs: torch.Tensor,
     sp_parent: torch.Tensor,

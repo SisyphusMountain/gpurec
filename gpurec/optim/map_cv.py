@@ -64,8 +64,9 @@ def _build(species_tree, paths, *, mode, device, solver_options):
 
 def heldout_nll(batch_statics, theta, receiver_weights):
     """Total predictive NLL ``sum_{i} NLL_i(theta)`` over the families in ``batch_statics`` (no grad)."""
-    loss, _g, _gr = stream_batches(batch_statics, theta, receiver_weights,
-                                   genewise=False, need_grad=False)
+    loss, _g, _gr, _go = stream_batches(batch_statics, theta, receiver_weights,
+                                        torch.zeros_like(receiver_weights),
+                                        genewise=False, need_grad=False)
     return float(loss)
 
 

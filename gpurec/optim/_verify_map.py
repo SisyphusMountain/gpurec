@@ -49,7 +49,7 @@ def run(n=30, n_train=22, device="cuda", pi_iters=64, neumann_terms=64):
     rw = torch.zeros(S, device=device)
 
     def ng(m):
-        L, g, _ = stream_batches(m.batch_statics, theta, rw, genewise=False, need_grad=True)
+        L, g, _, _ = stream_batches(m.batch_statics, theta, rw, torch.zeros_like(rw), genewise=False, need_grad=True)
         return float(L), g.reshape(-1)
 
     Lf, gf = ng(full)

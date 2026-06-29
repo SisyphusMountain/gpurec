@@ -72,6 +72,11 @@ class GeneReconModel(torch.nn.Module):
         self.receiver_weights = torch.nn.Parameter(
             torch.zeros((int(species_helpers["S"]),), dtype=torch.float32, device=device)
         )
+        # Per-species origination logits (softmax over the S species nodes). Default all-zeros =>
+        # the uniform origination prior the likelihood assumes; enters ONLY the NLL aggregation.
+        self.origination_weights = torch.nn.Parameter(
+            torch.zeros((int(species_helpers["S"]),), dtype=torch.float32, device=device)
+        )
         self.species_helpers = species_helpers
         self.mode = mode
         self.genewise = genewise
@@ -174,13 +179,23 @@ class GeneReconModel(torch.nn.Module):
     def _theta_for_static(self, static: _BatchStatic, theta: torch.Tensor) -> torch.Tensor:
         return theta_for_static(static, theta, genewise=self.genewise)
 
-    def _stream_batches(self, theta: torch.Tensor, receiver_weights: torch.Tensor, *, need_grad: bool):
+    def _stream_batches(
+        self,
+        theta: torch.Tensor,
+        receiver_weights: torch.Tensor,
+        origination_weights: torch.Tensor,
+        *,
+        need_grad: bool,
+        need_origination_grad: bool = False,
+    ):
         return stream_batches(
             self.batch_statics,
             theta,
             receiver_weights,
+            origination_weights,
             genewise=self.genewise,
             need_grad=need_grad,
+            need_origination_grad=need_origination_grad,
         )
 
     def genewise_loss_vector_and_grad(
@@ -188,6 +203,7 @@ class GeneReconModel(torch.nn.Module):
         *,
         theta: torch.Tensor | None = None,
         receiver_weights: torch.Tensor | None = None,
+        origination_weights: torch.Tensor | None = None,
         need_grad: bool = True,
         update_warm_starts: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
@@ -203,13 +219,16 @@ class GeneReconModel(torch.nn.Module):
             raise ValueError("genewise_loss_vector_and_grad() requires genewise mode")
         theta = self.theta if theta is None else theta
         receiver_weights = self.receiver_weights if receiver_weights is None else receiver_weights
-        return stream_genewise_loss_vector_grad(
+        origination_weights = self.origination_weights if origination_weights is None else origination_weights
+        loss_vec, grad_theta, grad_receiver, _grad_origination = stream_genewise_loss_vector_grad(
             self.batch_statics,
             theta,
             receiver_weights,
+            origination_weights,
             need_grad=need_grad,
             update_warm_starts=update_warm_starts,
         )
+        return loss_vec, grad_theta, grad_receiver
 
     def genewise_loss_vector(
         self,
@@ -400,12 +419,16 @@ class GeneReconModel(torch.nn.Module):
         self,
         theta: torch.Tensor | None = None,
         receiver_weights: torch.Tensor | None = None,
+        origination_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         theta = self.theta if theta is None else theta
         receiver_weights = self.receiver_weights if receiver_weights is None else receiver_weights
+        origination_weights = self.origination_weights if origination_weights is None else origination_weights
         if len(self.batch_statics) == 1:
-            return _GeneReconFunction.apply(theta, receiver_weights, self.batch_statics[0])
-        if torch.is_grad_enabled() and (theta.requires_grad or receiver_weights.requires_grad):
-            return _GeneReconFullLossFunction.apply(theta, receiver_weights, self)
-        loss, _, _ = self._stream_batches(theta, receiver_weights, need_grad=False)
+            return _GeneReconFunction.apply(theta, receiver_weights, origination_weights, self.batch_statics[0])
+        if torch.is_grad_enabled() and (
+            theta.requires_grad or receiver_weights.requires_grad or origination_weights.requires_grad
+        ):
+            return _GeneReconFullLossFunction.apply(theta, receiver_weights, origination_weights, self)
+        loss, _, _, _ = self._stream_batches(theta, receiver_weights, origination_weights, need_grad=False)
         return loss

@@ -107,7 +107,7 @@ class Schedule:
 def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr0=1.0,
                 schedule="adaptive", max_steps=300, rtol=0.05, window=20, loss_rtol=1e-5,
                 lr_floor_frac=1e-3, verbose=True, t0_wall=None, return_best=False, early_stop=True,
-                with_receiver=False, alpha0=None):
+                with_receiver=False, alpha0=None, with_origination=False, origination0=None):
     """Run a torch.optim optimizer with a pluggable LR schedule. Returns (theta, hist, warm).
 
     ``return_best=True`` appends the LOWEST-loss theta visited (a 4th return value): on this fixture
@@ -131,14 +131,28 @@ def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr
     for _d in theta_shape:
         theta_numel *= int(_d)
 
-    if with_receiver:
+    if with_receiver and with_origination:
+        raise ValueError(
+            "first_order jointly optimizes theta with AT MOST one of receiver/origination; "
+            "use make_value_and_grad(optimize_receiver=..., optimize_origination=...) for both."
+        )
+    with_tail = with_receiver or with_origination
+
+    if with_tail:
         S = int(receiver_weights.numel())
-        a0 = (receiver_weights if alpha0 is None else alpha0).detach().reshape(-1).float()
-        a0 = a0 - a0.mean()  # start on the gauge slice (mean 0)
-        z0 = torch.cat([theta0.detach().reshape(-1).float(), a0])
+        if with_receiver:
+            t0 = receiver_weights if alpha0 is None else alpha0
+        else:
+            t0 = torch.zeros(S, dtype=theta0.dtype, device=theta0.device) if origination0 is None else origination0
+        t0 = t0.detach().reshape(-1).float()
+        t0 = t0 - t0.mean()  # start on the gauge slice (mean 0); both softmax blocks are shift-invariant
+        z0 = torch.cat([theta0.detach().reshape(-1).float(), t0])
         x = z0.clone().requires_grad_(True)
-        f = make_value_and_grad(batch_statics, receiver_weights, theta_shape=theta_shape,
-                                optimize_receiver=True)
+        f = make_value_and_grad(
+            batch_statics, receiver_weights, theta_shape=theta_shape,
+            optimize_receiver=with_receiver, optimize_origination=with_origination,
+            origination_weights=(origination0 if with_origination else None),
+        )
         opt = _OPTIMIZERS[optimizer](x, lr0)
     else:
         x = theta0.detach().reshape(theta_shape).float().clone().requires_grad_(True)
@@ -149,8 +163,8 @@ def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr
     lr_floor = lr0 * lr_floor_frac
 
     def _split(x_flat):
-        """Return (theta [theta_shape], alpha [S] or None) from the current leaf."""
-        if with_receiver:
+        """Return (theta [theta_shape], tail [S] or None) -- tail is the alpha or origination logits."""
+        if with_tail:
             return (x_flat[:theta_numel].reshape(theta_shape).clone(),
                     x_flat[theta_numel:].clone())
         return x_flat.reshape(theta_shape).clone(), None
@@ -171,8 +185,8 @@ def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr
         opt.param_groups[0]["lr"] = lr
         x.grad = g.reshape(x.shape)
         opt.step()
-        if with_receiver:
-            # GAUGE: project out the all-ones mode in the alpha block (re-center to mean 0).
+        if with_tail:
+            # GAUGE: project out the all-ones mode in the tail (alpha/origination) block (mean 0).
             with torch.no_grad():
                 a = x[theta_numel:]
                 a -= a.mean()
@@ -192,10 +206,10 @@ def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr
                     print(f"  [{optimizer}/{schedule}] stop@{step} ({why}) loss={loss:.4f} "
                           f"||g||={gn:.3e}")
                 break
-    theta_out, alpha_out = _split(x.detach().reshape(-1))
-    first = (theta_out, alpha_out) if with_receiver else theta_out
+    theta_out, tail_out = _split(x.detach().reshape(-1))
+    first = (theta_out, tail_out) if with_tail else theta_out
     if return_best:
-        best = (best_theta, best_alpha) if with_receiver else best_theta
+        best = (best_theta, best_alpha) if with_tail else best_theta
         return first, hist, warm, best
     return first, hist, warm
 
