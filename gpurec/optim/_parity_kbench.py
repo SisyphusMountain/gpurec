@@ -16,6 +16,7 @@ backward's atomic-noise floor (~2e-4 relative).
 from __future__ import annotations
 
 import inspect
+import os
 import sys
 
 import torch
@@ -24,7 +25,10 @@ from gpurec.api._batch_state import _BatchStatic
 from gpurec.api.solver_options import SolverOptions
 from gpurec.optim.value_and_grad import make_value_and_grad
 
-_KBENCH = "/home/enzo/Documents/git/gpurec/kernel-bench"
+_KBENCH = os.environ.get(
+    "GPUREC_KBENCH_ROOT",
+    os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "kernel-bench")),
+)
 _DEFAULT_CAP = f"{_KBENCH}/data/666x80/whole.pt"
 
 # mint script gpurec->kbench renames (scripts/mint_kernel_bench_fixture.py); we invert them.
