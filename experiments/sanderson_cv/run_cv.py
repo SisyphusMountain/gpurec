@@ -62,9 +62,8 @@ def _hogenom_families(n):
 
 
 def _hogenom_full_families(n):
-    # full prepared hogenom family list (12408) from the large_dataset_capacity benchmark manifest
-    allf = DATA.parent.parent / "benchmarks/large_dataset_capacity/generated/alerax_hogenom_core_all_families.txt"
-    fams = [ln[2:].strip() for ln in open(allf) if ln.startswith("- CLU_")]
+    # full hogenom family list (12408, >=4 species); shipped as a tracked input (cf. families_1055.txt)
+    fams = [ln.strip() for ln in open(HERE / "families_hogenom_full.txt") if ln.strip()]
     if n is not None:
         fams = fams[:n]
     return [str(HOGENOM_ROOT / "families" / f / "gene_trees" / "ufboot1000.MFP.geneTree.newick") for f in fams]
