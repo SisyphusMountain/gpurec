@@ -40,7 +40,8 @@ _LN2 = 0.6931471805599453
 
 @torch.no_grad()
 def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_norm=True,
-                      neumann_terms=None, use_pruning=None, bicgstab_tol=None, cache=None):
+                      neumann_terms=None, use_pruning=None, bicgstab_tol=None, cache=None,
+                      origination_log_probs=None, origination_probs=None):
     """J^T applied to a root-score cotangent ``seed_root`` [n_root, S] -> grad_theta [S, 3].
 
     With ``seed_root=None`` the loss seed ``-softmax2(Pi_root)`` is used and ``drop_norm`` should be
@@ -87,9 +88,12 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
     )
     root_ids = wave_layout["root_clade_ids"]
     root_Pi = Pi_star_wave.index_select(0, root_ids)
-    root_lse = _logsumexp2(root_Pi, dim=-1, keepdim=True)
+    # origination-weighted numerator seed: softmax over (root_Pi + log2 origination_prob). The uniform
+    # default (origination_log_probs is None) reproduces the legacy -softmax2(root_Pi) seed bit-for-bit.
+    root_Pi_w = root_Pi if origination_log_probs is None else root_Pi + origination_log_probs
+    root_lse = _logsumexp2(root_Pi_w, dim=-1, keepdim=True)
     if seed_root is None:
-        seed_root = -_safe_exp2_ratio(root_Pi, root_lse)
+        seed_root = -_safe_exp2_ratio(root_Pi_w, root_lse)
     accumulated_rhs.index_copy_(0, root_ids, seed_root.to(dtype))
 
     def _scatter_accum(acc, item_rows_for_wave, contrib):
@@ -211,6 +215,7 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         bicgstab_tol=(so.bicgstab_tol if bicgstab_tol is None else bicgstab_tol),
         bicgstab_breakdown_tol=so.bicgstab_breakdown_tol,
         cache=cache,
+        origination_probs=origination_probs,
     )
 
 
@@ -219,7 +224,7 @@ def _e_adjoint_and_theta_vjp(
     grad_E, grad_Ebar, grad_E_s1, grad_E_s2, grad_log_pD, grad_log_pS, grad_max_transfer_mat,
     grad_receiver_log_probs, n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
     drop_norm, bicgstab_max_iter=500, bicgstab_tol=None, bicgstab_breakdown_tol=None,
-    cache=None,
+    cache=None, origination_probs=None,
 ):
     topology_args = (
         species_helpers["sp_parent"], species_helpers["sp_child1"], species_helpers["sp_child2"],
@@ -234,7 +239,11 @@ def _e_adjoint_and_theta_vjp(
         aux_outputs = (E_s1_from_E, E_s2_from_E, Ebar_from_E)
         aux_grads = (grad_E_s1, grad_E_s2, grad_Ebar)
         if not drop_norm:
-            norm = (1 - torch.exp2(E_req).mean(dim=-1)).clamp_min(torch.finfo(E_req.dtype).tiny)
+            if origination_probs is None:
+                norm = (1 - torch.exp2(E_req).mean(dim=-1)).clamp_min(torch.finfo(E_req.dtype).tiny)
+            else:
+                norm = (1 - (origination_probs * torch.exp2(E_req)).sum(dim=-1)).clamp_min(
+                    torch.finfo(E_req.dtype).tiny)
             denom = torch.log2(norm)
             direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
             aux_outputs = (direct_obj, *aux_outputs)

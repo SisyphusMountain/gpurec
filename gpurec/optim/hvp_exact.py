@@ -46,13 +46,15 @@ def _single_static(static):
 
 
 @torch.no_grad()
-def build_point_cache(static, theta, col_weights, sv):
+def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=None,
+                      origination_probs=None):
     """Run the production-configured backward once, caching per-wave (v_k, dts_r, active_mask)
     and the E-side adjoint. Returns (grad_theta, grad_col, cache)."""
     static = _single_static(static)
     cache: dict = {}
     grad_theta, grad_col = vjp_root_to_theta(
         static, sv, None, theta, col_weights, drop_norm=False, cache=cache,
+        origination_log_probs=origination_log_probs, origination_probs=origination_probs,
     )
     return grad_theta, grad_col, cache
 
@@ -76,8 +78,35 @@ def _scatter_accum(acc, item_rows_for_wave, contrib, item_rows):
         acc.index_add_(0, item_rows_for_wave, contrib)
 
 
+def _head_seed_tangents(root_Pi, E_star, omega, t_root, dE, u_omega, dtype):
+    """Origination-weighted head-HVP seed tangents (double-backward on the small NLL aggregation head
+    ``h = sum_fam nll(root_rows, E, omega)``; correct by construction and consistent with the kernels'
+    seed convention -- the hand-coded uniform ``d_seed`` equals ``ds_root`` here at uniform omega).
+
+    Returns ``(ds_root, ds_E_survival, Hv_omega)``:
+      ds_root        = d(dnll/droot) along (t_root, u_omega)  -> root-row HVP seed (with the omega cross-term),
+      ds_E_survival  = d(dnll/dE)   along (dE, u_omega)       -> survival E-seed tangent (replaces dg_norm),
+      Hv_omega       = d(dnll/domega) along (t_root, dE, u_omega) -> the omega row of ``H u``.
+    """
+    from gpurec.core.inference.solver import nll_vector_from_root_rows
+    from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
+
+    rP = root_Pi.detach().requires_grad_(True)
+    Ev = E_star.detach().requires_grad_(True)
+    om = omega.detach().to(device=rP.device, dtype=rP.dtype).requires_grad_(True)
+    with torch.enable_grad():
+        olp = origination_log_probs_from_weights(om)
+        op = torch.exp2(olp)
+        nll = nll_vector_from_root_rows(rP, Ev, origination_log_probs=olp, origination_probs=op).sum()
+        s_root, s_E, s_om = torch.autograd.grad(nll, (rP, Ev, om), create_graph=True)
+        inner = ((s_root * t_root).sum() + (s_E * dE).sum() + (s_om * u_omega.to(s_om.dtype)).sum())
+        ds_root, ds_E, Hv_om = torch.autograd.grad(inner, (rP, Ev, om))
+    return ds_root.to(dtype), ds_E.to(dtype), Hv_om.to(dtype)
+
+
 def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None,
-                   tangent_self_iters=None):
+                   tangent_self_iters=None, origination_log_probs=None, origination_probs=None,
+                   origination_weights=None):
     """Analytic exact-Hessian HVP. Builds the per-point adjoint cache once (if not given) and
     returns ``hvp(u_vec) -> H u`` (flat 3S). Runs in the dtype of ``theta``/``sv``.
 
@@ -139,7 +168,9 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
     G = int(E_star.shape[0])
 
     if cache is None:
-        _, _, cache = build_point_cache(static, theta, col_weights, sv)
+        _, _, cache = build_point_cache(static, theta, col_weights, sv,
+                                        origination_log_probs=origination_log_probs,
+                                        origination_probs=origination_probs)
     acc = cache["accum"]
     wE = cache["e_side"]["wE"]
 
@@ -232,14 +263,20 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
         u_vec = u_vec.to(theta.dtype)
         theta_numel = theta.numel()
         u = u_vec[:theta_numel].reshape(theta.shape)
-        # joint=True iff the caller passed the full 4S vector. When False (legacy theta-only /
-        # milestone contract: a length-theta_numel u_vec) u_alpha=0 AND the return is the
-        # theta-only (theta_numel) vector BIT-FOR-BIT -- the _verify_hvp uniform gate depends on it.
-        joint = u_vec.numel() > theta_numel
+        # Layout: [u_theta (theta_numel); u_alpha (S)?; u_omega (S)?]. theta-only (len theta_numel)
+        # returns theta_numel BIT-FOR-BIT (the _verify_hvp uniform gate depends on it); [theta; alpha]
+        # returns theta_numel+S; [theta; alpha; omega] returns theta_numel+2S.
+        n_tail = u_vec.numel() - theta_numel
+        joint = n_tail >= S
+        has_omega = n_tail >= 2 * S
         if joint:
-            u_alpha = u_vec[theta_numel:].contiguous()
+            u_alpha = u_vec[theta_numel:theta_numel + S].contiguous()
         else:
             u_alpha = torch.zeros(S, device=theta.device, dtype=theta.dtype)
+        if has_omega:
+            u_omega = u_vec[theta_numel + S:theta_numel + 2 * S].contiguous()
+        else:
+            u_omega = torch.zeros(S, device=theta.device, dtype=theta.dtype)
         with torch.no_grad():
             # S3/S7: at a NON-UNIFORM base the tangent forward MUST go through the weighted path
             # (param_jvp_weighted + use_col_weights), consistent with the weighted primal fixed
@@ -262,10 +299,17 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             dE, dEbar_e = full["dE"], full["dEbar"]
             dE_s1, dE_s2 = full["dE_s1"], full["dE_s2"]
 
-            # tangent of the loss seed -q on root rows
+            # tangent of the loss seed -q on root rows. Uniform origination: hand-coded (bit-for-bit
+            # legacy). Weighted origination: the autograd head gives the weighted root-seed tangent
+            # (incl. the omega cross-term), the survival E-seed tangent, and the omega row of H u.
             root_Pi = sv["pi_wave"].index_select(0, root_ids)
-            q = _safe_exp2_ratio(root_Pi, _logsumexp2(root_Pi, dim=-1, keepdim=True))
-            d_seed = -_LN2 * q * (t_root - (q * t_root).sum(dim=-1, keepdim=True))
+            Hv_omega = ds_E_surv = None
+            if origination_log_probs is None:
+                q = _safe_exp2_ratio(root_Pi, _logsumexp2(root_Pi, dim=-1, keepdim=True))
+                d_seed = -_LN2 * q * (t_root - (q * t_root).sum(dim=-1, keepdim=True))
+            else:
+                d_seed, ds_E_surv, Hv_omega = _head_seed_tangents(
+                    root_Pi, E_star, origination_weights, t_root, dE, u_omega, dtype)
 
             d_rhs = torch.zeros((C, S), device=theta.device, dtype=dtype)
             d_rhs.index_copy_(0, root_ids, d_seed.to(dtype))
@@ -407,9 +451,12 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             aux_lin = aux_T(d_gEs1, d_gEs2, d_gEbar)
             so_aux = e_step_backward_so(*x_args, zero_g, acc["grad_E_s1"], acc["grad_E_s2"],
                                         acc["grad_Ebar"], *dx, use_col_weights=use_col_weights)
-            e2E = torch.exp2(E_star)
-            dnorm = -_LN2 * (e2E * dE).mean(dim=-1, keepdim=True)
-            dg_norm = fam_factor * (-_LN2 * e2E * dE / (S * norm) + e2E * dnorm / (S * norm * norm))
+            if origination_log_probs is None:
+                e2E = torch.exp2(E_star)
+                dnorm = -_LN2 * (e2E * dE).mean(dim=-1, keepdim=True)
+                dg_norm = fam_factor * (-_LN2 * e2E * dE / (S * norm) + e2E * dnorm / (S * norm * norm))
+            else:
+                dg_norm = ds_E_surv  # weighted + omega-coupled survival tangent (autograd head)
             dq_E = d_gE + aux_lin + so_aux[0] + dg_norm
             # tangent E-adjoint solve: same operator, new rhs
             so_w = e_step_backward_so(*x_args, wE, zero_g, zero_g, zero_g, *dx,
@@ -473,6 +520,10 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             # BOTH (theta_req, col_req) -> (out_theta=H_tt u_t+H_ta u_a, out_col=H_at u_t+H_aa u_a).
             head = (g1_theta * u).sum() + (g1_col * u_alpha).sum() + phi2
             out_theta, out_col = torch.autograd.grad(head, (theta_req, col_req), retain_graph=True)
+        if has_omega:
+            # [theta; alpha; omega] contract: omega row = head omega-Hessian . (t_root, dE, u_omega),
+            # computed in _head_seed_tangents (omega is head-only -> no kernel/adjoint term).
+            return torch.cat([out_theta.reshape(-1), out_col.reshape(-1), Hv_omega.reshape(-1)])
         return torch.cat([out_theta.reshape(-1), out_col.reshape(-1)])
 
     return hvp
