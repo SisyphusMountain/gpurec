@@ -90,3 +90,19 @@ def test_certify_matches_dense_and_fisher_converges(tmp_path: Path):
     assert max(info["cg_resid"]) < 1e-6
     assert torch.isfinite(info["se_omega"]).all() and torch.isfinite(info["se_p"]).all()
     assert float((info["Sigma_oo"] - info["Sigma_oo"].T).abs().max()) < 1e-9
+
+
+def test_newton_joint_descends_and_holds_gauge(tmp_path: Path):
+    device = _require_cuda_triton()
+    from gpurec.optim.origination_curvature import newton_joint
+    torch.manual_seed(0)
+    m = _tiny(tmp_path, device)
+    S = int(m.species_helpers["S"])
+    th = 0.2 * torch.randn(S, 3, dtype=DT, device=device)
+    al = (lambda a: a - a.mean())(0.3 * torch.randn(S, dtype=DT, device=device))
+    om = (lambda a: a - a.mean())(0.3 * torch.randn(S, dtype=DT, device=device))
+    th_o, al_o, om_o, hist = newton_joint(m.batch_statics[0], th, al, om, max_newton=4, max_cg=20,
+                                          tangent_self_iters=200, verbose=False)
+    assert hist[-1]["F"] <= hist[0]["F"] + 1e-9          # Armijo => loss non-increasing
+    assert torch.isfinite(th_o).all() and torch.isfinite(al_o).all() and torch.isfinite(om_o).all()
+    assert abs(float(al_o.mean())) < 1e-9 and abs(float(om_o.mean())) < 1e-9   # gauge-fixed outputs
