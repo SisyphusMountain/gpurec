@@ -24,6 +24,9 @@ import torch
 from gpurec.api._batch_state import _BatchStatic
 from gpurec.api._execution import stream_batches
 from gpurec.core.inference.solver import nll_from_root_rows, solve_resident_e_pi
+from gpurec.optim.penalties import (
+    tv_prior_and_grad, origination_penalty_and_grad, group_expand, group_reduce,
+)
 
 # Names of the forward-solve intermediates the exact-HVP / tangent path consumes,
 # in the order ``solve_resident_e_pi`` returns them. gpurec rename of kbench's
@@ -85,7 +88,8 @@ def forward_solve(batch_statics, theta, receiver_weights, *, warm_E=None):
 
 def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, grad_avg_K: int = 1,
                         prior=None, tree_penalty=None, optimize_receiver: bool = False,
-                        origination_weights=None, optimize_origination: bool = False):
+                        origination_weights=None, optimize_origination: bool = False,
+                        tv_penalty=None, origination_penalty=None, group_index=None):
     """Return ``f(theta_vec, *, warm_E=None, want_grad=True) -> (loss, g_vec, saved, warm_E_out)``.
 
     The single ``(theta_vec -> value, grad)`` contract the gpurec optimization layer sits on.
@@ -154,6 +158,17 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
         tp_child = (sp_parent >= 0).nonzero(as_tuple=True)[0].contiguous()   # [E] non-root species
         tp_parent = sp_parent[tp_child].contiguous()                         # [E] their parents
 
+    tv_lam = tv_sp_parent = None
+    tv_eps = 1e-3
+    if tv_penalty is not None:
+        tv_lam, tv_sp_parent = tv_penalty[0], tv_penalty[1].detach().reshape(-1)
+        tv_eps = tv_penalty[2] if len(tv_penalty) > 2 else 1e-3
+
+    n_groups = None
+    if group_index is not None:
+        group_index = group_index.detach().reshape(-1).long()
+        n_groups = int(group_index.max().item()) + 1
+
     def f(theta_vec: torch.Tensor, *, warm_E=None, want_grad: bool = True):
         zvec = theta_vec.detach().reshape(-1)
         # joint layout: [theta_numel] [+ S alpha if optimize_receiver] [+ S origination if optimize_origination]
@@ -170,24 +185,31 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
         else:
             orig = base_origination
         theta = tvec.reshape(theta_shape).contiguous()
+        theta_expanded = group_expand(theta, group_index)  # [S,3] (identity if group_index is None)
         if want_grad:
             # the backward's scratch gate reads driver-free memory; return any stale cached
             # blocks (e.g. from another dtype's stage) before it runs
             free_cuda_cache_if_tight()
         loss, g_theta, g_recv, g_orig = stream_batches(
-            statics, theta, recv, orig, genewise=genewise, need_grad=want_grad,
+            statics, theta_expanded, recv, orig, genewise=genewise, need_grad=want_grad,
             need_origination_grad=optimize_origination,
         )
         loss_val = float(loss)
         d = None
         if lam is not None:
-            d = tvec - theta_ref_flat.to(device=tvec.device, dtype=tvec.dtype)
+            d = theta_expanded.reshape(-1) - theta_ref_flat.to(device=tvec.device, dtype=tvec.dtype)
             loss_val = loss_val + 0.5 * lam * float((d * d).sum())
         tdiff = None
         if lam_tree is not None:
-            ts = theta  # [S, 3]
+            ts = theta_expanded  # [S, 3]
             tdiff = ts.index_select(0, tp_child) - ts.index_select(0, tp_parent)  # [E, 3]
             loss_val = loss_val + 0.5 * lam_tree * float((tdiff * tdiff).sum())
+        if tv_lam is not None:
+            tv_pen, _ = tv_prior_and_grad(theta_expanded, tv_sp_parent, tv_lam, tv_eps)
+            loss_val = loss_val + float(tv_pen)
+        if origination_penalty is not None and optimize_origination:
+            o_pen, _ = origination_penalty_and_grad(orig, origination_penalty)
+            loss_val = loss_val + float(o_pen)
         g_vec = None
         if want_grad:
             if int(grad_avg_K) > 1:
@@ -196,7 +218,7 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
                 acc_orig = g_orig
                 for _ in range(int(grad_avg_K) - 1):
                     _l, gk, grk, gok = stream_batches(
-                        statics, theta, recv, orig, genewise=genewise, need_grad=True,
+                        statics, theta_expanded, recv, orig, genewise=genewise, need_grad=True,
                         need_origination_grad=optimize_origination,
                     )
                     acc = acc + gk
@@ -209,21 +231,28 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
                     g_recv = acc_recv / float(grad_avg_K)
                 if optimize_origination:
                     g_orig = acc_orig / float(grad_avg_K)
-            g_vec = g_theta.reshape(-1)
+            g_theta_full = g_theta.reshape(theta_expanded.shape)
             if lam is not None:
-                g_vec = g_vec + lam * d
+                g_theta_full = g_theta_full + (lam * d).reshape(theta_expanded.shape)
             if lam_tree is not None:
                 # d/dtheta of (lam_tree/2) sum_e ||theta[c]-theta[p]||^2: +g on child, -g on parent
-                gpen = torch.zeros_like(theta)
+                gpen = torch.zeros_like(theta_expanded)
                 step = lam_tree * tdiff
                 gpen.index_add_(0, tp_child, step)
                 gpen.index_add_(0, tp_parent, -step)
-                g_vec = g_vec + gpen.reshape(-1)
+                g_theta_full = g_theta_full + gpen
+            if tv_lam is not None:
+                _, tv_g = tv_prior_and_grad(theta_expanded, tv_sp_parent, tv_lam, tv_eps)
+                g_theta_full = g_theta_full + tv_g
+            g_vec = group_reduce(g_theta_full, group_index, n_groups).reshape(-1)
             # alpha / origination blocks: stream_batches already returns dNLL/dalpha and dNLL/dorig
             # (softmax Jacobians applied inside the head autograd); theta penalties don't touch them.
             if optimize_receiver:
                 g_vec = torch.cat([g_vec.reshape(-1), g_recv.reshape(-1)])
             if optimize_origination:
+                if origination_penalty is not None:
+                    _, o_g = origination_penalty_and_grad(orig, origination_penalty)
+                    g_orig = g_orig + o_g
                 g_vec = torch.cat([g_vec.reshape(-1), g_orig.reshape(-1)])
             g_vec = g_vec.contiguous()
         return loss_val, g_vec, None, None
