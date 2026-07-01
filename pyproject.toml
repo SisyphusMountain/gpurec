@@ -27,3 +27,7 @@ include = ["gpurec*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "gpu: requires CUDA + Triton (deselect with -m 'not gpu')",
+    "slow: long-running test",
+]
