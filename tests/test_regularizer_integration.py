@@ -19,3 +19,10 @@ def test_group_index_theta_shape_contract():
     assert grad_g.shape == (2, 3)
     assert torch.allclose(grad_g[0], torch.full((3,), 2.0, dtype=torch.float64))
     assert torch.allclose(grad_g[1], torch.full((3,), 1.0, dtype=torch.float64))
+
+
+def test_tv_with_smooth_polish_is_rejected():
+    from gpurec.optim.optimize import optimize
+    with pytest.raises(ValueError, match="non-smooth"):
+        optimize(object(), torch.zeros(3, 3), torch.zeros(3),
+                 tv_penalty=(1.0, torch.tensor([-1, 0, 0]), 1e-3), polish_mode="ridge")

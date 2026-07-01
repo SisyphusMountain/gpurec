@@ -107,7 +107,8 @@ class Schedule:
 def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr0=1.0,
                 schedule="adaptive", max_steps=300, rtol=0.05, window=20, loss_rtol=1e-5,
                 lr_floor_frac=1e-3, verbose=True, t0_wall=None, return_best=False, early_stop=True,
-                with_receiver=False, alpha0=None, with_origination=False, origination0=None):
+                with_receiver=False, alpha0=None, with_origination=False, origination0=None,
+                tv_penalty=None, origination_penalty=None, group_index=None):
     """Run a torch.optim optimizer with a pluggable LR schedule. Returns (theta, hist, warm).
 
     ``return_best=True`` appends the LOWEST-loss theta visited (a 4th return value): on this fixture
@@ -152,11 +153,15 @@ def first_order(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr
             batch_statics, receiver_weights, theta_shape=theta_shape,
             optimize_receiver=with_receiver, optimize_origination=with_origination,
             origination_weights=(origination0 if with_origination else None),
+            tv_penalty=tv_penalty, origination_penalty=origination_penalty, group_index=group_index,
         )
         opt = _OPTIMIZERS[optimizer](x, lr0)
     else:
         x = theta0.detach().reshape(theta_shape).float().clone().requires_grad_(True)
-        f = make_value_and_grad(batch_statics, receiver_weights, theta_shape=theta_shape)
+        f = make_value_and_grad(
+            batch_statics, receiver_weights, theta_shape=theta_shape,
+            tv_penalty=tv_penalty, origination_penalty=origination_penalty, group_index=group_index,
+        )
         opt = _OPTIMIZERS[optimizer](x, lr0)
     sched = Schedule(schedule, lr0, t_max=max_steps,
                      lr_min=lr0 * lr_floor_frac, patience=max(5, window // 2))
@@ -455,7 +460,7 @@ def ridge_anneal(batch_statics, theta0, receiver_weights, *, lam0=None, sigma=0.
 # ----------------------------------------------------------------------------------------------
 def optimize(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr0=1.0,
              schedule="adaptive", max_steps=300, polish_mode="ridge", max_newton=8, verbose=True,
-             polish=None, ridge=None):
+             polish=None, ridge=None, tv_penalty=None, origination_penalty=None, group_index=None):
     """Full recipe: first-order stage -> optional exact-fp32 Newton polish. Returns (theta_hat, hist).
 
     Defaults reflect the 666x80 characterization: Adam(lr=1)+adaptive schedule for fast basin
@@ -473,10 +478,17 @@ def optimize(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr0=1
         polish_mode = "none"
     elif ridge is False and polish_mode == "ridge":
         polish_mode = "lanczos"
+    if tv_penalty is not None and polish_mode not in ("none",):
+        raise ValueError(
+            "tv_penalty has a non-smooth (non-PSD) Hessian; use polish_mode='none' "
+            "(first-order only). The exact-fp32 Newton polish assumes smooth PD curvature."
+        )
     t0 = time.perf_counter()
     theta1, h1, _warm = first_order(batch_statics, theta0, receiver_weights, optimizer=optimizer,
                                     lr0=lr0, schedule=schedule, max_steps=max_steps,
-                                    verbose=verbose, t0_wall=t0)
+                                    verbose=verbose, t0_wall=t0,
+                                    tv_penalty=tv_penalty, origination_penalty=origination_penalty,
+                                    group_index=group_index)
     hist = list(h1)
     theta_hat = theta1
     if polish_mode != "none":
