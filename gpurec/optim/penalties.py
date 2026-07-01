@@ -171,3 +171,21 @@ def origination_penalty_and_grad(omega: torch.Tensor, cfg: OriginationPenalty, *
         pen = origination_penalty_value(w, cfg, sp_parent=sp_parent)
         (g,) = torch.autograd.grad(pen, w)
     return pen.detach(), g
+
+
+def group_expand(theta_param: torch.Tensor, group_index) -> torch.Tensor:
+    """[G,K] group rows -> [S,K] per-species (identity when group_index is None)."""
+    if group_index is None:
+        return theta_param
+    return theta_param.index_select(0, group_index.to(theta_param.device).long())
+
+
+def group_reduce(grad_full: torch.Tensor, group_index, n_groups) -> torch.Tensor:
+    """[S,K] per-species grad -> [G,K] per-group grad (identity when group_index is None)."""
+    if group_index is None:
+        return grad_full
+    gidx = group_index.to(grad_full.device).long()
+    out = torch.zeros((int(n_groups), grad_full.shape[1]),
+                      dtype=grad_full.dtype, device=grad_full.device)
+    out.index_add_(0, gidx, grad_full)
+    return out
