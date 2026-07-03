@@ -66,7 +66,7 @@ def test_write_outputs_alerax_format_and_sidecar(tmp_path):
 
 
 @pytest.mark.gpu
-def test_fit_global_reduces_nll_gpu(tmp_path):
+def test_fit_global_smoke_gpu(tmp_path):
     from pathlib import Path
     data = Path(__file__).parent / "data" / "alerax" / "test_mixed_200"
     if not data.exists():

@@ -1,7 +1,9 @@
 # gpurec CLI
 
-Installed as the `gpurec` console script (`pip install -e .`). Requires CUDA + Triton
-for the forward path (`--help` and argument parsing do not).
+Installed as the `gpurec` console script (`pip install -e .`). Importing `gpurec` (hence
+the CLI, even for `--help`) pulls in the Triton/CUDA stack via the package `__init__`, so
+Triton must be installed to run any subcommand; the actual GPU forward/optimize work
+happens when a subcommand executes.
 
 ## reconcile — log-likelihood at fixed rates
 ```
