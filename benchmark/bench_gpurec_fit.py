@@ -8,14 +8,11 @@ import sys
 
 
 def build_parser():
+    from gpurec.cli import _common     # import-safe: _common has no heavy/torch imports at module scope
     p = argparse.ArgumentParser(description="gpurec rate-fit benchmark driver")
-    p.add_argument("--species", required=True)
-    p.add_argument("--gene", required=True, nargs="+")
-    p.add_argument("--mode", choices=["global", "specieswise", "genewise"], default="global")
+    _common.add_common_args(p)         # --species --gene --mode --device --dtype --pi-iters --neumann-terms --e-max-iter
     p.add_argument("--steps", type=int, default=300)
     p.add_argument("--init-rate", type=float, default=None)
-    p.add_argument("--device", default="cuda")
-    p.add_argument("--dtype", choices=["float32", "float64"], default="float64")
     p.add_argument("--out", required=True)
     return p
 
