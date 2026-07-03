@@ -42,12 +42,14 @@ class GeneReconModel(torch.nn.Module):
         batch_packing: str = "depth_first_fit",
         max_wave_size: int = 8192,
         solver_options: SolverOptions | dict | None = None,
+        dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         device = torch.device(device)
         mode = str(mode).strip().lower()
         genewise, specieswise = _mode_flags(mode)
         self.solver_options = solver_options
+        self.dtype = dtype
 
         raw = preprocess_dataset(
             str(species_tree),
@@ -67,15 +69,15 @@ class GeneReconModel(torch.nn.Module):
         batch_wave_layouts = raw.get("batch_wave_layouts") or [None] * len(batches)
         theta_shape = (len(families), 3) if genewise else ((int(species_helpers["S"]), 3) if specieswise else (3,))
         self.theta = torch.nn.Parameter(
-            torch.full(theta_shape, math.log2(1e-10), dtype=torch.float32, device=device)
+            torch.full(theta_shape, math.log2(1e-10), dtype=dtype, device=device)
         )
         self.receiver_weights = torch.nn.Parameter(
-            torch.zeros((int(species_helpers["S"]),), dtype=torch.float32, device=device)
+            torch.zeros((int(species_helpers["S"]),), dtype=dtype, device=device)
         )
         # Per-species origination logits (softmax over the S species nodes). Default all-zeros =>
         # the uniform origination prior the likelihood assumes; enters ONLY the NLL aggregation.
         self.origination_weights = torch.nn.Parameter(
-            torch.zeros((int(species_helpers["S"]),), dtype=torch.float32, device=device)
+            torch.zeros((int(species_helpers["S"]),), dtype=dtype, device=device)
         )
         self.species_helpers = species_helpers
         self.mode = mode

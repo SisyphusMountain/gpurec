@@ -33,6 +33,11 @@ gpurec fit --species sp.nwk --gene DIR_OR_GLOB \
 Specieswise rows are labelled `s{i}` by species index (mapping to AleRax node labels is
 the scale kit's job).
 
-**Note:** `--dtype float64` currently only takes effect for `fit --mode genewise`;
-`reconcile` and `fit --mode global/specieswise` run in float32 (the base model is
-float32-only).
+**Note:** `--dtype float64` sets the model's compute dtype (`theta`, `receiver_weights`,
+`origination_weights` are built as float64 `nn.Parameter`s; `batch_statics` stay float32
+and the forward upcasts to the parameter dtype). This means `reconcile` and the
+likelihood evaluation run in float64, and `fit --mode genewise` is fully float64.
+**Nuance:** the first-order optimizer used by `fit --mode global/specieswise`
+(`gpurec.optim.optimize.first_order`) casts to float32 internally by design, so those fits
+still optimize in float32 — `--dtype float64` does not change their optimization
+trajectory, only the reported final NLL, which is evaluated (and reported) in float64.

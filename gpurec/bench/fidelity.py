@@ -53,7 +53,7 @@ def reconcile_at_alerax_rates(species, genes, rates, *, device="cuda", dtype=Non
     D, L, T = float(rates[0]), float(rates[1]), float(rates[2])
     gene_list = genes if isinstance(genes, list) else [genes]
     model = GeneReconModel(species, gene_list, mode=mode, device=device,
-                           solver_options=solver_options)
+                           dtype=dtype, solver_options=solver_options)
     # gpurec theta order is [log2 D, log2 L, log2 T] == AleRax (D, L, T) column order
     triple = torch.tensor([math.log2(D), math.log2(L), math.log2(T)],
                           dtype=model.theta.dtype, device=model.theta.device)

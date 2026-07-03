@@ -44,5 +44,6 @@ def build_model(args):
     from gpurec.api.model import GeneReconModel
     genes = resolve_gene_trees(args.gene)
     model = GeneReconModel(args.species, genes, mode=args.mode, device=args.device,
+                           dtype=make_dtype(args.dtype),
                            solver_options=make_solver_options(args))
     return model, genes
