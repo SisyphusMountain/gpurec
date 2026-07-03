@@ -20,7 +20,9 @@ uv.lock
 
 crates/*/target/
 
-tests/data/
+tests/data/*
+!tests/data/alerax/
+!tests/data/archaea60/
 
 *.ipynb
 !notebooks/lean_basic_workflow.ipynb
