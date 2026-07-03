@@ -35,8 +35,12 @@ the scale kit's job).
 
 **Note:** `--dtype float64` sets the model's compute dtype (`theta`, `receiver_weights`,
 `origination_weights` are built as float64 `nn.Parameter`s; `batch_statics` stay float32
-and the forward upcasts to the parameter dtype). This means `reconcile` and the
-likelihood evaluation run in float64, and `fit --mode genewise` is fully float64.
+and the E-step / Pi-wave / likelihood kernels upcast to the parameter dtype). So `reconcile`
+and the likelihood evaluation run that dominant path in float64 (≈10× closer to the AleRax
+reference on the toy fixtures), and `fit --mode genewise` is fully float64. **One caveat:** a
+static per-clade term (`log_split_probs`, used by split/CCP multifurcating families) is not
+re-cast in the DTS kernel and stays float32, so such families keep a small float32 floor on
+that one term — the overall likelihood is still float64-precision-improved, not fully float64.
 **Nuance:** the first-order optimizer used by `fit --mode global/specieswise`
 (`gpurec.optim.optimize.first_order`) casts to float32 internally by design, so those fits
 still optimize in float32 — `--dtype float64` does not change their optimization
