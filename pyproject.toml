@@ -21,6 +21,9 @@ dependencies = [
 [project.optional-dependencies]
 experiments = ["scipy", "ete3", "six"]
 
+[project.scripts]
+gpurec = "gpurec.cli.main:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gpurec*"]
