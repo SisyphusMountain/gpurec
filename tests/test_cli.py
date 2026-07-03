@@ -45,3 +45,32 @@ def test_reconcile_smoke_gpu(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "my_family" in out
+
+
+def test_write_outputs_alerax_format_and_sidecar(tmp_path):
+    import json
+    from gpurec.cli.fit import _write_outputs
+    from gpurec.bench.alerax_io import parse_alerax_parameters, AleraxRates
+    out = tmp_path / "rates.txt"
+    # node_rates rows are (node, D, L, T) — gpurec order == AleRax D L T column order
+    _write_outputs(str(out), [("GLOBAL", 0.1, 0.2, 0.3)],
+                   nll_bits=-1.0, nll_nats=-0.6931, elapsed_s=1.0, mode="global", n_families=1)
+    parsed = parse_alerax_parameters(out)          # reads columns as D L T
+    assert parsed["GLOBAL"] == AleraxRates(D=0.1, L=0.2, T=0.3)   # written verbatim, no reorder
+    side = json.loads((tmp_path / "rates.txt.json").read_text())
+    assert side["mode"] == "global" and side["nll_nats"] == -0.6931 and side["n_families"] == 1
+
+
+@pytest.mark.gpu
+def test_fit_global_reduces_nll_gpu(tmp_path):
+    from pathlib import Path
+    data = Path(__file__).parent / "data" / "alerax" / "test_mixed_200"
+    if not data.exists():
+        pytest.skip("fixtures not vendored yet (Task 5)")
+    out = tmp_path / "fit_rates.txt"
+    rc = main(["fit", "--species", str(data / "sp.nwk"), "--gene", str(data / "g.nwk"),
+               "--mode", "global", "--steps", "5", "--device", "cuda", "--out", str(out)])
+    assert rc == 0
+    import json
+    side = json.loads((tmp_path / "fit_rates.txt.json").read_text())
+    assert math.isfinite(side["nll_nats"]) and side["mode"] == "global"
