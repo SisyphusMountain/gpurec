@@ -13,6 +13,7 @@ def build_parser():
     p.add_argument("--gene", required=True, nargs="+")
     p.add_argument("--mode", choices=["global", "specieswise", "genewise"], default="global")
     p.add_argument("--steps", type=int, default=300)
+    p.add_argument("--init-rate", type=float, default=None)
     p.add_argument("--device", default="cuda")
     p.add_argument("--dtype", choices=["float32", "float64"], default="float64")
     p.add_argument("--out", required=True)

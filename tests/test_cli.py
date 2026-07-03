@@ -43,8 +43,12 @@ def test_reconcile_smoke_gpu(tmp_path, capsys):
     rc = main(["reconcile", "--species", str(data / "sp.nwk"),
                "--gene", str(data / "g.nwk"), "--device", "cuda"])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "my_family" in out
+    # gpurec keys by gene-file basename ("g"), not the AleRax family name ("my_family"),
+    # which only appears in AleRax's own files.
+    out = capsys.readouterr().out.strip()
+    parts = out.split()
+    assert len(parts) == 2, out
+    assert math.isfinite(float(parts[1]))
 
 
 def test_write_outputs_alerax_format_and_sidecar(tmp_path):

@@ -87,9 +87,13 @@ def run_fit(args) -> int:
     model, genes = _common.build_model(args)
     if args.init_rate is not None:
         _set_init_rate(model, args.init_rate)
+    # Adam-only (pure-NLL CLI fit); skips the Newton polish, which mis-shapes a global
+    # (3,) theta in the base `newton_lanczos` (it builds its evaluator without
+    # theta_shape, defaulting to (S,3)).
     theta_hat, _hist = optimize(model.batch_statics, model.theta.detach(),
                                 model.receiver_weights.detach(),
-                                optimizer="adam", schedule="adaptive", max_steps=args.steps)
+                                optimizer="adam", schedule="adaptive", max_steps=args.steps,
+                                polish_mode="none")
     loss_bits, gnorm = final_eval(model.batch_statics, theta_hat, model.receiver_weights.detach())
     loss_bits = float(loss_bits)
     nll_nats = _common.bits_to_nats(loss_bits)
