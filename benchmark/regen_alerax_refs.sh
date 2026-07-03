@@ -3,6 +3,11 @@
 # gpurec's likelihood convention (includes the -ln(2S-1) origination term the stock v1.3.0
 # shipped numbers omit). Copies + builds AleRax_fixed to a stable location OUTSIDE the tracked
 # repo, runs each fixture, and vendors ref/{per_fam_likelihoods.txt,model_parameters.txt}.
+#
+# The build also applies a small full-precision patch to AleOptimizer.cpp (AleRax prints only
+# ~6 significant figures by default, which truncates large-magnitude likelihoods/rates below the
+# fidelity gate's resolution). With the patch, per_fam_likelihoods.txt and model_parameters.txt
+# carry 17 significant digits so gpurec is compared at full precision.
 set -euo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
@@ -16,6 +21,16 @@ if [ ! -x "$BIN" ]; then
   [ -n "$ALERAX_SRC" ] || { echo "AleRax_fixed source not found; set ALERAX_SRC"; exit 1; }
   mkdir -p "$ALERAX_DST"
   rsync -a --exclude build --exclude .git "$ALERAX_SRC/" "$ALERAX_DST/"
+  # full-precision patch: emit 17 significant digits for per-family likelihoods + global rates
+  # (default is ~6 sig figs, which truncates large values). Idempotent (grep-guarded).
+  AO="$ALERAX_DST/src/ale/AleOptimizer.cpp"
+  if [ -f "$AO" ] && ! grep -q "setprecision(17)" "$AO"; then
+    sed -i \
+      -e 's|#include <cassert>|#include <cassert>\n#include <iomanip>|' \
+      -e 's|\(std::ofstream llOs(perFamilyLikelihoodPath);\)|\1\n    llOs << std::setprecision(17);|' \
+      -e 's|\(ParallelOfstream ratesOs(globalRatesPath, true);\)|\1\n    ratesOs << std::setprecision(17);|' \
+      "$AO"
+  fi
   mkdir -p "$ALERAX_DST/build"
   ( cd "$ALERAX_DST/build" && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j"$(nproc)" )
 fi
