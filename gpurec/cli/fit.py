@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import time
 
 from . import _common
@@ -73,6 +74,9 @@ def run_fit(args) -> int:
         nll_bits = nll_nats / math.log(2.0)
         n_fam = int(res.get("n_families", 0))
         elapsed = time.perf_counter() - t0
+        if not math.isfinite(nll_nats):
+            print(f"error: non-finite NLL for fit(genewise)", file=sys.stderr)
+            return 1
         print(f"fit(genewise): final NLL = {nll_nats:.6f} nats ({n_fam} families, {elapsed:.1f}s)")
         if args.out:
             _write_genewise(args.out, res, nll_bits, nll_nats, elapsed)
@@ -90,6 +94,9 @@ def run_fit(args) -> int:
     loss_bits = float(loss_bits)
     nll_nats = _common.bits_to_nats(loss_bits)
     elapsed = time.perf_counter() - t0
+    if not math.isfinite(nll_nats):
+        print(f"error: non-finite NLL for fit({args.mode})", file=sys.stderr)
+        return 1
     print(f"fit({args.mode}): final NLL = {nll_nats:.6f} nats "
           f"(grad_norm {float(gnorm):.2e}, {elapsed:.1f}s)")
     if args.out:
