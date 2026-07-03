@@ -24,7 +24,13 @@ gpurec fit --species sp.nwk --gene DIR_OR_GLOB \
   [--device cuda] [--dtype float64] [--out rates.txt]
 ```
 `global`/`specieswise` use `gpurec.optim.optimize` + `final_eval`; `genewise` uses
-`fit_genewise`. `--out` writes fitted rates (AleRax `# node D L T` order) plus a
-`<out>.json` sidecar (`nll_bits`, `nll_nats`, `elapsed_s`, `mode`, `n_families`).
+`fit_genewise`. `--out`: for `global`/`specieswise`, writes fitted rates (AleRax
+`# node D L T` order) to `<out>` plus a `<out>.json` sidecar (`nll_bits`, `nll_nats`,
+`elapsed_s`, `mode`, `n_families`). For `genewise`, writes ONLY `<out>.json` (schema:
+`theta_log2`, `rates`, plus the same nll/timing fields) — no `<out>` rates file.
 Specieswise rows are labelled `s{i}` by species index (mapping to AleRax node labels is
 the scale kit's job).
+
+**Note:** `--dtype float64` currently only takes effect for `fit --mode genewise`;
+`reconcile` and `fit --mode global/specieswise` run in float32 (the base model is
+float32-only).
