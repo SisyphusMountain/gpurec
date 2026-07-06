@@ -21,16 +21,10 @@ def test_round_never_decreases_joint(tmp_path):
     improved, new_joint = spr_round(fam, rates, sc, radius=1, tmpdir=tmp_path, current_joint=j0)
 
     assert new_joint >= j0 - 1e-9
-    # NOTE: six/start_gene.nwk and six/true_gene.nwk are both the fully
-    # "nested cherries" unrooted shape (((X,Y),(Z,W)),(V,U)) — empirically,
-    # SeqFamily.spr_neighbors(radius) returns [] for this exact shape at
-    # every radius 1..9 (verified directly against the fixture and against
-    # synthetic trees of the same shape with different leaf sets/alignments;
-    # the asymmetric "cherry+pendant" and caterpillar shapes both DO produce
-    # candidates). This mirrors the already-documented 4-taxon
-    # spr_neighbors==[] case in test_seqlik_spr.py, just for a 6-taxon
-    # topology that happens to hit the same class of limitation in B2's
-    # canonicalized-rotation recursion. So no improving move is available
-    # here for spr_round to find; per the task spec, only assert the
-    # monotonic non-decrease guarantee.
-    assert isinstance(improved, bool)
+    # NOTE: spr_neighbors on balanced trees was fixed (see test_seqlik_spr.py
+    # B2 fix #2 regression tests) so six/start_gene.nwk now genuinely
+    # enumerates candidates at radius=1. spr_round must actually find one
+    # that improves on the starting joint (this closes the vacuous-pass gap
+    # from D2, where no improving move was ever available to find).
+    assert improved is True
+    assert new_joint > j0
