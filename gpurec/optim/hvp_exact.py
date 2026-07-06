@@ -227,12 +227,22 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
     # smooth head graph + first-order grad g1 are built ONCE here, not per hvp(u). The head's
     # forward graph is retained (create_graph) so each hvp(u) only adds phi2 + one backward. ----
     base_p = e_bwd_params(wE, acc["grad_Ebar"])
-    cot_pS = acc["grad_log_pS"] + as_family_param(base_p[0], G, S)
-    cot_pD = acc["grad_log_pD"] + as_family_param(base_p[1], G, S)
+    # Genewise: log_pS/log_pD are per-family scalars broadcast across all S species, so their e-step
+    # cotangent base_p[.] ([G,S]) must be summed to per-family [G,1] BEFORE adding the already-per-family
+    # DTS cotangent acc[...] ([G,1]) -- otherwise the [G,1] term broadcasts over S and the head
+    # contraction (pS_hp[G,1] * cot_pS).sum(), which sums the species axis, multiplies it by S (the ~Sx
+    # HVP bug). Specieswise/global keep the per-species form BIT-FOR-BIT (there S IS the parameter axis;
+    # everything is [1,S]). pL has no acc term and mc's acc grad_mc is genuinely per-species [G,S], so
+    # both are correct unchanged in every mode.
+    if static.genewise:
+        cot_pS = acc["grad_log_pS"] + base_p[0].sum(dim=-1, keepdim=True)
+        cot_pD = acc["grad_log_pD"] + base_p[1].sum(dim=-1, keepdim=True)
+    else:
+        cot_pS = acc["grad_log_pS"] + as_family_param(base_p[0], G, S)
+        cot_pD = acc["grad_log_pD"] + as_family_param(base_p[1], G, S)
     cot_pL = base_p[2]
     cot_mc = acc["grad_mc"] + base_p[3]
     cot_col = acc["grad_col"] + base_p[4]
-
     theta_req = theta.detach().requires_grad_(True)
     col_req = col_weights.detach().requires_grad_(True)
     _head_grad_ctx = torch.enable_grad()
@@ -487,8 +497,12 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                                       use_col_weights=use_col_weights)
             # so_p outputs: (d_grad_E, d_grad_pS, d_grad_pD, d_grad_pL, d_grad_mc, d_grad_col)
 
-            d_cot_pS = d_gpS + as_family_param(lin_p[0] + so_p[1], G, S)
-            d_cot_pD = d_gpD + as_family_param(lin_p[1] + so_p[2], G, S)
+            if static.genewise:  # per-family log_pS/pD: sum the per-species tangent cotangents (see phi1 above)
+                d_cot_pS = d_gpS + (lin_p[0] + so_p[1]).sum(dim=-1, keepdim=True)
+                d_cot_pD = d_gpD + (lin_p[1] + so_p[2]).sum(dim=-1, keepdim=True)
+            else:
+                d_cot_pS = d_gpS + as_family_param(lin_p[0] + so_p[1], G, S)
+                d_cot_pD = d_gpD + as_family_param(lin_p[1] + so_p[2], G, S)
             d_cot_pL = lin_p[2] + so_p[3]
             d_cot_mc = d_gmc + lin_p[3] + so_p[4]
             d_cot_col = d_gcol + lin_p[4] + so_p[5]

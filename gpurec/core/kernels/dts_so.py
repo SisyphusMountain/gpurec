@@ -270,6 +270,21 @@ def dts_backward_so(
     block_s = min(512, triton.next_power_of_2(S))
     dev, dt = Pi.device, Pi.dtype
 
+    # The split kernel accumulates the second-order log_pD/log_pS cotangents per SPECIES via the
+    # d_grad_p*_ptr + item*S + s layout (identical to d_grad_mt). That matches a [rows, S] buffer,
+    # but genewise/global pass a species-REDUCED d_grad_pD/pS ([G,1] / [1,1]) because the rate is a
+    # per-family (or global) scalar and the first-order path reduces the species axis internally.
+    # Writing item*S+s into a [*,1] buffer runs off the end (only s==0/1 land; the rest silently
+    # corrupt adjacent pool memory). So when the caller's buffer is species-reduced (shape[1]==1),
+    # hand the kernel a [rows, S] scratch (rows = d_grad_mt's family-row count -- the layout `item`
+    # indexes) and sum the species axis back into the caller's buffer afterward. Specieswise ([1,S])
+    # already matches the kernel layout and writes straight through, bit-for-bit unchanged.
+    pd_reduced = int(d_grad_pD.shape[1]) == 1
+    ps_reduced = int(d_grad_pS.shape[1]) == 1
+    rows = int(d_grad_mt.shape[0])
+    dgpD_k = torch.zeros((rows, S), device=dev, dtype=dt) if pd_reduced else d_grad_pD
+    dgpS_k = torch.zeros((rows, S), device=dev, dtype=dt) if ps_reduced else d_grad_pS
+
     # stacked staging: rows [0:N) = left side, [N:2N) = right side (contiguous views, so the
     # split kernel writes them via the same n*S offsets); the tree kernel walks all 2N rows.
     ud = torch.empty((2 * N, S), device=dev, dtype=dt)
@@ -284,10 +299,14 @@ def dts_backward_so(
         lsp, meta["reduce_idx"], item_idx, int(meta["start"]), int(ws),
         pibar_row_max,
         d_rhs, ud_l, ud_r, dud_l, dud_r,
-        d_grad_pD, d_grad_pS, d_grad_mt,
+        dgpD_k, dgpS_k, d_grad_mt,
         S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_STATE=bool(by_state),
         MT_ROW_STRIDE=mt_row_stride, DTYPE=_tl_float_dtype(Pi.dtype),
     )
+    if pd_reduced:
+        d_grad_pD += dgpD_k.sum(dim=-1, keepdim=True)
+    if ps_reduced:
+        d_grad_pS += dgpS_k.sum(dim=-1, keepdim=True)
 
     # tree part: bottom-up subtree-or-self sums for both ud->sub and dud->dsub in one fused
     # kernel (mirrors the primal compact level-walk), replacing the host parent-chain index_add
