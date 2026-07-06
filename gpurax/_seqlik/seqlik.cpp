@@ -15,6 +15,7 @@
 #include <corax/corax.h>
 #include <corax/tree/utree_moves.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -27,12 +28,33 @@
 
 namespace py = pybind11;
 
-// Copied from SPRSearch.cpp:47 (identical in SearchUtils.cpp) — true iff
-// regrafting the pruned subtree at `r` would yield the same (unrooted)
-// topology as before the move, i.e. r is one of p's immediate neighbors.
-static bool sprYeldsSameTree(corax_unode_t *p, corax_unode_t *r) {
-  return (r == p) || (r == p->next) || (r == p->next->next) ||
-         (r == p->back) || (r == p->next->back) || (r == p->next->next->back);
+// Rotation-invariant replacement for the pointer-identity check copied from
+// SPRSearch.cpp:47 (identical in SearchUtils.cpp). The original check
+// compared raw pointers: (r == p) || (r == p->next) || (r == p->next->next)
+// || (r == p->back) || (r == p->next->back) || (r == p->next->next->back).
+// That is only correct when `r` is literally the same rotation object
+// reached by walking from `p`. spr_neighbors() canonicalizes both prune and
+// regraft to their array-stored (canonical) rotation via positionOfField
+// before this check runs, so a genuinely-adjacent-but-differently-rotated
+// neighbor no longer pointer-matches p->back / p->next->back /
+// p->next->next->back, and identity (no-op) moves slip through undetected.
+// Fix: compare LOGICAL identity, i.e. canonical array positions, not
+// pointers. `prunePos`/`regraftPos` are already canonical array positions
+// (as built by spr_neighbors' positionOfField map); this recomputes the
+// canonical positions of prune's own node and its three neighbors and
+// compares against regraftPos.
+static bool isNoOpSprMove(
+    PLLUnrootedTree &tree,
+    const std::unordered_map<unsigned, unsigned> &positionOfField,
+    unsigned prunePos, unsigned regraftPos) {
+  if (regraftPos == prunePos) {
+    return true;  // regraft target is prune's own logical node
+  }
+  corax_unode_t *prune = tree.getNode(prunePos);
+  unsigned n0 = positionOfField.at(prune->back->node_index);
+  unsigned n1 = positionOfField.at(prune->next->back->node_index);
+  unsigned n2 = positionOfField.at(prune->next->next->back->node_index);
+  return regraftPos == n0 || regraftPos == n1 || regraftPos == n2;
 }
 
 // coraxlib does not expose a version macro/symbol of its own; this string
@@ -77,7 +99,7 @@ public:
   //
   // Two corrections relative to a literal transcription of diggRecursive:
   //  1. The seed regraft node passed into the recursion (prune->next->back /
-  //     prune->next->next->back) is *always* one of sprYeldsSameTree's own
+  //     prune->next->next->back) is *always* one of isNoOpSprMove's own
   //     checks, so it is trivially rejected as a no-op; real candidates only
   //     appear one hop further out. SPRSearch::applySPRRound (SPRSearch.cpp:
   //     304) accounts for this by passing `radius + 1` as maxRadius to
@@ -103,10 +125,25 @@ public:
     auto &tree = _eval.getGeneTree();
     unsigned maxRadius = radius + 1;
 
+    // Maps EVERY rotation's node_index field to its logical node's true
+    // array position, not just the canonical (array-stored) rotation's own
+    // field. This matters because a node's up to 3 rotations do NOT share
+    // one common node_index value (verified empirically: e.g. an internal
+    // node whose canonical rotation is at array position 6 has rotations
+    // with node_index 6/7/8 — three distinct values, not one shared value).
+    // Any pointer walk (->back, ->next, ...) can land on a non-canonical
+    // rotation, so every rotation's field must resolve to the same
+    // position for lookups like isNoOpSprMove()'s prune->back/next->back
+    // checks to work regardless of which rotation was reached.
     std::unordered_map<unsigned, unsigned> positionOfField;
     unsigned pos = 0;
     for (auto *n : tree.getNodes()) {
-      positionOfField[n->node_index] = pos++;
+      positionOfField[n->node_index] = pos;
+      if (n->next) {
+        positionOfField[n->next->node_index] = pos;
+        positionOfField[n->next->next->node_index] = pos;
+      }
+      pos++;
     }
 
     std::unordered_set<unsigned> seenPrunePositions;
@@ -122,12 +159,17 @@ public:
         continue;
       }
       std::vector<unsigned> path;
-      collectSprNeighbors(tree, positionOfField, prune, prune->next->back,
+      collectSprNeighbors(tree, positionOfField, prune->next->back,
                           path, 1, maxRadius, prunePos, out);
-      collectSprNeighbors(tree, positionOfField, prune,
+      collectSprNeighbors(tree, positionOfField,
                           prune->next->next->back, path, 1, maxRadius,
                           prunePos, out);
     }
+    // getBranches() is backed by an unordered_set keyed on pointer address,
+    // so iteration order (and therefore the order moves are discovered in)
+    // is nondeterministic across runs/processes. Sort by (prune, regraft,
+    // path) before returning so the result is stable.
+    std::sort(out.begin(), out.end());
     return out;
   }
 
@@ -136,25 +178,49 @@ public:
   // tree (e.g. invalid/tip prune node, or a no-op move rejected by
   // coraxlib). prune_index/regraft_index are array positions, as returned
   // by spr_neighbors().
+  //
+  // Bounds-checked: getNode() does raw `nodes[idx]` indexing with no bounds
+  // checking of its own, so an out-of-range index (e.g. a stray/garbage
+  // Python-side value) previously dereferenced past the end of the node
+  // array (SIGSEGV). Validate both indices against the tree's actual node
+  // count first and raise a Python-catchable exception instead.
   void apply_spr(unsigned prune_index, unsigned regraft_index) {
     auto &tree = _eval.getGeneTree();
+    unsigned nNodes = tree.getNodeNumber();
+    if (prune_index >= nNodes || regraft_index >= nNodes) {
+      throw std::runtime_error("apply_spr: node index out of range");
+    }
     corax_unode_t *pe = tree.getNode(prune_index);
     corax_unode_t *re = tree.getNode(regraft_index);
     int rc = corax_utree_spr(pe, re, &_lastRollback);
     if (rc != CORAX_SUCCESS) {
       throw std::runtime_error("corax_utree_spr failed");
     }
+    _hasMove = true;
   }
 
-  // Undoes the most recent apply_spr() call.
-  void rollback() { corax_tree_rollback(&_lastRollback); }
+  // Undoes the most recent apply_spr() call. Throws if there is no pending
+  // move to undo, instead of running corax_tree_rollback() on a
+  // (previously uninitialized) rollback record — that read UB garbage and
+  // switched on a garbage rearrange_type.
+  void rollback() {
+    if (!_hasMove) {
+      throw std::runtime_error("rollback: no move to undo");
+    }
+    corax_tree_rollback(&_lastRollback);
+    _hasMove = false;
+  }
 
   // Hash of the current unrooted topology (branch lengths do not affect it).
   size_t tree_hash() { return _eval.getGeneTree().getUnrootedTreeHash(); }
 
 private:
   LibpllEvaluation _eval;
-  corax_tree_rollback_t _lastRollback;
+  // Zero-initialized: previously left uninitialized, so a rollback() call
+  // before any apply_spr() ran corax_tree_rollback() on garbage (UB). Now
+  // guarded additionally by _hasMove (see rollback()/apply_spr() above).
+  corax_tree_rollback_t _lastRollback{};
+  bool _hasMove = false;
 
   // Recursive helper for spr_neighbors: canonicalizes `regraftRaw` to its
   // true array position (see the note on spr_neighbors above), and if
@@ -164,20 +230,20 @@ private:
   static void collectSprNeighbors(
       PLLUnrootedTree &tree,
       const std::unordered_map<unsigned, unsigned> &positionOfField,
-      corax_unode_t *prune, corax_unode_t *regraftRaw,
+      corax_unode_t *regraftRaw,
       std::vector<unsigned> &path, unsigned radius, unsigned maxRadius,
       unsigned prunePos,
       std::vector<std::tuple<unsigned, unsigned, std::vector<unsigned>>> &out) {
     unsigned regraftPos = positionOfField.at(regraftRaw->node_index);
     corax_unode_t *regraft = tree.getNode(regraftPos);
-    if (!sprYeldsSameTree(prune, regraft)) {
+    if (!isNoOpSprMove(tree, positionOfField, prunePos, regraftPos)) {
       out.emplace_back(prunePos, regraftPos, path);
     }
     if (radius < maxRadius && regraft->next) {
       path.push_back(regraftPos);
-      collectSprNeighbors(tree, positionOfField, prune, regraft->next->back,
+      collectSprNeighbors(tree, positionOfField, regraft->next->back,
                           path, radius + 1, maxRadius, prunePos, out);
-      collectSprNeighbors(tree, positionOfField, prune,
+      collectSprNeighbors(tree, positionOfField,
                           regraft->next->next->back, path, radius + 1,
                           maxRadius, prunePos, out);
       path.pop_back();

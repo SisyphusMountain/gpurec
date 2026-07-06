@@ -1,5 +1,7 @@
 import pathlib
 
+import pytest
+
 from gpurax._seqlik import SeqFamily
 
 FX = pathlib.Path(__file__).parent / "fixtures"
@@ -68,3 +70,56 @@ def test_apply_then_rollback_restores_tree(tmp_path):
     assert fam.tree_hash() != h0
     fam.rollback()
     assert fam.tree_hash() == h0
+
+
+# --- Review findings regression tests ---------------------------------
+
+
+def test_no_identity_moves(tmp_path):
+    # HIGH finding: sprYeldsSameTree's pointer-identity check missed no-op
+    # moves once regraft/prune were canonicalized to array-stored rotations
+    # (~0.9% of radius-1 candidates were identity moves in the buggy build).
+    # Gate: every move returned by spr_neighbors(radius) must actually
+    # change the topology, and must cleanly round-trip via rollback().
+    for radius in (1, 2):
+        fam = make_spr_family(tmp_path)
+        h0 = fam.tree_hash()
+        moves = fam.spr_neighbors(radius)
+        assert len(moves) > 0
+        for p, r, _ in moves:
+            fam.apply_spr(p, r)
+            assert fam.tree_hash() != h0, (
+                f"identity move slipped through at radius={radius}: "
+                f"(prune={p}, regraft={r})"
+            )
+            fam.rollback()
+            assert fam.tree_hash() == h0
+
+
+def test_apply_spr_out_of_range_raises(tmp_path):
+    # CRITICAL finding: apply_spr had no bounds-checking and segfaulted on
+    # out-of-range indices. Must now raise instead of crashing.
+    fam = make_spr_family(tmp_path)
+    with pytest.raises(RuntimeError):
+        fam.apply_spr(10**9, 0)
+    with pytest.raises(RuntimeError):
+        fam.apply_spr(0, 10**9)
+
+
+def test_rollback_without_move_raises(tmp_path):
+    # MEDIUM finding: _lastRollback was uninitialized, so calling rollback()
+    # before any apply_spr() ran corax_tree_rollback() on garbage (UB). Must
+    # now raise cleanly instead.
+    fam = make_spr_family(tmp_path)
+    with pytest.raises(RuntimeError):
+        fam.rollback()
+
+
+def test_neighbors_deterministic(tmp_path):
+    # LOW finding: spr_neighbors' internal getBranches() is an
+    # unordered_set keyed on pointer address, so the raw enumeration order
+    # is nondeterministic; the output must be sorted before returning.
+    fam_a = make_spr_family(tmp_path)
+    fam_b = make_spr_family(tmp_path)
+    assert fam_a.spr_neighbors(1) == fam_a.spr_neighbors(1)
+    assert fam_a.spr_neighbors(1) == fam_b.spr_neighbors(1)
