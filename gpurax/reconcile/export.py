@@ -151,6 +151,67 @@ def _build_genetree_clade(recon_nodes, node_index, index_to_name):
     return clade
 
 
+def _notung_node_label(event, species_index, node_index, index_to_name):
+    if event == "leaf":
+        return _species_name(index_to_name, species_index)
+    if event == "loss":
+        return f"LOST_{_species_name(index_to_name, species_index)}"
+    return f"n{node_index}"
+
+
+def _notung_nhx_comment(recon_nodes, node_index, index_to_name):
+    """Build the `[&&NHX:...]` comment for one node, matching the tag keys
+    GeneRax's own NHX writer emits (`printEventNHX` in
+    `ext/GeneRaxCore/src/IO/ReconciliationWriter.cpp`): `S=` species label,
+    `D=Y/N` duplication flag, `H=Y/N` transfer(horizontal) flag, and for
+    transfer nodes a `@<donorSpecies>@<destSpecies>` suffix appended directly
+    after `H=`. Branch lengths (`B=` in GeneRax) are omitted: `recon_nodes`
+    carries no branch-length information.
+    """
+    event, species_index, _children = recon_nodes[node_index]
+    species_label = _species_name(index_to_name, species_index)
+    comment = f"[&&NHX:S={species_label}"
+    comment += ":D=" + ("Y" if event == "duplication" else "N")
+    comment += ":H=" + ("Y" if event == "transfer" else "N")
+    if event == "transfer":
+        dest_index = _transfer_destination_index(recon_nodes, node_index)
+        dest_label = _species_name(index_to_name, dest_index)
+        comment += f"@{species_label}@{dest_label}"
+    comment += "]"
+    return comment
+
+
+def _build_notung_newick(recon_nodes, node_index, index_to_name):
+    event, species_index, children = recon_nodes[node_index]
+    left_index, right_index = children
+    comment = _notung_nhx_comment(recon_nodes, node_index, index_to_name)
+    if left_index == -1 and right_index == -1:
+        label = _notung_node_label(event, species_index, node_index, index_to_name)
+        return label + comment
+    left_str = _build_notung_newick(recon_nodes, left_index, index_to_name)
+    right_str = _build_notung_newick(recon_nodes, right_index, index_to_name)
+    return f"({left_str},{right_str})n{node_index}" + comment
+
+
+def write_notung(out_dir, name, gene_newick, recon_nodes, species_newick=None):
+    """Write a Notung-style NHX-annotated Newick reconciliation, matching the
+    tag conventions of GeneRax's own NHX writer (`saveReconciliationNHX` in
+    `ext/GeneRaxCore/src/IO/ReconciliationWriter.cpp`). The tree topology and
+    per-node events come entirely from `recon_nodes` (node 0 = root), mirroring
+    `write_recphyloxml`; `gene_newick` is accepted for API symmetry but its
+    topology is not re-parsed here.
+    """
+    if species_newick is not None:
+        index_to_name, _species_root = _species_index_to_name(species_newick)
+    else:
+        index_to_name = {}
+
+    nhx_newick = _build_notung_newick(recon_nodes, 0, index_to_name) + ";"
+    p = pathlib.Path(out_dir) / f"{name}.notung.nhx"
+    p.write_text(nhx_newick + "\n")
+    return str(p)
+
+
 def write_recphyloxml(out_dir, name, gene_newick, recon_nodes, species_newick):
     """Write a RecPhyloXML reconciliation, matching the tag/attribute names used
     by GeneRax's own writer (`ext/GeneRaxCore/src/IO/ReconciliationWriter.cpp`):
