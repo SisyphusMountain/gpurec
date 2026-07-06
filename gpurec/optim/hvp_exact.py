@@ -15,7 +15,7 @@ from __future__ import annotations
 import torch
 
 from gpurec.api._implicit_grad import _bicgstab, _safe_exp2_ratio
-from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
+from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, survival_from_E as _survival_from_E
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.kernels.dts_so import dts_backward_so
 from gpurec.core.kernels.e_step import e_step_triton_autograd
@@ -200,7 +200,7 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                                          grad_outputs=(g_s1, g_s2, g_ebar), retain_graph=True)
         return out
 
-    norm = (1 - torch.exp2(E_star).mean(dim=-1, keepdim=True)).clamp_min(torch.finfo(dtype).tiny)
+    norm = _survival_from_E(E_star, keepdim=True)  # uniform survival; consumed only in the origination-uniform tangent below
     fam_factor = 1.0 if G == n_fam else float(n_fam)
 
     zeros_state = lambda: torch.zeros_like(E_star)

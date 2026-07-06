@@ -2,7 +2,7 @@ import warnings
 
 import torch
 
-from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
+from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
 from gpurec.core.kernels.dts_fused import compute_dts_forward
 from gpurec.core.kernels.wave_backward import (
     active_mask_from_rhs_absmax_fused,
@@ -36,9 +36,7 @@ def _bicgstab_rel_tol_default(dtype) -> float:
     without wasting iterations. These are exactly the values used elsewhere in
     the codebase for the same purpose (``gpurec.optim.forward_tangent._default_tol``):
 
-      * fp32: ``1e-6`` (~8.4x fp32 eps 1.19e-7).  The historical default ``1e-7``
-        was 0.84x fp32 eps -- i.e. *below* the achievable fp32 floor -- so the
-        solve stagnated at ~1.1*eps and raised (the N=128 CV crash).
+      * fp32: ``1e-6`` (~8.4x fp32 eps 1.19e-7).
       * fp64: ``1e-12`` (~4.5e3x fp64 eps 2.2e-16; tight but trivially reachable).
     """
     return 1e-12 if dtype == torch.float64 else 1e-6
@@ -517,13 +515,7 @@ def _e_adjoint_and_theta_vjp(
             *topology_args,
             use_receiver_weights=use_receiver_weights,
         )
-        if origination_probs is None:
-            survival = (1 - torch.exp2(E_req).mean(dim=-1)).clamp_min(torch.finfo(E_req.dtype).tiny)
-        else:
-            survival = (1 - (origination_probs * torch.exp2(E_req)).sum(dim=-1)).clamp_min(
-                torch.finfo(E_req.dtype).tiny
-            )
-        denom = torch.log2(survival)
+        denom = _log2_survival(E_req, origination_probs)
         direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
         (aux_to_e,) = torch.autograd.grad(
             (direct_obj, E_s1_from_E, E_s2_from_E, Ebar_from_E),

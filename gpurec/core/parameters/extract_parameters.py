@@ -2,6 +2,8 @@ import math
 
 import torch
 
+from gpurec.core.inference.logspace import safe_log2
+
 _LN2 = 0.6931471805599453
 
 
@@ -53,24 +55,30 @@ def receiver_valid_log_normalizer(
     sp_parent: torch.Tensor,
     max_ancestor_depth: int,
 ) -> torch.Tensor:
+    # For each donor ``s`` the valid transfer recipients are all species that are NOT ``s`` itself
+    # nor a strict ancestor of ``s``. The normalizer is ``-log2(valid_mass)`` where ``valid_mass`` is
+    # the receiver probability on those valid recipients. Computing it as ``1 - ancestor_mass``
+    # catastrophically cancels once the excluded mass rounds to 1 (deep donor, or receiver weight
+    # concentrated on the ancestors) -- the old code then hid the collapse behind a ``clamp_min(tiny)``
+    # before ``log2``. Instead accumulate the valid mass DIRECTLY as a sum over non-excluded recipients:
+    # a sum of non-negative terms cannot cancel, so no ``1 - .`` and no clamp are needed.
     S = int(receiver_log_probs.numel())
     receiver_probs = torch.exp2(receiver_log_probs)
     parent = sp_parent.to(device=receiver_log_probs.device, dtype=torch.long)
-    cur = torch.arange(S, device=receiver_log_probs.device, dtype=torch.long)
-    ancestor_mass = torch.zeros((S,), device=receiver_log_probs.device, dtype=receiver_log_probs.dtype)
-    zero = torch.zeros((), device=receiver_log_probs.device, dtype=receiver_log_probs.dtype)
+    idx = torch.arange(S, device=receiver_log_probs.device, dtype=torch.long)
+    cur = idx.clone()
+    excluded = torch.zeros((S, S), dtype=torch.bool, device=receiver_log_probs.device)  # excluded[s, r]
 
     for _ in range(max(1, int(max_ancestor_depth))):
         valid = (cur >= 0) & (cur < S)
-        safe_cur = cur.clamp(0, max(S - 1, 0))
-        ancestor_mass = ancestor_mass + torch.where(valid, receiver_probs.index_select(0, safe_cur), zero)
-        next_cur = parent.index_select(0, safe_cur)
-        cur = torch.where(valid, next_cur, torch.full_like(cur, -1))
+        safe_cur = cur.clamp(0, max(S - 1, 0))  # index-only clamp (bounds safety); the ``valid`` mask carries the logic
+        excluded[idx[valid], safe_cur[valid]] = True  # mark ``s`` itself and every ancestor visited
+        cur = torch.where(valid, parent.index_select(0, safe_cur), torch.full_like(cur, -1))
 
-    valid_mass = 1.0 - ancestor_mass
+    valid_mass = (receiver_probs.unsqueeze(0) * (~excluded)).sum(dim=-1)  # sum of non-excluded receiver probs
     return torch.where(
         valid_mass > 0.0,
-        -torch.log2(valid_mass.clamp_min(torch.finfo(receiver_log_probs.dtype).tiny)),
+        -safe_log2(valid_mass),
         receiver_log_probs.new_full((S,), float("-inf")),
     )
 

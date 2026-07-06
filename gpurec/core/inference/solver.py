@@ -3,7 +3,7 @@ import math
 import torch
 
 from gpurec.core.inference.forward import pi_wave_forward
-from gpurec.core.inference.logspace import logsumexp2
+from gpurec.core.inference.logspace import logsumexp2, log2_survival
 from gpurec.core.kernels.e_step import e_fixed_point_triton
 from gpurec.core.parameters.extract_parameters import (
     extract_parameters_uniform,
@@ -156,16 +156,14 @@ def nll_vector_from_root_rows(
     the uniform form when the weights are equal.
     """
     if origination_log_probs is None:
-        survival = (1 - torch.exp2(E).mean(dim=-1)).clamp_min(torch.finfo(E.dtype).tiny)
         return -(
             logsumexp2(root_rows, dim=-1)
             - math.log2(root_rows.shape[-1])
-            - torch.log2(survival)
+            - log2_survival(E)
         )
-    survival = (1 - (origination_probs * torch.exp2(E)).sum(dim=-1)).clamp_min(torch.finfo(E.dtype).tiny)
     return -(
         logsumexp2(root_rows + origination_log_probs, dim=-1)
-        - torch.log2(survival)
+        - log2_survival(E, origination_probs)
     )
 
 

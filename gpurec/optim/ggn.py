@@ -18,7 +18,7 @@ import math
 
 import torch
 
-from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
+from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.kernels.dts_fused import compute_dts_forward
 from gpurec.core.kernels.e_step import e_step_triton_autograd
@@ -239,12 +239,7 @@ def _e_adjoint_and_theta_vjp(
         aux_outputs = (E_s1_from_E, E_s2_from_E, Ebar_from_E)
         aux_grads = (grad_E_s1, grad_E_s2, grad_Ebar)
         if not drop_norm:
-            if origination_probs is None:
-                norm = (1 - torch.exp2(E_req).mean(dim=-1)).clamp_min(torch.finfo(E_req.dtype).tiny)
-            else:
-                norm = (1 - (origination_probs * torch.exp2(E_req)).sum(dim=-1)).clamp_min(
-                    torch.finfo(E_req.dtype).tiny)
-            denom = torch.log2(norm)
+            denom = _log2_survival(E_req, origination_probs)
             direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
             aux_outputs = (direct_obj, *aux_outputs)
             aux_grads = (torch.ones_like(direct_obj), *aux_grads)
