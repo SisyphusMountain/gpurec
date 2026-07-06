@@ -25,6 +25,17 @@ def _rf(nwk_a, nwk_b):
     return dendropy.calculate.treecompare.symmetric_difference(a, b)
 
 
+def _write_families_file(path):
+    path.write_text(
+        "[FAMILIES]\n"
+        "- fam1\n"
+        f"starting_gene_tree = {FX / 'start_gene.nwk'}\n"
+        f"alignment = {FX / 'aln.fasta'}\n"
+        f"mapping = {FX / 'map.link'}\n"
+        "subst_model = GTR\n"
+    )
+
+
 def test_rf_parity_vs_generax(tmp_path):
     generax_ref = json.loads((FX / "generax_ref.json").read_text())
     if not generax_ref.get("available", True):
@@ -32,10 +43,12 @@ def test_rf_parity_vs_generax(tmp_path):
 
         pytest.xfail("no GeneRax binary")
 
-    fam_name = _family_name(FX / "families.txt")
+    families_file = tmp_path / "families.txt"
+    _write_families_file(families_file)
+    fam_name = _family_name(families_file)
 
     run(
-        str(FX / "families.txt"),
+        str(families_file),
         str(FX / "species.nwk"),
         str(tmp_path),
         max_spr_radius=3,
