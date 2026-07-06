@@ -291,6 +291,18 @@ PYBIND11_MODULE(_impl, m) {
   m.def("corax_version", &corax_version,
         "Return the coraxlib version string this extension was linked against.");
 
+  // GeneRax "Step 0": builds a starting gene tree (random topology, taxa
+  // drawn from the alignment) via LibpllEvaluation::createAndSaveRandomTree
+  // and writes it to `out`. Used when a family has no starting_tree of its
+  // own; the joint SPR search subsequently improves this random start.
+  m.def("build_starting_tree",
+        [](const std::string &aln, const std::string &model,
+           const std::string &out) {
+          LibpllEvaluation::createAndSaveRandomTree(aln, model, out);
+          return out;
+        },
+        py::arg("alignment"), py::arg("model"), py::arg("out"));
+
   py::class_<SeqFamily>(m, "SeqFamily")
       .def(py::init<const std::string &, const std::string &, const std::string &>(),
            py::arg("newick"), py::arg("alignment_path"), py::arg("model"))
