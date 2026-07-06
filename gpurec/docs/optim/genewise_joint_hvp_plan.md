@@ -1,169 +1,170 @@
-# Genewise analytic HVP: per-family DTL `[G,3]` + per-family origination `[G,S]`
+# Genewise joint analytic HVP: DTL `θ[G,3]` + origination `ω[G,S]` + receiver weights `α[S]`
 
-**Status:** design / plan (not yet implemented). 2026-07-06.
-**Depends on:** the committed survival/receiver normalizer fix (`b6faad9b`) — the origination head's
-`1/survival²` curvature is only trustworthy on the hardened forward-adjoint.
+**Status:** P0 (θ) done + committed (`a6322953`, 2026-07-06). P1–P4 (ω, α arrowhead, Newton) designed
+here. Supersedes the earlier θ+ω-only version of this doc (α was previously a non-goal; it is now in
+scope as the global arrowhead).
 
 ## 1. Goal
 
-Provide an **analytic** Hessian / HVP for genewise fits over the joint parameter
-`z_g = (θ_g ∈ ℝ³, ω_g ∈ ℝ^S)` per gene family `g ∈ {1..G}`:
-
-- `θ` — per-family DTL logits, shape `[G, 3]` (the existing genewise rate tensor).
-- `ω` — per-family origination logits, shape `[G, S]` (NEW; today origination is a single global `[S]`).
-
-so genewise can run **Newton / Newton-CG** over DTL **and** per-family origination together, and so the
-convergence certificate uses an exact (not finite-difference) curvature.
-
-Non-goals (separate work): global receiver weights `α [S]` or origination `ω [S]` (the *arrowhead* case,
-needs multi-batch accumulation + a `2S` Schur solve); per-family receiver weights `[G,S]` (α enters the
-fixed points, so it is not a cheap head like ω — different cost profile).
-
-## 2. Why this is the clean case: full block-diagonality
-
-Both `θ_g` and `ω_g` are **per-family**, and family `g`'s loss depends only on `(θ_g, ω_g)`. There is **no
-cross-family coupling**, so the joint Hessian is **block-diagonal** with `G` independent blocks, each
-`(3+S)×(3+S)`:
+One analytic (forward-over-reverse) HVP over the **joint** parameter
 
 ```
-family g:   [ H_θθ  (3×3) | H_θω  (3×S) ]
-            [ H_ωθ  (S×3) | H_ωω  (S×S) ]
+z = [ θ (G×3)  |  ω (G×S)  |  α (S) ]        dim = 3G + GS + S
 ```
 
-Consequences:
-- **Newton is per-family and embarrassingly parallel** — no global reduction, no arrowhead, and (unlike the
-  global-α/ω case) **no multi-batch accumulation** is required. `θ` stays per-batch/per-family independent.
-- The `3` broadcast probes (a tangent `u[g] = e_j` for all families at once) recover column `j` of **every**
-  family's block simultaneously — because the Hessian is block-diagonal. (This is exactly the property the
-  failed reuse gate exposed the *lack of* for the θ-projection; see §4.)
+for genewise fits, so genewise can run **Newton** over any subset of {per-family DTL `θ`, per-family
+origination `ω`, global receiver weights `α`}.
 
-## 3. Why the `(3+S)` block is cheap: origination is a *head* parameter
+- `θ` — per-family DTL logits `[G,3]` (existing genewise rates).
+- `ω` — per-family origination logits `[G,S]` (NEW; today origination is a single global `[S]`).
+- `α` — global receiver (transfer-recipient) weights `[S]` (existing; the current code's `receiver_log_probs`).
 
-`ω_g` enters **only** the NLL aggregation, never the E / Pi-wave fixed-point solve
-(`origination_grad_from_root_rows`, `solver.py:184-199`, and the weighted NLL `nll_vector_from_root_rows`,
-`solver.py:158-169`):
+**Design axioms:**
+- The HVP is a **single operator** `hvp(u) = H·u`. The Hessian's block structure is used **only** by
+  the Newton *solve*, never to compute `H·u` (see §4).
+- **Prior-agnostic.** Any regularizer/prior on `ω` (or damping) is the caller's — added as a diagonal
+  on `H_ωω` or via the Newton damping `μ`. We build no prior.
+
+## 2. What P0 actually was (correcting the earlier diagnosis)
+
+P0 (genewise `H_θθ`, block-diagonal `[G,3,3]`) is green and committed. The **earlier** version of this
+plan mis-diagnosed the P0 bug as a wrong "θ[s]↔species s" seed/projection. That was wrong. The seed
+(`param_jvp`) and reverse projection were already correct for genewise. The real bugs were two
+**per-family/per-species plumbing** errors:
+
+1. **Head contraction** (`hvp_exact.py`): mixed the already-per-family `[G,1]` DTS cotangent
+   (`acc["grad_log_pS/pD"]`) with the per-species `[G,S]` e-step cotangent (`base_p[.]`). The `[G,1]`
+   then broadcast over `S` and the head contraction `(pS_hp[G,1]·cot).sum()` summed the species axis →
+   an `S×` overcount. Fixed by summing the e-step term to `[G,1]` first, gated on `static.genewise`.
+2. **`dts_backward_so`** (`dts_so.py`): the split SO kernel writes `log_pS/pD` cotangents per-species
+   via `d_grad_p*_ptr + item*S + s` (a `[rows,S]` layout). Genewise passes a species-reduced `[G,1]`
+   buffer → out-of-bounds writes (only `s=0/1` land, the rest corrupt adjacent pool memory, poisoning
+   `d_grad_mt` too). Fixed with a `[rows,S]` scratch reduced back to `[G,1]`.
+
+Neither was cross-term math; both were reductions. **Lesson for P1–P4:** the risk in the joint sweep is
+per-family/per-species *reductions*, not derivations. Every new gate exists to catch that class.
+
+## 3. The joint Hessian is an arrowhead
+
+`ω` never enters the fixed-point solve (it is a *head* parameter — §5); `θ` and `α` do. `θ,ω` are
+per-family; `α` is global. So `H` is **arrowhead**:
 
 ```
-NLL_g = -( logsumexp2(root_rows_g + log_softmax2(ω_g)) - log2(survival_g) )
-survival_g = 1 - Σ_s softmax2(ω_g)_s · 2^{E_g,s}          # weighted survival (now cancellation-free)
+          θ_g (3)     ω_g (S)   │   α (S)
+θ_g   [  H_θθ,g      H_θω,g    │  H_θα,g  ]   ┐ per-family block B_g,
+ω_g   [  H_ωθ,g      H_ωω,g    │  H_ωα,g  ]   ┘ block-diagonal in g   (each (3+S)²)
+──────────────────────────────────────────────
+α     [ Σ_g H_αθ,g  Σ_g H_αω,g │  H_αα    ]   ← global arrow (dense S×S), sums over families
 ```
 
-That splits the block by cost:
+- **Core:** `G` independent blocks `B_g = [[H_θθ,g, H_θω,g],[H_ωθ,g, H_ωω,g]]`, each `(3+S)×(3+S)`.
+- **Arrow:** global `α` with dense `H_αα` and couplings `H_zα,g = [H_θα,g; H_ωα,g]`.
 
-| sub-block | derivative through | cost |
-|-----------|--------------------|------|
-| **H_θθ** `3×3` | E & Pi fixed points | **3 θ forward-over-reverse sweeps** (same as θ-only genewise) |
-| **H_θω** `3×S` | θ-tangent of `(root_rows,E)` × head cross-partial | **falls out of the same 3 sweeps** (no extra) |
-| **H_ωω** `S×S` | head only (`root_rows_g, E_g` held fixed) | **closed-form, no sweeps**; **diagonal + low-rank** |
+## 4. Principle: one sweep computes `H·u`; blocks are only for the solve
 
-`H_ωω` structure (both pieces are `ω`→softmax curvature):
-- origination-prior term `log2 Σ_s 2^{root_rows_s} p_s` (`p=softmax2(ω)`) = `LSE(ω+r) − LSE(ω)`, a
-  difference of two log-partition Hessians ⇒ `(diag(q)−qqᵀ) − (diag(p)−ppᵀ)` (`q` = reweighted softmax);
-  diagonal + rank-2.
-- survival term `−log2(1 − Σ_s p_s 2^{E_s})` → softmax-Jacobian (`diag(p)−p pᵀ`) scaled by `1/survival`,
-  plus a rank-1 `∝ 1/survival²`. The `1/survival²` is now accurate because survival is computed
-  cancellation-free (`survival_from_E`, committed in `b6faad9b`).
-- **Sum = diagonal + low-rank (rank O(1))** ⇒ inverts in `O(S·rank)` via Woodbury, not `O(S³)`.
+`H` is the Jacobian of the gradient map `g(z)`. `H·u` is the directional derivative of that map:
+linearize the **entire** gradient computation along `u`. That computation has a shared middle —
+`θ,α → (E, Pi, root_rows) → NLL → adjoint → g`. A cross term like `H_θα` **is** `∂(g_θ)/∂α` routed
+through `dE, dPi`; it lives inside that shared intermediate and has no independent existence.
 
-**Net cost:** the whole `[G,3]+[G,S]` analytic Hessian ≈ **3 broadcast θ sweeps + a cheap per-family
-diag+low-rank ω head**. The large `S` of origination costs **no extra sweeps** — the payoff of it being a
-head parameter. A joint HVP probe `[u_θ; u_ω]` is likewise **~one sweep**: `u_θ` drives the fixed-point
-tangent, `u_ω` only touches the head.
+Therefore:
+- **One** forward-over-reverse sweep seeded with `u = [u_θ; u_ω; u_α]` returns
+  `dg = [dg_θ; dg_ω; dg_α] = H·u`, with **all** cross terms — `dg_θ = H_θθu_θ + H_θωu_ω + H_θαu_α`,
+  automatically, because every input direction flows through the same `E/Pi/root/adjoint`.
+- **Isolated per-block operators, summed, cannot produce cross terms** (they'd give block-diagonal `H`).
+  So we build the joint operator, not blocks.
+- The blocks are materialized **only** for the Newton solve (§7), as a cheap way to invert the `H` we
+  already have — never to compute `H·u`.
 
-## 4. What the feasibility gate already told us
+`hvp(u_vec)` in `hvp_exact.py` already realizes this for `θ+α` (returns `[out_θ; out_α]` from one
+sweep, validated by `_verify_hvp_recv`). The joint work is to make `ω` a proper per-family in/out of the
+same operator.
 
-Ran the existing HVP oracle (`_verify_hvp.py` pattern: analytic vs fp64 central-diff + symmetry) on a
-2-identical-family fp64 converged model:
+## 5. Per-parameter treatment
 
-- **specieswise `(S,3)`: PASS** (`rel ~5e-7`) — the forward-over-reverse machinery and the SO/tangent
-  kernels are sound; the committed normalizer edit to `hvp_exact.py` did not regress it.
-- **genewise `(F,3)`: FAIL** — analytic HVP finite but `~400×` too large **and non-symmetric**
-  (`rel_asym ~5e2`). Non-symmetric ⇒ it is not `H·u` for any Hessian ⇒ wrong operator, not a scale bug.
+| param | enters fixed point? | how its Hessian rows/cols are produced | status |
+|-------|--------------------|-----------------------------------------|--------|
+| `θ[G,3]` | yes | 3 broadcast θ-tangent sweeps (forward-over-reverse) | ✅ P0 done |
+| `ω[G,S]` | **no** (head only) | autograd double-backward over `head(root_rows, E, ω)` | ⚠️ head exists but ω is global `[S]` |
+| `α[S]` | yes | α-tangent sweep (already emits `out_col`) | ✅ exists, validated **with specieswise θ** |
 
-Diagnosis: `make_exact_hvp`'s **parameter-projection heads** assume `θ[s] ↔ species s`. Genewise `θ[g]`
-broadcasts one 3-vector across all `S` species, so the θ↔rates forward-tangent/reverse-sum is mishandled.
-The **core `C×S` propagation kernels are correct and reused unchanged**; only the parameter seed/projection
-is wrong. This is the single thing Phase 0 fixes.
+- **ω is head-only.** It touches only `NLL = head(root_rows(θ,α), E(θ,α), ω)`
+  (`nll_vector_from_root_rows`). `_head_seed_tangents` already forms `⟨∇NLL, [t_root; dE; u_ω]⟩` and
+  double-backwards it — `Hv_om` already contains `H_ωω u_ω + H_ωθ(·) + H_ωα(·)`. The **only** change is
+  to keep `ω` per-family `[G,S]` instead of summing to `[S]`. Then all three ω-blocks appear on their own.
+- **α×genewise-θ is untested.** The α path is validated only with specieswise θ. Given P0's genewise
+  reduction bugs, the genewise θ×α coupling needs its own gate before we trust `H_θα`.
 
-## 5. Components to build
+## 6. `H_ωω` structure — diagonal + low-rank (for Woodbury)
 
-The expensive `C×S` propagation kernels (`wave_tangent`, `e_step_tangent`, `wave_so`, `dts_so`,
-`e_step_so`) are **reused as-is**. New work:
+`H_ωω,g` is the head Hessian of two softmax/log-partition terms in `ω_g`:
+- origination-prior `LSE(ω+r) − LSE(ω)` ⇒ `(diag(q)−qqᵀ) − (diag(p)−ppᵀ)` (`p=softmax2(ω)`,
+  `q`=reweighted) — **diagonal + rank-2**.
+- survival `−log2(1 − Σ_s p_s 2^{E_s})` ⇒ softmax-Jacobian `(diag(p)−ppᵀ)` scaled by `1/survival`,
+  plus a rank-1 `∝ 1/survival²` (survival is cancellation-free since `b6faad9b`) — **diagonal + rank-1**.
 
-### P0 — Genewise θ seed/projection  *(critical path; also delivers the θ-only certificate)*
-- **Seed (forward):** `d(extract_parameters_genewise)/dθ_g · u_θ`. `θ_g [3] → (log_pS,log_pD,log_pL,log_pT)`
-  via `log_softmax([0, θ_g])` (`extract_parameters.py:30-38`), broadcast to `S` species. Push `u_θ [G,3]`
-  through this per-family log-softmax Jacobian to per-species rate tangents.
-- **Projection (reverse):** **sum** the per-species rate-cotangents `[G, S, ·]` back into `[G, 3]` (the
-  transpose of the broadcast). The current `(S,3)` path keeps them per-species — that is the ~400×/asym bug.
-- Deliverable: genewise **θ-only** block-diagonal `H_θθ` (`G × 3×3`) via 3 broadcast probes; passes the gate.
-  This is Part 2 (the analytic certificate) on its own.
+Sum = **diagonal + low-rank (rank O(1))** ⇒ inverts in `O(S·rank)` via Woodbury, not `O(S³)`. The
+caller's ω prior (if any) adds to the diagonal — still diag+low-rank.
 
-### P1 — Per-family origination in the model + NLL
-- Model: origination parameter `[G, S]` (today global `[S]`, `model.py:79`). Per-family selection into each
-  family's aggregation (mirror `theta_for_static`'s `index_select`, `_execution.py:18-19`).
-- NLL: the weighted branch already exists (`nll_vector_from_root_rows`, `solver.py:165-169`); feed each
-  family its own `ω_g` row. Gradient: `origination_grad_from_root_rows` (`solver.py:184-199`), per-family.
+## 7. Arrowhead Newton solve
 
-### P2 — Per-family ω head Hessian + θω coupling  ⇒ full `(3+S)` block
-- `H_ωω` closed-form per family from `(root_rows_g, E_g)` (already computed by the forward). Adapt
-  `_head_seed_tangents` (`hvp_exact.py:81-104`), which already does the origination head double-backward for a
-  **global** ω, to be **per-family `[G,S]`** (do not sum to `[S]`). Expose the diag+low-rank form (or apply
-  it matrix-free through the autograd head).
-- `H_θω` = θ-sweep JVP of `(root_rows, E)` contracted with the head's `∂²/∂(root_rows,E)∂ω` — reuse the 3 θ
-  sweeps from P0.
+Solve `H δ = −g` for `δ = [δ_θ; δ_ω; δ_α]`:
+1. Per family, invert `B_g = [[H_θθ,g, H_θω,g],[·, H_ωω,g]]` using Woodbury on `H_ωω,g` (diag+low-rank);
+   `H_θθ,g` is `3×3`. All families in parallel.
+2. **Schur-complement** the core out → a **dense `S×S`** system in `α`:
+   `(H_αα − Σ_g H_αz,g B_g⁻¹ H_zα,g) δ_α = −(g_α − Σ_g H_αz,g B_g⁻¹ g_z,g)`. Solve (dense `S×S`).
+3. Back-substitute `δ_z,g = B_g⁻¹(−g_z,g − H_zα,g δ_α)` per family.
 
-### P3 — Assembly + per-family Newton
-- Form per-family `(3+S)` blocks, or expose a matrix-free per-family joint HVP `hvp(u; active⊆{θ,ω})`.
-- **Per-family Newton** via Schur + Woodbury: `H_ωω = D + low-rank` inverts in `O(S·rank)`; reduce to a `3×3`
-  θ system `(H_θθ − H_θω H_ωω⁻¹ H_ωθ) δ_θ = −(g_θ − H_θω H_ωω⁻¹ g_ω)`, back-substitute `δ_ω`. All families in
-  parallel. (Or per-family Newton-CG if not forming blocks.)
-- Wire into `genewise_fit.py`: replace the FD certificate Hessian (`:264-270`) with the analytic block; the
-  inner-loop FD step (`:229-236`) may stay FD or switch — decide after measuring.
+Conditioning/PD is the caller's `μ` (added to `H_ωω`/`H_αα`) or their ω prior. A **matrix-free
+Newton-CG** on the full `hvp` is the cross-check oracle for this structured solve (they must agree).
 
-### P4 — Optimize (optional)
-- Batch the width-3 direction axis into the tangent/SO kernels ⇒ the whole `H_θθ`/`H_θω` in **one** batched
-  forward-over-reverse instead of 3.
-- Exploit diag+low-rank `H_ωω` in the solve (Woodbury) rather than dense.
+## 8. Batching
 
-## 6. Interfaces (proposed)
+Scope this on the **single collated batch** (all families up to `family_chunk_size`, matching what the
+θ HVP reaches today; both HVP gates already require `len(batch_statics)==1`). Note: the gradient
+aggregates over batches (`make_value_and_grad` loops), but the exact HVP is single-batch for θ too — so
+multi-batch is not α-specific.
 
-```python
-# core, per single genewise static (block-diagonal across its families):
-genewise_hvp(static, theta, omega, sv, *, active=("theta","omega")) -> callable  # hvp(u_flat) -> H u
-genewise_hessian_blocks(static, theta, omega, sv) -> dict(
-    H_tt=[F,3,3], H_to=[F,3,S], H_oo_diag=[F,S], H_oo_lowrank=[F,S,r])  # structured, not dense S×S
-newton_step_genewise(blocks, g_theta, g_omega, mu) -> (dtheta[F,3], domega[F,S])  # Schur + Woodbury
-```
+**Multi-batch is a uniform follow-on, not a special case:** `θ,ω` are block-diagonal → concatenate
+across batches; `α` is the only cross-batch coupling → accumulate its Schur pieces (`α`-row/col +
+`H_αα` + `Σ_g H_αz B⁻¹ H_zα`) over batches before the dense `S×S` solve. Same code path for all three.
 
-## 7. Verification
+## 9. Prior — out of scope
 
-- **Gate (oracle):** extend `_verify_hvp.py` to the genewise `(3+S)` block — analytic `hvp(u)` vs fp64
-  central-difference of the joint value-and-grad, for broadcast `e_j` (θ and ω) and random directions, plus
-  the symmetry check `uᵀHw == wᵀHu`. Acceptance: `rel < 5e-4`, symmetric, on a ≥2-family fp64 converged model.
-  The FAIL→PASS transition on this gate is the P0/P2 acceptance criterion.
-- **Golden test** in the suite (fp32-vs-fp64 on a small fixture), alongside `tests/test_survival_normalizer.py`.
-- **End-to-end:** genewise fit with active origination completes with finite curvature and a PD certificate.
+`ω[G,S]` is `S` params/family from one family's likelihood ⇒ under-determined (the low-rank `H_ωω` is
+the symptom). A prior/regularizer is a **modeling** decision left to the caller; the machinery is
+agnostic and only requires that whatever the caller adds is diagonal-on-`H_ωω` (keeps §6/§7 valid).
 
-## 8. Risks / open questions
+## 10. Verification
 
-- **Identifiability (modeling):** `[G,S]` origination = `S` params/family from one family's likelihood ⇒
-  very likely under-determined (the low-rank `H_ωω` is the symptom). Almost certainly needs a **prior /
-  regularizer** on `ω_g`, which also conditions the Newton block. This is a modeling decision to settle
-  before turning it on in a real fit; the HVP/Newton machinery is agnostic to it.
-- **P0 is the critical path** and is shared with the θ-only certificate — build and gate it first, in
-  isolation, before the ω pieces.
-- **Head double-backward must use the hardened survival** — satisfied by `b6faad9b` (survival + weighted
-  survival are cancellation-free); the `1/survival²` in `H_ωω` is now accurate.
-- **Truncation consistency:** the HVP must match the primal forward's `pi_iters` truncation
-  (`tangent_self_iters`, `hvp_exact.py:122-143`) or the gate will show a small bias unrelated to the port.
+- **Genewise joint gate** (`tests/test_genewise_hvp.py`): analytic `hvp([u_θ; u_ω; u_α])` vs fp64 FD of
+  the joint value-and-grad, for broadcast `e_j` (θ), broadcast/random `e_k` (ω), random `u_α`, and mixed
+  directions; plus the symmetry check `uᵀHw == wᵀHu`. Accept `rel < 5e-4`, `rel_asym < 5e-3`, on a
+  ≥2-family fp64 converged model. Extends the P0 θ gate.
+- **α×genewise-θ** gets its own directions in that gate (the untested coupling, §5).
+- **Newton cross-check**: structured Schur/Woodbury `δ` vs matrix-free Newton-CG on the same `hvp`.
+- **Golden** fp32-vs-fp64 blocks test alongside `tests/test_survival_normalizer.py`.
+- **Truncation:** `tangent_self_iters == solver_options.pi_iters` (else a bias unrelated to the port).
 
-## 9. Phasing summary
+## 11. Phasing
 
 | Phase | Deliverable | Gate |
 |-------|-------------|------|
-| P0 | genewise θ seed/projection → `H_θθ` block-diagonal `[G,3×3]` (the analytic certificate) | θ gate PASS |
-| P1 | per-family origination `[G,S]` in model + weighted NLL | grad matches FD |
-| P2 | per-family `H_ωω` (diag+low-rank) + `H_θω` ⇒ full `(3+S)` block | joint gate PASS |
-| P3 | per-family Newton (Schur+Woodbury) wired into fit/cert | PD cert, finite e2e |
-| P4 | batch θ directions to 1 sweep; Woodbury solve | perf, no accuracy change |
+| P0 | genewise `H_θθ` block-diagonal `[G,3,3]` | ✅ θ gate PASS (done) |
+| P1 | per-family origination `ω[G,S]` in model + weighted NLL + grad | grad vs FD |
+| P2 | `ω` per-family in the HVP head ⇒ `H_ωω, H_ωθ, H_ωα` (auto) | joint θ+ω gate PASS |
+| P3 | genewise θ×α gate (verify/fix the existing α path under genewise θ) ⇒ full `H·u` | joint θ+ω+α gate PASS |
+| P4 | arrowhead `newton_step` (Schur+Woodbury+dense `S×S`) + wire into genewise fit + PD cert | Newton vs CG; e2e finite/PD |
+| (P5) | multi-batch α accumulation (uniform outer loop) | joint gate on >1 batch |
+
+## 12. Interfaces (proposed)
+
+```python
+# one joint HVP operator (single collated batch); u = [u_θ(3G); u_ω(GS); u_α(S)] (any tail omitted ⇒ 0)
+make_exact_hvp(static, theta, alpha, sv, *, omega=..., ...) -> hvp(u_flat) -> H u
+# structured curvature for the Newton solve (materialized only here, not for H·u):
+genewise_hessian_blocks(static, theta, omega, alpha, sv) -> dict(
+    H_tt=[G,3,3], H_to=[G,3,S], H_oo_diag=[G,S], H_oo_lr=[G,S,r],   # per-family core
+    H_aa=..., H_za=[G,3+S,S])                                        # global arrow
+newton_step_joint(blocks, g_theta[G,3], g_omega[G,S], g_alpha[S], mu) -> (dθ[G,3], dω[G,S], dα[S])
+```
