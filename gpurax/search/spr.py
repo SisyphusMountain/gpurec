@@ -1,4 +1,5 @@
 import pathlib
+import time
 from collections import namedtuple
 
 from gpurax.search.scorer import Candidate
@@ -6,14 +7,26 @@ from gpurax.search.scorer import Candidate
 FamilyState = namedtuple("FamilyState", "name seqfam rates")
 
 
-def _materialize(fam, p, r, tmpdir, tag, warmup=False):
+def _materialize(fam, p, r, tmpdir, tag, warmup=False, scorer=None):
     """Apply an SPR move, capture its seq loglk and newick on the moved
     topology, then roll back. Returns (seq_loglk, newick_path).
 
     warmup=True forces the seq term to 0.0 (reconciliation-only scoring,
-    mirrors GeneRax --rec-radius) without touching the seq_loglk machinery."""
+    mirrors GeneRax --rec-radius) without touching the seq_loglk machinery.
+
+    If `scorer` is given, the wall time of the `fam.seq_loglk(False)` call
+    (the sequence term, computed on CPU/libpll here at materialization time)
+    is accumulated into `scorer.timings["seq_s"]` -- task I3's Phase-2
+    trigger, measured against `scorer.timings["rec_s"]` accumulated inside
+    JointScorer.score_candidates."""
     fam.apply_spr(p, r)
-    seq = 0.0 if warmup else fam.seq_loglk(False)
+    if warmup:
+        seq = 0.0
+    else:
+        t0 = time.perf_counter()
+        seq = fam.seq_loglk(False)
+        if scorer is not None:
+            scorer.timings["seq_s"] += time.perf_counter() - t0
     path = str(pathlib.Path(tmpdir) / f"cand_{tag}.nwk")
     pathlib.Path(path).write_text(fam.newick() + "\n")
     fam.rollback()
@@ -27,7 +40,7 @@ def spr_round(fam, rates, scorer, radius, tmpdir, current_joint):
 
     cands, keys = [], []
     for i, (p, r, _path) in enumerate(moves):
-        seq, nwk = _materialize(fam, p, r, tmpdir, i)
+        seq, nwk = _materialize(fam, p, r, tmpdir, i, scorer=scorer)
         cands.append(Candidate(seq_loglk=seq, newick_path=nwk, rates=rates))
         keys.append((p, r))
 
@@ -48,7 +61,12 @@ def _initial_joints(families, scorer, tmpdir, warmup):
     advances from."""
     cands = []
     for fs in families:
-        seq = 0.0 if warmup else fs.seqfam.seq_loglk(False)
+        if warmup:
+            seq = 0.0
+        else:
+            t0 = time.perf_counter()
+            seq = fs.seqfam.seq_loglk(False)
+            scorer.timings["seq_s"] += time.perf_counter() - t0
         path = str(pathlib.Path(tmpdir) / f"init_{fs.name}.nwk")
         pathlib.Path(path).write_text(fs.seqfam.newick() + "\n")
         cands.append(Candidate(seq, path, fs.rates))
@@ -84,7 +102,7 @@ def spr_search(families, scorer, max_radius, tmpdir, *, warmup=False):
                 for i, (p, r, _path) in enumerate(moves):
                     seq, nwk = _materialize(
                         fs.seqfam, p, r, tmpdir, f"r{radius}_{fs.name}_{i}",
-                        warmup=warmup,
+                        warmup=warmup, scorer=scorer,
                     )
                     batch.append(Candidate(seq, nwk, fs.rates))
                     owner.append((fs.name, p, r))
