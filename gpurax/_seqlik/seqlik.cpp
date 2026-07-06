@@ -10,15 +10,30 @@
 // units — no bits conversion here).
 
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include <corax/corax.h>
+#include <corax/tree/utree_moves.h>
 
+#include <stdexcept>
 #include <string>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "likelihoods/LibpllEvaluation.hpp"
 #include "trees/PLLUnrootedTree.hpp"
 
 namespace py = pybind11;
+
+// Copied from SPRSearch.cpp:47 (identical in SearchUtils.cpp) — true iff
+// regrafting the pruned subtree at `r` would yield the same (unrooted)
+// topology as before the move, i.e. r is one of p's immediate neighbors.
+static bool sprYeldsSameTree(corax_unode_t *p, corax_unode_t *r) {
+  return (r == p) || (r == p->next) || (r == p->next->next) ||
+         (r == p->back) || (r == p->next->back) || (r == p->next->next->back);
+}
 
 // coraxlib does not expose a version macro/symbol of its own; this string
 // simply confirms the extension built and linked against corax + the
@@ -52,8 +67,122 @@ public:
 
   std::string newick() { return _eval.getGeneTree().getNewickString(); }
 
+  // Enumerates SPR neighbor moves up to `radius` regraft hops away from each
+  // candidate prune edge. Mirrors the recursion pattern in
+  // SearchUtils.cpp:diggRecursive (regraft over next->back / next->next->back,
+  // pushing an index onto the path at each hop) but only records moves — no
+  // scoring, no tree mutation. Returns a flat list of
+  // (prune_index, regraft_index, path) tuples, where every index is an
+  // ARRAY POSITION suitable for PLLUnrootedTree::getNode() (see below).
+  //
+  // Two corrections relative to a literal transcription of diggRecursive:
+  //  1. The seed regraft node passed into the recursion (prune->next->back /
+  //     prune->next->next->back) is *always* one of sprYeldsSameTree's own
+  //     checks, so it is trivially rejected as a no-op; real candidates only
+  //     appear one hop further out. SPRSearch::applySPRRound (SPRSearch.cpp:
+  //     304) accounts for this by passing `radius + 1` as maxRadius to
+  //     diggBestMoveFromPrune — we do the same for our user-facing `radius`.
+  //  2. PLLUnrootedTree::getNode(i) does plain array indexing
+  //     (`_tree->nodes[i]`), but a node's own `corax_unode_t::node_index`
+  //     field is NOT reliably equal to its position in that array: verified
+  //     empirically that, past the first internal node, node_index can lag
+  //     the true array position (e.g. a 6-taxon tree here has internal nodes
+  //     at positions 7/8/9 whose own node_index fields read 9/12/15).
+  //     Recording those raw field values and later feeding them back into
+  //     getNode() (as apply_spr does) then indexes out of bounds. The field
+  //     *is* shared across an internal node's (up to 3) rotations, though, so
+  //     we build a one-time field->position map by scanning tree.getNodes()
+  //     (which yields exactly one canonical pointer per logical node, at its
+  //     true array position) and use that to canonicalize/convert every node
+  //     we touch during traversal to its true array position. Prune/regraft
+  //     indices exposed to Python — and expected back by apply_spr() — are
+  //     therefore always array positions, not raw node_index fields.
+  std::vector<std::tuple<unsigned, unsigned, std::vector<unsigned>>>
+  spr_neighbors(unsigned radius) {
+    std::vector<std::tuple<unsigned, unsigned, std::vector<unsigned>>> out;
+    auto &tree = _eval.getGeneTree();
+    unsigned maxRadius = radius + 1;
+
+    std::unordered_map<unsigned, unsigned> positionOfField;
+    unsigned pos = 0;
+    for (auto *n : tree.getNodes()) {
+      positionOfField[n->node_index] = pos++;
+    }
+
+    std::unordered_set<unsigned> seenPrunePositions;
+    for (auto *rawPrune : tree.getBranches()) {
+      unsigned prunePos = positionOfField.at(rawPrune->node_index);
+      if (!seenPrunePositions.insert(prunePos).second) {
+        continue;  // already tried this logical node as a prune candidate
+      }
+      corax_unode_t *prune = tree.getNode(prunePos);
+      // corax_utree_spr requires the prune edge to be defined by an inner
+      // node (getAllPruneIndices in SPRSearch.cpp applies the same filter).
+      if (!prune->next) {
+        continue;
+      }
+      std::vector<unsigned> path;
+      collectSprNeighbors(tree, positionOfField, prune, prune->next->back,
+                          path, 1, maxRadius, prunePos, out);
+      collectSprNeighbors(tree, positionOfField, prune,
+                          prune->next->next->back, path, 1, maxRadius,
+                          prunePos, out);
+    }
+    return out;
+  }
+
+  // Applies the SPR move (prune_index, regraft_index) in place, recording
+  // rollback info. Throws on failure instead of silently corrupting the
+  // tree (e.g. invalid/tip prune node, or a no-op move rejected by
+  // coraxlib). prune_index/regraft_index are array positions, as returned
+  // by spr_neighbors().
+  void apply_spr(unsigned prune_index, unsigned regraft_index) {
+    auto &tree = _eval.getGeneTree();
+    corax_unode_t *pe = tree.getNode(prune_index);
+    corax_unode_t *re = tree.getNode(regraft_index);
+    int rc = corax_utree_spr(pe, re, &_lastRollback);
+    if (rc != CORAX_SUCCESS) {
+      throw std::runtime_error("corax_utree_spr failed");
+    }
+  }
+
+  // Undoes the most recent apply_spr() call.
+  void rollback() { corax_tree_rollback(&_lastRollback); }
+
+  // Hash of the current unrooted topology (branch lengths do not affect it).
+  size_t tree_hash() { return _eval.getGeneTree().getUnrootedTreeHash(); }
+
 private:
   LibpllEvaluation _eval;
+  corax_tree_rollback_t _lastRollback;
+
+  // Recursive helper for spr_neighbors: canonicalizes `regraftRaw` to its
+  // true array position (see the note on spr_neighbors above), and if
+  // (prune, regraft) is not a no-op move, records it; then, if the radius
+  // budget allows and `regraft` is an inner node, recurses one hop further
+  // via regraft->next->back and regraft->next->next->back.
+  static void collectSprNeighbors(
+      PLLUnrootedTree &tree,
+      const std::unordered_map<unsigned, unsigned> &positionOfField,
+      corax_unode_t *prune, corax_unode_t *regraftRaw,
+      std::vector<unsigned> &path, unsigned radius, unsigned maxRadius,
+      unsigned prunePos,
+      std::vector<std::tuple<unsigned, unsigned, std::vector<unsigned>>> &out) {
+    unsigned regraftPos = positionOfField.at(regraftRaw->node_index);
+    corax_unode_t *regraft = tree.getNode(regraftPos);
+    if (!sprYeldsSameTree(prune, regraft)) {
+      out.emplace_back(prunePos, regraftPos, path);
+    }
+    if (radius < maxRadius && regraft->next) {
+      path.push_back(regraftPos);
+      collectSprNeighbors(tree, positionOfField, prune, regraft->next->back,
+                          path, radius + 1, maxRadius, prunePos, out);
+      collectSprNeighbors(tree, positionOfField, prune,
+                          regraft->next->next->back, path, radius + 1,
+                          maxRadius, prunePos, out);
+      path.pop_back();
+    }
+  }
 };
 
 PYBIND11_MODULE(_impl, m) {
@@ -66,5 +195,10 @@ PYBIND11_MODULE(_impl, m) {
            py::arg("newick"), py::arg("alignment_path"), py::arg("model"))
       .def("seq_loglk", &SeqFamily::seq_loglk, py::arg("opt_bl") = false)
       .def("optimize_all", &SeqFamily::optimize_all)
-      .def("newick", &SeqFamily::newick);
+      .def("newick", &SeqFamily::newick)
+      .def("spr_neighbors", &SeqFamily::spr_neighbors, py::arg("radius"))
+      .def("apply_spr", &SeqFamily::apply_spr, py::arg("prune_index"),
+           py::arg("regraft_index"))
+      .def("rollback", &SeqFamily::rollback)
+      .def("tree_hash", &SeqFamily::tree_hash);
 }
