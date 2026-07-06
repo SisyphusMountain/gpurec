@@ -15,6 +15,7 @@ import dendropy
 from gpurax._seqlik import SeqFamily
 from gpurax.io.families import parse_families
 from gpurax.io.initial_trees import ensure_starting_tree
+from gpurax.io.prepare import prepare_family
 from gpurax.rates.optimize import optimize_global_rates
 from gpurax.recon.parity import recon_loglk
 from gpurax.reconcile.export import (
@@ -41,8 +42,9 @@ def _validate_newick(path, name):
 def _build_family_state(family, workdir):
     tree_path = ensure_starting_tree(family, workdir)
     _validate_newick(tree_path, family.name)
+    tree_path, alignment_path = prepare_family(family, tree_path, workdir)
     newick = pathlib.Path(tree_path).read_text().strip()
-    seqfam = SeqFamily(newick, family.alignment, family.model)
+    seqfam = SeqFamily(newick, alignment_path, family.model)
     return FamilyState(family.name, seqfam, _DEFAULT_RATES)
 
 
