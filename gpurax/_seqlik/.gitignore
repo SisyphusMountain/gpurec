@@ -1,0 +1,3 @@
+# Compiled extension (build artifact) - regenerate with ./build.sh
+_impl*.so
+__pycache__/
