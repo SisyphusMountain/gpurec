@@ -10,6 +10,9 @@
 
 ## Global Constraints
 
+- **gpurec REQUIRES CUDA** (Triton kernels; no CPU path). Every reconciliation call/test uses `device="cuda"`. Task snippets below that say `device="cpu"` are WRONG — use `"cuda"`. The libpll/sequence side stays CPU. (Machine has an RTX 4090.)
+- **Reconciliation parity oracle = AleRax / self-consistency, NOT GeneRax** (decision after conclusive diagnosis). gpurec's UndatedDTL is validated == AleRax to 2.6e-4 (existing `tests/test_fidelity_alerax.py`); it differs from GeneRax's UndatedDTL by (1) a topology-INDEPENDENT survival normalization `Σ_s(1−2^{E_s})` (harmless to SPR argmax; optionally add back for absolute numbers) and (2) a small topology-dependent per-rooting recursion term (genuine model difference, left as-is; no gpurec core edits). Do NOT assert gpurec rec == GeneRax rec anywhere.
+- **Phase-1 success metric = RF / tree-quality parity with GeneRax** (finds comparable trees), NOT bit-identical joint-loglk. Drop joint-loglk-equality assertions against GeneRax.
 - gpurec works entirely in **log2 / bits**; rates live in log2 space; theta order is **`[log2 D, log2 L, log2 T]`** (index 2 = transfer). Convert to natural-log for GeneRax comparison: `logL_nats = -nll_bits * math.log(2)`. (verbatim: `bits_to_nats(x) = x * math.log(2.0)`, `gpurec/cli/_common.py:8`)
 - gpurec `gene_trees` are **file paths only** — no in-memory Newick string path through the constructor (`gpurec/api/model.py:54`, `crates/gpurec-preprocess/src/lib.rs:154`). In-memory topologies must be written to files (or fed through `build_family_ccp`).
 - **Never use `clamp`/`clamp_`** on any values (project rule — corrupts results silently).
@@ -431,35 +434,38 @@ git commit -m "feat(seqlik): SPR neighbor enumeration + apply/rollback"
 
 ## Milestone C — Reconciliation batch adapter (gpurec)
 
-### Task C1: Single fixed-tree reconciliation logL (parity primitive)
+### Task C1: Single fixed-tree reconciliation logL (primitive)
+
+**NOTE (decision):** validate against gpurec's own behavior (regression anchor) + self-consistency, NOT GeneRax. gpurec's UndatedDTL is the engine and is already validated == AleRax in `tests/test_fidelity_alerax.py`. The gpurec-vs-GeneRax difference is documented in C4, not asserted here.
 
 **Files:**
 - Create: `gpurax/recon/__init__.py`, `gpurax/recon/parity.py`
 - Create: `tests/gpurax/test_recon_parity.py`
 
 **Interfaces:**
-- Consumes: `GeneReconModel(species_tree, gene_trees, *, mode, device, dtype)` (`gpurec/api/model.py:33`); `model()` scalar NLL bits (`:420`); `bits_to_nats` (`gpurec/cli/_common.py:8`). Rate-set pattern from `gpurec/cli/reconcile.py:18-27`.
-- Produces: `recon_loglk(species_path: str, gene_tree_path: str, D: float, L: float, T: float, *, device="cuda") -> float` (natural-log reconciliation logL for the single fixed tree).
+- Consumes: `GeneReconModel(species_tree, gene_trees, *, mode, device, dtype)` (`gpurec/api/model.py:33`); `model()` scalar NLL bits (`:420`). Rate-set pattern from `gpurec/cli/reconcile.py:18-27`.
+- Produces: `recon_loglk(species_path: str, gene_tree_path: str, D: float, L: float, T: float, *, device="cuda") -> float` (natural-log reconciliation logL for the single fixed tree, in gpurec/AleRax convention).
 
-- [ ] **Step 1: Write the failing parity test**
+- [ ] **Step 1: Write the failing regression + self-consistency test**
 
 ```python
 # tests/gpurax/test_recon_parity.py
 import pytest
 from gpurax.recon.parity import recon_loglk
 
-def test_recon_matches_generax(fixture_dir, generax_ref):
-    if not generax_ref.get("available", True):
-        pytest.xfail("no GeneRax binary")
-    r = generax_ref["fixed_rates"]
-    ll = recon_loglk(str(fixture_dir / "species.nwk"), str(fixture_dir / "gene.nwk"),
-                     r["D"], r["L"], r["T"], device="cpu")
-    assert ll == pytest.approx(generax_ref["rec_loglk_nats"], rel=1e-4)
+# gpurec's known value on the 4-taxon fixture at D=0.2,L=0.3,T=0.1 (measured; AleRax convention).
+GPUREC_REF_NATS = -5.910620282602933
+
+def test_recon_regression_and_finite(fixture_dir):
+    sp, gt = str(fixture_dir / "species.nwk"), str(fixture_dir / "gene.nwk")
+    ll = recon_loglk(sp, gt, 0.2, 0.3, 0.1, device="cuda")
+    assert ll == pytest.approx(GPUREC_REF_NATS, rel=1e-5)   # pins gpurec behavior
+    assert recon_loglk(sp, gt, 0.2, 0.3, 0.1, device="cuda") == pytest.approx(ll, rel=1e-9)  # deterministic
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pytest tests/gpurax/test_recon_parity.py -v`
+Run: `.venv/bin/python -m pytest tests/gpurax/test_recon_parity.py -v`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement `recon_loglk`**
@@ -480,19 +486,19 @@ def recon_loglk(species_path, gene_tree_path, D, L, T, *, device="cuda"):
     with torch.no_grad():
         model.theta.copy_(triple)
         nll_bits = float(model())          # summed scalar NLL in bits
-    return -nll_bits * math.log(2.0)       # -> nats logL
+    return -nll_bits * math.log(2.0)       # -> nats logL (gpurec/AleRax convention)
 ```
 
 - [ ] **Step 4: Run**
 
-Run: `pytest tests/gpurax/test_recon_parity.py -v`
-Expected: PASS (or xfail). **If parity fails, this is the rooting-convention risk (spec §8):** capture the discrepancy and proceed to Task C4 before continuing — do not paper over it.
+Run: `.venv/bin/python -m pytest tests/gpurax/test_recon_parity.py -v`
+Expected: PASS. (If the regression anchor `-5.9106…` no longer matches, gpurec's behavior changed — investigate before updating the constant.)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add gpurax/recon/ tests/gpurax/test_recon_parity.py
-git commit -m "feat(recon): single fixed-tree reconciliation logL parity primitive"
+git commit -m "feat(recon): single fixed-tree reconciliation logL primitive (gpurec/AleRax convention)"
 ```
 
 ### Task C2: Batched reconciliation over candidate topologies (pseudo-families)
@@ -643,42 +649,68 @@ git add gpurax/recon/incremental.py tests/gpurax/test_recon_cost.py docs/gpurax/
 git commit -m "feat(recon): preprocess-cost probe + incremental-path decision record"
 ```
 
-### Task C4: Rooting-convention parity check (spec §8 risk)
+### Task C4: Reconciliation-convention documentation + ranking-consistency check
+
+**NOTE (decision):** the gpurec-vs-GeneRax reconciliation difference is DIAGNOSED and ACCEPTED (not fixed). This task documents it and verifies the thing that actually matters for the tool: gpurec's reconciliation **ranks** topologies compatibly with GeneRax (so the SPR search finds comparable trees). Source diagnosis: `scratchpad/gpurax/{rooting-investigation,offset-constancy,residual-diagnosis}.md`.
 
 **Files:**
-- Create: `tests/gpurax/test_rooting.py`
-- Create: `docs/gpurax/rooting_convention.md`
+- Create: `tests/gpurax/test_recon_ranking.py`
+- Create: `docs/gpurax/reconciliation_convention.md`
 
 **Interfaces:**
-- Consumes: `recon_loglk` (C1); GeneRax `ReconciliationEvaluation` rooting behavior (`_enforcedRootedGeneTree`, `JointTree.cpp:151`).
-- Produces: a documented mapping between gpurec's single-Newick rooting and GeneRax's rooted-GFT handling; if they differ, a `root_gene_tree(newick) -> newick` normalization used by the recon adapter.
+- Consumes: `recon_loglk` (C1).
+- Produces: `docs/gpurax/reconciliation_convention.md` documenting the two-component gpurec-vs-GeneRax difference; a ranking-consistency test over the 3 four-taxon topologies.
 
-- [ ] **Step 1: Write the test comparing rooted vs unrooted inputs**
+- [ ] **Step 1: Write the ranking-consistency test**
 
 ```python
-# tests/gpurax/test_rooting.py
+# tests/gpurax/test_recon_ranking.py
 import pytest
 from gpurax.recon.parity import recon_loglk
 
-def test_rooting_convention(fixture_dir, generax_ref):
-    if not generax_ref.get("available", True):
-        pytest.xfail("no GeneRax binary")
-    ll = recon_loglk(str(fixture_dir / "species.nwk"), str(fixture_dir / "gene.nwk"),
-                     0.2, 0.3, 0.1, device="cpu")
-    # GeneRax sums over rootings unless enforced-rooted; document which gpurec does.
-    assert ll == pytest.approx(generax_ref["rec_loglk_nats"], rel=1e-4)
+# 3 distinct 4-taxon gene-tree topologies (species-prefixed leaves).
+T = {
+    "T1": "((A_a,B_b),(C_c,D_d));",   # matches species tree ((A,B),(C,D)) -> pure speciation
+    "T2": "((A_a,C_c),(B_b,D_d));",
+    "T3": "((A_a,D_d),(B_b,C_c));",
+}
+
+def _ll(tmp_path, species, nwk, name):
+    p = tmp_path / f"{name}.nwk"; p.write_text(nwk + "\n")
+    return recon_loglk(species, str(p), 0.2, 0.3, 0.1, device="cuda")
+
+def test_gpurec_ranks_species_matching_topology_best(tmp_path, fixture_dir):
+    sp = str(fixture_dir / "species.nwk")
+    lls = {k: _ll(tmp_path, sp, v, k) for k, v in T.items()}
+    # T1 (matches species tree) is most likely; T2==T3 by the C<->D species-tree symmetry.
+    assert lls["T1"] > lls["T2"] and lls["T1"] > lls["T3"]
+    assert lls["T2"] == pytest.approx(lls["T3"], rel=1e-4)
+    # GeneRax ranks identically (T1 best) — cross-checked in scratchpad/gpurax/offset-constancy.md.
 ```
 
-- [ ] **Step 2: Run and diagnose**
+- [ ] **Step 2: Run to verify it fails**
 
-Run: `pytest tests/gpurax/test_rooting.py -v`
-If it passes, write `rooting_convention.md` stating "gpurec single-Newick reconciliation matches GeneRax default rooting (verified)". If it fails, determine whether GeneRax marginalizes over rootings while gpurec fixes the input root (inspect `ReconciliationEvaluation` and `crates/gpurec-preprocess` root handling), document the difference, and add the smallest normalization that reconciles them.
+Run: `.venv/bin/python -m pytest tests/gpurax/test_recon_ranking.py -v`
+Expected: FAIL — module not found (or test file new).
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Write the convention doc**
+
+Write `docs/gpurax/reconciliation_convention.md` summarizing (cite the scratchpad diagnosis files):
+- Engine = gpurec's UndatedDTL, validated == AleRax to 2.6e-4 (`tests/test_fidelity_alerax.py`).
+- gpurec-vs-GeneRax difference = (1) survival normalization `Σ_s(1−2^{E_s})` gpurec applies and GeneRax's reported value omits — **topology-independent**, so harmless to the SPR argmax; (2) a small **topology-dependent** per-rooting DTL recursion term (~0.07 nat/species-node, 0 at pure speciation) — a genuine implementation difference, left as-is (no gpurec core edits).
+- Ruled out: ×ln(2) bug; DLT-vs-DTL rate-order swap (both tools are DLT).
+- Consequence: joint-loglk will not bit-match GeneRax; success is measured by RF / tree-quality (Task I1), and gpurec ranks topologies compatibly with GeneRax (this test).
+
+- [ ] **Step 4: Run**
+
+Run: `.venv/bin/python -m pytest tests/gpurax/test_recon_ranking.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add tests/gpurax/test_rooting.py docs/gpurax/rooting_convention.md
-git commit -m "test(recon): rooting-convention parity check + documentation"
+git add tests/gpurax/test_recon_ranking.py docs/gpurax/reconciliation_convention.md
+git commit -m "docs(recon): document gpurec-vs-GeneRax UndatedDTL convention + ranking-consistency test"
 ```
 
 ---
@@ -1512,19 +1544,21 @@ git commit -m "feat(cli): GeneRax-mirroring command-line interface"
 
 ## Milestone I — Validation
 
-### Task I1: Integration parity vs GeneRax (joint-loglk + RF)
+### Task I1: Integration RF/tree-quality parity vs GeneRax
+
+**NOTE (decision):** success = RF / tree-quality parity, NOT joint-loglk bit-parity (gpurec's recon differs from GeneRax's by a documented amount — see C4). Assert RF, not joint equality. On the 4-taxon fixture the tree space is tiny, so also assert our search doesn't *worsen* the starting tree.
 
 **Files:**
 - Create: `tests/gpurax/test_parity_integration.py`
 
 **Interfaces:**
-- Consumes: `gpurax.driver.run`; `generax_ref.json` (A1); an RF function (dendropy `TreeList`/`symmetric_difference` or ete3 `compare`).
+- Consumes: `gpurax.driver.run`; `generax_ref.json` (A1, has `reconciled_newick`); an RF function (dendropy `symmetric_difference`).
 
 - [ ] **Step 1: Write the integration test**
 
 ```python
 # tests/gpurax/test_parity_integration.py
-import json, pathlib, pytest
+import pathlib, pytest
 from gpurax.driver import run
 FX = pathlib.Path(__file__).parent / "fixtures"
 
@@ -1535,28 +1569,29 @@ def _rf(nwk_a, nwk_b):
     b = dendropy.Tree.get(data=nwk_b, schema="newick", taxon_namespace=tns)
     return dendropy.calculate.treecompare.symmetric_difference(a, b)
 
-def test_joint_and_rf_parity(tmp_path, generax_ref):
+def test_rf_parity_vs_generax(tmp_path, generax_ref):
     if not generax_ref.get("available", True):
         pytest.xfail("no GeneRax binary")
     run(str(FX / "families.txt"), str(FX / "species.nwk"), str(tmp_path),
-        max_spr_radius=3, device="cpu")
-    rows = (tmp_path / "scores.tsv").read_text().splitlines()
-    joint = float(dict(zip(rows[0].split("\t"), rows[1].split("\t")))["joint"])
-    assert joint == pytest.approx(generax_ref["joint_loglk_nats"], rel=1e-2)
+        max_spr_radius=3, device="cuda")   # gpurec needs CUDA
     ours = (tmp_path / "fam1.reconciled.nwk").read_text()
-    assert _rf(ours, generax_ref["reconciled_newick"]) <= 2   # low RF on 4 taxa
+    # RF/tree-quality parity: our reconciled tree matches GeneRax's (low RF on 4 taxa).
+    assert _rf(ours, generax_ref["reconciled_newick"]) <= 2
+    # sanity: scores.tsv well-formed with the joint/rec/seq columns
+    rows = (tmp_path / "scores.tsv").read_text().splitlines()
+    assert rows[0].split("\t") == ["name", "joint", "rec", "seq"]
 ```
 
 - [ ] **Step 2: Run**
 
-Run: `pytest tests/gpurax/test_parity_integration.py -v`
-Expected: PASS or xfail. If joint differs beyond tolerance, decompose: compare per-family `rec` (C1 parity) and `seq` (B1 parity) columns separately to localize the discrepancy.
+Run: `.venv/bin/python -m pytest tests/gpurax/test_parity_integration.py -v`
+Expected: PASS or xfail. If RF is high, decompose: check the seq term (B1 parity holds) and whether the joint search converged; do NOT expect the joint *value* to equal GeneRax's (documented difference).
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add tests/gpurax/test_parity_integration.py
-git commit -m "test(gpurax): integration parity vs GeneRax (joint-loglk + RF)"
+git commit -m "test(gpurax): integration RF/tree-quality parity vs GeneRax"
 ```
 
 ### Task I2: Regression slice (cyanobacteria / primates)
