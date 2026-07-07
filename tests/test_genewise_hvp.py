@@ -63,9 +63,28 @@ def test_genewise_theta_hvp_matches_fd():
     assert sym / scale < 5e-3, f"non-symmetric: rel_asym={sym / scale:.2e}"
 
 
+def genewise_hessian_blocks(static, theta, receiver_weights, sv, *, omega=None, active=("theta",)):
+    """Theta-only per-family curvature ``[G,3,3]``, built from 3 broadcast HVP probes (one per theta
+    component) against the joint analytic HVP (``make_exact_hvp``).
+
+    TEST-ONLY fixture (moved here from gpurec.optim.genewise_curvature): the production genewise fit
+    never assembles blocks -- it runs matrix-free CG directly on the analytic HVP
+    (``newton_joint_genewise``). Feeds the fp32-vs-fp64 golden comparison below.
+    """
+    assert tuple(active) == ("theta",), "P0: theta-only; omega/alpha added in Tasks 4-5"
+    G = int(theta.shape[0])
+    tsi = int(static.solver_options.pi_iters)
+    hvp = make_exact_hvp([static], theta, receiver_weights, sv, tangent_self_iters=tsi)
+    cols = []
+    for j in range(3):  # broadcast e_j across all families -> column j of every 3x3 block at once
+        u = torch.zeros(G, 3, device=theta.device, dtype=theta.dtype); u[:, j] = 1.0
+        cols.append(hvp(u.reshape(-1))[: G * 3].reshape(G, 3))
+    H = torch.stack(cols, dim=-1)  # [G,3,3], H[:,:,j] = col j
+    return {"H_tt": 0.5 * (H + H.transpose(1, 2))}
+
+
 @pytest.mark.gpu
 def test_theta_blocks_fp32_vs_fp64():
-    from gpurec.optim.genewise_curvature import genewise_hessian_blocks
     def blocks(dtype):
         m = build_genewise_model(dtype=dtype); st = m.batch_statics[0]
         G = len(m.families); S = int(m.species_helpers["S"])
