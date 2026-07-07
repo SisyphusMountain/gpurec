@@ -20,12 +20,16 @@ _SO = dict(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64, self_lo
            adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0)
 
 
-def build_genewise_model(n_fam=2, dtype=torch.float64, device="cuda", per_family_origination=False):
+def build_genewise_model(n_fam=2, dtype=torch.float64, device="cuda", per_family_origination=False,
+                         family_chunk_size=None):
     so = SolverOptions(**_SO); so.validate()
+    kw = {} if family_chunk_size is None else {"family_chunk_size": family_chunk_size}
     m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * n_fam, mode="genewise",
                        device=device, dtype=dtype, solver_options=so,
-                       per_family_origination=per_family_origination)
-    assert len(m.batch_statics) == 1, f"expected 1 batch, got {len(m.batch_statics)}"
+                       per_family_origination=per_family_origination, **kw)
+    # single-batch is the default (Tasks 1-7); only force ≥2 batches when family_chunk_size splits them
+    if family_chunk_size is None:
+        assert len(m.batch_statics) == 1, f"expected 1 batch, got {len(m.batch_statics)}"
     return m
 
 
@@ -231,3 +235,37 @@ def test_genewise_joint_newton_reduces_grad():
     th, al, om, hist = newton_joint_genewise(st, th0, al0, om0, max_newton=4, verbose=False)
     assert hist["gnorm_final"] < hist["gnorm_init"]        # Newton reduced the gauge-projected gradient
     assert math.isfinite(hist["lam_min"])                  # certificate ran (PD not required)
+
+
+@pytest.mark.gpu
+def test_multibatch_joint_hvp_matches_fd():
+    # Multi-batch genewise joint HVP: sum of per-batch single-batch exact HVPs (per-family
+    # gather/scatter) must match the FD Hessian of the multi-batch summed gradient. Forces >=2
+    # batches via family_chunk_size so the disjoint-family scatter + shared-alpha sum are exercised.
+    from gpurec.optim.newton_cg import _fd_hessian_hvp
+    from gpurec.optim.genewise_curvature import make_multibatch_joint_hvp_genewise, multibatch_joint_vg_genewise
+    torch.manual_seed(0)
+    m = build_genewise_model(n_fam=4, per_family_origination=True, family_chunk_size=2)
+    assert len(m.batch_statics) >= 2, f"need multi-batch, got {len(m.batch_statics)}"
+    G, S = len(m.families), int(m.species_helpers["S"])
+    th = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    al = torch.randn(S, device="cuda", dtype=torch.float64) * 0.1        # NON-uniform alpha
+    om = torch.randn(G, S, device="cuda", dtype=torch.float64) * 0.1     # NON-uniform omega
+    Av = make_multibatch_joint_hvp_genewise(m.batch_statics, th, al, om, tangent_self_iters=128)
+    x0 = torch.cat([th.reshape(-1), al.reshape(-1), om.reshape(-1)])     # [theta; alpha; omega]
+    fd = _fd_hessian_hvp(multibatch_joint_vg_genewise(m.batch_statics, (G, 3), S, G), x0, None, eps=1e-3)
+    P = 3 * G + S + G * S
+
+    def d_theta(j):
+        u = torch.zeros(P, device="cuda", dtype=torch.float64); u.view(-1)[j:3 * G:3] = 1.0; return u
+
+    def d_omega(k):
+        u = torch.zeros(P, device="cuda", dtype=torch.float64); u[3 * G + S:].reshape(G, S)[:, k] = 1.0; return u
+
+    da = torch.zeros(P, device="cuda", dtype=torch.float64)
+    da[3 * G:3 * G + S] = torch.randn(S, device="cuda", dtype=torch.float64)
+    for name, u in [("theta", d_theta(0)), ("omega", d_omega(S // 3)), ("alpha", da),
+                    ("mixed", d_theta(1) + d_omega(S // 2) + da)]:
+        Ha, Hf = Av(u).double(), fd(u).double()
+        rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
+        assert torch.isfinite(Ha).all() and rel < 5e-4, f"{name}: rel={rel:.2e}"

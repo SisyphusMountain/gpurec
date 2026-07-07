@@ -4,7 +4,7 @@ from gpurec.optim.hvp_exact import make_exact_hvp
 from gpurec.api._execution import evaluate_static_loss_grad
 from gpurec.optim.cg import cg_witness, lanczos_extremes, lanczos_min_eigpair
 from gpurec.optim.origination_curvature import build_joint_hvp
-from gpurec.optim.value_and_grad import free_cuda_cache_if_tight
+from gpurec.optim.value_and_grad import forward_solve, free_cuda_cache_if_tight
 
 
 def genewise_hessian_blocks(static, theta, receiver_weights, sv, *, omega=None, active=("theta",)):
@@ -398,3 +398,119 @@ def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_f
     history = dict(gnorm_init=gnorm_init, gnorm_final=gnorm_final, lam_min=cert["lam_min_gauge"],
                    pd=cert["pd"], iters=trace, cert=cert)
     return theta_out, alpha_out, omega_out, history
+
+
+# ==================================================================================================
+# Multi-batch genewise joint HVP + value-and-grad.
+#
+# Genewise theta [G,3] and omega [G,S] are PER-FAMILY -- each family lives in exactly ONE batch,
+# identified by static.family_index_tensor (GLOBAL indices into [0,G)). alpha [S] is GLOBAL/shared.
+# The joint Hessian over z=[theta(3G); alpha(S); omega(G*S)] is ADDITIVE over families/batches
+# (H = sum_families d^2 NLL); batches hold DISJOINT family sets. So the multi-batch HVP is the SUM
+# of per-batch single-batch exact HVPs, each acting on its own families, with per-family
+# gather/scatter on the theta/omega blocks and a plain sum on the shared alpha block. This is the
+# same summation principle as experiments/sanderson_cv/certify.make_exact_multibatch_hvp (the
+# specieswise template), extended with the genewise per-family index bookkeeping.
+#
+# API asymmetry consumed below (verified against gpurec.api._execution / value_and_grad):
+#   * forward_solve([static_b], theta, alpha) RE-selects the batch families from a FULL [G,3] theta
+#     via static_b.family_index_tensor (genewise) -> it is passed the FULL theta.
+#   * make_exact_hvp([static_b], theta_b, alpha, sv_b, origination_weights=omega_b) consumes the
+#     PRE-selected theta_b / omega_b directly (no internal select).
+#   * evaluate_static_loss_grad(static_b, theta_b, alpha, omega, ...) uses theta DIRECTLY but
+#     RE-selects origination_weights internally (origination_weights_for_static) -> it is passed the
+#     PRE-selected theta_b but the FULL omega (passing omega_b would double-select, out of bounds).
+# ==================================================================================================
+
+
+def make_multibatch_joint_hvp_genewise(batch_statics, theta, alpha, omega, *, tangent_self_iters=None):
+    """Multi-batch genewise joint HVP over ``z = [theta (3G); alpha (S); omega (G*S)]``.
+
+    Builds one single-batch exact joint HVP per batch (over that batch's OWN families, in the
+    batch-local layout ``[theta_b (3 G_b); alpha (S); omega_b (S G_b)]``) and returns ``Av(u)`` that
+    gathers each family's rows into the per-batch operator, applies it, and scatters the outputs
+    back: ``index_add`` on the DISJOINT per-family theta/omega blocks (pure placement) and a plain
+    sum on the SHARED global alpha block (the arrowhead spine). Requires non-uniform ``alpha`` and,
+    for a live omega block, non-uniform ``omega``. Run in fp64. ``tangent_self_iters`` is forwarded
+    to each ``make_exact_hvp`` (fixed per-wave tangent self-loop count).
+    """
+    theta = theta.double()
+    alpha = alpha.double()
+    omega = omega.double()
+    G = int(theta.shape[0])
+    S = int(alpha.numel())
+    dev, dt = theta.device, theta.dtype
+
+    batch_hvps = []  # [(fam_b, hvp_b)] one per batch
+    for static_b in batch_statics:
+        fam_b = static_b.family_index_tensor.to(device=dev)
+        theta_b = theta.index_select(0, fam_b).contiguous()   # [G_b, 3]
+        omega_b = omega.index_select(0, fam_b).contiguous()   # [G_b, S]
+        # FULL theta to forward_solve (it re-selects the batch families internally); theta_b/omega_b
+        # to make_exact_hvp (it consumes them directly). Both see the identical batch-local theta_b.
+        _loss, sv_b = forward_solve([static_b], theta, alpha)
+        hvp_b = make_exact_hvp([static_b], theta_b, alpha, sv_b,
+                               tangent_self_iters=tangent_self_iters, origination_weights=omega_b)
+        batch_hvps.append((fam_b, hvp_b))
+
+    def Av(u):
+        u = u.to(device=dev, dtype=dt)
+        u_theta = u[:3 * G].reshape(G, 3)
+        u_alpha = u[3 * G:3 * G + S].contiguous()
+        u_omega = u[3 * G + S:3 * G + S + G * S].reshape(G, S)
+        out_theta = torch.zeros(G, 3, device=dev, dtype=dt)
+        out_alpha = torch.zeros(S, device=dev, dtype=dt)
+        out_omega = torch.zeros(G, S, device=dev, dtype=dt)
+        for fam_b, hvp_b in batch_hvps:
+            G_b = int(fam_b.numel())
+            u_theta_b = u_theta.index_select(0, fam_b)   # [G_b, 3]
+            u_omega_b = u_omega.index_select(0, fam_b)   # [G_b, S]
+            u_b = torch.cat([u_theta_b.reshape(-1), u_alpha, u_omega_b.reshape(-1)])
+            o_b = hvp_b(u_b).to(dtype=dt)
+            out_theta.index_add_(0, fam_b, o_b[:3 * G_b].reshape(G_b, 3))
+            out_alpha = out_alpha + o_b[3 * G_b:3 * G_b + S]
+            out_omega.index_add_(0, fam_b, o_b[3 * G_b + S:3 * G_b + S + G_b * S].reshape(G_b, S))
+        return torch.cat([out_theta.reshape(-1), out_alpha, out_omega.reshape(-1)])
+
+    return Av
+
+
+def multibatch_joint_vg_genewise(batch_statics, theta_shape, S, G):
+    """Multi-batch joint value-and-grad ``vg(x, warm_E=None) -> (loss, g_z, None, None)`` over
+    ``z = [theta (3G); alpha (S); omega (G*S)]`` (matches ``_fd_hessian_hvp``'s vg contract).
+
+    Loops the batches; per batch evaluates the genewise loss + grad over that batch's OWN families
+    (``theta_b`` gathered by ``static.family_index_tensor``; the FULL per-family ``omega`` [G,S] is
+    passed because ``evaluate_static_loss_grad`` re-selects the batch rows internally). Aggregates
+    the DISJOINT theta/omega grads by ``index_add`` and the SHARED alpha grad by sum. This is the
+    CORRECT multi-batch genewise origination aggregation -- the existing ``stream_batches`` uses
+    ``.add_()`` on a full-[G,S] accumulator, which shape-mismatches the batch-local [G_b,S] grad.
+    """
+    theta_shape = tuple(theta_shape)
+    nt = 1
+    for _d in theta_shape:
+        nt *= int(_d)
+
+    def vg(x, warm_E=None):
+        x = x.double()
+        th = x[:nt].reshape(G, 3)            # FULL theta [G,3]
+        al = x[nt:nt + S].contiguous()       # global alpha [S]
+        om = x[nt + S:nt + S + G * S].reshape(G, S)   # FULL omega [G,S]
+        dev, dt = x.device, x.dtype
+        loss = 0.0
+        g_theta = torch.zeros(G, 3, device=dev, dtype=dt)
+        g_alpha = torch.zeros(S, device=dev, dtype=dt)
+        g_omega = torch.zeros(G, S, device=dev, dtype=dt)
+        for static_b in batch_statics:
+            fam_b = static_b.family_index_tensor.to(device=dev)
+            theta_b = th.index_select(0, fam_b).contiguous()   # [G_b,3]; omega stays FULL (re-selected inside)
+            loss_b, gth_b, gal_b, gom_b = evaluate_static_loss_grad(
+                static_b, theta_b, al, om, need_grad=True, need_origination_grad=True)
+            loss = loss + float(loss_b)
+            g_theta.index_add_(0, fam_b, gth_b.to(dtype=dt))
+            g_omega.index_add_(0, fam_b, gom_b.to(dtype=dt))
+            g_alpha = g_alpha + gal_b.to(dtype=dt)
+        g_z = torch.cat([g_theta.reshape(-1), g_alpha.reshape(-1), g_omega.reshape(-1)])
+        return loss, g_z, None, None
+
+    return vg
