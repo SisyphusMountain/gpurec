@@ -9,7 +9,9 @@ scope as the global arrowhead).
 One analytic (forward-over-reverse) HVP over the **joint** parameter
 
 ```
-z = [ θ (G×3)  |  ω (G×S)  |  α (S) ]        dim = 3G + GS + S
+z = [ θ (G×3)  |  ω (G×S)  |  α (S) ]        dim = 3G + GS + S   (parameter groups)
+# FLAT HVP / gate-vector order is [θ; α; ω] (α before ω) — matches the established
+# origination_curvature.py convention (z=[theta;alpha;omega]); newton_step_joint is order-agnostic.
 ```
 
 for genewise fits, so genewise can run **Newton** over any subset of {per-family DTL `θ`, per-family
@@ -68,7 +70,7 @@ linearize the **entire** gradient computation along `u`. That computation has a 
 through `dE, dPi`; it lives inside that shared intermediate and has no independent existence.
 
 Therefore:
-- **One** forward-over-reverse sweep seeded with `u = [u_θ; u_ω; u_α]` returns
+- **One** forward-over-reverse sweep seeded with `u = [u_θ; u_α; u_ω]` returns
   `dg = [dg_θ; dg_ω; dg_α] = H·u`, with **all** cross terms — `dg_θ = H_θθu_θ + H_θωu_ω + H_θαu_α`,
   automatically, because every input direction flows through the same `E/Pi/root/adjoint`.
 - **Isolated per-block operators, summed, cannot produce cross terms** (they'd give block-diagonal `H`).
@@ -160,7 +162,8 @@ agnostic and only requires that whatever the caller adds is diagonal-on-`H_ωω`
 ## 12. Interfaces (proposed)
 
 ```python
-# one joint HVP operator (single collated batch); u = [u_θ(3G); u_ω(GS); u_α(S)] (any tail omitted ⇒ 0)
+# one joint HVP operator (single collated batch); u = [u_θ(3G); u_α(S); u_ω(GS)] (any tail omitted ⇒ 0)
+# NOTE: flat order is [θ; α; ω] (α before ω) — matches the established origination_curvature.py convention.
 make_exact_hvp(static, theta, alpha, sv, *, omega=..., ...) -> hvp(u_flat) -> H u
 # structured curvature for the Newton solve (materialized only here, not for H·u):
 genewise_hessian_blocks(static, theta, omega, alpha, sv) -> dict(

@@ -157,7 +157,7 @@ Run: `.venv/bin/python -m pytest tests/test_genewise_hvp.py::test_per_family_ori
 
 **Interfaces:**
 - Consumes: per-family `origination_weights[G,S]` (Task 2); `origination_log_probs_from_weights` (`extract_parameters`); `nll_vector_from_root_rows(..., origination_log_probs, origination_probs)` and `origination_grad_from_root_rows(root_rows, E, origination_weights)` (`solver.py`).
-- Produces: a genewise loss+grad that feeds each family its own `ω_g` row and returns a per-family origination gradient `[G,S]`; `make_joint_value_and_grad(static, theta_shape, S, G)` test helper (below) that packs `[g_θ(3G); g_ω(GS); g_α(S)]` into one flat vector for FD.
+- Produces: a genewise loss+grad that feeds each family its own `ω_g` row and returns a per-family origination gradient `[G,S]`; `make_joint_value_and_grad(static, theta_shape, S, G)` test helper (below) that packs `[g_θ(3G); g_α(S); g_ω(GS)]` into one flat vector for FD.
 
 - [ ] **Step 1: Read FIRST** `_execution.py:22-111` and `solver.py` `nll_vector_from_root_rows` / `origination_grad_from_root_rows`. Note: `_origination_log_probs` currently assumes a **global** `[S]` weight; it must select `ω_g` per family (index by `static.family_index_tensor`, exactly like `theta_for_static`) when the weight is `[G,S]`.
 
@@ -208,16 +208,17 @@ def test_origination_grad_matches_fd():
 
 ```python
 def make_joint_value_and_grad(static, theta_shape, S, G):
-    """(loss, flat-grad) over z=[theta(3G); omega(GS); alpha(S)] for fp64 FD. Packs the three
-    grads from evaluate_static_loss_grad in the SAME order the joint hvp returns them."""
+    """(loss, flat-grad) over z=[theta(3G); alpha(S); omega(GS)] for fp64 FD. Packs the three
+    grads from evaluate_static_loss_grad in the SAME order the joint hvp returns them ([theta; alpha; omega])."""
     from gpurec.api._execution import evaluate_static_loss_grad
     nt = int(torch.tensor(theta_shape).prod())
     def vg(x, warm=None):
         th = x[:nt].reshape(theta_shape)
-        om = x[nt:nt + G * S].reshape(G, S)
-        al = x[nt + G * S:nt + G * S + S]
-        l, g_th, g_al, g_om = evaluate_static_loss_grad(static, th, al, om, need_origination_grad=True)
-        g = torch.cat([g_th.reshape(-1), g_om.reshape(-1), g_al.reshape(-1)]).double()
+        al = x[nt:nt + S]
+        om = x[nt + S:nt + S + G * S].reshape(G, S)
+        # NOTE need_grad=True is REQUIRED (origination grad is only produced on that path; see _execution.py early return)
+        l, g_th, g_al, g_om = evaluate_static_loss_grad(static, th, al, om, need_grad=True, need_origination_grad=True)
+        g = torch.cat([g_th.reshape(-1), g_al.reshape(-1), g_om.reshape(-1)]).double()
         return float(l), g, None, None
     return vg
 
@@ -231,20 +232,21 @@ def test_joint_theta_omega_hvp_matches_fd():
     om = torch.zeros(G, S, device="cuda", dtype=torch.float64)
     _l, sv = forward_solve([st], th, rw)
     hvp = make_exact_hvp([st], th, rw, sv, tangent_self_iters=128, origination_weights=om)
-    x0 = torch.cat([th.reshape(-1), om.reshape(-1), rw.reshape(-1)])
+    x0 = torch.cat([th.reshape(-1), rw.reshape(-1), om.reshape(-1)])   # [theta; alpha; omega]
     fd = _fd_hessian_hvp(make_joint_value_and_grad(st, (G, 3), S, G), x0, None, eps=1e-5)
     for name, u in [("theta_e0", _dir_theta(G, S, 0)), ("omega_k", _dir_omega(G, S, S // 3))]:
         Ha, Hf = hvp(u).double(), fd(u).double()
         rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
         assert torch.isfinite(Ha).all() and rel < 5e-4, f"{name}: rel={rel:.2e}"
 
+# Canonical flat layout is [theta(3G); alpha(S); omega(GS)] — alpha BEFORE omega (matches origination_curvature.py).
 def _dir_theta(G, S, j):
-    u = torch.zeros(3 * G + G * S + S, device="cuda", dtype=torch.float64)
+    u = torch.zeros(3 * G + S + G * S, device="cuda", dtype=torch.float64)
     u.view(-1)[j:3 * G:3] = 1.0  # broadcast e_j across families' theta block
     return u
 def _dir_omega(G, S, k):
-    u = torch.zeros(3 * G + G * S + S, device="cuda", dtype=torch.float64)
-    u[3 * G:3 * G + G * S].reshape(G, S)[:, k] = 1.0  # broadcast omega e_k across families
+    u = torch.zeros(3 * G + S + G * S, device="cuda", dtype=torch.float64)
+    u[3 * G + S:3 * G + S + G * S].reshape(G, S)[:, k] = 1.0  # broadcast omega e_k across families
     return u
 ```
 
@@ -252,7 +254,7 @@ def _dir_omega(G, S, k):
 
 Run: `.venv/bin/python -m pytest tests/test_genewise_hvp.py::test_joint_theta_omega_hvp_matches_fd -q`
 
-- [ ] **Step 4: Implement** — thread `origination_weights[G,S]` into `_head_seed_tangents` as `om` (per family); the head NLL is already `nll_vector_from_root_rows` (per family), so the double-backward w.r.t. per-family `om` yields `Hv_om` `[G,S]` without summing over families. In `hvp()`, adopt the **canonical joint layout `[θ(3G); ω(G·S); α(S)]`** — ω BEFORE α (the current code emits `[θ;α;ω]`; reorder it). Tail detection by `n_tail = u.numel() - 3G`: `0` ⇒ θ-only `[θ]`; `== S` ⇒ `[θ;α]` (the existing recv path, `u_ω=0`, output `[θ;α]` — bit-for-bit unchanged, `_verify_hvp_recv` depends on it); `== G*S + S` ⇒ full, parse `u_omega = tail[:G*S].reshape(G,S)`, `u_alpha = tail[G*S:]`, return `torch.cat([out_theta, Hv_omega.reshape(-1), out_col])`. Gate all per-family ω shape changes on `static.genewise` (specieswise/global keep the global-`[S]` ω path).
+- [ ] **Step 4: Implement** — thread `origination_weights[G,S]` into `_head_seed_tangents` as `om` (per family); the head NLL is already `nll_vector_from_root_rows` (per family), so the double-backward w.r.t. per-family `om` yields `Hv_om` `[G,S]` without summing over families. In `hvp()`, **KEEP the existing canonical layout `[θ(3G); α(S); ω(G·S)]`** — α BEFORE ω. This matches the base code AND the established `gpurec/optim/origination_curvature.py` consumer (`z = [theta; alpha; omega]`, `a=u[tn:tn+S]`, `o=u[tn+S:tn+2S]`) — do NOT reorder to `[θ;ω;α]` (that silently α↔ω-swaps that live module). The ONLY real changes are: (a) size ω off the passed param — `omega_numel = origination_weights.numel() if origination_weights is not None else 0`, `u_omega = u_vec[tn+S : tn+S+omega_numel].reshape(origination_weights.shape)` (handles `[S]` and `[G,S]` with no mode-branch); (b) activate the head at uniform ω by deriving `origination_log_probs`/`probs` from `origination_weights` when given. Tail detection by `n_tail = u.numel() - 3G`: `0` ⇒ θ-only; `== S` ⇒ `[θ;α]` (recv path, `u_ω=0`, bit-for-bit — `_verify_hvp_recv` depends on it); `== S + omega_numel` ⇒ full `[θ;α;ω]`: `u_alpha = tail[:S]`, `u_omega = tail[S:S+omega_numel].reshape(origination_weights.shape)`, return `torch.cat([out_theta, out_col, Hv_omega.reshape(-1)])` (unchanged from base order). Gate per-family ω shape handling on `static.genewise` only where the `.numel()` keying doesn't already cover it. **Regression: also run `test_origination_curvature.py` + `_verify_s9_curvature` — they use the global-ω `[θ;α;ω]` path and MUST stay green.**
 
 - [ ] **Step 5: Run the joint θ+ω gate — expect PASS.**
 
@@ -290,11 +292,11 @@ def test_joint_theta_omega_alpha_hvp_matches_fd():
     om = torch.zeros(G, S, device="cuda", dtype=torch.float64)
     _l, sv = forward_solve([st], th, al)
     hvp = make_exact_hvp([st], th, al, sv, tangent_self_iters=128, origination_weights=om)
-    x0 = torch.cat([th.reshape(-1), om.reshape(-1), al.reshape(-1)])
+    x0 = torch.cat([th.reshape(-1), al.reshape(-1), om.reshape(-1)])   # [theta; alpha; omega]
     fd = _fd_hessian_hvp(make_joint_value_and_grad(st, (G, 3), S, G), x0, None, eps=1e-5)
-    P = 3 * G + G * S + S
+    P = 3 * G + S + G * S
     dirs = {"theta": _dir_theta(G, S, 1), "omega": _dir_omega(G, S, S // 4)}
-    da = torch.zeros(P, device="cuda", dtype=torch.float64); da[3 * G + G * S:] = torch.randn(S, device="cuda", dtype=torch.float64)
+    da = torch.zeros(P, device="cuda", dtype=torch.float64); da[3 * G:3 * G + S] = torch.randn(S, device="cuda", dtype=torch.float64)  # alpha block
     dirs["alpha"] = da
     dirs["mixed"] = _dir_theta(G, S, 0) + _dir_omega(G, S, S // 2) + da
     Hs = {}
@@ -330,7 +332,7 @@ Run: `.venv/bin/python -m pytest tests/test_genewise_hvp.py::test_joint_theta_om
 
 **Interfaces:**
 - Consumes: the joint `hvp` (Tasks 4-5); the closed-form `H_ωω` head Hessian from `(root_rows_g, E_g)` (design §6).
-- Produces: `genewise_hessian_blocks(..., active=("theta","omega","alpha")) -> {"H_tt":[G,3,3], "H_to":[G,3,S], "H_oo_diag":[G,S], "H_oo_lr":[G,S,r], "H_aa":[S,S], "H_za":[G,3+S,S]}` (dense arrow; matrix-free is P4/optional) and `newton_step_joint(blocks, g_theta[G,3], g_omega[G,S], g_alpha[S], mu) -> (dtheta[G,3], domega[G,S], dalpha[S])`. `newton_step_joint` takes the three grads as separate tensors, so it is flat-order-agnostic; only the gate vectors follow `[θ;ω;α]`.
+- Produces: `genewise_hessian_blocks(..., active=("theta","omega","alpha")) -> {"H_tt":[G,3,3], "H_to":[G,3,S], "H_oo_diag":[G,S], "H_oo_lr":[G,S,r], "H_aa":[S,S], "H_za":[G,3+S,S]}` (dense arrow; matrix-free is P4/optional) and `newton_step_joint(blocks, g_theta[G,3], g_omega[G,S], g_alpha[S], mu) -> (dtheta[G,3], domega[G,S], dalpha[S])`. `newton_step_joint` takes the three grads as separate tensors, so it is flat-order-agnostic; only the gate vectors follow `[θ;α;ω]` (α before ω — matches origination_curvature.py).
 
 - [ ] **Step 1: Write the failing test** — on a *synthetic* SPD arrowhead (random `H_tt`, `H_to`, diag+low-rank `H_oo`, dense `H_aa`, couplings), `newton_step_joint` reproduces the dense assembled solve (`torch.linalg.solve` on the full `(3G+GS+S)` matrix) to `rtol 1e-5`.
 
@@ -420,11 +422,11 @@ def test_newton_step_matches_cg():
     al = torch.zeros(S, device="cuda", dtype=torch.float64); om = torch.zeros(G, S, device="cuda", dtype=torch.float64)
     _l, sv = forward_solve([st], th, al)
     hvp = make_exact_hvp([st], th, al, sv, tangent_self_iters=128, origination_weights=om)
-    g = torch.randn(3 * G + G * S + S, device="cuda", dtype=torch.float64)
+    g = torch.randn(3 * G + S + G * S, device="cuda", dtype=torch.float64)  # [theta; alpha; omega]
     blocks = genewise_hessian_blocks(st, th, al, sv, omega=om, active=("theta", "omega", "alpha"))
-    g_th, g_om, g_al = g[:3*G].reshape(G,3), g[3*G:3*G+G*S].reshape(G,S), g[3*G+G*S:]
+    g_th, g_al, g_om = g[:3*G].reshape(G,3), g[3*G:3*G+S], g[3*G+S:].reshape(G,S)
     dth, dom, dal = newton_step_joint(blocks, g_th, g_om, g_al, mu)
-    d_struct = torch.cat([dth.reshape(-1), dom.reshape(-1), dal.reshape(-1)])
+    d_struct = torch.cat([dth.reshape(-1), dal.reshape(-1), dom.reshape(-1)])   # [theta; alpha; omega] to match hvp/d_cg
     d_cg = _cg_solve(lambda v: hvp(v) + mu * v, -g, tol=1e-8, max_iter=2000)
     rel = float((d_struct - d_cg).abs().max()) / max(float(d_cg.abs().max()), 1e-30)
     assert rel < 1e-3, f"structured vs CG rel={rel:.2e}"
@@ -454,6 +456,6 @@ def test_newton_step_matches_cg():
 
 - **Spec coverage:** design §3 arrowhead → Tasks 4-6; §4 one-sweep → Tasks 4-5 (HVP), never assembled for `H·u`; §5 per-param → θ(Task 1, done P0)/ω(Tasks 2-4)/α(Task 5); §6 diag+low-rank `H_ωω` → Task 6; §7 arrowhead solve → Task 6; §8 batching → single-batch default + Task 9; §9 prior-agnostic → `omega_ridge` hook (Task 7), no prior built; §10 verification → gates in Tasks 1,3,4,5,6,8; §11 phasing → Tasks map P0..P5.
 - **Investigation-gated tasks:** Tasks 4 and 5 modify adjoint/kernel internals whose exact diff depends on reading the cited functions — each has a "read FIRST" step and a fully-specified gate (the tests are the contract). Task 5 may be a no-op fix (α already genewise-correct) — its gate decides.
-- **Type consistency:** `genewise_hessian_blocks` returns a dict grown across Tasks 1→6 (`H_tt`, then `+H_to/H_oo_diag/H_oo_lr/H_aa/H_za`); `newton_step_joint(blocks, g_theta[G,3], g_omega[G,S], g_alpha[S], mu)` consumes exactly that dict. The joint direction/return order is `[θ(3G); ω(GS); α(S)]` everywhere (`make_joint_value_and_grad`, the `hvp` return, `_dir_*` helpers, `newton_step_joint`).
+- **Type consistency:** `genewise_hessian_blocks` returns a dict grown across Tasks 1→6 (`H_tt`, then `+H_to/H_oo_diag/H_oo_lr/H_aa/H_za`); `newton_step_joint(blocks, g_theta[G,3], g_omega[G,S], g_alpha[S], mu)` consumes exactly that dict. The joint direction/return order is `[θ(3G); α(S); ω(GS)]` everywhere (α before ω, matching `origination_curvature.py`'s `z=[theta;alpha;omega]`): `make_joint_value_and_grad`, the `hvp` return, `_dir_*` helpers, `newton_step_joint` gate vectors.
 - **Prior-agnostic:** no task adds a prior; Task 7 exposes `omega_ridge` (caller-set, adds to `H_oo_diag`) purely as the conditioning hook.
 ```
