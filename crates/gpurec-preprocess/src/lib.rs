@@ -115,6 +115,9 @@ fn preprocess_dataset(
 fn gpurec_preprocess(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(preprocess_dataset, module)?)?;
     module.add_function(wrap_pyfunction!(plan_batch_layouts, module)?)?;
+    module.add_function(wrap_pyfunction!(build_family_ccp, module)?)?;
+    module.add_function(wrap_pyfunction!(species_leaf_index_map, module)?)?;
+    module.add_class::<FamilyCcp>()?;
     Ok(())
 }
 
@@ -1615,6 +1618,681 @@ fn is_empty(bits: &[u64]) -> bool {
 
 fn bit_count(bits: &[u64]) -> usize {
     bits.iter().map(|word| word.count_ones() as usize).sum()
+}
+
+// ===================================================================
+// Additive: build-once family CCP + direct species-pruning of the CCP.
+//
+// Ghost-lineage optimization. `build_family_ccp` amalgamates a family's
+// bootstrap-tree distribution ONCE (identical to the internal amalgamation
+// used by `preprocess_dataset`), additionally recording, for every
+// root-bipartition split, a bitmask over the input trees. `FamilyCcp.prune`
+// then derives — for a given set of removed species — the exact CCP that a
+// fresh `preprocess` of the prune-then-amalgamate pipeline would produce,
+// without re-parsing or re-amalgamating any trees.
+//
+// Nothing here changes the existing preprocess path.
+// ===================================================================
+
+fn and_bits(left: &[u64], right: &[u64]) -> Vec<u64> {
+    left.iter().zip(right).map(|(a, b)| a & b).collect()
+}
+
+fn set_tree_bit(mask: &mut [u64], tree_idx: usize) {
+    mask[tree_idx >> 6] |= 1u64 << (tree_idx & 63);
+}
+
+fn mask_popcount(mask: &[u64]) -> u64 {
+    mask.iter().map(|w| w.count_ones() as u64).sum()
+}
+
+fn mask_or_into(dst: &mut [u64], src: &[u64]) {
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d |= *s;
+    }
+}
+
+fn species_of_leaf(leaf_name: &str) -> &str {
+    leaf_name
+        .split_once('_')
+        .map_or(leaf_name, |(species, _)| species)
+}
+
+fn bits_to_name_set(bits: &[u64], names: &[String]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (w, &word) in bits.iter().enumerate() {
+        let mut word = word;
+        while word != 0 {
+            let b = word.trailing_zeros() as usize;
+            out.insert(names[w * BITS_PER_WORD + b].clone());
+            word &= word - 1;
+        }
+    }
+    out
+}
+
+/// Amalgamate a newick gene-tree distribution, recording per-tree membership
+/// bitmasks for every root-bipartition split. The `(CladeData, leaf_names)`
+/// portion is byte-identical to `amalgamate_clades_and_splits` (same clade
+/// ids, same split insertion order, same accumulated weights).
+fn amalgamate_with_masks(
+    gene_path: &Path,
+) -> Result<(CladeData, Vec<String>, Vec<Vec<u64>>, usize), String> {
+    let text =
+        fs::read_to_string(gene_path).map_err(|err| format!("{}: {err}", gene_path.display()))?;
+    if looks_like_ale_file(&text) {
+        return Err(format!(
+            "{}: build_family_ccp supports newick tree distributions only (got an .ale file)",
+            gene_path.display()
+        ));
+    }
+    let trees = parse_gene_newick_text_records(gene_path, &text)?;
+    let num_trees = trees.len();
+    let mask_words = (num_trees + BITS_PER_WORD - 1) / BITS_PER_WORD;
+
+    let mut all_leaves = BTreeSet::new();
+    for tree in &trees {
+        collect_leaf_names(tree, &mut all_leaves);
+    }
+    let leaf_names: Vec<String> = all_leaves.into_iter().collect();
+    if leaf_names.is_empty() {
+        return Err(format!("{}: no leaves found", gene_path.display()));
+    }
+    let leaf_to_index: HashMap<String, usize> = leaf_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect();
+    let num_words = bitvec_num_words(leaf_names.len());
+    let mut result = CladeData {
+        clades: CladeRegistry::new(),
+        splits: Vec::new(),
+        root_clade_id: 0,
+    };
+    let mut root_bits = vec![0; num_words];
+    for idx in 0..leaf_names.len() {
+        set_bit(&mut root_bits, idx);
+    }
+    result.root_clade_id = result.clades.get_or_create(root_bits);
+    let mut split_index_map = HashMap::new();
+    let mut masks: Vec<Vec<u64>> = Vec::new();
+    for (tree_idx, tree) in trees.iter().enumerate() {
+        process_gene_tree_masked(
+            tree,
+            &leaf_to_index,
+            num_words,
+            &mut result,
+            &mut split_index_map,
+            &mut masks,
+            mask_words,
+            tree_idx,
+        )?;
+    }
+    while masks.len() < result.splits.len() {
+        masks.push(Vec::new());
+    }
+    Ok((result, leaf_names, masks, num_trees))
+}
+
+/// Copy of `process_gene_tree` that additionally sets, for each
+/// root-bipartition split, the bit for `tree_idx` in that split's mask.
+/// The clade/split construction is identical to `process_gene_tree`.
+#[allow(clippy::too_many_arguments)]
+fn process_gene_tree_masked(
+    tree: &GeneTree,
+    leaf_to_index: &HashMap<String, usize>,
+    num_words: usize,
+    result: &mut CladeData,
+    split_index_map: &mut HashMap<SplitKey, usize>,
+    masks: &mut Vec<Vec<u64>>,
+    mask_words: usize,
+    tree_idx: usize,
+) -> Result<(), String> {
+    let postorder = gene_postorder(tree);
+    let mut node_clades = vec![vec![0; num_words]; tree.nodes.len()];
+    let mut node_clade_ids = vec![usize::MAX; tree.nodes.len()];
+    let mut node_above_ids = vec![None; tree.nodes.len()];
+
+    for &node_idx in &postorder {
+        let node = &tree.nodes[node_idx];
+        let bits = match node.children.as_slice() {
+            [] => {
+                let leaf_idx = leaf_to_index
+                    .get(&node.name)
+                    .ok_or_else(|| format!("unknown gene leaf {:?}", node.name))?;
+                let mut bits = vec![0; num_words];
+                set_bit(&mut bits, *leaf_idx);
+                bits
+            }
+            [left, right] => bit_or(&node_clades[*left], &node_clades[*right]),
+            _ => return Err("gene tree was not binarized".to_string()),
+        };
+        node_clades[node_idx] = bits;
+        node_clade_ids[node_idx] = result.clades.get_or_create(node_clades[node_idx].clone());
+    }
+
+    let tree_root_bits = node_clades[tree.root].clone();
+    let tree_root_id = node_clade_ids[tree.root];
+    // Shared-taxa assumption: every tree spans the full family leaf set. This
+    // is what makes root-mask pruning exact (bootstrap replicates share taxa).
+    if tree_root_id != result.root_clade_id {
+        return Err(format!(
+            "build_family_ccp requires all trees to share the same leaf set (tree {tree_idx} differs)"
+        ));
+    }
+    let mut tree_root_split_keys = HashSet::new();
+
+    for &node_idx in &postorder {
+        if node_idx == tree.root {
+            continue;
+        }
+        let above_bits = bit_difference(&tree_root_bits, &node_clades[node_idx]);
+        if is_empty(&above_bits) {
+            continue;
+        }
+        let below_id = node_clade_ids[node_idx];
+        let above_id = result.clades.get_or_create(above_bits);
+        node_above_ids[node_idx] = Some(above_id);
+        let root_key = canonical_root_key(&result.clades, below_id, above_id);
+        if tree_root_split_keys.insert(root_key) {
+            let split = CladeSplit {
+                parent: tree_root_id,
+                left: below_id,
+                right: above_id,
+                weight: 1.0,
+            };
+            let canon = split.canonical_key();
+            add_or_accumulate_split(result, split_index_map, split);
+            let idx = *split_index_map.get(&canon).unwrap();
+            while masks.len() < result.splits.len() {
+                masks.push(Vec::new());
+            }
+            if masks[idx].is_empty() {
+                masks[idx] = vec![0u64; mask_words];
+            }
+            set_tree_bit(&mut masks[idx], tree_idx);
+        }
+    }
+
+    for &node_idx in &postorder {
+        if node_idx == tree.root {
+            continue;
+        }
+        let node = &tree.nodes[node_idx];
+        let [left_idx, right_idx] = node.children.as_slice() else {
+            continue;
+        };
+        let parent_id = node_clade_ids[node_idx];
+        let left_id = node_clade_ids[*left_idx];
+        let right_id = node_clade_ids[*right_idx];
+        add_or_accumulate_split(
+            result,
+            split_index_map,
+            CladeSplit {
+                parent: parent_id,
+                left: left_id,
+                right: right_id,
+                weight: 1.0,
+            },
+        );
+
+        if let Some(above_id) = node_above_ids[node_idx] {
+            let left_plus_id =
+                node_above_ids[*right_idx].ok_or_else(|| "missing left-plus clade".to_string())?;
+            let right_plus_id =
+                node_above_ids[*left_idx].ok_or_else(|| "missing right-plus clade".to_string())?;
+            add_or_accumulate_split(
+                result,
+                split_index_map,
+                CladeSplit {
+                    parent: left_plus_id,
+                    left: left_id,
+                    right: above_id,
+                    weight: 1.0,
+                },
+            );
+            add_or_accumulate_split(
+                result,
+                split_index_map,
+                CladeSplit {
+                    parent: right_plus_id,
+                    left: right_id,
+                    right: above_id,
+                    weight: 1.0,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Build-once handle for one gene family's full-distribution CCP.
+#[pyclass]
+struct FamilyCcp {
+    clade_bits: Vec<Vec<u64>>,
+    splits: Vec<CladeSplit>,
+    /// Parallel to `splits`; non-empty only for root-bipartition splits
+    /// (parent == root_clade_id). Bit t set iff tree t contributed the split.
+    masks: Vec<Vec<u64>>,
+    root_clade_id: usize,
+    leaf_names: Vec<String>,
+    num_words: usize,
+    num_leaves: usize,
+    num_trees: usize,
+    mask_words: usize,
+}
+
+impl FamilyCcp {
+    fn survivor_mask(&self, remove: &HashSet<String>) -> Vec<u64> {
+        let mut surv = vec![0u64; self.num_words];
+        for i in 0..self.num_leaves {
+            if !remove.contains(species_of_leaf(&self.leaf_names[i])) {
+                set_bit(&mut surv, i);
+            }
+        }
+        surv
+    }
+
+    /// Core prune: returns the pruned `CladeData` (clade ids in fresh
+    /// registry order; pruned root clade == id 0) in the full-leaf bit space.
+    fn prune_core(&self, remove: &HashSet<String>) -> CladeData {
+        let survivor = self.survivor_mask(remove);
+        let mut registry = CladeRegistry::new();
+        // Create the pruned root clade X' first so it is id 0 (mirrors amalgamation).
+        let root_pruned = and_bits(&self.clade_bits[self.root_clade_id], &survivor);
+        let pruned_root_id = registry.get_or_create(root_pruned);
+
+        let c = self.clade_bits.len();
+        let mut clade_map: Vec<i64> = vec![-1; c];
+        for cid in 0..c {
+            let pb = and_bits(&self.clade_bits[cid], &survivor);
+            if is_empty(&pb) {
+                clade_map[cid] = -1;
+            } else {
+                clade_map[cid] = registry.get_or_create(pb) as i64;
+            }
+        }
+
+        let mut data = CladeData {
+            clades: registry,
+            splits: Vec::new(),
+            root_clade_id: pruned_root_id,
+        };
+        let mut split_index_map: HashMap<SplitKey, usize> = HashMap::new();
+        // Root bipartitions accumulate per-tree masks (OR) keyed by pruned pair.
+        let mut root_acc: BTreeMap<(usize, usize), Vec<u64>> = BTreeMap::new();
+
+        for (i, split) in self.splits.iter().enumerate() {
+            let lp = clade_map[split.left];
+            let rp = clade_map[split.right];
+            if split.parent == self.root_clade_id {
+                // Root bipartition split.
+                if lp < 0 || rp < 0 {
+                    continue; // one side entirely removed -> collapse (rooting vanishes)
+                }
+                let key = canonical_root_key(&data.clades, lp as usize, rp as usize);
+                let entry = root_acc
+                    .entry(key)
+                    .or_insert_with(|| vec![0u64; self.mask_words]);
+                mask_or_into(entry, &self.masks[i]);
+            } else {
+                let pp = clade_map[split.parent];
+                if pp < 0 {
+                    continue;
+                }
+                if pp as usize == pruned_root_id {
+                    // Non-root clade that pruned onto the root: its bipartition is
+                    // already produced by the root splits above -> skip (redundant).
+                    continue;
+                }
+                if lp < 0 || rp < 0 {
+                    // Degree-2 suppression: clade passes through as its surviving child.
+                    continue;
+                }
+                add_or_accumulate_split(
+                    &mut data,
+                    &mut split_index_map,
+                    CladeSplit {
+                        parent: pp as usize,
+                        left: lp as usize,
+                        right: rp as usize,
+                        weight: split.weight,
+                    },
+                );
+            }
+        }
+
+        for ((a, b), mask) in root_acc {
+            let w = mask_popcount(&mask) as f64;
+            data.splits.push(CladeSplit {
+                parent: pruned_root_id,
+                left: a,
+                right: b,
+                weight: w,
+            });
+        }
+        data
+    }
+
+    fn arrays_dict(
+        &self,
+        data: &CladeData,
+        species_index: &HashMap<String, i64>,
+    ) -> PyResult<Value> {
+        let ccp = build_ccp_arrays(data);
+        let c = data.clades.clades.len();
+        let schedule_depth = clade_schedule_depth(data);
+        let mut leaf_row_index = Vec::new();
+        let mut leaf_col_index = Vec::new();
+        for cid in 0..c {
+            let clade = &data.clades.clades[cid];
+            if clade.size != 1 {
+                continue;
+            }
+            if let Some(leaf_idx) = first_set_bit(&clade.bits) {
+                let leaf_name = &self.leaf_names[leaf_idx];
+                let species = species_of_leaf(leaf_name);
+                let species_idx = species_index.get(species).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "species {species:?} not found for gene leaf {leaf_name:?}"
+                    ))
+                })?;
+                leaf_row_index.push(cid as i64);
+                leaf_col_index.push(*species_idx);
+            }
+        }
+        Ok(json!({
+            "split_leftrights_sorted": ccp.split_leftrights_sorted,
+            "split_parents_sorted": ccp.split_parents_sorted,
+            "log_split_probs_sorted": ccp.log_split_probs_sorted,
+            "split_counts": ccp.split_counts,
+            "N_splits": data.splits.len() as i64,
+            "root_clade_id": data.root_clade_id as i64,
+            "C": c as i64,
+            "schedule_depth": schedule_depth as i64,
+            "leaf_row_index": leaf_row_index,
+            "leaf_col_index": leaf_col_index,
+        }))
+    }
+}
+
+#[pymethods]
+impl FamilyCcp {
+    #[getter]
+    fn n_leaves(&self) -> usize {
+        self.num_leaves
+    }
+    #[getter]
+    fn n_trees(&self) -> usize {
+        self.num_trees
+    }
+    #[getter]
+    fn n_clades(&self) -> usize {
+        self.clade_bits.len()
+    }
+    #[getter]
+    fn n_splits(&self) -> usize {
+        self.splits.len()
+    }
+
+    /// Prune this family's CCP by a set of species names, returning the
+    /// per-family CCP dict (JSON string) in the exact format
+    /// `preprocess_dataset` emits for a fresh preprocess of the pruned trees.
+    /// `species_index` maps species names to gp indices of the PRUNED species
+    /// tree (see `species_leaf_index_map`).
+    fn prune(
+        &self,
+        remove_species: Vec<String>,
+        species_index: HashMap<String, i64>,
+    ) -> PyResult<String> {
+        let remove: HashSet<String> = remove_species.into_iter().collect();
+        let data = self.prune_core(&remove);
+        let value = self.arrays_dict(&data, &species_index)?;
+        Ok(value.to_string())
+    }
+
+    /// Diagnostics on the root-bipartition pruning: how many pruned root splits
+    /// received contributions from >1 original bipartition of the SAME tree
+    /// (`n_root_collisions`), and the total root weight computed correctly
+    /// (per-tree deduped, via mask OR) vs naively (summed). `naive_would_diverge`
+    /// is true exactly when the naive sum would produce a different CCP.
+    fn prune_root_stats(&self, remove_species: Vec<String>) -> PyResult<String> {
+        let remove: HashSet<String> = remove_species.into_iter().collect();
+        let survivor = self.survivor_mask(&remove);
+        let mut registry = CladeRegistry::new();
+        let root_pruned = and_bits(&self.clade_bits[self.root_clade_id], &survivor);
+        let _ = registry.get_or_create(root_pruned);
+        let c = self.clade_bits.len();
+        let mut clade_map: Vec<i64> = vec![-1; c];
+        for cid in 0..c {
+            let pb = and_bits(&self.clade_bits[cid], &survivor);
+            clade_map[cid] = if is_empty(&pb) {
+                -1
+            } else {
+                registry.get_or_create(pb) as i64
+            };
+        }
+        let mut acc: BTreeMap<(usize, usize), (Vec<u64>, f64)> = BTreeMap::new();
+        for (i, split) in self.splits.iter().enumerate() {
+            if split.parent != self.root_clade_id {
+                continue;
+            }
+            let lp = clade_map[split.left];
+            let rp = clade_map[split.right];
+            if lp < 0 || rp < 0 {
+                continue;
+            }
+            let key = canonical_root_key(&registry, lp as usize, rp as usize);
+            let entry = acc
+                .entry(key)
+                .or_insert_with(|| (vec![0u64; self.mask_words], 0.0));
+            mask_or_into(&mut entry.0, &self.masks[i]);
+            entry.1 += mask_popcount(&self.masks[i]) as f64;
+        }
+        let mut n_collisions = 0usize;
+        let mut correct_sum = 0.0f64;
+        let mut naive_sum = 0.0f64;
+        for (_k, (mask, naive)) in &acc {
+            let correct = mask_popcount(mask) as f64;
+            correct_sum += correct;
+            naive_sum += naive;
+            if correct + 0.5 < *naive {
+                n_collisions += 1;
+            }
+        }
+        Ok(json!({
+            "n_root_pruned_splits": acc.len(),
+            "n_root_collisions": n_collisions,
+            "sum_correct_weight": correct_sum,
+            "sum_naive_weight": naive_sum,
+            "naive_would_diverge": correct_sum != naive_sum,
+        })
+        .to_string())
+    }
+
+    /// Rigorous bit-identity check: compare the direct-prune CCP against a
+    /// fresh amalgamation of the actually-pruned newick file. Comparison is
+    /// done on leaf-name-set canonical form (invariant to clade-id numbering),
+    /// so it proves structural + weight + log-prob equality. Returns a JSON
+    /// diagnostics string with an `identical` boolean.
+    fn verify_against_amalgamation(
+        &self,
+        remove_species: Vec<String>,
+        pruned_newick_path: String,
+    ) -> PyResult<String> {
+        let remove: HashSet<String> = remove_species.into_iter().collect();
+        let direct = self.prune_core(&remove);
+        let (reference, ref_leaf_names) =
+            amalgamate_clades_and_splits(Path::new(&pruned_newick_path))
+                .map_err(PyValueError::new_err)?;
+        Ok(compare_clade_data(
+            &direct,
+            &self.leaf_names,
+            &reference,
+            &ref_leaf_names,
+        ))
+    }
+}
+
+/// Canonical fingerprint of a CladeData: clade leaf-name-sets and, per split,
+/// (parent-set, {child-set, child-set}) -> (weight, log2 conditional prob).
+fn clade_data_fingerprint(
+    data: &CladeData,
+    names: &[String],
+) -> (BTreeSet<String>, BTreeMap<String, (f64, f64)>) {
+    let clade_str: Vec<String> = data
+        .clades
+        .clades
+        .iter()
+        .map(|cl| {
+            bits_to_name_set(&cl.bits, names)
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect();
+    let clade_set: BTreeSet<String> = clade_str.iter().cloned().collect();
+
+    let c = data.clades.clades.len();
+    let mut sum_weights = vec![0.0f64; c];
+    for s in &data.splits {
+        sum_weights[s.parent] += s.weight;
+    }
+    let mut split_map: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+    for s in &data.splits {
+        let p = &clade_str[s.parent];
+        let l = &clade_str[s.left];
+        let r = &clade_str[s.right];
+        let (a, b) = if l <= r { (l, r) } else { (r, l) };
+        let key = format!("[{p}]=>[{a}]++[{b}]");
+        let logp = (s.weight / sum_weights[s.parent]).log2();
+        split_map.insert(key, (s.weight, logp));
+    }
+    (clade_set, split_map)
+}
+
+fn compare_clade_data(
+    direct: &CladeData,
+    direct_names: &[String],
+    reference: &CladeData,
+    reference_names: &[String],
+) -> String {
+    let (dclades, dsplits) = clade_data_fingerprint(direct, direct_names);
+    let (rclades, rsplits) = clade_data_fingerprint(reference, reference_names);
+
+    let mut identical = true;
+    let mut messages: Vec<String> = Vec::new();
+
+    if dclades != rclades {
+        identical = false;
+        let only_direct: Vec<String> = dclades.difference(&rclades).take(4).cloned().collect();
+        let only_ref: Vec<String> = rclades.difference(&dclades).take(4).cloned().collect();
+        messages.push(format!(
+            "clade sets differ: n_direct={} n_ref={} only_direct(sample)={:?} only_ref(sample)={:?}",
+            dclades.len(),
+            rclades.len(),
+            only_direct,
+            only_ref
+        ));
+    }
+
+    let dkeys: BTreeSet<&String> = dsplits.keys().collect();
+    let rkeys: BTreeSet<&String> = rsplits.keys().collect();
+    if dkeys != rkeys {
+        identical = false;
+        let only_direct: Vec<String> = dsplits
+            .keys()
+            .filter(|k| !rsplits.contains_key(*k))
+            .take(4)
+            .cloned()
+            .collect();
+        let only_ref: Vec<String> = rsplits
+            .keys()
+            .filter(|k| !dsplits.contains_key(*k))
+            .take(4)
+            .cloned()
+            .collect();
+        messages.push(format!(
+            "split key sets differ: n_direct={} n_ref={} only_direct(sample)={:?} only_ref(sample)={:?}",
+            dsplits.len(),
+            rsplits.len(),
+            only_direct,
+            only_ref
+        ));
+    }
+
+    let mut max_weight_diff = 0.0f64;
+    let mut max_logprob_diff = 0.0f64;
+    let mut first_value_diff = String::new();
+    for (k, (dw, dlp)) in &dsplits {
+        if let Some((rw, rlp)) = rsplits.get(k) {
+            let wd = (dw - rw).abs();
+            let lpd = (dlp - rlp).abs();
+            if wd > max_weight_diff {
+                max_weight_diff = wd;
+            }
+            if lpd > max_logprob_diff {
+                max_logprob_diff = lpd;
+            }
+            if (wd > 1e-9 || lpd > 1e-12) && first_value_diff.is_empty() {
+                first_value_diff =
+                    format!("{k}: direct=(w={dw}, logp={dlp}) ref=(w={rw}, logp={rlp})");
+            }
+        }
+    }
+    if max_weight_diff > 1e-9 || max_logprob_diff > 1e-12 {
+        identical = false;
+    }
+
+    json!({
+        "identical": identical,
+        "n_clades_direct": dclades.len(),
+        "n_clades_ref": rclades.len(),
+        "n_splits_direct": dsplits.len(),
+        "n_splits_ref": rsplits.len(),
+        "max_weight_diff": max_weight_diff,
+        "max_logprob_diff": max_logprob_diff,
+        "first_value_diff": first_value_diff,
+        "messages": messages,
+    })
+    .to_string()
+}
+
+/// Build-once: amalgamate a family's newick tree distribution into a reusable
+/// `FamilyCcp` handle (records per-tree root-split masks).
+#[pyfunction]
+fn build_family_ccp(gene_path: String) -> PyResult<FamilyCcp> {
+    let (data, leaf_names, masks, num_trees) =
+        amalgamate_with_masks(Path::new(&gene_path)).map_err(PyValueError::new_err)?;
+    let num_leaves = leaf_names.len();
+    let num_words = bitvec_num_words(num_leaves);
+    let mask_words = (num_trees + BITS_PER_WORD - 1) / BITS_PER_WORD;
+    let clade_bits: Vec<Vec<u64>> = data.clades.clades.iter().map(|c| c.bits.clone()).collect();
+    Ok(FamilyCcp {
+        clade_bits,
+        splits: data.splits,
+        masks,
+        root_clade_id: data.root_clade_id,
+        leaf_names,
+        num_words,
+        num_leaves,
+        num_trees,
+        mask_words,
+    })
+}
+
+/// Return `{species_name: gp_index}` for a species tree, using the exact same
+/// post-order indexing as `preprocess_dataset`'s species output. Call once per
+/// pruned species tree and pass the result to `FamilyCcp.prune`.
+#[pyfunction]
+fn species_leaf_index_map(species_path: String) -> PyResult<String> {
+    let tree = parse_one_newick_file(Path::new(&species_path))?;
+    let (_species, name_to_index) = build_species_output(&tree);
+    let map: BTreeMap<String, i64> = name_to_index
+        .into_iter()
+        .map(|(k, v)| (k, v as i64))
+        .collect();
+    Ok(json!(map).to_string())
 }
 
 #[cfg(test)]

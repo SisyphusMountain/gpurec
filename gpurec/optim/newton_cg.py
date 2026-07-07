@@ -86,9 +86,23 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
             max_newton=max_newton, lam=lam, theta_ref=theta_ref, ftol=ftol, verbose=verbose,
         )
     S = int((static[0] if isinstance(static, (list, tuple)) else static).species_helpers["S"])
+    theta_shape = tuple(theta0.shape)
     theta_vec = theta0.reshape(-1).clone()
     p_dim = theta_vec.numel()
-    vg = make_value_and_grad(static, receiver_weights)
+    # GLOBAL mode carries 3 shared rates (theta0 is (3,)). The exact-HVP tangent kernels are
+    # (S,3)-specific and the [S,3]-configured statics cannot consume a broadcast global theta, so
+    # for a global theta fall back to the finite-difference Hessian built on the (correct,
+    # internally-broadcast) 3-D gradient -- cheap and accurate at this size. Specieswise (S,3)
+    # theta keeps the exact HVP unchanged.
+    if hvp_mode == "exact" and p_dim != S * 3:
+        hvp_mode = "fd"
+        # The 1e-5 default FD step is far below the fp32 gradient noise floor: the central
+        # difference is then dominated by noise, the FD Hessian grows a SPURIOUS negative
+        # eigenvalue, the CG witness reacts by bumping lam to ~lam_max, and the damped descent
+        # crawls. Scale the step to the gradient's precision (~5e-3 fp32, ~6e-6 fp64) so the FD
+        # Hessian matches the analytic one (positive-definite here) and the descent is un-clamped.
+        fd_eps = float(torch.finfo(theta_vec.dtype).eps) ** (1.0 / 3.0)
+    vg = make_value_and_grad(static, receiver_weights, theta_shape=theta_shape)
     lam_obj = float(lam)
     x_ref = (theta_vec if theta_ref is None else theta_ref.reshape(-1).to(theta_vec)).double().clone()
     evals = [0]  # cumulative forward+backward evaluations, tracked via wrapper
@@ -109,7 +123,7 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
             # then every CG iteration costs ~1 tangent-forward + 1 tangent-adjoint sweep
             from gpurec.optim.hvp_exact import make_exact_hvp
 
-            theta_m = x_vec.reshape(S, 3)
+            theta_m = x_vec.reshape(theta_shape)
             _, sv_pt = forward_solve(static, theta_m, receiver_weights, warm_E=warm)
             evals[0] += 2  # cache build ~ 1 fwd + 1 bwd
             h = make_exact_hvp(static, theta_m, receiver_weights, sv_pt)
@@ -209,7 +223,7 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
         alpha, accepted, sv_t = 1.0, False, None
         for _ in range(int(ls_max)):
             trial = (theta_vec.double() + alpha * p).to(theta_vec.dtype)
-            lt, st = forward_solve(static, trial.reshape(S, 3), receiver_weights, warm_E=warm_E)
+            lt, st = forward_solve(static, trial.reshape(theta_shape), receiver_weights, warm_E=warm_E)
             Ft = float(lt) + penalty(trial)
             if Ft <= F + c1 * alpha * gp:
                 accepted, sv_t = True, st
@@ -244,7 +258,7 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
                     print("  lam at ceiling with no accepted step -- stopping")
                 break
 
-    return theta_vec.reshape(S, 3), history
+    return theta_vec.reshape(theta_shape), history
 
 
 def newton_tr(static, theta0, receiver_weights, *, curvature="fd_hessian", max_newton=30, gtol=1e-2,

@@ -108,7 +108,8 @@ def compute_dts_tangent(
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        log_split_probs = log_split_probs.reshape(N).contiguous()
+        # float64 batch static -> compute dtype at the boundary (see dts_fused.compute_dts_forward).
+        log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
     by_state = log_pD_vec.ndim == 2 and int(log_pD_vec.shape[1]) != 1
     row_stride = 0 if int(log_pD_vec.shape[0]) == 1 else int(log_pD_vec.stride(0))
     block_s = min(512, triton.next_power_of_2(S))

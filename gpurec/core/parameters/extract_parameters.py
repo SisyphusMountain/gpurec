@@ -25,6 +25,10 @@ def as_family_species(t, S, family_rows):
 
 
 def extract_parameters_uniform(theta, unnorm_row_max, *, specieswise=False, genewise=False):
+    # unnorm_row_max is a full-precision float64 batch static (batching.py); cast to the compute
+    # dtype so the transfer term runs at the model's precision (f64 keeps it; f32 downcasts to the
+    # old value). Mirrors the receiver_weights cast in extract_parameters_weighted_receivers.
+    unnorm_row_max = unnorm_row_max.to(device=theta.device, dtype=theta.dtype)
     zeros = theta.new_zeros((*theta.shape[:-1], 1))
     logits = torch.cat((zeros, theta), dim=-1)
     result = torch.log_softmax(logits * _LN2, dim=-1) / _LN2

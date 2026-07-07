@@ -31,3 +31,36 @@ def test_fidelity_matches_alerax_fixed(fixture):
     assert rep.mean_abs_delta <= TOL_NATS, (
         f"{fixture}: |Δ|={rep.mean_abs_delta:.3e} nats > {TOL_NATS} "
         f"(gpurec={gpurec_ll}, alerax_fixed={alerax_ll})")
+
+
+TOL_NATS_FP64 = 1e-8
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_fidelity_float64_reaches_machine_precision(fixture):
+    """float64 reconciliation must be GENUINE, not floored by a float32 batch static.
+
+    The CCP split log-probs (``log_split_probs``) and the transfer row-max
+    (``unnorm_row_max``) are computed in float64 by the Rust preprocessor. If either is
+    stored truncated to float32 in the batch (batching.py) and not cast back to the compute
+    dtype at the kernel boundary, float64 reconciliation floors at ~1e-5 nats instead of
+    reaching f64 round-off. This guards that regression: with both statics kept float64 and
+    cast to the compute dtype (extract_parameters_uniform / the DTS launchers), every fixture
+    lands within 1e-8 nats of AleRax_fixed (observed <=3e-12). The looser 1e-3 gate above
+    would not catch a re-truncation; this one will.
+    """
+    import torch
+    ref = DATA / fixture / "ref"
+    rates = global_rates(parse_alerax_parameters(ref / "model_parameters.txt"))
+    alerax_ll = parse_alerax_likelihoods(ref / "per_fam_likelihoods.txt")
+    gpurec_ll = reconcile_at_alerax_rates(
+        str(DATA / fixture / "sp.nwk"), [str(DATA / fixture / "g.nwk")], rates,
+        device="cuda", dtype=torch.float64, mode="global")
+    assert len(gpurec_ll) == 1 and len(alerax_ll) == 1
+    gpurec_ll = {k: v for k, v in zip(alerax_ll, gpurec_ll.values())}
+    rep = compare(gpurec_ll, alerax_ll)
+    assert rep.mean_abs_delta <= TOL_NATS_FP64, (
+        f"{fixture}: float64 |Δ|={rep.mean_abs_delta:.3e} nats > {TOL_NATS_FP64} "
+        f"— a float32 batch static is likely flooring float64 "
+        f"(gpurec={gpurec_ll}, alerax_fixed={alerax_ll})")

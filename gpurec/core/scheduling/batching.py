@@ -55,7 +55,10 @@ def preprocess_dataset(
     )
     _validate_schema_version(raw, payload_name="preprocess_dataset")
     species = raw["species"]
-    species["unnorm_row_max"] = torch.tensor(species["unnorm_row_max"], dtype=torch.float32)
+    # float64: the transfer row-max is computed in f64 by the Rust preprocessor and added into
+    # max_transfer (extract_parameters_uniform, which casts it to the compute dtype). Storing it
+    # f64 keeps full precision for f64 models; f32 models downcast (== the old direct-f32 value).
+    species["unnorm_row_max"] = torch.tensor(species["unnorm_row_max"], dtype=torch.float64)
     for key in (
         "sp_child1", "sp_child2", "sp_parent", "sp_subtree_start", "sp_subtree_end",
         "compact_level_parents", "compact_level_child1", "compact_level_child2",
@@ -89,7 +92,10 @@ def build_wave_layout_from_plan(payload, *, device: torch.device | str):
             meta["reduce_idx"] = torch.tensor(raw_meta["reduce_idx"], dtype=index_dtype, device=device).contiguous()
             meta["log_split_probs"] = torch.tensor(
                 [logp[idx] for idx in split_indices],
-                dtype=torch.float32,
+                # float64: CCP split log-probs are f64 from the Rust preprocessor; the DTS
+                # launchers cast to the compute dtype at the kernel boundary. Full precision
+                # for f64 models; f32 models downcast (identical to the old direct-f32 static).
+                dtype=torch.float64,
                 device=device,
             ).contiguous()
             meta["n_eq1"] = int(raw_meta.get("n_eq1", 0))
@@ -250,7 +256,9 @@ def build_wave_layout(families, *, device: torch.device | str, max_wave_size: in
     lefts_t = torch.tensor(lefts_new, dtype=index_dtype, device=device)
     rights_t = torch.tensor(rights_new, dtype=index_dtype, device=device)
     parents_t = torch.tensor(parents_new, dtype=index_dtype, device=device)
-    logp_t = torch.tensor(logp_global, dtype=torch.float32, device=device)
+    # float64: see build_wave_layout_from_plan / the DTS launchers — CCP split log-probs are f64
+    # from the Rust preprocessor and cast to the compute dtype at the DTS kernel boundary.
+    logp_t = torch.tensor(logp_global, dtype=torch.float64, device=device)
     wave_metas = []
     order_head = 0
     for wave_idx, wave in enumerate(waves):

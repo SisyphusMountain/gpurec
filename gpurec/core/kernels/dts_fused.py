@@ -182,7 +182,11 @@ def compute_dts_forward(
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        log_split_probs = log_split_probs.reshape(N).contiguous()
+        # log_split_probs is a float64 batch static (batching.py: CCP split log-probs are
+        # computed in f64 by the Rust preprocessor). Cast to the compute dtype at the kernel
+        # boundary: f64 models keep full precision, f32 models downcast (identical to the old
+        # direct-f32 static). Mirrors the unnorm_row_max cast at solver.py.
+        log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
     if n_eq1 is None:
         n_eq1 = N
         eq1_reduce_idx = reduce_idx

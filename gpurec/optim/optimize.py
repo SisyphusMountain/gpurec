@@ -233,15 +233,24 @@ def newton_polish(batch_statics, theta_stage1, receiver_weights, *, ridge=False,
 
     theta_shape = tuple(theta_stage1.shape)
     theta_f = theta_stage1.detach().reshape(theta_shape).float().contiguous()
+    S = int((batch_statics[0] if isinstance(batch_statics, (list, tuple)) else batch_statics).species_helpers["S"])
+    # A global (3,) theta has no per-species structure: the exact-HVP ridge estimator is
+    # (S,3)-specific (it misreads a broadcast global theta), so skip it and let newton_lanczos
+    # self-damp its FD-Hessian descent.
+    is_global = (theta_f.numel() == 3 and S > 1)
+    if is_global:
+        # each 3-D FD-Newton step is cheap; give it room to reach the gtol stop (the exact-HVP
+        # default of 8 is tuned for expensive large-S steps and stops the global fit early).
+        max_newton = max(int(max_newton), 30)
     lam = 0.0
-    if ridge:
+    if ridge and not is_global:
         lam = _exact_ridge_lambda(batch_statics, theta_f, receiver_weights,
                                   m=max(20, lanczos_m), sigma=sigma, verbose=verbose)
     t_start = time.perf_counter() if t0_wall is None else t0_wall
     theta_hat, h_newton = newton_lanczos(
         batch_statics, theta_f, receiver_weights, hvp_mode="exact", lanczos_m=lanczos_m,
         sigma=sigma, max_newton=max_newton, gtol=gtol, lam=lam,
-        theta_ref=(theta_f if ridge else None), verbose=verbose,
+        theta_ref=(theta_f if (ridge and not is_global) else None), verbose=verbose,
     )
     hist = []
     for r in h_newton:

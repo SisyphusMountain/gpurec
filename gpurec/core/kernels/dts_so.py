@@ -263,7 +263,8 @@ def dts_backward_so(
     if lsp is None:
         lsp = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        lsp = lsp.reshape(N).contiguous()
+        # float64 batch static -> compute dtype at the boundary (see dts_fused.compute_dts_forward).
+        lsp = lsp.reshape(N).to(Pi.dtype).contiguous()
     by_state = log_pD_param.ndim == 2 and int(log_pD_param.shape[1]) != 1
     row_stride = 0 if int(log_pD_param.shape[0]) == 1 else int(log_pD_param.stride(0))
     mt_row_stride = 0 if int(mc_item.shape[0]) == 1 else int(mc_item.stride(0))

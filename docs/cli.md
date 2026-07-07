@@ -34,13 +34,18 @@ Specieswise rows are labelled `s{i}` by species index (mapping to AleRax node la
 the scale kit's job).
 
 **Note:** `--dtype float64` sets the model's compute dtype (`theta`, `receiver_weights`,
-`origination_weights` are built as float64 `nn.Parameter`s; `batch_statics` stay float32
-and the E-step / Pi-wave / likelihood kernels upcast to the parameter dtype). So `reconcile`
-and the likelihood evaluation run that dominant path in float64 (≈10× closer to the AleRax
-reference on the toy fixtures), and `fit --mode genewise` is fully float64. **One caveat:** a
-static per-clade term (`log_split_probs`, used by split/CCP multifurcating families) is not
-re-cast in the DTS kernel and stays float32, so such families keep a small float32 floor on
-that one term — the overall likelihood is still float64-precision-improved, not fully float64.
+`origination_weights` are built as float64 `nn.Parameter`s). The Triton kernels are
+dtype-generic — every kernel takes a `DTYPE: tl.constexpr` and every launcher threads it from
+the input tensor's dtype (`_tl_float_dtype`). The two float batch statics that enter the
+compute (`log_split_probs`, the CCP split log-probs; `unnorm_row_max`, the uniform-mode
+transfer row-max) are stored at full float64 precision — they are computed in f64 by the Rust
+preprocessor — and cast to the compute dtype at the kernel boundary (the DTS launchers and
+`extract_parameters_uniform`). So `reconcile` and the likelihood evaluation are **genuine
+float64 end-to-end**: on the toy AleRax fixtures the float64 likelihood matches AleRax_fixed to
+≤3e-12 nats (machine round-off), vs ~2.9e-5 in float32 — see
+`tests/test_fidelity_alerax.py::test_fidelity_float64_reaches_machine_precision`. float32 is
+byte-for-byte unchanged (a Python-float static rounds to the same f32 whether cast directly or
+via f64). `fit --mode genewise` is fully float64.
 **Nuance:** the first-order optimizer used by `fit --mode global/specieswise`
 (`gpurec.optim.optimize.first_order`) casts to float32 internally by design, so those fits
 still optimize in float32 — `--dtype float64` does not change their optimization
