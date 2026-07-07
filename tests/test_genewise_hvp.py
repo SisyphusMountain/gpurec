@@ -135,6 +135,47 @@ def test_joint_theta_omega_hvp_matches_fd():
 
 
 @pytest.mark.gpu
+def test_joint_theta_omega_alpha_hvp_matches_fd():
+    m = build_genewise_model(per_family_origination=True)
+    st = m.batch_statics[0]
+    G, S = len(m.families), int(m.species_helpers["S"])
+    th = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    al = torch.randn(S, device="cuda", dtype=torch.float64) * 0.1   # NON-uniform alpha
+    om = torch.zeros(G, S, device="cuda", dtype=torch.float64)
+    _l, sv = forward_solve([st], th, al)
+    hvp = make_exact_hvp([st], th, al, sv, tangent_self_iters=128, origination_weights=om)
+    x0 = torch.cat([th.reshape(-1), al.reshape(-1), om.reshape(-1)])   # [theta; alpha; omega]
+    # eps=1e-3 (not 1e-5): the alpha row of H (H_ta = theta-block of H applied to a pure-alpha
+    # direction) is the worst-conditioned FD block -- a small alpha->theta coupling (O(5e-3)) read
+    # off the CHANGE in the large theta gradient (O(15)). In this converged-fp64 setup the central
+    # FD is gradient-NOISE-limited (err ~ solver_noise/eps ~ 1e-10/eps), NOT truncation-limited
+    # (O(eps^2) is negligible here: the theta block stays ~3e-8 even at eps=1e-3), so a larger step
+    # gives the smaller error for EVERY block. An eps-sweep (1e-3..1e-7) shows the analytic-vs-FD rel
+    # DECREASES monotonically toward ~3e-7 as eps grows (no error floor => no structural bug: the
+    # genewise alpha cotangent is global [S], no per-family reduction), and the analytic HVP's tiny
+    # theta<->alpha asymmetry equals the FD's bit-for-bit (a property of the pi_iters-truncated
+    # gradient, not a defect). eps=1e-3 clears 5e-4 with ~10x margin on all four directions.
+    fd = _fd_hessian_hvp(make_joint_value_and_grad(st, (G, 3), S, G), x0, None, eps=1e-3)
+    P = 3 * G + S + G * S
+    dirs = {"theta": _dir_theta(G, S, 1), "omega": _dir_omega(G, S, S // 4)}
+    da = torch.zeros(P, device="cuda", dtype=torch.float64)
+    da[3 * G:3 * G + S] = torch.randn(S, device="cuda", dtype=torch.float64)  # alpha block
+    dirs["alpha"] = da
+    dirs["mixed"] = _dir_theta(G, S, 0) + _dir_omega(G, S, S // 2) + da
+    Hs = {}
+    for name, u in dirs.items():
+        Ha, Hf = hvp(u).double(), fd(u).double()
+        rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
+        assert torch.isfinite(Ha).all() and rel < 5e-4, f"{name}: rel={rel:.2e}"
+        Hs[name] = Ha
+    # symmetry across parameter groups: u^T H w == w^T H u
+    u, w = dirs["theta"], dirs["alpha"]
+    sym = abs(float(torch.dot(u, Hs["alpha"])) - float(torch.dot(w, Hs["theta"])))
+    scale = max((abs(float(torch.dot(u, Hs["theta"]))) * abs(float(torch.dot(w, Hs["alpha"])))) ** 0.5, 1e-30)
+    assert sym / scale < 5e-3, f"asym={sym / scale:.2e}"
+
+
+@pytest.mark.gpu
 def test_origination_grad_matches_fd():
     from gpurec.api._execution import evaluate_static_loss_grad
     m = build_genewise_model(per_family_origination=True); st = m.batch_statics[0]
