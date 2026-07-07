@@ -19,6 +19,22 @@ def theta_for_static(static: _BatchStatic, theta: torch.Tensor, *, genewise: boo
     return theta.index_select(0, static.family_index_tensor) if genewise else theta
 
 
+def origination_weights_for_static(static: _BatchStatic, origination_weights: torch.Tensor) -> torch.Tensor:
+    """Select each batch family's own ``ω_g`` row from a per-family ``[G,S]`` weight tensor.
+
+    Mirrors ``theta_for_static``: identity for a global ``[S]`` weight (``ndim == 1``); for a
+    per-family ``[G,S]`` weight, selects the batch's rows via ``static.family_index_tensor`` so
+    ``origination_weights_static[i]`` lines up with family ``i`` of this batch's ``root_rows``. A
+    no-op for a single batch spanning all families (identity index_select), but required for
+    multi-batch runs where a batch only covers a subset of families.
+    """
+    return (
+        origination_weights.index_select(0, static.family_index_tensor)
+        if origination_weights.ndim == 2
+        else origination_weights
+    )
+
+
 def _origination_log_probs(origination_weights: torch.Tensor, *, like: torch.Tensor):
     """(log2-probs, probs) for non-uniform origination weights, else (None, None) for the fast path."""
     if origination_weights_are_uniform(origination_weights):
@@ -54,7 +70,8 @@ def evaluate_static_loss_grad(
         ) = solve_resident_e_pi(
             static, theta, receiver_weights, warm_start_E=static.warm_E
         )
-        o_lp, o_p = _origination_log_probs(origination_weights, like=theta)
+        origination_weights_static = origination_weights_for_static(static, origination_weights)
+        o_lp, o_p = _origination_log_probs(origination_weights_static, like=theta)
         loss = nll_from_root_rows(root_rows, E, origination_log_probs=o_lp, origination_probs=o_p).detach()
         static.warm_E = E.detach()
         if not need_grad:
@@ -104,7 +121,7 @@ def evaluate_static_loss_grad(
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
         grad_origination = (
-            origination_grad_from_root_rows(root_rows, E, origination_weights).detach()
+            origination_grad_from_root_rows(root_rows, E, origination_weights_static).detach()
             if need_origination_grad
             else None
         )
@@ -205,7 +222,8 @@ def evaluate_static_loss_vector_grad(
         ) = solve_resident_e_pi(
             static, theta, receiver_weights, warm_start_E=static.warm_E
         )
-        o_lp, o_p = _origination_log_probs(origination_weights, like=theta)
+        origination_weights_static = origination_weights_for_static(static, origination_weights)
+        o_lp, o_p = _origination_log_probs(origination_weights_static, like=theta)
         loss_vec = nll_vector_from_root_rows(
             root_rows, E, origination_log_probs=o_lp, origination_probs=o_p
         ).detach()
@@ -258,7 +276,7 @@ def evaluate_static_loss_vector_grad(
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
         grad_origination = (
-            origination_grad_from_root_rows(root_rows, E, origination_weights).detach()
+            origination_grad_from_root_rows(root_rows, E, origination_weights_static).detach()
             if need_origination_grad
             else None
         )

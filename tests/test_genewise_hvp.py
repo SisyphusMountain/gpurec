@@ -82,3 +82,23 @@ def test_per_family_origination_shape():
     assert tuple(m.origination_weights.shape) == (G, S)
     m0 = build_genewise_model(per_family_origination=False)   # default unchanged
     assert tuple(m0.origination_weights.shape) == (S,)
+
+
+@pytest.mark.gpu
+def test_origination_grad_matches_fd():
+    from gpurec.api._execution import evaluate_static_loss_grad
+    m = build_genewise_model(per_family_origination=True); st = m.batch_statics[0]
+    G, S = len(m.families), int(m.species_helpers["S"])
+    th = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+    om = torch.randn(G, S, device="cuda", dtype=torch.float64) * 0.1
+    def loss_only(omega):
+        l, *_ = evaluate_static_loss_grad(st, th, rw, omega, need_grad=False)
+        return float(l)
+    _l, _gt, _gr, g_om = evaluate_static_loss_grad(st, th, rw, om, need_grad=True, need_origination_grad=True)
+    assert tuple(g_om.shape) == (G, S)
+    eps = 1e-5; g, k = 0, S // 3          # probe one (family, species) entry
+    d = torch.zeros(G, S, device="cuda", dtype=torch.float64); d[g, k] = eps
+    fd = (loss_only(om + d) - loss_only(om - d)) / (2 * eps)
+    rel = abs(float(g_om[g, k]) - fd) / max(abs(fd), 1e-30)
+    assert rel < 1e-3, f"origination grad rel={rel:.2e}"
