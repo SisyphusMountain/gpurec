@@ -217,3 +217,17 @@ def test_origination_grad_matches_fd():
     fd = (loss_only(om + d) - loss_only(om - d)) / (2 * eps)
     rel = abs(float(g_om[g, k]) - fd) / max(abs(fd), 1e-30)
     assert rel < 1e-3, f"origination grad rel={rel:.2e}"
+
+
+@pytest.mark.gpu
+def test_genewise_joint_newton_reduces_grad():
+    from gpurec.optim.genewise_curvature import newton_joint_genewise, proj_z_genewise
+    torch.manual_seed(0)
+    m = build_genewise_model(per_family_origination=True); st = m.batch_statics[0]
+    G, S = len(m.families), int(m.species_helpers["S"])
+    th0 = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    al0 = torch.randn(S, device="cuda", dtype=torch.float64) * 0.1          # NON-uniform alpha
+    om0 = torch.randn(G, S, device="cuda", dtype=torch.float64) * 0.1       # NON-uniform omega
+    th, al, om, hist = newton_joint_genewise(st, th0, al0, om0, max_newton=4, verbose=False)
+    assert hist["gnorm_final"] < hist["gnorm_init"]        # Newton reduced the gauge-projected gradient
+    assert math.isfinite(hist["lam_min"])                  # certificate ran (PD not required)

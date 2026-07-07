@@ -1,6 +1,11 @@
 import torch
 from gpurec.optim.hvp_exact import make_exact_hvp
 
+from gpurec.api._execution import evaluate_static_loss_grad
+from gpurec.optim.cg import cg_witness, lanczos_extremes, lanczos_min_eigpair
+from gpurec.optim.origination_curvature import build_joint_hvp
+from gpurec.optim.value_and_grad import free_cuda_cache_if_tight
+
 
 def genewise_hessian_blocks(static, theta, receiver_weights, sv, *, omega=None, active=("theta",)):
     """Structured curvature for the genewise arrowhead Newton solve. P0: theta-only.
@@ -140,3 +145,256 @@ def newton_step_joint(blocks, g_theta, g_omega, g_alpha, mu):
     rhs_z = -g_z - (H_za @ d_alpha)                      # [G,3+S]
     d_z = Binv(rhs_z.unsqueeze(-1)).squeeze(-1)          # [G,3+S]
     return d_z[:, :3].contiguous(), d_z[:, 3:].contiguous(), d_alpha
+
+
+# ==================================================================================================
+# Matrix-free gauge-projected joint Newton-CG over the GENEWISE parameter
+#   z = [theta.reshape(-1) (3G); alpha (S); omega.reshape(-1) (G*S)],   p_dim = 3G + S + G*S.
+#
+# Genewise analog of gpurec.optim.origination_curvature (which handles the specieswise / global-omega
+# case). It reuses the validated joint analytic HVP (build_joint_hvp -> make_exact_hvp, FD-verified
+# genewise in Tasks 4/5) and the operator-based CG/Lanczos primitives (gpurec.optim.cg) verbatim.
+#
+# The ONLY genewise deltas vs origination_curvature are (i) the gauge projector: genewise omega has a
+# softmax gauge PER FAMILY, so there are G omega-nulls plus 1 alpha-null (proj_z_genewise below kills
+# all G+1); (ii) the joint value-and-grad is built directly from evaluate_static_loss_grad because
+# make_value_and_grad's joint layout assumes a GLOBAL omega [S]; (iii) sizes/layout carry G. The
+# HVP itself is genewise-correct as-is (theta [G,3], omega [G,S]).
+# ==================================================================================================
+
+
+def proj_z_genewise(u, theta_numel, S, G):
+    """Gauge projector ``P_z u`` for genewise ``z = [theta (3G); alpha (S); omega (G*S)]``.
+
+    Identity on the theta block; mean-subtract the single alpha block (1 gauge null); mean-subtract
+    EACH of the G omega rows independently (G gauge nulls -- one softmax gauge per family). Kills all
+    G+1 exact-zero directions of the joint Hessian on input, so the reduced operator built from it is
+    the genuine curvature on the gauge-fixed subspace.
+    """
+    th = u[:theta_numel]
+    a = u[theta_numel:theta_numel + S]
+    o = u[theta_numel + S:theta_numel + S + G * S].reshape(G, S)
+    return torch.cat([th, a - a.mean(), (o - o.mean(dim=1, keepdim=True)).reshape(-1)])
+
+
+def make_gauge_operator_genewise(hvp, theta_numel, S, G, *, ridge=0.0):
+    """``A_z(v) = P_z ( H (P_z v) ) + ridge * P_z v`` -- symmetric gauge-projected joint operator.
+
+    All G+1 gauge nulls map to 0 (killed by the input projection). Mirrors
+    ``origination_curvature.make_gauge_operator`` with the genewise projector.
+    """
+    ridge = float(ridge or 0.0)
+
+    def Av(v):
+        pv = proj_z_genewise(v, theta_numel, S, G)
+        Hv = hvp(pv)
+        out = proj_z_genewise(Hv, theta_numel, S, G)
+        if ridge != 0.0:
+            out = out + ridge * pv
+        return out
+
+    return Av
+
+
+def certify_joint_min_genewise(static, theta, alpha, omega, *, m=120, seed=0,
+                               tangent_self_iters=None, warm_E=None, hvp=None, theta_numel=None,
+                               S=None, G=None, verbose=True):
+    """Gauge-fixed reduced-Hessian PD certificate for the genewise ``(theta, alpha, omega)`` point.
+
+    Gauge-projected Lanczos for the smallest reduced-Hessian eigenpair, deflating ALL G+1 gauge nulls:
+    ``proj_z_genewise`` kills them on input, and the ``shift_C * (v - P_z v)`` term lifts any residual
+    null component above the spectrum top so the bottom Ritz value is the genuine minimum on the
+    gauge-fixed subspace. PD is NOT guaranteed -- the point may be a saddle or the omega block may be
+    near-singular; ``lam_min_gauge`` is reported honestly (PD iff > 0). Returns a dict with
+    ``lam_min_gauge``, ``ritz_resid``, ``pd``, ``gauge_comp``, ``v_min``. Run in fp64.
+    """
+    theta, alpha, omega = theta.double(), alpha.double(), omega.double()
+    S = int(S if S is not None else alpha.numel())
+    theta_numel = int(theta_numel if theta_numel is not None else theta.numel())
+    G = int(G if G is not None else omega.reshape(-1).numel() // S)
+    if hvp is None:
+        hvp, _loss, _sv, _cache = build_joint_hvp(static, theta, alpha, omega, warm_E=warm_E,
+                                                  tangent_self_iters=tangent_self_iters)
+    p = theta_numel + S + G * S
+    Av = make_gauge_operator_genewise(hvp, theta_numel, S, G)
+    gen = torch.Generator(device=str(theta.device)).manual_seed(seed)
+    start = proj_z_genewise(torch.randn(p, generator=gen, device=theta.device, dtype=torch.float64),
+                            theta_numel, S, G)
+
+    _, lam_max = lanczos_extremes(Av, p, m=min(20, p), device=str(theta.device), start=start)
+    shift_C = 2.0 * max(abs(lam_max), 1.0)
+
+    def Av_deflated(v):
+        return Av(v) + shift_C * (v - proj_z_genewise(v, theta_numel, S, G))
+
+    lam_min, v_min = lanczos_min_eigpair(Av_deflated, p, m=m, device=str(theta.device), start=start)
+    Av_v = Av(v_min)
+    ritz_resid = float((Av_v - lam_min * v_min).norm()) / max(abs(lam_min), 1.0)
+    gauge_comp = float((v_min - proj_z_genewise(v_min, theta_numel, S, G)).norm())
+    pd = lam_min > 0.0
+    if verbose:
+        tag = "PD (certified gauge-fixed genewise min)" if pd else "NOT PD (saddle / near-singular)"
+        print(f"[gw-cert] lam_min_gauge={lam_min:+.6e}  ritz_resid={ritz_resid:.2e}  "
+              f"gauge_comp={gauge_comp:.2e}  m={m}  -> {tag}")
+    return dict(lam_min_gauge=lam_min, ritz_resid=ritz_resid, pd=bool(pd), gauge_comp=gauge_comp,
+                v_min=v_min, m=int(m), S=S, G=G, theta_numel=theta_numel)
+
+
+def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_floor=1e-4,
+                          lanczos_m=10, nu=1.5, decrease=1.5, max_bumps=3, max_cg=40, c1=1e-4,
+                          ls_max=25, gtol=1e-2, max_newton=40, tangent_self_iters=None, ftol=1e-9,
+                          seed=0, cert_m=120, verbose=True):
+    """Gauge-projected LM-damped Newton-CG on the genewise joint ``z = [theta (3G); alpha (S); omega (G*S)]``.
+
+    Mirrors ``origination_curvature.newton_joint`` with three genewise deltas: (i) ``proj_z_genewise``
+    (G+1 gauge nulls -- one alpha null plus one softmax null per family); (ii) loss/grad come from
+    ``evaluate_static_loss_grad`` (genewise theta ``[G,3]``, omega ``[G,S]``; g_alpha is the receiver
+    grad); (iii) the joint analytic HVP is ``build_joint_hvp`` (genewise-correct as-is). Each Newton
+    system ``P (H + lam*I) P dz = -P g`` is solved by ``cg_witness`` (negative-curvature self-correction
+    bumps ``lam``), globalized by Armijo backtracking on the joint forward loss; after each accepted step
+    alpha is re-centered and EACH omega row is re-centered to the gauge slice, and the HVP is rebuilt at
+    the new point. REQUIRES non-uniform ``alpha0`` AND ``omega0`` (build_joint_hvp raises otherwise). Run
+    in fp64. Returns ``(theta, alpha, omega, history)`` where ``history`` is a dict holding
+    ``gnorm_init``/``gnorm_final`` (``||P g||`` at the start / final iterate), the final ``lam_min`` and
+    ``pd`` (from ``certify_joint_min_genewise``, PD not forced), the per-iteration ``iters`` trace, and
+    the full ``cert`` dict.
+    """
+    theta0 = theta0.double()
+    alpha0 = alpha0.double().reshape(-1)
+    omega0 = omega0.double()
+    theta_shape = tuple(theta0.shape)          # (G, 3)
+    G = int(theta0.shape[0])
+    theta_numel = int(theta0.numel())          # 3G
+    S = int(alpha0.numel())
+    p_dim = theta_numel + S + G * S
+    device = theta0.device
+
+    alpha0 = alpha0 - alpha0.mean()                                              # land on the gauge slice
+    omega0 = omega0.reshape(G, S)
+    omega0 = omega0 - omega0.mean(dim=1, keepdim=True)                           # per-family row-center
+    z = torch.cat([theta0.reshape(-1), alpha0, omega0.reshape(-1)]).contiguous()
+
+    def split(zv):
+        th = zv[:theta_numel].reshape(theta_shape).contiguous()
+        al = zv[theta_numel:theta_numel + S].contiguous()
+        om = zv[theta_numel + S:].reshape(G, S).contiguous()
+        return th, al, om
+
+    def vg(zv, *, want_grad=True):
+        th, al, om = split(zv)
+        if want_grad:
+            free_cuda_cache_if_tight()
+            loss, g_th, g_al, g_om = evaluate_static_loss_grad(
+                static, th, al, om, need_grad=True, need_origination_grad=True)
+            g_z = torch.cat([g_th.reshape(-1), g_al.reshape(-1), g_om.reshape(-1)]).double()
+            return float(loss), g_z, None, None
+        loss, _, _, _ = evaluate_static_loss_grad(static, th, al, om, need_grad=False)
+        return float(loss), None, None, None
+
+    def build_hvp(zv):
+        th, al, om = split(zv)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        hvp, _l, _sv, _c = build_joint_hvp(static, th, al, om, tangent_self_iters=tangent_self_iters)
+        return make_gauge_operator_genewise(hvp, theta_numel, S, G)
+
+    F, g_z, _, _ = vg(z)
+    gP = proj_z_genewise(g_z.double(), theta_numel, S, G)
+    gnorm_init = float(gP.norm())
+    Hz = build_hvp(z)
+    start = proj_z_genewise(
+        torch.randn(p_dim, generator=torch.Generator(device=str(device)).manual_seed(seed),
+                    device=device, dtype=torch.float64), theta_numel, S, G)
+    _, lam_max = lanczos_extremes(Hz, p_dim, m=lanczos_m, device=str(device), start=start)
+    lam_max = max(lam_max, 1e-12)
+    lam_damp = sigma * lam_max
+    lam_floor = sigma_floor * lam_max
+    lam_ceil = 10.0 * lam_max
+    if verbose:
+        print(f"[newton-joint(gw)] G={G} S={S} theta_numel={theta_numel} p_dim={p_dim}  "
+              f"lam_max~{lam_max:.3f}  lam_damp0={lam_damp:.4f}  gnorm0={gnorm_init:.4e}")
+
+    trace, stalls, hvp_stale = [], 0, False
+    for k in range(int(max_newton)):
+        gnorm = float(gP.norm())
+        rec = {"newton": k, "F": F, "gnorm": gnorm, "lam_damp": lam_damp}
+        trace.append(rec)
+        if verbose:
+            print(f"[nj {k:2d}] F={F:.6f}  ||P g||={gnorm:.4e}  lam={lam_damp:.3e}", end="")
+        if gnorm < gtol:
+            if verbose:
+                print("  converged")
+            break
+        if hvp_stale:
+            Hz = None
+            free_cuda_cache_if_tight(min_free_gib=8.0)
+            Hz = build_hvp(z)
+            hvp_stale = False
+
+        eta = min(0.1, gnorm ** 0.5)
+        p_step, cg_iters, status, cert = None, 0, "", None
+        for _bump in range(int(max_bumps) + 1):
+            Av = lambda v, ld=lam_damp: Hz(v) + ld * proj_z_genewise(v, theta_numel, S, G)
+            p_step, cg_iters, status, cert = cg_witness(Av, -gP, tol=eta * gnorm, max_iter=max_cg)
+            if status != "neg_curv":
+                break
+            lam_damp = min(lam_ceil, nu * (lam_damp - cert))
+            if verbose:
+                print(f"\n      witness d^TAd/|d|^2={cert:.2e} -> lam={lam_damp:.3e}", end="")
+        if status == "neg_curv":
+            p_step, status = -gP / lam_damp, "fallback_gd"
+        p_step = proj_z_genewise(p_step, theta_numel, S, G)
+        rec["cg"], rec["status"] = cg_iters, status
+
+        gp = float(torch.dot(gP, p_step))
+        if gp >= 0.0:
+            p_step = -gP / lam_damp
+            gp = -gnorm * gnorm / lam_damp
+            status += "+gd"
+
+        alpha_ls, accepted = 1.0, False
+        for _ in range(int(ls_max)):
+            trial = z + alpha_ls * p_step
+            Ft, _, _, _ = vg(trial, want_grad=False)
+            if Ft <= F + c1 * alpha_ls * gp:
+                accepted = True
+                break
+            alpha_ls *= 0.5
+        rec["alpha_ls"] = alpha_ls if accepted else None
+
+        if accepted:
+            z = proj_z_genewise(trial, theta_numel, S, G).contiguous()   # re-center alpha AND each omega row
+            hvp_stale = True
+            lam_damp = max(lam_floor, lam_damp / decrease) if alpha_ls == 1.0 else min(lam_ceil, 1.5 * lam_damp)
+            if verbose:
+                print(f"  cg={cg_iters}({status})  a={alpha_ls:.2e}  dF={Ft - F:+.4e}")
+            stalls = stalls + 1 if (F - Ft) <= ftol * max(1.0, abs(F)) else 0
+            F = Ft
+            F, g_z, _, _ = vg(z)
+            gP = proj_z_genewise(g_z.double(), theta_numel, S, G)
+            if stalls >= 2:
+                if verbose:
+                    print(f"[nj {k + 1:2d}] improvement below ftol floor twice -- stopping")
+                break
+        else:
+            lam_damp = min(lam_ceil, 4.0 * lam_damp)
+            if verbose:
+                print(f"  cg={cg_iters}({status})  line-search failed -> lam={lam_damp:.3e}")
+            if lam_damp >= lam_ceil:
+                if verbose:
+                    print("  lam at ceiling with no accepted step -- stopping")
+                break
+
+    theta_out, alpha_out, omega_out = split(z)
+    alpha_out = alpha_out - alpha_out.mean()
+    omega_out = omega_out - omega_out.mean(dim=1, keepdim=True)
+    gnorm_final = float(gP.norm())
+
+    # Final gauge-fixed PD certificate at the polished point (fresh HVP; PD is NOT forced).
+    hvp_f, _l, _sv, _c = build_joint_hvp(static, theta_out, alpha_out, omega_out,
+                                         tangent_self_iters=tangent_self_iters)
+    cert = certify_joint_min_genewise(static, theta_out, alpha_out, omega_out, m=cert_m, hvp=hvp_f,
+                                      theta_numel=theta_numel, S=S, G=G, verbose=verbose)
+    history = dict(gnorm_init=gnorm_init, gnorm_final=gnorm_final, lam_min=cert["lam_min_gauge"],
+                   pd=cert["pd"], iters=trace, cert=cert)
+    return theta_out, alpha_out, omega_out, history
