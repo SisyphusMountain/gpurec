@@ -84,6 +84,56 @@ def test_per_family_origination_shape():
     assert tuple(m0.origination_weights.shape) == (S,)
 
 
+def make_joint_value_and_grad(static, theta_shape, S, G):
+    """(loss, flat-grad) over z=[theta(3G); omega(GS); alpha(S)] for fp64 FD. Packs the three grads
+    from evaluate_static_loss_grad in the SAME order the joint hvp returns them ([theta; omega; alpha]).
+    """
+    from gpurec.api._execution import evaluate_static_loss_grad
+    nt = int(torch.tensor(theta_shape).prod())
+
+    def vg(x, warm_E=None):
+        th = x[:nt].reshape(theta_shape)
+        om = x[nt:nt + G * S].reshape(G, S)
+        al = x[nt + G * S:nt + G * S + S]
+        # need_grad=True is required: origination grad is only produced on the need_grad path.
+        l, g_th, g_al, g_om = evaluate_static_loss_grad(
+            static, th, al, om, need_grad=True, need_origination_grad=True)
+        g = torch.cat([g_th.reshape(-1), g_om.reshape(-1), g_al.reshape(-1)]).double()
+        return float(l), g, None, None
+
+    return vg
+
+
+def _dir_theta(G, S, j):
+    u = torch.zeros(3 * G + G * S + S, device="cuda", dtype=torch.float64)
+    u.view(-1)[j:3 * G:3] = 1.0  # broadcast e_j across families' theta block
+    return u
+
+
+def _dir_omega(G, S, k):
+    u = torch.zeros(3 * G + G * S + S, device="cuda", dtype=torch.float64)
+    u[3 * G:3 * G + G * S].reshape(G, S)[:, k] = 1.0  # broadcast omega e_k across families
+    return u
+
+
+@pytest.mark.gpu
+def test_joint_theta_omega_hvp_matches_fd():
+    m = build_genewise_model(per_family_origination=True)
+    st = m.batch_statics[0]
+    G, S = len(m.families), int(m.species_helpers["S"])
+    th = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+    om = torch.zeros(G, S, device="cuda", dtype=torch.float64)
+    _l, sv = forward_solve([st], th, rw)
+    hvp = make_exact_hvp([st], th, rw, sv, tangent_self_iters=128, origination_weights=om)
+    x0 = torch.cat([th.reshape(-1), om.reshape(-1), rw.reshape(-1)])
+    fd = _fd_hessian_hvp(make_joint_value_and_grad(st, (G, 3), S, G), x0, None, eps=1e-5)
+    for name, u in [("theta_e0", _dir_theta(G, S, 0)), ("omega_k", _dir_omega(G, S, S // 3))]:
+        Ha, Hf = hvp(u).double(), fd(u).double()
+        rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
+        assert torch.isfinite(Ha).all() and rel < 5e-4, f"{name}: rel={rel:.2e}"
+
+
 @pytest.mark.gpu
 def test_origination_grad_matches_fd():
     from gpurec.api._execution import evaluate_static_loss_grad

@@ -167,6 +167,17 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
     E_star = sv["E"]
     G = int(E_star.shape[0])
 
+    # Turn ON the origination head whenever origination_weights are supplied (even UNIFORM omega=0):
+    # the omega curvature at uniform omega is nonzero and is exactly what the joint gate must capture.
+    # Derive the log-probs from the weights (shape-generic: [S] specieswise/global, [G,S] genewise) so
+    # build_point_cache runs the same weighted head as the tangent sweep -- at uniform omega this is
+    # numerically identical to the default uniform forward, so the point cache stays consistent; we are
+    # only enabling the head double-backward that produces Hv_omega.
+    if origination_weights is not None and origination_log_probs is None:
+        from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
+        origination_log_probs = origination_log_probs_from_weights(origination_weights)
+        origination_probs = torch.exp2(origination_log_probs)
+
     if cache is None:
         _, _, cache = build_point_cache(static, theta, col_weights, sv,
                                         origination_log_probs=origination_log_probs,
@@ -273,20 +284,26 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
         u_vec = u_vec.to(theta.dtype)
         theta_numel = theta.numel()
         u = u_vec[:theta_numel].reshape(theta.shape)
-        # Layout: [u_theta (theta_numel); u_alpha (S)?; u_omega (S)?]. theta-only (len theta_numel)
-        # returns theta_numel BIT-FOR-BIT (the _verify_hvp uniform gate depends on it); [theta; alpha]
-        # returns theta_numel+S; [theta; alpha; omega] returns theta_numel+2S.
+        # CANONICAL layout: [u_theta (theta_numel); u_omega (omega_numel)?; u_alpha (S)?]. Omega BEFORE
+        # alpha. The omega size is keyed off the origination parameter, so this is uniform across modes:
+        # genewise omega_numel=G*S -> u_omega reshapes to [G,S]; specieswise/global omega_numel=S -> [S].
+        #   n_tail == 0                 -> theta-only, returns theta_numel BIT-FOR-BIT (_verify_hvp gate);
+        #   n_tail == S                 -> [theta; alpha], omega implicitly 0 (_verify_hvp_recv path);
+        #   n_tail == omega_numel + S   -> full [theta; omega; alpha].
+        omega_numel = origination_weights.numel() if origination_weights is not None else 0
         n_tail = u_vec.numel() - theta_numel
+        has_omega = (omega_numel > 0 and n_tail == omega_numel + S)
         joint = n_tail >= S
-        has_omega = n_tail >= 2 * S
-        if joint:
-            u_alpha = u_vec[theta_numel:theta_numel + S].contiguous()
-        else:
-            u_alpha = torch.zeros(S, device=theta.device, dtype=theta.dtype)
         if has_omega:
-            u_omega = u_vec[theta_numel + S:theta_numel + 2 * S].contiguous()
+            u_omega = u_vec[theta_numel:theta_numel + omega_numel].reshape(origination_weights.shape)
+            u_alpha = u_vec[theta_numel + omega_numel:theta_numel + omega_numel + S].contiguous()
         else:
-            u_omega = torch.zeros(S, device=theta.device, dtype=theta.dtype)
+            u_alpha = (u_vec[theta_numel:theta_numel + S].contiguous() if joint
+                       else torch.zeros(S, device=theta.device, dtype=theta.dtype))
+            # u_omega is only consumed when the origination head is active; keep its shape matched to
+            # origination_weights ([G,S] genewise / [S] otherwise) so _head_seed_tangents contracts cleanly.
+            u_omega = (torch.zeros_like(origination_weights) if origination_weights is not None
+                       else torch.zeros(S, device=theta.device, dtype=theta.dtype))
         with torch.no_grad():
             # S3/S7: at a NON-UNIFORM base the tangent forward MUST go through the weighted path
             # (param_jvp_weighted + use_col_weights), consistent with the weighted primal fixed
@@ -535,9 +552,10 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             head = (g1_theta * u).sum() + (g1_col * u_alpha).sum() + phi2
             out_theta, out_col = torch.autograd.grad(head, (theta_req, col_req), retain_graph=True)
         if has_omega:
-            # [theta; alpha; omega] contract: omega row = head omega-Hessian . (t_root, dE, u_omega),
-            # computed in _head_seed_tangents (omega is head-only -> no kernel/adjoint term).
-            return torch.cat([out_theta.reshape(-1), out_col.reshape(-1), Hv_omega.reshape(-1)])
+            # Full [theta; omega; alpha] contract (CANONICAL order, omega BEFORE alpha): the omega row is
+            # the head omega-Hessian . (t_root, dE, u_omega) from _head_seed_tangents (omega is head-only
+            # -> no kernel/adjoint term). Hv_omega is [G,S] genewise / [S] otherwise; flatten in place.
+            return torch.cat([out_theta.reshape(-1), Hv_omega.reshape(-1), out_col.reshape(-1)])
         return torch.cat([out_theta.reshape(-1), out_col.reshape(-1)])
 
     return hvp
