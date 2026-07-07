@@ -467,6 +467,12 @@ def ridge_anneal(batch_statics, theta0, receiver_weights, *, lam0=None, sigma=0.
 # ----------------------------------------------------------------------------------------------
 # orchestrator
 # ----------------------------------------------------------------------------------------------
+# Reference tuning from the 666x80 characterization; clone-override per dataset. See docs/config_convention.md.
+OPTIMIZE_REFERENCE = dict(
+    optimizer="adam", lr0=1.0, schedule="adaptive", max_steps=300, polish_mode="ridge", max_newton=8,
+)
+
+
 def optimize(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr0=1.0,
              schedule="adaptive", max_steps=300, polish_mode="ridge", max_newton=8, verbose=True,
              polish=None, ridge=None, tv_penalty=None, origination_penalty=None, group_index=None):

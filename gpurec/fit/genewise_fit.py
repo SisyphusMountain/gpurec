@@ -42,6 +42,16 @@ _BASE_SOLVER = dict(
     adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0,
 )
 
+# Reference recipe tuned for the standard genewise problem. Import and clone-override per dataset:
+#   fit_genewise(sp, genes, **{**GENEWISE_REFERENCE, "tol": 5e-4})
+# Per-dataset values belong in your experiment script, NOT edited here (see docs/config_convention.md).
+GENEWISE_REFERENCE = dict(
+    adam_steps=5, adam_lr=1.0, grad_clip=10.0, pi_tiers=(16, 64), neu_opt=16, neu_cert=64,
+    clade_budget=None, tol=1e-3, max_iter=120, check_every=4, drop_frac=0.30, trust=2.0,
+    fd_eps=1e-2, mu=1e-2, fwd_tol=1e-3, improve_frac=0.8, verify_drop=True, eager_defer=True,
+    warm_adjoint=True, certify=False,
+)
+
 
 def _resolve_gene_trees(spec) -> list[str]:
     """A list of paths, a glob ('dir/*.ale'), a directory (-> *.ale then *.newick), or a listfile."""

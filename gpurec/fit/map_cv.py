@@ -115,6 +115,13 @@ def fit_map(batch_statics, theta0, receiver_weights, *, lam, theta_ref,
     return torch.tensor(res.x, device=dev, dtype=torch.float32).reshape(theta_shape)
 
 
+# Reference CV tuning; clone-override per dataset. See docs/config_convention.md.
+MAP_CV_REFERENCE = dict(
+    k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 1000.0), mode="specieswise", init_rate=0.1, seed=0,
+    adam_steps=60, lbfgs_iters=80, maxcor=50,
+)
+
+
 def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 1000.0),
            mode="specieswise", init_rate=0.1, seed=0, solver_options=None, device="cuda",
            adam_steps=60, lbfgs_iters=80, maxcor=50, verbose=True):
