@@ -1,7 +1,7 @@
 import torch
 from gpurec.optim.hvp_exact import make_exact_hvp
 
-from gpurec.api._execution import evaluate_static_loss_grad
+from gpurec.api._execution import evaluate_static_loss_grad, stream_batches
 from gpurec.optim.cg import cg_witness, lanczos_extremes, lanczos_min_eigpair
 from gpurec.optim.origination_curvature import build_joint_hvp
 from gpurec.optim.value_and_grad import forward_solve, free_cuda_cache_if_tight
@@ -212,9 +212,16 @@ def certify_joint_min_genewise(static, theta, alpha, omega, *, m=120, seed=0,
     S = int(S if S is not None else alpha.numel())
     theta_numel = int(theta_numel if theta_numel is not None else theta.numel())
     G = int(G if G is not None else omega.reshape(-1).numel() // S)
+    # `static` is EITHER a single static (single-batch, bit-for-bit) OR a batch_statics list (len>1).
+    statics = static if isinstance(static, (list, tuple)) else [static]
+    multibatch = len(statics) > 1
     if hvp is None:
-        hvp, _loss, _sv, _cache = build_joint_hvp(static, theta, alpha, omega, warm_E=warm_E,
-                                                  tangent_self_iters=tangent_self_iters)
+        if multibatch:
+            hvp = make_multibatch_joint_hvp_genewise(statics, theta, alpha, omega,
+                                                     tangent_self_iters=tangent_self_iters)
+        else:
+            hvp, _loss, _sv, _cache = build_joint_hvp(statics[0], theta, alpha, omega, warm_E=warm_E,
+                                                      tangent_self_iters=tangent_self_iters)
     p = theta_numel + S + G * S
     Av = make_gauge_operator_genewise(hvp, theta_numel, S, G)
     gen = torch.Generator(device=str(theta.device)).manual_seed(seed)
@@ -268,6 +275,12 @@ def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_f
     S = int(alpha0.numel())
     p_dim = theta_numel + S + G * S
     device = theta0.device
+    # `static` is EITHER a single static / [static] (single-batch, bit-for-bit) OR a batch_statics
+    # list (len>1). p_dim uses the FULL G (sum of per-batch families), independent of batch count;
+    # everything below (proj/LM/CG/line-search/certificate) operates on the flat [theta;alpha;omega].
+    statics = static if isinstance(static, (list, tuple)) else [static]
+    multibatch = len(statics) > 1
+    single = statics[0]
 
     alpha0 = alpha0 - alpha0.mean()                                              # land on the gauge slice
     omega0 = omega0.reshape(G, S)
@@ -280,22 +293,37 @@ def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_f
         om = zv[theta_numel + S:].reshape(G, S).contiguous()
         return th, al, om
 
+    # True multi-batch joint value-and-grad (9a): sums per-batch losses, index_add/scatter of the
+    # disjoint per-family theta/omega grads + plain sum of the shared alpha grad. Built once.
+    _mb_vg = multibatch_joint_vg_genewise(statics, theta_shape, S, G) if multibatch else None
+
     def vg(zv, *, want_grad=True):
         th, al, om = split(zv)
+        if multibatch:
+            if want_grad:
+                free_cuda_cache_if_tight()
+                loss, g_z, _, _ = _mb_vg(zv)
+                return float(loss), g_z.double(), None, None
+            loss, _, _, _ = stream_batches(statics, th, al, om, genewise=True, need_grad=False)
+            return float(loss), None, None, None
         if want_grad:
             free_cuda_cache_if_tight()
             loss, g_th, g_al, g_om = evaluate_static_loss_grad(
-                static, th, al, om, need_grad=True, need_origination_grad=True)
+                single, th, al, om, need_grad=True, need_origination_grad=True)
             g_z = torch.cat([g_th.reshape(-1), g_al.reshape(-1), g_om.reshape(-1)]).double()
             return float(loss), g_z, None, None
-        loss, _, _, _ = evaluate_static_loss_grad(static, th, al, om, need_grad=False)
+        loss, _, _, _ = evaluate_static_loss_grad(single, th, al, om, need_grad=False)
         return float(loss), None, None, None
 
     def build_hvp(zv):
         th, al, om = split(zv)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        hvp, _l, _sv, _c = build_joint_hvp(static, th, al, om, tangent_self_iters=tangent_self_iters)
+        if multibatch:
+            hvp = make_multibatch_joint_hvp_genewise(statics, th, al, om,
+                                                     tangent_self_iters=tangent_self_iters)
+        else:
+            hvp, _l, _sv, _c = build_joint_hvp(single, th, al, om, tangent_self_iters=tangent_self_iters)
         return make_gauge_operator_genewise(hvp, theta_numel, S, G)
 
     F, g_z, _, _ = vg(z)
@@ -391,8 +419,12 @@ def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_f
     gnorm_final = float(gP.norm())
 
     # Final gauge-fixed PD certificate at the polished point (fresh HVP; PD is NOT forced).
-    hvp_f, _l, _sv, _c = build_joint_hvp(static, theta_out, alpha_out, omega_out,
-                                         tangent_self_iters=tangent_self_iters)
+    if multibatch:
+        hvp_f = make_multibatch_joint_hvp_genewise(statics, theta_out, alpha_out, omega_out,
+                                                   tangent_self_iters=tangent_self_iters)
+    else:
+        hvp_f, _l, _sv, _c = build_joint_hvp(single, theta_out, alpha_out, omega_out,
+                                             tangent_self_iters=tangent_self_iters)
     cert = certify_joint_min_genewise(static, theta_out, alpha_out, omega_out, m=cert_m, hvp=hvp_f,
                                       theta_numel=theta_numel, S=S, G=G, verbose=verbose)
     history = dict(gnorm_init=gnorm_init, gnorm_final=gnorm_final, lam_min=cert["lam_min_gauge"],

@@ -269,3 +269,39 @@ def test_multibatch_joint_hvp_matches_fd():
         Ha, Hf = Av(u).double(), fd(u).double()
         rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
         assert torch.isfinite(Ha).all() and rel < 5e-4, f"{name}: rel={rel:.2e}"
+
+
+@pytest.mark.gpu
+def test_genewise_joint_newton_multibatch():
+    # Multi-batch genewise joint Newton-CG fit: newton_joint_genewise must accept a batch_statics
+    # LIST (len>=2), drive the multi-batch HVP + multi-batch joint value-and-grad, and reduce the
+    # gauge-projected gradient. max_newton=3 keeps the several per-batch HVP rebuilds/step bounded.
+    from gpurec.optim.genewise_curvature import newton_joint_genewise
+    torch.manual_seed(0)
+    m = build_genewise_model(n_fam=4, per_family_origination=True, family_chunk_size=2)
+    assert len(m.batch_statics) >= 2, f"need multi-batch, got {len(m.batch_statics)}"
+    G, S = len(m.families), int(m.species_helpers["S"])
+    th0 = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    al0 = torch.randn(S, device="cuda", dtype=torch.float64) * 0.1     # non-uniform alpha
+    om0 = torch.randn(G, S, device="cuda", dtype=torch.float64) * 0.1  # non-uniform omega
+    th, al, om, hist = newton_joint_genewise(m.batch_statics, th0, al0, om0, max_newton=3, verbose=False)
+    assert hist["gnorm_final"] < hist["gnorm_init"]   # Newton reduced the gauge-projected gradient
+    assert math.isfinite(hist["lam_min"])             # certificate ran (PD not required)
+
+
+@pytest.mark.gpu
+def test_stream_batches_multibatch_origination_grad():
+    # Multi-batch per-family origination grad: stream_batches must scatter each batch-local [G_b,S]
+    # origination grad into the full [G,S] accumulator (index_add_), not shape-mismatch on .add_().
+    from gpurec.api._execution import stream_batches
+    torch.manual_seed(0)
+    m = build_genewise_model(n_fam=4, per_family_origination=True, family_chunk_size=2)
+    assert len(m.batch_statics) >= 2, f"need multi-batch, got {len(m.batch_statics)}"
+    G, S = len(m.families), int(m.species_helpers["S"])
+    th = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+    om = torch.randn(G, S, device="cuda", dtype=torch.float64) * 0.1
+    loss, g_th, g_rw, g_om = stream_batches(
+        m.batch_statics, th, rw, om, genewise=True, need_grad=True, need_origination_grad=True)
+    assert tuple(g_om.shape) == (G, S)
+    assert torch.isfinite(g_om).all()

@@ -321,9 +321,13 @@ def stream_batches(
                 grad_receiver_i.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
             )
             if grad_origination_total is not None and grad_origination_i is not None:
-                grad_origination_total.add_(
-                    grad_origination_i.to(device=origination_weights.device, dtype=origination_weights.dtype)
+                grad_origination_i = grad_origination_i.to(
+                    device=origination_weights.device, dtype=origination_weights.dtype
                 )
+                if origination_weights.ndim == 2:  # per-family [G,S]: scatter batch-local rows into full [G,S]
+                    grad_origination_total.index_add_(0, static.family_index_tensor, grad_origination_i)
+                else:  # 1-D global [S]: plain sum (byte-for-bit, specieswise)
+                    grad_origination_total.add_(grad_origination_i)
     return (
         total.detach(),
         None if grad_total is None else grad_total.detach(),
@@ -376,9 +380,13 @@ def stream_genewise_loss_vector_grad(
                 grad_receiver_i.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
             )
             if grad_origination_total is not None and grad_origination_i is not None:
-                grad_origination_total.add_(
-                    grad_origination_i.to(device=origination_weights.device, dtype=origination_weights.dtype)
+                grad_origination_i = grad_origination_i.to(
+                    device=origination_weights.device, dtype=origination_weights.dtype
                 )
+                if origination_weights.ndim == 2:  # per-family [G,S]: scatter batch-local rows into full [G,S]
+                    grad_origination_total.index_add_(0, static.family_index_tensor, grad_origination_i)
+                else:  # 1-D global [S]: plain sum (byte-for-bit, specieswise)
+                    grad_origination_total.add_(grad_origination_i)
     return (
         loss_total.detach(),
         None if grad_total is None else grad_total.detach(),
