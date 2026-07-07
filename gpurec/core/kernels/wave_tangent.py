@@ -244,7 +244,6 @@ def _wave_step_tangent_selfloop_kernel(
         dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)  # invariant col seed
         weighted = colw + pi_w
     else:
-        colw = pi_w  # unused
         dcolw = zero
         weighted = pi_w
     row_max = tl.max(weighted, axis=0)
