@@ -59,3 +59,19 @@ def test_genewise_theta_hvp_matches_fd():
     sym = abs(float(torch.dot(u, Hw)) - float(torch.dot(w, Hu)))
     scale = max((abs(float(torch.dot(u, Hu))) * abs(float(torch.dot(w, Hw)))) ** 0.5, 1e-30)
     assert sym / scale < 5e-3, f"non-symmetric: rel_asym={sym / scale:.2e}"
+
+
+@pytest.mark.gpu
+def test_theta_blocks_fp32_vs_fp64():
+    from gpurec.optim.genewise_curvature import genewise_hessian_blocks
+    def blocks(dtype):
+        m = build_genewise_model(dtype=dtype); st = m.batch_statics[0]
+        G = len(m.families); S = int(m.species_helpers["S"])
+        th = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=dtype)
+        rw = torch.zeros(S, device="cuda", dtype=dtype)
+        _l, sv = forward_solve([st], th, rw)
+        return genewise_hessian_blocks(st, th, rw, sv)["H_tt"]
+    H32, H64 = blocks(torch.float32).double(), blocks(torch.float64)
+    assert torch.isfinite(H32).all()
+    torch.testing.assert_close(H32, H64, rtol=1e-3, atol=1e-2)
+    assert float((H64 - H64.transpose(1, 2)).abs().max()) < 1e-6  # each 3x3 block symmetric
