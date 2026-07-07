@@ -212,7 +212,7 @@ def make_joint_value_and_grad(static, theta_shape, S, G):
     grads from evaluate_static_loss_grad in the SAME order the joint hvp returns them ([theta; alpha; omega])."""
     from gpurec.api._execution import evaluate_static_loss_grad
     nt = int(torch.tensor(theta_shape).prod())
-    def vg(x, warm=None):
+    def vg(x, warm_E=None):   # _fd_hessian_hvp calls vg(..., warm_E=warm_E) BY KEYWORD -- name must be warm_E
         th = x[:nt].reshape(theta_shape)
         al = x[nt:nt + S]
         om = x[nt + S:nt + S + G * S].reshape(G, S)
