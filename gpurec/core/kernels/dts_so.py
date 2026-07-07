@@ -1,6 +1,7 @@
 """Second-order contraction of the dts cross-wave backward (for the analytic exact-Hessian HVP).
 
-Per split (l, r, parent w) the dts backward forms (wave_backward.py:1868-2285, at fixed adjoint v)
+Per split (l, r, parent w) the dts backward forms (wave_backward_kernels.py
+``_dts_cross_backward_accum_kernel``, at fixed adjoint v)
 ``vd_k = v[w,s] * w_k`` with ``w_k = 2^{lsp + d_k - Pi_parent[w,s]}`` and the five terms
 d0=log_pD+Pi_l+Pi_r, d1=Pi_l+Pibar_r, d2=Pi_r+Pibar_l, d3=log_pS+Pi_l[c1]+Pi_r[c2],
 d4=log_pS+Pi_r[c1]+Pi_l[c2]; it scatters Pi cotangents, stages pibar cotangents
