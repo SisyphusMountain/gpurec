@@ -176,6 +176,30 @@ def test_joint_theta_omega_alpha_hvp_matches_fd():
 
 
 @pytest.mark.gpu
+def test_newton_step_matches_dense():
+    from gpurec.optim.genewise_curvature import newton_step_joint, _assemble_dense_arrowhead
+    torch.manual_seed(0); G, S, r, mu = 2, 5, 2, 1e-2
+    dev, dt = "cuda", torch.float64
+    def spd(n):
+        A = torch.randn(n, n, device=dev, dtype=dt); return A @ A.T + n * torch.eye(n, device=dev, dtype=dt)
+    blocks = dict(
+        H_tt=torch.stack([spd(3) for _ in range(G)]),
+        H_to=torch.randn(G, 3, S, device=dev, dtype=dt) * 0.1,
+        H_oo_diag=torch.rand(G, S, device=dev, dtype=dt) + 1.0,
+        H_oo_lr=torch.randn(G, S, r, device=dev, dtype=dt) * 0.1,
+        H_aa=spd(S), H_za=torch.randn(G, 3 + S, S, device=dev, dtype=dt) * 0.1)
+    g_th = torch.randn(G, 3, device=dev, dtype=dt); g_om = torch.randn(G, S, device=dev, dtype=dt)
+    g_al = torch.randn(S, device=dev, dtype=dt)
+    dth, dom, dal = newton_step_joint(blocks, g_th, g_om, g_al, mu)
+    # NOTE: the oracle also takes the three grads (to build `gd`, the "stacked g" of the
+    # brief comment); newton_step_joint takes them separately, so the oracle needs them too.
+    Hd, gd = _assemble_dense_arrowhead(blocks, g_th, g_om, g_al, mu)  # dense [(3G+GS+S)]^2 + stacked g
+    ref = torch.linalg.solve(Hd, -gd)
+    got = torch.cat([dth.reshape(-1), dom.reshape(-1), dal.reshape(-1)])
+    torch.testing.assert_close(got, ref, rtol=1e-5, atol=1e-8)
+
+
+@pytest.mark.gpu
 def test_origination_grad_matches_fd():
     from gpurec.api._execution import evaluate_static_loss_grad
     m = build_genewise_model(per_family_origination=True); st = m.batch_statics[0]
