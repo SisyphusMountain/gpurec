@@ -20,13 +20,11 @@ _SO = dict(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64, self_lo
            adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0)
 
 
-def build_genewise_model(n_fam=2, dtype=torch.float64, device="cuda"):
-    """n_fam identical genewise families in one batch -> block-diagonal [n_fam,3,3]; if the machinery
-    wrongly summed across families, each block would come out ~n_fam x and fail vs per-family FD."""
-    so = SolverOptions(**_SO)
-    so.validate()
+def build_genewise_model(n_fam=2, dtype=torch.float64, device="cuda", per_family_origination=False):
+    so = SolverOptions(**_SO); so.validate()
     m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * n_fam, mode="genewise",
-                       device=device, dtype=dtype, solver_options=so)
+                       device=device, dtype=dtype, solver_options=so,
+                       per_family_origination=per_family_origination)
     assert len(m.batch_statics) == 1, f"expected 1 batch, got {len(m.batch_statics)}"
     return m
 
@@ -75,3 +73,12 @@ def test_theta_blocks_fp32_vs_fp64():
     assert torch.isfinite(H32).all()
     torch.testing.assert_close(H32, H64, rtol=1e-3, atol=1e-2)
     assert float((H64 - H64.transpose(1, 2)).abs().max()) < 1e-6  # each 3x3 block symmetric
+
+
+@pytest.mark.gpu
+def test_per_family_origination_shape():
+    m = build_genewise_model(per_family_origination=True)
+    G, S = len(m.families), int(m.species_helpers["S"])
+    assert tuple(m.origination_weights.shape) == (G, S)
+    m0 = build_genewise_model(per_family_origination=False)   # default unchanged
+    assert tuple(m0.origination_weights.shape) == (S,)

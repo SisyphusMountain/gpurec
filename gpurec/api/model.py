@@ -43,11 +43,14 @@ class GeneReconModel(torch.nn.Module):
         max_wave_size: int = 8192,
         solver_options: SolverOptions | dict | None = None,
         dtype: torch.dtype = torch.float32,
+        per_family_origination: bool = False,
     ):
         super().__init__()
         device = torch.device(device)
         mode = str(mode).strip().lower()
         genewise, specieswise = _mode_flags(mode)
+        if per_family_origination and not genewise:
+            raise ValueError("per_family_origination requires mode='genewise'")
         self.solver_options = solver_options
         self.dtype = dtype
 
@@ -76,9 +79,12 @@ class GeneReconModel(torch.nn.Module):
         )
         # Per-species origination logits (softmax over the S species nodes). Default all-zeros =>
         # the uniform origination prior the likelihood assumes; enters ONLY the NLL aggregation.
+        origination_shape = (len(families), int(species_helpers["S"])) if per_family_origination \
+            else (int(species_helpers["S"]),)
         self.origination_weights = torch.nn.Parameter(
-            torch.zeros((int(species_helpers["S"]),), dtype=dtype, device=device)
+            torch.zeros(origination_shape, dtype=dtype, device=device)
         )
+        self.per_family_origination = per_family_origination
         self.species_helpers = species_helpers
         self.mode = mode
         self.genewise = genewise
