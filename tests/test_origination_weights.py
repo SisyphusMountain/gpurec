@@ -15,7 +15,7 @@ from gpurec import GeneReconModel, SolverOptions
 from gpurec.core.inference.solver import nll_vector_from_root_rows
 from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
 from gpurec.core.scheduling import batching
-from gpurec.optim.optimize import first_order
+from gpurec.fit.optimize import first_order
 
 DT = torch.float64
 

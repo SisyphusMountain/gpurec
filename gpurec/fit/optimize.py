@@ -18,7 +18,7 @@ import time
 
 import torch
 
-from gpurec.optim.value_and_grad import (forward_solve, free_cuda_cache_if_tight,
+from gpurec.solver.value_and_grad import (forward_solve, free_cuda_cache_if_tight,
                                          make_value_and_grad)
 
 # ----------------------------------------------------------------------------------------------
@@ -229,7 +229,7 @@ def newton_polish(batch_statics, theta_stage1, receiver_weights, *, ridge=False,
     ``ridge=False``: rely on newton_lanczos's internal sigma*lam_max damping + CG witness
     (cheap: ~lanczos_m HVPs). ``ridge=True``: add the MAP term lam/2||theta-ref||^2 with lam from
     a short exact-HVP Lanczos (convexifies the flat optimum for a quadratic endgame)."""
-    from gpurec.optim.newton_cg import newton_lanczos
+    from gpurec.fit.newton_cg import newton_lanczos
 
     theta_shape = tuple(theta_stage1.shape)
     theta_f = theta_stage1.detach().reshape(theta_shape).float().contiguous()
@@ -263,8 +263,8 @@ def newton_polish(batch_statics, theta_stage1, receiver_weights, *, ridge=False,
 def _exact_ridge_lambda(batch_statics, theta, receiver_weights, *, m=20, sigma=0.01, verbose=True):
     """lam = -min(lam_min,0) + sigma*lam_max via a short EXACT-fp32 HVP Lanczos (cheaper than the
     FD-fp64 auto_lambda in pipeline.py)."""
-    from gpurec.optim.cg import lanczos_extremes
-    from gpurec.optim.hvp_exact import make_exact_hvp
+    from gpurec.solver.cg import lanczos_extremes
+    from gpurec.solver.hvp_exact import make_exact_hvp
 
     _, sv = forward_solve(batch_statics, theta, receiver_weights)
     hvp = make_exact_hvp(batch_statics, theta, receiver_weights, sv)
@@ -304,8 +304,8 @@ def ridge_anneal(batch_statics, theta0, receiver_weights, *, lam0=None, sigma=0.
     ``theta_ref_mode``: "moving" (proximal: re-center on the current iterate each level; default,
     slides toward the floor) or "fixed" (Tikhonov homotopy from theta0). Runs the exact fp32 HVP;
     CG vectors are fp64. Returns (theta, history, lam0)."""
-    from gpurec.optim.cg import cg_witness, lanczos_extremes
-    from gpurec.optim.hvp_exact import make_exact_hvp
+    from gpurec.solver.cg import cg_witness, lanczos_extremes
+    from gpurec.solver.hvp_exact import make_exact_hvp
 
     theta_shape = tuple(theta0.shape)
     p_dim = int(theta0.reshape(-1).numel())

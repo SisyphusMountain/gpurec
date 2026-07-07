@@ -34,7 +34,7 @@ def _bicgstab_rel_tol_default(dtype) -> float:
     unit roundoff ``eps``) yet stay BELOW the ~2e-4 downstream gradient atomic-noise
     floor, so the solve is as tight as the working precision *reliably* allows
     without wasting iterations. These are exactly the values used elsewhere in
-    the codebase for the same purpose (``gpurec.optim.forward_tangent._default_tol``):
+    the codebase for the same purpose (``gpurec.solver.forward_tangent._default_tol``):
 
       * fp32: ``1e-6`` (~8.4x fp32 eps 1.19e-7).
       * fp64: ``1e-12`` (~4.5e3x fp64 eps 2.2e-16; tight but trivially reachable).

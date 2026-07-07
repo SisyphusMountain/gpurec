@@ -34,8 +34,8 @@ import numpy as np
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.optim.optimize import Schedule
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.fit.optimize import Schedule
+from gpurec.solver.value_and_grad import make_value_and_grad
 
 HERE = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("GPUREC_DATA_ROOT", HERE.parents[1] / "tests" / "data"))

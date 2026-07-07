@@ -1,10 +1,10 @@
 import torch
-from gpurec.optim.hvp_exact import make_exact_hvp
+from gpurec.solver.hvp_exact import make_exact_hvp
 
 from gpurec.api._execution import evaluate_static_loss_grad, stream_batches
-from gpurec.optim import curvature as _curv
-from gpurec.optim.origination_curvature import build_joint_hvp
-from gpurec.optim.value_and_grad import forward_solve, free_cuda_cache_if_tight
+from gpurec.solver import curvature as _curv
+from gpurec.solver.origination_curvature import build_joint_hvp
+from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight
 
 
 def _assemble_dense_arrowhead(blocks, g_theta, g_omega, g_alpha, mu):
@@ -143,9 +143,9 @@ def newton_step_joint(blocks, g_theta, g_omega, g_alpha, mu):
 # Matrix-free gauge-projected joint Newton-CG over the GENEWISE parameter
 #   z = [theta.reshape(-1) (3G); alpha (S); omega.reshape(-1) (G*S)],   p_dim = 3G + S + G*S.
 #
-# Genewise analog of gpurec.optim.origination_curvature (which handles the specieswise / global-omega
+# Genewise analog of gpurec.solver.origination_curvature (which handles the specieswise / global-omega
 # case). It reuses the validated joint analytic HVP (build_joint_hvp -> make_exact_hvp, FD-verified
-# genewise in Tasks 4/5) and the operator-based CG/Lanczos primitives (gpurec.optim.cg) verbatim.
+# genewise in Tasks 4/5) and the operator-based CG/Lanczos primitives (gpurec.solver.cg) verbatim.
 #
 # The ONLY genewise deltas vs origination_curvature are (i) the gauge projector: genewise omega has a
 # softmax gauge PER FAMILY, so there are G omega-nulls plus 1 alpha-null (proj_z_genewise below kills

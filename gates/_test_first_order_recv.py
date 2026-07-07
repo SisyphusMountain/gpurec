@@ -15,8 +15,8 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.core.inference.solver import receiver_weights_are_uniform
-from gpurec.optim.optimize import first_order
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.fit.optimize import first_order
+from gpurec.solver.value_and_grad import make_value_and_grad
 from gates._verify_recv_grad import _SO, _SP, _ROOT, _valid_mass_min
 
 

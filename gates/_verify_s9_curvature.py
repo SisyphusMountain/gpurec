@@ -1,5 +1,5 @@
 """S9 gate: the gauge-projected joint ``(theta, alpha)`` curvature CONSUMERS
-(``gpurec.optim.receiver_curvature``) built on the verified analytic joint exact HVP (PR #4).
+(``gpurec.solver.receiver_curvature``) built on the verified analytic joint exact HVP (PR #4).
 
 Three parts:
 
@@ -36,7 +36,7 @@ import sys
 
 import torch
 
-from gpurec.optim.receiver_curvature import (
+from gpurec.solver.receiver_curvature import (
     certify_joint_min, make_gauge_operator, newton_joint, proj_alpha, proj_z,
     receiver_information,
 )
@@ -113,7 +113,7 @@ def run_synthetic(theta_numel=12, S=8, seed=1, device="cpu"):
 def run_penalty_unit(S=6, seed=2, device="cpu"):
     """Unit-check ``_penalty_hvp`` (ridge + GBM tree-Laplacian on the theta block) vs a DENSE penalty
     Hessian, on a tiny synthetic tree. This is the only place the penalty path is exercised."""
-    from gpurec.optim.receiver_curvature import _penalty_hvp, _tree_edges
+    from gpurec.solver.receiver_curvature import _penalty_hvp, _tree_edges
     print(f"[A' penalty-hvp] S={S} (dense ridge + tree-Laplacian ground truth)")
     theta_shape = (S, 3)
     theta_numel = S * 3
@@ -154,8 +154,8 @@ def _live_imports():
         _static_theta_alpha_from_live, _valid_mass_min,
     )
     from gpurec.core.inference.solver import receiver_weights_are_uniform
-    from gpurec.optim.optimize import first_order
-    from gpurec.optim.value_and_grad import make_value_and_grad
+    from gpurec.fit.optimize import first_order
+    from gpurec.solver.value_and_grad import make_value_and_grad
     return (_static_theta_alpha_from_live, _valid_mass_min, receiver_weights_are_uniform,
             first_order, make_value_and_grad)
 
@@ -216,7 +216,7 @@ def run_live(n_families=8, device="cuda", seed=0, tangent_self_iters=128, warmup
     # converges and we can verify the solve+extraction WIRING on the real operator: residual small,
     # covariance symmetric, s.e. finite. The UNRIDGED Fisher consumer is verified vs dense pinv to
     # 2e-13 in the synthetic test). ----
-    from gpurec.optim.receiver_curvature import build_joint_hvp
+    from gpurec.solver.receiver_curvature import build_joint_hvp
     hvp_n, _l, _sv, _c = build_joint_hvp([static], theta_n, alpha_n,
                                          tangent_self_iters=tangent_self_iters)
     ridge = max(1.0, abs(cert["lam_min_gauge"]) + 0.5)   # comfortably PD
@@ -259,7 +259,7 @@ def run_primates_dense(device="cuda", seed=3, tangent_self_iters=64):
     try:
         from gpurec import GeneReconModel, SolverOptions
         from gpurec.core.inference.solver import receiver_weights_are_uniform
-        from gpurec.optim.receiver_curvature import build_joint_hvp
+        from gpurec.solver.receiver_curvature import build_joint_hvp
         so = SolverOptions(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64,
                            self_loop_solver="neumann", bicgstab_max_iter=500, bicgstab_tol=1e-10,
                            bicgstab_breakdown_tol=1e-30, adjoint_pruning_threshold=1e-6,

@@ -44,9 +44,9 @@ import torch
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.parameters.extract_parameters import receiver_log_probs_from_weights
-from gpurec.optim.hvp_exact import build_point_cache, make_exact_hvp
-from gpurec.optim.newton_cg import _fd_hessian_hvp
-from gpurec.optim.value_and_grad import forward_solve, make_value_and_grad
+from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp
+from gpurec.fit.newton_cg import _fd_hessian_hvp
+from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 
 _ROOT = "/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom"
 _SP = (f"{_ROOT}/runs/MFP/true_start_ufboot1000/"
@@ -285,7 +285,7 @@ def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128, eps=1e-5, n
     if endgame:
         # move alpha (and theta) off init with a short joint first-order descent -> a near-minimum
         # where H_aa is near-singular off the gauge. Re-gate there (the endgame, not just the start).
-        from gpurec.optim.optimize import first_order
+        from gpurec.fit.optimize import first_order
         print(f"[ENDGAME] short joint first_order(with_receiver=True, max_steps={endgame_steps}) "
               "to move alpha off init...")
         # first return value is (theta, alpha) when with_receiver=True

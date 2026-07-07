@@ -23,7 +23,7 @@ from gpurec.core.parameters.extract_parameters import (
     receiver_log_probs_from_weights,
     receiver_valid_log_normalizer,
 )
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.solver.value_and_grad import make_value_and_grad
 
 _ROOT = "/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom"
 _SP = (f"{_ROOT}/runs/MFP/true_start_ufboot1000/"

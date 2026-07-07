@@ -1,7 +1,7 @@
 """`gpurec fit` — optimize DTL rates in global / specieswise / genewise mode.
 
-global / specieswise -> gpurec.optim.optimize + final_eval (writes AleRax-format rates).
-genewise            -> gpurec.optim.genewise_fit.fit_genewise (writes a JSON sidecar).
+global / specieswise -> gpurec.fit.optimize + final_eval (writes AleRax-format rates).
+genewise            -> gpurec.fit.genewise_fit.fit_genewise (writes a JSON sidecar).
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def run_fit(args) -> int:
     t0 = time.perf_counter()
 
     if args.mode == "genewise":
-        from gpurec.optim.genewise_fit import fit_genewise
+        from gpurec.fit.genewise_fit import fit_genewise
         res = fit_genewise(args.species, args.gene, device=args.device,
                            dtype=_common.make_dtype(args.dtype), certify=True)
         nll_nats = float(res.get("loss_nats", float("nan")))
@@ -83,7 +83,7 @@ def run_fit(args) -> int:
         return 0
 
     # global / specieswise
-    from gpurec.optim.optimize import optimize, final_eval
+    from gpurec.fit.optimize import optimize, final_eval
     model, genes = _common.build_model(args)
     if args.init_rate is not None:
         _set_init_rate(model, args.init_rate)

@@ -1,4 +1,4 @@
-"""Standalone FD / parity / analytic-gradient gate scripts for gpurec.optim.
+"""Standalone FD / parity / analytic-gradient gate scripts for gpurec.solver / gpurec.fit.
 
 Run a gate directly, e.g. ``python -m gates._verify_hvp``. These are developer
 verification harnesses, NOT part of the shipped ``gpurec`` package and NOT

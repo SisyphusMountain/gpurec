@@ -1,7 +1,7 @@
 # tests/test_penalties_origination.py
 import math
 import torch
-from gpurec.optim.penalties import (
+from gpurec.solver.penalties import (
     OriginationPenalty, origination_penalty_and_grad, origination_log_pO,
 )
 

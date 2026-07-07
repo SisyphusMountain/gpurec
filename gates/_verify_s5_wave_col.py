@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import torch
 
-import gpurec.optim.hvp_exact as hx
-from gpurec.optim.hvp_exact import build_point_cache, make_exact_hvp
-from gpurec.optim.value_and_grad import forward_solve
+import gpurec.solver.hvp_exact as hx
+from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp
+from gpurec.solver.value_and_grad import forward_solve
 from gates._verify_hvp_recv import _static_theta_alpha_from_live
 
 

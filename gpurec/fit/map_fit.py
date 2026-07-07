@@ -36,11 +36,11 @@ os.environ.setdefault("NEWTON_TANGENT_SELF_ITERS", "64")
 
 import torch
 
-from gpurec.optim.value_and_grad import forward_solve, make_value_and_grad, free_cuda_cache_if_tight
-from gpurec.optim.hvp_exact import make_exact_hvp
-from gpurec.optim.cg import lanczos_min_eigpair
-from gpurec.optim.optimize import first_order, ridge_anneal
-from gpurec.optim.baselines import lbfgs_scipy
+from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad, free_cuda_cache_if_tight
+from gpurec.solver.hvp_exact import make_exact_hvp
+from gpurec.solver.cg import lanczos_min_eigpair
+from gpurec.fit.optimize import first_order, ridge_anneal
+from gpurec.fit.baselines import lbfgs_scipy
 
 
 def spectrum_min(static, theta, col_weights, p, *, m=200, seed=0):

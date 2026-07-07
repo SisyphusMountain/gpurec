@@ -19,9 +19,9 @@ import sys
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.optim.hvp_exact import build_point_cache, make_exact_hvp
-from gpurec.optim.newton_cg import _fd_hessian_hvp
-from gpurec.optim.value_and_grad import forward_solve, make_value_and_grad
+from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp
+from gpurec.fit.newton_cg import _fd_hessian_hvp
+from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 
 _ROOT = "/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom"
 _SP = (f"{_ROOT}/runs/MFP/true_start_ufboot1000/"

@@ -28,8 +28,8 @@ from gpurec.core.kernels.wave_so import wave_backward_so
 from gpurec.core.parameters.extract_parameters import (
     as_family_param, as_family_species, extract_parameters_weighted_receivers,
 )
-from gpurec.optim.forward_tangent import jvp_root_scores, wave_step_constants
-from gpurec.optim.ggn import vjp_root_to_theta
+from gpurec.solver.forward_tangent import jvp_root_scores, wave_step_constants
+from gpurec.solver.ggn import vjp_root_to_theta
 
 _LN2 = 0.6931471805599453
 
@@ -348,7 +348,7 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             d_gmc = torch.zeros_like(acc["grad_mc"])
             d_gcol = torch.zeros((S,), device=theta.device, dtype=dtype)
 
-            from gpurec.optim.value_and_grad import free_cuda_cache_if_tight
+            from gpurec.solver.value_and_grad import free_cuda_cache_if_tight
 
             for _wi, wave in enumerate(cache["waves"]):  # already reverse order
                 if _wi % free_cache_every == 0:

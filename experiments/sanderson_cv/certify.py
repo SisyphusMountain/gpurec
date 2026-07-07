@@ -16,9 +16,9 @@ from pathlib import Path
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.optim.value_and_grad import make_value_and_grad, forward_solve
-from gpurec.optim.hvp_exact import make_exact_hvp
-from gpurec.optim.cg import lanczos_min_eigpair
+from gpurec.solver.value_and_grad import make_value_and_grad, forward_solve
+from gpurec.solver.hvp_exact import make_exact_hvp
+from gpurec.solver.cg import lanczos_min_eigpair
 
 HERE = Path(__file__).resolve().parent
 ROOT = Path("/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom")

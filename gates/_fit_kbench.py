@@ -16,8 +16,8 @@ import time
 import torch
 
 from gates._parity_kbench import _DEFAULT_CAP, gpurec_static_from_capture
-from gpurec.optim.baselines import lbfgs_scipy
-from gpurec.optim.optimize import final_eval, first_order
+from gpurec.fit.baselines import lbfgs_scipy
+from gpurec.fit.optimize import final_eval, first_order
 
 
 def run(cap_path=_DEFAULT_CAP, device="cuda", adam_steps=150, lbfgs_iters=100, maxcor=50):

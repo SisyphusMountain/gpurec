@@ -1,6 +1,6 @@
 # tests/test_penalties_tv.py
 import torch
-from gpurec.optim.penalties import tv_prior_and_grad
+from gpurec.solver.penalties import tv_prior_and_grad
 
 
 def _tiny_tree():

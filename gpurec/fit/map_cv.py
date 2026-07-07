@@ -8,11 +8,11 @@ parity-verified :func:`gpurec.api._execution.stream_batches` and avoids any back
 
 Per fold/lambda the MAP objective fit on the train families is
     ``sum_{i in train} NLL_i(theta) + (lambda/2) ||theta - theta_ref||^2``
-(the ``prior`` term of :func:`gpurec.optim.value_and_grad.make_value_and_grad`).
+(the ``prior`` term of :func:`gpurec.solver.value_and_grad.make_value_and_grad`).
 ``CV(lambda) = mean over folds of held-out predictive NLL``; pick ``lambda* = argmin`` and refit on
 all families at ``lambda*``.
 
-    python -m gpurec.optim.map_cv            # small live-hogenom smoke test (finite + sane CV curve)
+    python -m gpurec.fit.map_cv            # small live-hogenom smoke test (finite + sane CV curve)
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import stream_batches
-from gpurec.optim.optimize import Schedule
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.fit.optimize import Schedule
+from gpurec.solver.value_and_grad import make_value_and_grad
 
 # solver settings matching the kernel-bench fixture mint (production truncation, pi=16/neumann=16);
 # used by the parity tests. NOT for the CV fit: at pi=16 the gradient is biased (FD disagrees ~5%),

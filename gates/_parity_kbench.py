@@ -23,7 +23,7 @@ import torch
 
 from gpurec.api._batch_state import _BatchStatic
 from gpurec.api.solver_options import SolverOptions
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.solver.value_and_grad import make_value_and_grad
 
 _KBENCH = os.environ.get(
     "GPUREC_KBENCH_ROOT",

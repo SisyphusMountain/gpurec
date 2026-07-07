@@ -18,7 +18,7 @@ sys.path.insert(0, RW)
 import run_cv
 from run_cv import DATASETS, build_model, _CV_SO
 from gpurec import SolverOptions
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.solver.value_and_grad import make_value_and_grad
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 DEV = "cuda"

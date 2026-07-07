@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.solver.value_and_grad import make_value_and_grad
 
 
 def gd(batch_statics, theta0, receiver_weights, *, lr=3e-3, steps=300, verbose=False):

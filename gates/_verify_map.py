@@ -17,8 +17,8 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import stream_batches
-from gpurec.optim.map_cv import _DEFAULT_SO
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.fit.map_cv import _DEFAULT_SO
+from gpurec.solver.value_and_grad import make_value_and_grad
 
 _ROOT = "/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom"
 _SP = (f"{_ROOT}/runs/MFP/true_start_ufboot1000/"

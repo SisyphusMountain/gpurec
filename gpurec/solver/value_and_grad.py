@@ -24,7 +24,7 @@ import torch
 from gpurec.api._batch_state import _BatchStatic
 from gpurec.api._execution import stream_batches
 from gpurec.core.inference.solver import nll_from_root_rows, solve_resident_e_pi
-from gpurec.optim.penalties import (
+from gpurec.solver.penalties import (
     tv_prior_and_grad, origination_penalty_and_grad, group_expand, group_reduce,
 )
 

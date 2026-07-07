@@ -1,6 +1,6 @@
 # tests/test_group_index.py
 import torch
-from gpurec.optim.penalties import group_expand, group_reduce
+from gpurec.solver.penalties import group_expand, group_reduce
 
 
 def test_none_is_identity():

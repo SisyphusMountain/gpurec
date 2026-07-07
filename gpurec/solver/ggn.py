@@ -21,7 +21,7 @@ from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.api._implicit_grad import _safe_exp2_ratio, implicit_grad_loglik_vjp_wave
 
-from gpurec.optim.forward_tangent import jvp_root_scores
+from gpurec.solver.forward_tangent import jvp_root_scores
 
 _LN2 = 0.6931471805599453
 

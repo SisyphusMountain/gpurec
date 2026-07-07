@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import torch
 
-from gpurec.optim.cg import cg_witness, lanczos_extremes, lanczos_min_eigpair
-from gpurec.optim.value_and_grad import free_cuda_cache_if_tight
+from gpurec.solver.cg import cg_witness, lanczos_extremes, lanczos_min_eigpair
+from gpurec.solver.value_and_grad import free_cuda_cache_if_tight
 
 
 def gauge_operator(hvp, proj, *, penalty_hvp=None, ridge=0.0):

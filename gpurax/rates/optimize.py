@@ -9,7 +9,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)  # repo gpurec, not .venv (project rule)
 
 from gpurec.api.model import GeneReconModel
-from gpurec.optim.optimize import optimize
+from gpurec.fit.optimize import optimize
 
 
 def optimize_global_rates(species_path, tree_paths, init=(0.2, 0.3, 0.1), device="cuda"):
@@ -17,7 +17,7 @@ def optimize_global_rates(species_path, tree_paths, init=(0.2, 0.3, 0.1), device
     given (fixed) gene trees -- GeneRax "Step 1" (optimize rates at fixed gene trees).
 
     Mirrors gpurec/cli/fit.py's global-mode optimizer call: Adam basin-entry (adaptive LR
-    schedule) followed by a ridge-regularized Newton polish (``gpurec.optim.optimize.optimize``,
+    schedule) followed by a ridge-regularized Newton polish (``gpurec.fit.optimize.optimize``,
     ``polish_mode="ridge"``); ``newton_lanczos`` is theta-shape aware, so the global ``(3,)``
     theta polishes via the FD-Hessian path without special-casing here.
     """

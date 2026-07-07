@@ -22,7 +22,7 @@ import run_cv
 from run_cv import DATASETS, build_model, kfold_indices, heldout_nll, _CV_SO
 from run_cv_joint import gbm_fit_joint
 from gpurec import SolverOptions
-from gpurec.optim.value_and_grad import make_value_and_grad
+from gpurec.solver.value_and_grad import make_value_and_grad
 DEV = "cuda"
 
 

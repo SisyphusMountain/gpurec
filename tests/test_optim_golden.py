@@ -29,7 +29,7 @@ import pytest
 import torch
 import triton  # noqa: F401  -- HARD dependency; the whole codebase is Triton. Fail loud, never skip.
 
-_GOLDEN = Path(__file__).resolve().parents[1] / "gpurec" / "optim" / "_golden" / "checkpoint_666x80.pt"
+_GOLDEN = Path(__file__).resolve().parents[1] / "gpurec" / "solver" / "_golden" / "checkpoint_666x80.pt"
 _CAP_REL = Path("kernel-bench") / "data" / "666x80" / "whole.pt"
 LOSS_RTOL = 1e-3   # the stale-golden gap was 4e-3; atomic-reduction noise is ~1e-5 -> 1e-3 separates
 GRAD_RTOL = 2e-3   # backward is atomically nondeterministic at ~2e-4; matches the parity bar
@@ -71,7 +71,7 @@ def ctx():
 
 
 def _loss_grad(ctx, theta, pi, neu):
-    from gpurec.optim.value_and_grad import make_value_and_grad
+    from gpurec.solver.value_and_grad import make_value_and_grad
 
     static = ctx["make"](ctx["cap"], "cuda")
     static.solver_options.pi_iters, static.solver_options.neumann_terms = pi, neu
@@ -121,7 +121,7 @@ def test_cross_parity_vs_live_kbench(ctx):
         from newton.vg import forward_solve as kb_fwd
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"kbench import failed: {exc}")
-    from gpurec.optim.value_and_grad import forward_solve as gp_fwd
+    from gpurec.solver.value_and_grad import forward_solve as gp_fwd
 
     g, cap, rw = ctx["golden"], ctx["cap"], ctx["rw"]
     for name, theta in (("fixture", g["theta_fixture"].cuda()), ("checkpoint", g["theta_hat"].cuda())):

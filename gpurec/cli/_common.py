@@ -24,7 +24,7 @@ def add_common_args(parser) -> None:
 
 def resolve_gene_trees(values) -> list:
     """Resolve --gene values (list / glob / dir / listfile) to gene-tree paths."""
-    from gpurec.optim.genewise_fit import _resolve_gene_trees
+    from gpurec.fit.genewise_fit import _resolve_gene_trees
     return _resolve_gene_trees(values)
 
 

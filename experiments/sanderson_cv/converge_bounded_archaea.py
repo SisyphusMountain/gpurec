@@ -32,9 +32,9 @@ DTYPE = torch.float32 if os.environ["SADDLE_DTYPE"] == "float32" else torch.floa
 
 from run_cv import DATASETS, _CV_SO
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.optim.optimize import Schedule
-from gpurec.optim.value_and_grad import make_value_and_grad
-from gpurec.optim.cg import steihaug_cg
+from gpurec.fit.optimize import Schedule
+from gpurec.solver.value_and_grad import make_value_and_grad
+from gpurec.solver.cg import steihaug_cg
 from gpurec.optimization import clamp_log_rate_, project_rate_gradient_, log2_rate_bounds
 from saddle_escape import make_lap, build_hvp_once
 

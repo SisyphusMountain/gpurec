@@ -28,11 +28,11 @@ import torch
 
 from gpurec.core.inference.solver import origination_weights_are_uniform, receiver_weights_are_uniform
 from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
-from gpurec.optim import curvature as _curv
-from gpurec.optim.cg import cg_solve
-from gpurec.optim.hvp_exact import build_point_cache, make_exact_hvp
-from gpurec.optim.receiver_curvature import _penalty_hvp, _tree_edges
-from gpurec.optim.value_and_grad import forward_solve, free_cuda_cache_if_tight, make_value_and_grad
+from gpurec.solver import curvature as _curv
+from gpurec.solver.cg import cg_solve
+from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp
+from gpurec.solver.receiver_curvature import _penalty_hvp, _tree_edges
+from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight, make_value_and_grad
 
 
 # --------------------------------------------------------------------------- gauge projector (P_z)

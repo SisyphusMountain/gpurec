@@ -1,5 +1,5 @@
 """Integration tests for the TV prior / origination penalty / grouped-theta wiring
-in ``gpurec.optim.value_and_grad.make_value_and_grad``.
+in ``gpurec.solver.value_and_grad.make_value_and_grad``.
 
 This file holds the CPU-checkable portion (no Triton/CUDA forward solve required).
 The end-to-end no-op-equals-baseline GPU validation is added in Task 7.
@@ -9,7 +9,7 @@ import pytest
 
 
 def test_group_index_theta_shape_contract():
-    from gpurec.optim.penalties import group_expand, group_reduce
+    from gpurec.solver.penalties import group_expand, group_reduce
     gidx = torch.tensor([0, 0, 1])           # 3 species, 2 categories
     theta_g = torch.randn(2, 3, dtype=torch.float64)
     theta_s = group_expand(theta_g, gidx)
@@ -22,7 +22,7 @@ def test_group_index_theta_shape_contract():
 
 
 def test_tv_with_smooth_polish_is_rejected():
-    from gpurec.optim.optimize import optimize
+    from gpurec.fit.optimize import optimize
     with pytest.raises(ValueError, match="non-smooth"):
         optimize(object(), torch.zeros(3, 3), torch.zeros(3),
                  tv_penalty=(1.0, torch.tensor([-1, 0, 0]), 1e-3), polish_mode="ridge")
@@ -116,7 +116,7 @@ def test_disabled_regularizers_equal_baseline(tmp_path):
     """
     _require_preprocess_native()
     device = _require_cuda_triton()
-    from gpurec.optim.value_and_grad import make_value_and_grad
+    from gpurec.solver.value_and_grad import make_value_and_grad
 
     model = _build_specieswise_model(tmp_path, device)
     theta = model.theta.detach().reshape(-1).clone()
@@ -159,7 +159,7 @@ def test_tv_penalty_changes_gradient(tmp_path):
     """
     _require_preprocess_native()
     device = _require_cuda_triton()
-    from gpurec.optim.value_and_grad import make_value_and_grad
+    from gpurec.solver.value_and_grad import make_value_and_grad
 
     model = _build_specieswise_model(tmp_path, device)
     sp_parent = model.species_helpers["sp_parent"]

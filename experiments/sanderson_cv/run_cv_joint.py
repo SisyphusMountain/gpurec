@@ -22,9 +22,9 @@ import run_cv
 from run_cv import DATASETS, build_model, kfold_indices, heldout_nll, _CV_SO
 from converge_bounded_joint_archaea import build_joint_hvp_multibatch, make_tree_lap
 from gpurec import SolverOptions
-from gpurec.optim.value_and_grad import make_value_and_grad
-from gpurec.optim.optimize import Schedule
-from gpurec.optim.receiver_curvature import certify_joint_min
+from gpurec.solver.value_and_grad import make_value_and_grad
+from gpurec.fit.optimize import Schedule
+from gpurec.solver.receiver_curvature import certify_joint_min
 
 DEV = "cuda"
 
