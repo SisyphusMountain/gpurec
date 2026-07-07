@@ -28,7 +28,8 @@ import torch
 
 from gpurec.core.inference.solver import origination_weights_are_uniform, receiver_weights_are_uniform
 from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
-from gpurec.optim.cg import cg_solve, cg_witness, lanczos_extremes, lanczos_min_eigpair
+from gpurec.optim import curvature as _curv
+from gpurec.optim.cg import cg_solve
 from gpurec.optim.hvp_exact import build_point_cache, make_exact_hvp
 from gpurec.optim.receiver_curvature import _penalty_hvp, _tree_edges
 from gpurec.optim.value_and_grad import forward_solve, free_cuda_cache_if_tight, make_value_and_grad
@@ -80,19 +81,8 @@ def make_gauge_operator(hvp, theta_numel, S, *, penalty_hvp=None, ridge=0.0):
     """``A_z(v) = P_z ( H + penalty ) ( P_z v ) + ridge * P_z v`` -- the symmetric gauge-projected joint
     operator. Both gauge nulls ``[0;1_S;0]`` and ``[0;0;1_S]`` map to 0 (killed by the input projection).
     ``penalty_hvp`` (theta block only) makes the Newton model exact under ridge/tree penalties."""
-    ridge = float(ridge or 0.0)
-
-    def Av(v):
-        pv = proj_z(v, theta_numel, S)
-        Hv = hvp(pv)
-        if penalty_hvp is not None:
-            Hv = Hv + penalty_hvp(pv)
-        out = proj_z(Hv, theta_numel, S)
-        if ridge != 0.0:
-            out = out + ridge * pv
-        return out
-
-    return Av
+    return _curv.gauge_operator(hvp, lambda v: proj_z(v, theta_numel, S),
+                                penalty_hvp=penalty_hvp, ridge=ridge)
 
 
 # --------------------------------------------------------------------------------- PD certificate
@@ -113,23 +103,9 @@ def certify_joint_min(static, theta, alpha, omega, *, m=200, seed=0, tangent_sel
         theta_numel = int(theta_numel if theta_numel is not None else theta.numel())
         S = int(S if S is not None else alpha.numel())
     p = theta_numel + 2 * S
-    Av = make_gauge_operator(hvp, theta_numel, S)
-    gen = torch.Generator(device=str(theta.device)).manual_seed(seed)
-    start = proj_z(torch.randn(p, generator=gen, device=theta.device, dtype=torch.float64), theta_numel, S)
-
-    # Deflate the 2-D gauge null (spanned by [0;1;0] and [0;0;1]): shift v - P_z v (the null
-    # component) up by C >> spectrum top, so the smallest eigenvalue of the shifted operator is the
-    # genuine reduced-Hessian minimum on the gauge-fixed subspace.
-    _, lam_max = lanczos_extremes(Av, p, m=min(20, p), device=str(theta.device), start=start)
-    shift_C = 2.0 * max(abs(lam_max), 1.0)
-
-    def Av_deflated(v):
-        return Av(v) + shift_C * (v - proj_z(v, theta_numel, S))
-
-    lam_min, v_min = lanczos_min_eigpair(Av_deflated, p, m=m, device=str(theta.device), start=start)
-    Av_v = Av(v_min)
-    ritz_resid = float((Av_v - lam_min * v_min).norm()) / max(abs(lam_min), 1.0)
-    gauge_comp = float((v_min - proj_z(v_min, theta_numel, S)).norm())
+    # Deflated gauge-projected Lanczos, deflating BOTH gauge nulls ([0;1_S;0] and [0;0;1_S]).
+    lam_min, ritz_resid, v_min, gauge_comp, _leak = _curv.certify_min(
+        hvp, lambda v: proj_z(v, theta_numel, S), p, m=m, seed=seed, device=theta.device)
     pd = lam_min > 0.0
     if verbose:
         tag = "PD (certified gauge-fixed joint min)" if pd else "NOT PD (saddle / non-stationary)"
@@ -244,102 +220,22 @@ def newton_joint(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_floor=1e-4
         theta_numel, theta_shape, lam=(prior[0] if prior else 0.0),
         lam_tree=(tree_penalty[0] if tree_penalty else 0.0), tp_child=tp_child, tp_parent=tp_parent)
 
-    def split(zv):
-        return (zv[:theta_numel].reshape(theta_shape).contiguous(),
-                zv[theta_numel:theta_numel + S].contiguous(),
-                zv[theta_numel + S:].contiguous())
-
     def build_hvp(zv):
-        th, al, om = split(zv)
+        th = zv[:theta_numel].reshape(theta_shape).contiguous()
+        al = zv[theta_numel:theta_numel + S].contiguous()
+        om = zv[theta_numel + S:].contiguous()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         hvp, _l, _sv, _c = build_joint_hvp(static, th, al, om, tangent_self_iters=tangent_self_iters)
         return make_gauge_operator(hvp, theta_numel, S, penalty_hvp=pen_hvp)
 
-    F, g_z, _, _ = vg(z)
-    gP = proj_z(g_z.double(), theta_numel, S)
-    Hz = build_hvp(z)
-    start = proj_z(torch.randn(p_dim, generator=torch.Generator(device=str(device)).manual_seed(seed),
-                               device=device, dtype=torch.float64), theta_numel, S)
-    _, lam_max = lanczos_extremes(Hz, p_dim, m=lanczos_m, device=str(device), start=start)
-    lam_max = max(lam_max, 1e-12)
-    lam_damp = sigma * lam_max
-    lam_floor = sigma_floor * lam_max
-    lam_ceil = 10.0 * lam_max
-    if verbose:
-        print(f"[newton-joint(orig)] S={S} theta_numel={theta_numel}  lam_max~{lam_max:.3f}  "
-              f"lam_damp0={lam_damp:.4f}")
+    z, history = _curv.newton_min(
+        z, p_dim, lambda v: proj_z(v, theta_numel, S), vg, build_hvp, theta_numel=theta_numel, S=S,
+        sigma=sigma, sigma_floor=sigma_floor, lanczos_m=lanczos_m, nu=nu, decrease=decrease,
+        max_bumps=max_bumps, max_cg=max_cg, c1=c1, ls_max=ls_max, gtol=gtol, max_newton=max_newton,
+        ftol=ftol, seed=seed, device=device, tag="newton-joint(orig)", verbose=verbose)
 
-    history, stalls, hvp_stale = [], 0, False
-    for k in range(int(max_newton)):
-        gnorm = float(gP.norm())
-        rec = {"newton": k, "F": F, "gnorm": gnorm, "lam_damp": lam_damp}
-        history.append(rec)
-        if verbose:
-            print(f"[nj {k:2d}] F={F:.6f}  ||P g||={gnorm:.4e}  lam={lam_damp:.3e}", end="")
-        if gnorm < gtol:
-            if verbose:
-                print("  converged")
-            break
-        if hvp_stale:
-            Hz = None
-            free_cuda_cache_if_tight(min_free_gib=8.0)
-            Hz = build_hvp(z)
-            hvp_stale = False
-
-        eta = min(0.1, gnorm ** 0.5)
-        p_step, cg_iters, status, cert = None, 0, "", None
-        for _bump in range(int(max_bumps) + 1):
-            Av = lambda v, ld=lam_damp: Hz(v) + ld * proj_z(v, theta_numel, S)
-            p_step, cg_iters, status, cert = cg_witness(Av, -gP, tol=eta * gnorm, max_iter=max_cg)
-            if status != "neg_curv":
-                break
-            lam_damp = min(lam_ceil, nu * (lam_damp - cert))
-            if verbose:
-                print(f"\n      witness d^TAd/|d|^2={cert:.2e} -> lam={lam_damp:.3e}", end="")
-        if status == "neg_curv":
-            p_step, status = -gP / lam_damp, "fallback_gd"
-        p_step = proj_z(p_step, theta_numel, S)
-        rec["cg"], rec["status"] = cg_iters, status
-
-        gp = float(torch.dot(gP, p_step))
-        if gp >= 0.0:
-            p_step = -gP / lam_damp
-            gp = -gnorm * gnorm / lam_damp
-            status += "+gd"
-
-        alpha_ls, accepted = 1.0, False
-        for _ in range(int(ls_max)):
-            trial = z + alpha_ls * p_step
-            Ft, _, _, _ = vg(trial, want_grad=False)
-            if Ft <= F + c1 * alpha_ls * gp:
-                accepted = True
-                break
-            alpha_ls *= 0.5
-        rec["alpha_ls"] = alpha_ls if accepted else None
-
-        if accepted:
-            z = proj_z(trial, theta_numel, S).contiguous()   # re-center alpha AND omega (pin gauge)
-            hvp_stale = True
-            lam_damp = max(lam_floor, lam_damp / decrease) if alpha_ls == 1.0 else min(lam_ceil, 1.5 * lam_damp)
-            if verbose:
-                print(f"  cg={cg_iters}({status})  a={alpha_ls:.2e}  dF={Ft - F:+.4e}")
-            stalls = stalls + 1 if (F - Ft) <= ftol * max(1.0, abs(F)) else 0
-            F = Ft
-            if stalls >= 2:
-                if verbose:
-                    print(f"[nj {k + 1:2d}] improvement below ftol floor twice -- stopping")
-                break
-            F, g_z, _, _ = vg(z)
-            gP = proj_z(g_z.double(), theta_numel, S)
-        else:
-            lam_damp = min(lam_ceil, 4.0 * lam_damp)
-            if verbose:
-                print(f"  cg={cg_iters}({status})  line-search failed -> lam={lam_damp:.3e}")
-            if lam_damp >= lam_ceil:
-                if verbose:
-                    print("  lam at ceiling with no accepted step -- stopping")
-                break
-
-    theta_out, alpha_out, omega_out = split(z)
+    theta_out = z[:theta_numel].reshape(theta_shape).contiguous()
+    alpha_out = z[theta_numel:theta_numel + S].contiguous()
+    omega_out = z[theta_numel + S:].contiguous()
     return theta_out, alpha_out - alpha_out.mean(), omega_out - omega_out.mean(), history
