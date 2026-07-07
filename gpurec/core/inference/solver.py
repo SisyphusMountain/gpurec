@@ -186,7 +186,9 @@ def origination_grad_from_root_rows(
 
     Origination weights enter ONLY this aggregation (never the fixed-point solve or the kernels), so
     their gradient is an exact, cheap autograd pass with ``root_rows`` and ``E`` held constant.
-    Returns a length-S tensor in ``origination_weights``' dtype.
+    Returns a length-S tensor in ``origination_weights``' dtype for the global/specieswise case; for
+    genewise per-family origination weights ``[G,S]``, autograd preserves that shape and this returns
+    ``[G,S]`` instead.
     """
     ow = origination_weights.detach().to(device=root_rows.device, dtype=root_rows.dtype).requires_grad_(True)
     with torch.enable_grad():

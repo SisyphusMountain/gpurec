@@ -77,8 +77,10 @@ class GeneReconModel(torch.nn.Module):
         self.receiver_weights = torch.nn.Parameter(
             torch.zeros((int(species_helpers["S"]),), dtype=dtype, device=device)
         )
-        # Per-species origination logits (softmax over the S species nodes). Default all-zeros =>
-        # the uniform origination prior the likelihood assumes; enters ONLY the NLL aggregation.
+        # Per-species origination logits (softmax over the S species nodes); when
+        # per_family_origination=True this is instead per-family [G,S] (independent softmax per
+        # family). Default all-zeros => the uniform origination prior the likelihood assumes; enters
+        # ONLY the NLL aggregation.
         origination_shape = (len(families), int(species_helpers["S"])) if per_family_origination \
             else (int(species_helpers["S"]),)
         self.origination_weights = torch.nn.Parameter(

@@ -8,11 +8,14 @@ from gpurec.optim.value_and_grad import forward_solve, free_cuda_cache_if_tight
 
 
 def genewise_hessian_blocks(static, theta, receiver_weights, sv, *, omega=None, active=("theta",)):
-    """Structured curvature for the genewise arrowhead Newton solve. P0: theta-only.
+    """Theta-only per-family curvature ``[G,3,3]``, built from 3 broadcast HVP probes (one per theta
+    component) against the joint analytic HVP (``make_exact_hvp``).
 
-    Returns per-family blocks; omega/alpha entries are added in Tasks 4-5. The HVP itself
-    is one joint operator (make_exact_hvp) -- these blocks are materialized ONLY for the
-    Newton solve, never to compute H@u.
+    TEST-ONLY: feeds this module's fp32-vs-fp64 golden comparison test. The production genewise fit
+    never assembles blocks -- it runs matrix-free CG directly on the analytic HVP
+    (``newton_joint_genewise``). The ``H_tt`` block returned here also feeds the (likewise test-only)
+    structured solver below (``newton_step_joint`` / ``_assemble_dense_arrowhead``) -- see the
+    TEST-ONLY banner on ``newton_step_joint`` for its block-order and PSD-assumption caveats.
     """
     assert tuple(active) == ("theta",), "P0: theta-only; omega/alpha added in Tasks 4-5"
     G = int(theta.shape[0])
@@ -28,6 +31,10 @@ def genewise_hessian_blocks(static, theta, receiver_weights, sv, *, omega=None, 
 
 def _assemble_dense_arrowhead(blocks, g_theta, g_omega, g_alpha, mu):
     """TEST-ONLY oracle: materialize the full arrowhead Hessian + mu*I and the stacked gradient.
+
+    NOT wired into the fit -- see the TEST-ONLY / block-order / PSD-assumption banner on
+    ``newton_step_joint`` below; this oracle assembles the dense counterpart of that same
+    non-production structured solver.
 
     Block/flat order matches ``newton_step_joint``'s output packing and the test's
     ``cat([dth.reshape(-1), dom.reshape(-1), dal.reshape(-1)])``:
@@ -72,7 +79,14 @@ def _assemble_dense_arrowhead(blocks, g_theta, g_omega, g_alpha, mu):
 
 
 def newton_step_joint(blocks, g_theta, g_omega, g_alpha, mu):
-    """Arrowhead Newton solve of ``(H + mu*I) delta = -g`` via Schur complement + Woodbury.
+    """TEST-ONLY / NOT wired into the fit. This structured solver uses the internal flat block order
+    ``[theta; omega; alpha]`` and assumes a POSITIVE-SEMIDEFINITE low-rank ``H_oo = D + UU^T``. The
+    real per-family ``H_omegaomega`` is INDEFINITE, and the live/canonical flat layout used by the fit
+    is ``[theta; alpha; omega]``. The production genewise Newton fit runs matrix-free CG directly on
+    the analytic HVP (``newton_joint_genewise``) and never calls this solver -- do NOT wire it into
+    the fit without first deriving a signed low-rank ``H_oo`` and reconciling the block order.
+
+    Arrowhead Newton solve of ``(H + mu*I) delta = -g`` via Schur complement + Woodbury.
 
     ``H`` is block-diagonal per-family cores ``B_g = [[H_tt_g, H_to_g],[H_to_g^T, H_oo_g]]``
     (each ``(3+S)``) plus a global ``alpha`` arrow (dense ``H_aa`` ``S x S`` + couplings
@@ -509,14 +523,16 @@ def make_multibatch_joint_hvp_genewise(batch_statics, theta, alpha, omega, *, ta
 
 def multibatch_joint_vg_genewise(batch_statics, theta_shape, S, G):
     """Multi-batch joint value-and-grad ``vg(x, warm_E=None) -> (loss, g_z, None, None)`` over
-    ``z = [theta (3G); alpha (S); omega (G*S)]`` (matches ``_fd_hessian_hvp``'s vg contract).
+    ``z = [theta (3G); alpha (S); omega (G*S)]`` (matches ``_fd_hessian_hvp``'s vg contract) -- this is
+    the joint ``[theta; alpha; omega]`` gradient consumed by the FD gate and by ``newton_joint_genewise``.
 
     Loops the batches; per batch evaluates the genewise loss + grad over that batch's OWN families
     (``theta_b`` gathered by ``static.family_index_tensor``; the FULL per-family ``omega`` [G,S] is
-    passed because ``evaluate_static_loss_grad`` re-selects the batch rows internally). Aggregates
-    the DISJOINT theta/omega grads by ``index_add`` and the SHARED alpha grad by sum. This is the
-    CORRECT multi-batch genewise origination aggregation -- the existing ``stream_batches`` uses
-    ``.add_()`` on a full-[G,S] accumulator, which shape-mismatches the batch-local [G_b,S] grad.
+    passed because ``evaluate_static_loss_grad`` re-selects the batch rows internally). Aggregates the
+    DISJOINT theta/omega grads by ``index_add`` and the SHARED alpha grad by sum -- the per-family
+    origination (omega) grad aggregation here is consistent with the now-fixed ``stream_batches``,
+    which likewise ``index_add_``s the batch-local ``[G_b,S]`` origination grad into the full ``[G,S]``
+    accumulator when ``origination_weights.ndim == 2``.
     """
     theta_shape = tuple(theta_shape)
     nt = 1

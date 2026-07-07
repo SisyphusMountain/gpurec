@@ -140,6 +140,7 @@ def test_joint_theta_omega_hvp_matches_fd():
 
 @pytest.mark.gpu
 def test_joint_theta_omega_alpha_hvp_matches_fd():
+    torch.manual_seed(0)
     m = build_genewise_model(per_family_origination=True)
     st = m.batch_statics[0]
     G, S = len(m.families), int(m.species_helpers["S"])
@@ -206,6 +207,7 @@ def test_newton_step_matches_dense():
 @pytest.mark.gpu
 def test_origination_grad_matches_fd():
     from gpurec.api._execution import evaluate_static_loss_grad
+    torch.manual_seed(0)
     m = build_genewise_model(per_family_origination=True); st = m.batch_statics[0]
     G, S = len(m.families), int(m.species_helpers["S"])
     th = torch.full((G, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
