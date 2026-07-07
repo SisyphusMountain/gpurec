@@ -284,19 +284,20 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
         u_vec = u_vec.to(theta.dtype)
         theta_numel = theta.numel()
         u = u_vec[:theta_numel].reshape(theta.shape)
-        # CANONICAL layout: [u_theta (theta_numel); u_omega (omega_numel)?; u_alpha (S)?]. Omega BEFORE
-        # alpha. The omega size is keyed off the origination parameter, so this is uniform across modes:
-        # genewise omega_numel=G*S -> u_omega reshapes to [G,S]; specieswise/global omega_numel=S -> [S].
+        # BASE layout: [u_theta (theta_numel); u_alpha (S)?; u_omega (omega_numel)?]. Alpha BEFORE omega
+        # -- the codebase convention (origination_curvature.py consumes z=[theta;alpha;omega]). The omega
+        # size is keyed off the origination parameter, so this is uniform across modes: genewise
+        # omega_numel=G*S -> u_omega reshapes to [G,S]; specieswise/global omega_numel=S -> [S].
         #   n_tail == 0                 -> theta-only, returns theta_numel BIT-FOR-BIT (_verify_hvp gate);
         #   n_tail == S                 -> [theta; alpha], omega implicitly 0 (_verify_hvp_recv path);
-        #   n_tail == omega_numel + S   -> full [theta; omega; alpha].
+        #   n_tail == S + omega_numel   -> full [theta; alpha; omega].
         omega_numel = origination_weights.numel() if origination_weights is not None else 0
         n_tail = u_vec.numel() - theta_numel
-        has_omega = (omega_numel > 0 and n_tail == omega_numel + S)
+        has_omega = (omega_numel > 0 and n_tail == S + omega_numel)
         joint = n_tail >= S
         if has_omega:
-            u_omega = u_vec[theta_numel:theta_numel + omega_numel].reshape(origination_weights.shape)
-            u_alpha = u_vec[theta_numel + omega_numel:theta_numel + omega_numel + S].contiguous()
+            u_alpha = u_vec[theta_numel:theta_numel + S].contiguous()
+            u_omega = u_vec[theta_numel + S:theta_numel + S + omega_numel].reshape(origination_weights.shape)
         else:
             u_alpha = (u_vec[theta_numel:theta_numel + S].contiguous() if joint
                        else torch.zeros(S, device=theta.device, dtype=theta.dtype))
@@ -552,10 +553,11 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             head = (g1_theta * u).sum() + (g1_col * u_alpha).sum() + phi2
             out_theta, out_col = torch.autograd.grad(head, (theta_req, col_req), retain_graph=True)
         if has_omega:
-            # Full [theta; omega; alpha] contract (CANONICAL order, omega BEFORE alpha): the omega row is
-            # the head omega-Hessian . (t_root, dE, u_omega) from _head_seed_tangents (omega is head-only
-            # -> no kernel/adjoint term). Hv_omega is [G,S] genewise / [S] otherwise; flatten in place.
-            return torch.cat([out_theta.reshape(-1), Hv_omega.reshape(-1), out_col.reshape(-1)])
+            # Full [theta; alpha; omega] contract (BASE order, alpha BEFORE omega -- matches
+            # origination_curvature.py's z=[theta;alpha;omega]): the omega row is the head omega-Hessian .
+            # (t_root, dE, u_omega) from _head_seed_tangents (omega is head-only -> no kernel/adjoint
+            # term). Hv_omega is [G,S] genewise / [S] otherwise; flatten in place.
+            return torch.cat([out_theta.reshape(-1), out_col.reshape(-1), Hv_omega.reshape(-1)])
         return torch.cat([out_theta.reshape(-1), out_col.reshape(-1)])
 
     return hvp
