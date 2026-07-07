@@ -132,4 +132,4 @@ a `treerecs_mapping.link` gene→species map, which `GeneReconModel` does not in
 ground-truth role is fully covered by part A (consumer correctness vs dense `eigh`/`pinv` to machine
 precision); the live part B covers real-operator wiring.
 
-Run: `python -m gpurec.optim._verify_s9_curvature` (`--synthetic` = A only, no GPU; `--live` = B only).
+Run: `python -m gates._verify_s9_curvature` (`--synthetic` = A only, no GPU; `--live` = B only).

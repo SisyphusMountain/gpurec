@@ -5,7 +5,7 @@
 2. PRIOR GRAD: grad(prior on) - grad(prior off) == lam*(theta-theta_ref) exactly.
 3. FINITE DIFFERENCE: directional FD of the MAP loss matches the analytic MAP gradient.
 
-    python -m gpurec.optim._verify_map
+    python -m gates._verify_map
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@ the kernel-bench tree is importable.
 This is the Phase-1 verification gate: gpurec value+grad must match kernel-bench to the
 backward's atomic-noise floor (~2e-4 relative).
 
-    python -m gpurec.optim._parity_kbench [/abs/path/to/whole.pt]
+    python -m gates._parity_kbench [/abs/path/to/whole.pt]
 """
 
 from __future__ import annotations

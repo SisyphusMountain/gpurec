@@ -27,7 +27,7 @@ fp64, converged solver (pi>=128, neumann>=64, tangent_self>=128):
 
 Reuses the _verify_hvp_recv / _verify_recv_grad fixture (8 hogenom families, S=1331).
 
-    python -m gpurec.optim._verify_s3_fwd_tangent
+    python -m gates._verify_s3_fwd_tangent
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from gpurec.core.parameters.extract_parameters import (
 )
 from gpurec.optim.forward_tangent import jvp_root_scores
 from gpurec.optim.value_and_grad import forward_solve
-from gpurec.optim._verify_hvp_recv import (
+from gates._verify_hvp_recv import (
     _static_theta_alpha_from_live, _valid_mass_min, proj_alpha,
 )
 

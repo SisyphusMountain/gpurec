@@ -62,7 +62,7 @@ def _require() -> None:
 @pytest.fixture(scope="module")
 def ctx():
     _require()
-    from gpurec.optim._parity_kbench import gpurec_static_from_capture
+    from gates._parity_kbench import gpurec_static_from_capture
 
     cap = torch.load(_cap_path(), map_location="cpu", weights_only=False)
     golden = torch.load(_GOLDEN, map_location="cpu", weights_only=False)

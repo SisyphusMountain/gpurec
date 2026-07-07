@@ -10,7 +10,7 @@ It ALSO re-asserts the regression invariant from the other side: with ``u_alpha 
 ``d_grad_col`` from each wave must be EXACTLY zero (dcol = 0 -> no col-cotangent), and the analytic
 HVP's theta block is untouched. The full (theta, alpha) numerical validation of H_aa/H_ta is S8.
 
-    python -m gpurec.optim._verify_s5_wave_col
+    python -m gates._verify_s5_wave_col
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import torch
 import gpurec.optim.hvp_exact as hx
 from gpurec.optim.hvp_exact import build_point_cache, make_exact_hvp
 from gpurec.optim.value_and_grad import forward_solve
-from gpurec.optim._verify_hvp_recv import _static_theta_alpha_from_live
+from gates._verify_hvp_recv import _static_theta_alpha_from_live
 
 
 def _capture_run(static, theta, alpha, u, *, tangent_self_iters=128):

@@ -260,7 +260,7 @@ Run: `.venv/bin/python -m pytest tests/test_genewise_hvp.py::test_joint_theta_om
 
 - [ ] **Step 6: Regression** — specieswise + receiver HVP unaffected.
 
-Run: `.venv/bin/python -m gpurec.optim._verify_hvp 8 && .venv/bin/python -m gpurec.optim._verify_hvp_recv`
+Run: `.venv/bin/python -m gates._verify_hvp 8 && .venv/bin/python -m gates._verify_hvp_recv`
 Expected: `[hvp gate] ALL PASS` and `[recv-hvp S8 gate] ... OVERALL=True`.
 
 - [ ] **Step 7: Commit** (`feat(hvp): per-family omega head Hessian + theta-omega coupling ([G,S])`).

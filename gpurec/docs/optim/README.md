@@ -38,11 +38,11 @@ to gpurec's renamed forward/backward kernels at the call sites.
 
 | gate | script | result |
 |---|---|---|
-| value+grad ≡ kbench golden | `python -m gpurec.optim._parity_kbench` | loss exact, grad rel_L2 **2e-7** (live-kbench 1.4e-5) |
-| Adam→L-BFGS reaches the basin | `python -m gpurec.optim._fit_kbench` | 170130 → **137686** (the known deep basin) |
-| masking additivity + prior grad + fp64 FD | `python -m gpurec.optim._verify_map` | 5e-8 / 3e-8 / **3.8e-4** |
+| value+grad ≡ kbench golden | `python -m gates._parity_kbench` | loss exact, grad rel_L2 **2e-7** (live-kbench 1.4e-5) |
+| Adam→L-BFGS reaches the basin | `python -m gates._fit_kbench` | 170130 → **137686** (the known deep basin) |
+| masking additivity + prior grad + fp64 FD | `python -m gates._verify_map` | 5e-8 / 3e-8 / **3.8e-4** |
 | CV harness (live hogenom) | `python -m gpurec.optim.map_cv` | held-out NLL finite; **regularization helps** (λ=0 → λ\*>0) |
-| exact HVP ≡ fp64 FD-of-grad | `python -m gpurec.optim._verify_hvp` | rel **~1e-6**, symmetry 3e-7 |
+| exact HVP ≡ fp64 FD-of-grad | `python -m gates._verify_hvp` | rel **~1e-6**, symmetry 3e-7 |
 | **golden regression (pytest)** | `pytest tests/test_optim_golden.py` | loss+grad at fixture **and checkpoint** vs pinned golden + **bit-exact** cross-parity vs live kbench — see `golden_test.md` |
 
 The capture-based tests need the kernel-bench `666x80` capture (`whole.pt`); the live tests need the

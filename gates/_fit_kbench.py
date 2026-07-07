@@ -5,7 +5,7 @@ The kbench golden Newton fit went F0=170130 -> FN~144033 from this fixture's the
 Adam+L-BFGS (no second-order kernels) should reach the same basin (~144k), within the ~7 NLL
 run-to-run optimizer-endpoint spread.
 
-    python -m gpurec.optim._fit_kbench
+    python -m gates._fit_kbench
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import time
 
 import torch
 
-from gpurec.optim._parity_kbench import _DEFAULT_CAP, gpurec_static_from_capture
+from gates._parity_kbench import _DEFAULT_CAP, gpurec_static_from_capture
 from gpurec.optim.baselines import lbfgs_scipy
 from gpurec.optim.optimize import final_eval, first_order
 

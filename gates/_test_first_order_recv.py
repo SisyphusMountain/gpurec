@@ -3,7 +3,7 @@
 Confirms the joint z=[theta; alpha] optimizer (a) DECREASES the loss, (b) MOVES alpha, and
 (c) holds the gauge mean(alpha)~0 after every step. Mirrors the _verify_recv_grad fixture build.
 
-    python -m gpurec.optim._test_first_order_recv
+    python -m gates._test_first_order_recv
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from gpurec import GeneReconModel, SolverOptions
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.optim.optimize import first_order
 from gpurec.optim.value_and_grad import make_value_and_grad
-from gpurec.optim._verify_recv_grad import _SO, _SP, _ROOT, _valid_mass_min
+from gates._verify_recv_grad import _SO, _SP, _ROOT, _valid_mass_min
 
 
 def run(n_families=8, device="cuda", seed=0, max_steps=12):

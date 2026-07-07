@@ -2,7 +2,7 @@
 
 The genewise Hessian is block-diagonal per family; broadcasting a unit tangent e_j across all families
 recovers column j of every family's block at once. This gate first pins the theta-only block (P0); the
-joint (theta, omega) block is added in P2. Mirrors gpurec.optim._verify_hvp but for genewise (F,3) theta.
+joint (theta, omega) block is added in P2. Mirrors gates._verify_hvp but for genewise (F,3) theta.
 """
 import math
 

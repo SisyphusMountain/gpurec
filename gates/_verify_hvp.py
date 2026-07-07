@@ -6,8 +6,8 @@ difference of the value-and-grad gradient. fp64 + a CONVERGED solver (high pi_it
 tangent-self) so neither side is truncation-limited; tolerance ~5e-4 reflects residual solver
 truncation (per the kbench gate's note).
 
-    python -m gpurec.optim._verify_hvp                 # tiny live-hogenom model (local, fp64)
-    python -m gpurec.optim._verify_hvp --capture       # the 666x80 capture (large fp64; use the A100)
+    python -m gates._verify_hvp                 # tiny live-hogenom model (local, fp64)
+    python -m gates._verify_hvp --capture       # the 666x80 capture (large fp64; use the A100)
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _static_theta_rw_from_live(n_families, device, init_rate=0.1):
 
 def _static_theta_rw_from_capture(device):
     import os
-    from gpurec.optim._parity_kbench import _DEFAULT_CAP, gpurec_static_from_capture
+    from gates._parity_kbench import _DEFAULT_CAP, gpurec_static_from_capture
     cap_path = os.environ.get("GPUREC_KB_CAPTURE", _DEFAULT_CAP)
     cap = torch.load(cap_path, map_location="cpu", weights_only=False)
     static = gpurec_static_from_capture(cap, device)

@@ -5,7 +5,7 @@ theta.numel()+S) yields a gradient g_z whose directional derivative matches a ce
 NLL, at a NON-UNIFORM base alpha (so the alpha code paths are LIVE, not the degenerate uniform
 center), with a converged fp64 solver. Also checks the gauge identity 1^T g_alpha == 0.
 
-    python -m gpurec.optim._verify_recv_grad
+    python -m gates._verify_recv_grad
 
 Mirrors the fixture build of _verify_hvp / _verify_map.
 """

@@ -24,8 +24,8 @@ Three parts:
      dense gauge-projected Hessian by applying the REAL analytic joint HVP to the 4S unit vectors and
      cross-check the cert + Fisher against dense ``eigh``/``pinv`` -- real operator AND dense truth.
 
-    python -m gpurec.optim._verify_s9_curvature                 # A + B (+ C if primates loads)
-    python -m gpurec.optim._verify_s9_curvature --synthetic     # A only (no GPU/model)
+    python -m gates._verify_s9_curvature                 # A + B (+ C if primates loads)
+    python -m gates._verify_s9_curvature --synthetic     # A only (no GPU/model)
 """
 
 from __future__ import annotations
@@ -150,7 +150,7 @@ def run_penalty_unit(S=6, seed=2, device="cpu"):
 
 # ============================================================================= live fixture helpers
 def _live_imports():
-    from gpurec.optim._verify_hvp_recv import (  # reuse the verified fixture + endgame descent
+    from gates._verify_hvp_recv import (  # reuse the verified fixture + endgame descent
         _static_theta_alpha_from_live, _valid_mass_min,
     )
     from gpurec.core.inference.solver import receiver_weights_are_uniform

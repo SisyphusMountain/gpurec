@@ -31,7 +31,7 @@ EXPECTED BASELINE (the discriminator):
 As S3..S8 land, the SAME gate is re-run; the alpha/mixed blocks must turn green (rel <= 5e-4) and
 the analytic null-space leakage must drop to the truncation floor.
 
-    python -m gpurec.optim._verify_hvp_recv            # tiny live-hogenom model (local, fp64)
+    python -m gates._verify_hvp_recv            # tiny live-hogenom model (local, fp64)
 """
 
 from __future__ import annotations

@@ -17,7 +17,7 @@ run the HVP tangent sweep (that is S3: the tangent forward is still uniform and 
 Reuses the _verify_hvp_recv / _verify_recv_grad fixture (8 hogenom families, S=1331),
 seeded NON-UNIFORM base alpha = 0.2*randn(S), fp64, converged solver (pi>=128, neu>=64).
 
-    python -m gpurec.optim._verify_s7_turnon
+    python -m gates._verify_s7_turnon
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import torch
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.optim.hvp_exact import build_point_cache
 from gpurec.optim.value_and_grad import forward_solve, make_value_and_grad
-from gpurec.optim._verify_hvp_recv import (
+from gates._verify_hvp_recv import (
     _static_theta_alpha_from_live, _valid_mass_min, proj_alpha,
 )
 
