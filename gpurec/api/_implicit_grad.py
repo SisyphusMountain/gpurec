@@ -212,6 +212,9 @@ def implicit_grad_loglik_vjp_wave(
     pibar_side_threshold: float = 0.0,
     collect_backward_relres: bool = False,
     warm_v: dict | None = None,
+    seed_root: torch.Tensor | None = None,
+    drop_norm: bool = False,
+    cache: dict | None = None,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
 ):
@@ -254,11 +257,10 @@ def implicit_grad_loglik_vjp_wave(
     # is only a shift, which softmax ignores, so this is identical at uniform.
     root_Pi_w = root_Pi if origination_log_probs is None else root_Pi + origination_log_probs
     root_lse = _logsumexp2(root_Pi_w, dim=-1, keepdim=True)
-    accumulated_rhs.index_copy_(
-        0,
-        root_ids,
-        -_safe_exp2_ratio(root_Pi_w, root_lse),
-    )
+    # seed_root=None -> the loss seed -softmax2(root_Pi_w) (production); a caller-supplied root
+    # cotangent (the GGN/J^T path) is used verbatim.
+    seed = -_safe_exp2_ratio(root_Pi_w, root_lse) if seed_root is None else seed_root.to(dtype)
+    accumulated_rhs.index_copy_(0, root_ids, seed)
     def _scatter_accum(acc: torch.Tensor, family_rows_for_wave: torch.Tensor, contrib: torch.Tensor) -> None:
         if contrib.dtype != acc.dtype:
             contrib = contrib.to(dtype=acc.dtype)
@@ -401,6 +403,16 @@ def implicit_grad_loglik_vjp_wave(
             warm_v[ws] = torch.where(
                 _row_active.unsqueeze(-1), v_k, torch.zeros((), dtype=v_k.dtype, device=v_k.device)
             ).detach()
+        if cache is not None:
+            # per-wave adjoint state for the exact-HVP tangent sweep (theta fixed across CG). Pruning
+            # leaves inactive v_k rows uninitialized; the primal never reads them but the second-order
+            # contraction does -> sanitize with the row mask.
+            row_active = (active_mask.reshape(W, -1) != 0).any(dim=1)
+            v_clean = torch.where(row_active.unsqueeze(1), v_k, torch.zeros_like(v_k))
+            cache.setdefault("waves", []).append(dict(
+                ws=ws, W=W, v=v_clean, dts_r=dts_r, active_mask=active_mask,
+                has_splits=has_splits, has_leaf_term=has_leaf_term, meta=meta,
+            ))
         family_rows_for_wave = family_idx[ws : ws + W]
         _scatter_accum(grad_log_pD, family_rows_for_wave, aw0)
         _scatter_accum(grad_log_pS, family_rows_for_wave, aw345)
@@ -470,6 +482,12 @@ def implicit_grad_loglik_vjp_wave(
         # Diagnostic short-circuit: the per-family backward residual is fully accumulated
         # from the per-wave self-loop solves; the E-adjoint solve is not needed here.
         return backward_relres, backward_vk_mag
+    if cache is not None:
+        cache["accum"] = dict(
+            grad_E=grad_E_acc, grad_Ebar=grad_Ebar_acc, grad_E_s1=grad_E_s1_acc,
+            grad_E_s2=grad_E_s2_acc, grad_log_pD=grad_log_pD, grad_log_pS=grad_log_pS,
+            grad_mc=grad_max_transfer_mat, grad_col=grad_receiver_log_probs,
+        )
     return _e_adjoint_and_theta_vjp(
         E_star, log_pS, log_pD, log_pL, max_transfer_mat,
         receiver_log_probs,
@@ -479,9 +497,11 @@ def implicit_grad_loglik_vjp_wave(
         int(root_ids.numel()), theta, receiver_weights, species_helpers,
         specieswise=specieswise,
         genewise=genewise,
+        drop_norm=drop_norm,
         bicgstab_max_iter=bicgstab_max_iter,
         bicgstab_tol=bicgstab_tol,
         bicgstab_breakdown_tol=bicgstab_breakdown_tol,
+        cache=cache,
         origination_probs=origination_probs,
     )
 
@@ -491,9 +511,11 @@ def _e_adjoint_and_theta_vjp(
     grad_E, grad_Ebar, grad_E_s1, grad_E_s2,
     grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
     n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
+    drop_norm: bool = False,
     bicgstab_max_iter: int = 500,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
+    cache=None,
     origination_probs=None,
 ):
     topology_args = (
@@ -515,19 +537,16 @@ def _e_adjoint_and_theta_vjp(
             *topology_args,
             use_receiver_weights=use_receiver_weights,
         )
-        denom = _log2_survival(E_req, origination_probs)
-        direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
-        (aux_to_e,) = torch.autograd.grad(
-            (direct_obj, E_s1_from_E, E_s2_from_E, Ebar_from_E),
-            E_req,
-            grad_outputs=(
-                torch.ones_like(direct_obj),
-                grad_E_s1,
-                grad_E_s2,
-                grad_Ebar,
-            ),
-            retain_graph=True,
-        )
+        # ``drop_norm`` (GGN/J^T use) skips the loss's explicit E-normalization term, which is not
+        # part of d(Pi_root)/dtheta. Default False -> the full real gradient (production path).
+        aux_outputs = (E_s1_from_E, E_s2_from_E, Ebar_from_E)
+        aux_grads = (grad_E_s1, grad_E_s2, grad_Ebar)
+        if not drop_norm:
+            denom = _log2_survival(E_req, origination_probs)
+            direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
+            aux_outputs = (direct_obj, *aux_outputs)
+            aux_grads = (torch.ones_like(direct_obj), *aux_grads)
+        (aux_to_e,) = torch.autograd.grad(aux_outputs, E_req, grad_outputs=aux_grads, retain_graph=True)
     q_E = grad_E + aux_to_e
 
     E_shape = E_star.shape
@@ -551,6 +570,8 @@ def _e_adjoint_and_theta_vjp(
         tol=bicgstab_tol,
         breakdown_tol=bicgstab_breakdown_tol,
     ).view(E_shape)
+    if cache is not None:
+        cache["e_side"] = dict(q_E=q_E, wE=wE, aux_to_e=aux_to_e)
 
     theta_req = theta.detach().requires_grad_(True)
     receiver_req = receiver_weights.detach().requires_grad_(True)
