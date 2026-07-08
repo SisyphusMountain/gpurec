@@ -32,8 +32,14 @@ import torch
 
 from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
+from gpurec.config.rates import RateBounds
 from gpurec.core.inference.solver import solve_forward_residual
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
+
+# The genewise rate-bounds preset (floor 1e-6, cap 2.0) -- tighter than the global (1e-10, None)
+# floor in gpurec.optimization / GeneReconModel's theta init. Single source for the fit_genewise
+# min_rate/max_rate signature defaults below (Global Constraint 2, task-5 brief).
+_GENEWISE_RATE_BOUNDS = RateBounds.genewise()
 
 # Proven base solver settings (pi_iters / neumann_terms are overridden per tier below).
 _BASE_SOLVER = dict(
@@ -76,8 +82,8 @@ def fit_genewise(
     *,
     device="cuda",
     dtype: torch.dtype = torch.float32,
-    min_rate: float = 1e-6,
-    max_rate: float = 2.0,
+    min_rate: float = _GENEWISE_RATE_BOUNDS.min_rate,
+    max_rate: float = _GENEWISE_RATE_BOUNDS.max_rate,
     # --- the recipe (defaults = the accepted optimized recipe) ---
     adam_steps: int = 5,
     adam_lr: float = 1.0,
@@ -106,7 +112,8 @@ def fit_genewise(
     dev = torch.device(device)
     pis = [int(p) for p in pi_tiers]
     cert_pi = max(pis)
-    lo, hi = log2_rate_bounds(min_rate, max_rate)
+    bounds = RateBounds(min_rate=min_rate, max_rate=max_rate)
+    lo, hi = log2_rate_bounds(bounds=bounds)
     base = dict(_BASE_SOLVER)
     if isinstance(solver_options, SolverOptions):
         base = {k: getattr(solver_options, k) for k in _BASE_SOLVER}
@@ -132,10 +139,10 @@ def fit_genewise(
         return lv.to(dtype), g.to(dtype)
 
     def pgmax(th, g):
-        return project_rate_gradient_(th, g.clone(), min_rate=min_rate, max_rate=max_rate).abs().amax(dim=1)
+        return project_rate_gradient_(th, g.clone(), bounds=bounds).abs().amax(dim=1)
 
     def clamp_(th):
-        clamp_log_rate_(th, min_rate=min_rate, max_rate=max_rate)
+        clamp_log_rate_(th, bounds=bounds)
         return th
 
     def forward_resid(m, th, pi):
@@ -182,7 +189,7 @@ def fit_genewise(
                     _, g = lg(m, lf.detach()); lf.grad = g
                     if grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(lf, grad_clip)
-                    project_rate_gradient_(lf.detach(), lf.grad, min_rate=min_rate, max_rate=max_rate)
+                    project_rate_gradient_(lf.detach(), lf.grad, bounds=bounds)
                     ad.step()
                     with torch.no_grad():
                         clamp_(lf)
@@ -244,7 +251,8 @@ def fit_genewise(
                     H = 0.5 * (H + H.transpose(1, 2))
                     e, V = torch.linalg.eigh(H)
                     Hd = V @ torch.diag_embed(e.clamp(min=mu)) @ V.transpose(1, 2)   # convexify -> PD
-                fixed = ((sub >= hi - 1e-6) & (g < 0)) | ((sub <= lo + 1e-6) & (g > 0))
+                fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
+                    ((sub <= lo + bounds.bound_active_eps) & (g > 0))
                 free = (~fixed).float()
                 Hred = Hd * free.unsqueeze(1) * free.unsqueeze(2) + torch.diag_embed(1.0 - free)
                 delta = -torch.linalg.solve(Hred, (g * free).unsqueeze(-1)).squeeze(-1)
@@ -278,7 +286,7 @@ def fit_genewise(
                 H[:, :, j] = (gp - gm) / (2 * fd_eps)
             H = 0.5 * (H + H.transpose(1, 2))
             lam_min = torch.linalg.eigvalsh(H)[:, 0]
-            bound_active = ((theta <= lo + 1e-6) | (theta >= hi - 1e-6)).any(dim=1)
+            bound_active = ((theta <= lo + bounds.bound_active_eps) | (theta >= hi - bounds.bound_active_eps)).any(dim=1)
             conv = pg < tol
             nll_bits = float(mfull.genewise_loss_vector(theta=theta).sum())
             result.update(

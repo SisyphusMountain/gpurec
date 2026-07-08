@@ -11,6 +11,7 @@ from gpurec.api._execution import (
     theta_for_static,
 )
 from gpurec.api.solver_options import SolverOptions
+from gpurec.config.rates import RateBounds
 from gpurec.core.scheduling.batching import plan_batch_wave_layouts, preprocess_dataset
 
 
@@ -71,8 +72,9 @@ class GeneReconModel(torch.nn.Module):
             batches = [list(range(len(families)))]
         batch_wave_layouts = raw.get("batch_wave_layouts") or [None] * len(batches)
         theta_shape = (len(families), 3) if genewise else ((int(species_helpers["S"]), 3) if specieswise else (3,))
+        bounds = RateBounds()
         self.theta = torch.nn.Parameter(
-            torch.full(theta_shape, math.log2(1e-10), dtype=dtype, device=device)
+            torch.full(theta_shape, math.log2(bounds.init_rate), dtype=dtype, device=device)
         )
         self.receiver_weights = torch.nn.Parameter(
             torch.zeros((int(species_helpers["S"]),), dtype=dtype, device=device)
