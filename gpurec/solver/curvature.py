@@ -18,10 +18,24 @@ the HVP builder + the value/grad closure and keep their own public signatures. R
 
 from __future__ import annotations
 
+import dataclasses
+
 import torch
 
+from gpurec.config.newton import NewtonOptions
 from gpurec.solver.cg import cg_witness, lanczos_extremes, lanczos_min_eigpair
 from gpurec.solver.value_and_grad import free_cuda_cache_if_tight
+
+
+def resolve_newton(newton: "NewtonOptions | None", **overrides) -> NewtonOptions:
+    """Resolve a ``NewtonOptions`` instance from an optional base ``newton`` plus explicit-kwarg
+    overrides (the deprecation shim for the old copy-pasted individual kwargs): any override value
+    that is ``None`` falls back to ``newton`` (or ``NewtonOptions()`` if ``newton`` is also ``None``);
+    a non-``None`` override replaces that field. Used by the ``newton_*``/``certify_*`` wrappers so
+    existing callers passing e.g. ``max_newton=4`` explicitly keep working unchanged."""
+    opts = newton if newton is not None else NewtonOptions()
+    active = {k: v for k, v in overrides.items() if v is not None}
+    return dataclasses.replace(opts, **active) if active else opts
 
 
 def gauge_operator(hvp, proj, *, penalty_hvp=None, ridge=0.0):
@@ -44,7 +58,8 @@ def gauge_operator(hvp, proj, *, penalty_hvp=None, ridge=0.0):
     return Av
 
 
-def certify_min(hvp, proj, p, *, m=200, seed=0, penalty_hvp=None, device=None, leak_fn=None):
+def certify_min(hvp, proj, p, *, m=None, seed=None, penalty_hvp=None, device=None, leak_fn=None,
+                newton: NewtonOptions | None = None):
     """Gauge-fixed reduced-Hessian PD certificate via deflated gauge-projected Lanczos.
 
     ``proj`` = ``P_z``; ``p`` = ``len(z)``. Lanczos is started from a ``P_z``-projected random
@@ -52,7 +67,12 @@ def certify_min(hvp, proj, p, *, m=200, seed=0, penalty_hvp=None, device=None, l
     ``v - P_z v`` up by ``C >> spectrum-top`` so the smallest eigenvalue of the shifted operator
     is the genuine reduced-Hessian minimum. Returns
     ``(lam_min, ritz_resid, v_min, gauge_comp, leak)`` (``leak`` is ``None`` unless ``leak_fn``
-    is given). The Ritz residual is measured against the UNSHIFTED ``A_z``."""
+    is given). The Ritz residual is measured against the UNSHIFTED ``A_z``.
+
+    ``m``/``seed`` default (``None``) to ``NewtonOptions.certify_m``/``seed``; pass ``newton=`` to
+    override the whole block, or ``m=``/``seed=`` directly (back-compat kwargs)."""
+    opts = resolve_newton(newton, certify_m=m, seed=seed)
+    m, seed = opts.certify_m, opts.seed
     Av = gauge_operator(hvp, proj, penalty_hvp=penalty_hvp)
     gen = torch.Generator(device=str(device)).manual_seed(seed)
     start = proj(torch.randn(p, generator=gen, device=device, dtype=torch.float64))
@@ -71,17 +91,22 @@ def certify_min(hvp, proj, p, *, m=200, seed=0, penalty_hvp=None, device=None, l
     return lam_min, ritz_resid, v_min, gauge_comp, leak
 
 
-def newton_min(z, p_dim, proj, vg, build_hvp, *, theta_numel, S, sigma=0.01, sigma_floor=1e-4,
-               lanczos_m=10, nu=1.5, decrease=1.5, max_bumps=3, max_cg=40, c1=1e-4, ls_max=25,
-               gtol=1e-2, max_newton=40, ftol=1e-9, seed=0, device=None, tag="newton-joint",
-               verbose=True):
+def newton_min(z, p_dim, proj, vg, build_hvp, *, theta_numel, S, newton: NewtonOptions | None = None,
+               device=None, tag="newton-joint", verbose=True):
     """Gauge-projected LM-damped Newton on the joint ``z`` (already on the gauge slice).
 
     The Newton system is the gauge-projected ``P_z (H + penalty + lam_damp I) P_z dz = -P_z g_z``,
     solved by ``cg_witness`` (negative-curvature self-correction bumps ``lam_damp``), globalized by
     Armijo backtracking on the joint forward loss; after each accepted step ``z`` is re-projected
     to the gauge slice. ``vg(z, want_grad=?)`` returns ``(F, g_z, ...)``; ``build_hvp(z)`` returns
-    the gauge operator at ``z``. Returns ``(z, history)``."""
+    the gauge operator at ``z``. ``newton`` (a ``NewtonOptions``, default ``NewtonOptions()``)
+    supplies every LM/Lanczos/CG/line-search knob. Returns ``(z, history)``."""
+    opts = newton if newton is not None else NewtonOptions()
+    sigma, sigma_floor = opts.sigma, opts.sigma_floor
+    lanczos_m, nu, decrease = opts.lanczos_m, opts.nu, opts.decrease
+    max_bumps, max_cg, c1, ls_max = opts.max_bumps, opts.max_cg, opts.c1, opts.ls_max
+    gtol, max_newton, ftol, seed = opts.gtol, opts.max_newton, opts.ftol, opts.seed
+
     F, g_z, _, _ = vg(z)
     gP = proj(g_z.double())
 
@@ -92,7 +117,7 @@ def newton_min(z, p_dim, proj, vg, build_hvp, *, theta_numel, S, sigma=0.01, sig
     lam_max = max(lam_max, 1e-12)
     lam_damp = sigma * lam_max
     lam_floor = sigma_floor * lam_max
-    lam_ceil = 10.0 * lam_max
+    lam_ceil = opts.lam_ceil_factor * lam_max
     if verbose:
         print(f"[{tag}] S={S} theta_numel={theta_numel}  lam_max~{lam_max:.3f}  "
               f"lam_damp0={lam_damp:.4f}")
@@ -116,7 +141,7 @@ def newton_min(z, p_dim, proj, vg, build_hvp, *, theta_numel, S, sigma=0.01, sig
             Hz = build_hvp(z)
             hvp_stale = False
 
-        eta = min(0.1, gnorm ** 0.5)
+        eta = min(opts.forcing_eta, gnorm ** 0.5)
         p_step, cg_iters, status, cert = None, 0, "", None
         for _bump in range(int(max_bumps) + 1):
             Av = lambda v, ld=lam_damp: Hz(v) + ld * proj(v)

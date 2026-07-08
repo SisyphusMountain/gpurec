@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import torch
 
+from gpurec.config.newton import NewtonOptions
 from gpurec.core.inference.solver import origination_weights_are_uniform, receiver_weights_are_uniform
 from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
 from gpurec.solver import curvature as _curv
@@ -86,14 +87,18 @@ def make_gauge_operator(hvp, theta_numel, S, *, penalty_hvp=None, ridge=0.0):
 
 
 # --------------------------------------------------------------------------------- PD certificate
-def certify_joint_min(static, theta, alpha, omega, *, m=200, seed=0, tangent_self_iters=None,
-                      warm_E=None, hvp=None, theta_numel=None, S=None, verbose=True):
+def certify_joint_min(static, theta, alpha, omega, *, m=None, seed=None, tangent_self_iters=None,
+                      warm_E=None, hvp=None, theta_numel=None, S=None, verbose=True,
+                      newton: NewtonOptions | None = None):
     """Gauge-fixed reduced-Hessian PD certificate for the joint ``(theta, alpha, omega)`` minimum.
 
     Gauge-projected Lanczos for the smallest reduced-Hessian eigenpair, deflating BOTH gauge nulls.
     Returns a dict with ``lam_min_gauge`` (PD iff > 0), ``ritz_resid``, ``pd``, ``v_min``.
+    ``m``/``seed`` default (``None``) to ``NewtonOptions.certify_m``/``seed`` (pass ``newton=`` to
+    override the whole block, or ``m=``/``seed=`` directly -- back-compat kwargs).
     """
     theta, alpha, omega = theta.double(), alpha.double(), omega.double()
+    opts = _curv.resolve_newton(newton, certify_m=m, seed=seed)
     if hvp is None:
         hvp, _loss, _sv, _cache = build_joint_hvp(static, theta, alpha, omega, warm_E=warm_E,
                                                   tangent_self_iters=tangent_self_iters)
@@ -105,20 +110,21 @@ def certify_joint_min(static, theta, alpha, omega, *, m=200, seed=0, tangent_sel
     p = theta_numel + 2 * S
     # Deflated gauge-projected Lanczos, deflating BOTH gauge nulls ([0;1_S;0] and [0;0;1_S]).
     lam_min, ritz_resid, v_min, gauge_comp, _leak = _curv.certify_min(
-        hvp, lambda v: proj_z(v, theta_numel, S), p, m=m, seed=seed, device=theta.device)
+        hvp, lambda v: proj_z(v, theta_numel, S), p, m=opts.certify_m, seed=opts.seed,
+        device=theta.device)
     pd = lam_min > 0.0
     if verbose:
         tag = "PD (certified gauge-fixed joint min)" if pd else "NOT PD (saddle / non-stationary)"
         print(f"[orig-cert] lam_min_gauge={lam_min:+.6e}  ritz_resid={ritz_resid:.2e}  "
-              f"gauge_comp={gauge_comp:.2e}  m={m}  -> {tag}")
+              f"gauge_comp={gauge_comp:.2e}  m={opts.certify_m}  -> {tag}")
     return dict(lam_min_gauge=lam_min, ritz_resid=ritz_resid, pd=bool(pd), gauge_comp=gauge_comp,
-                v_min=v_min, m=int(m), S=S, theta_numel=theta_numel)
+                v_min=v_min, m=int(opts.certify_m), S=S, theta_numel=theta_numel)
 
 
 # --------------------------------------------------------------------- Fisher / uncertainty (omega)
 def origination_information(static, theta, alpha, omega, *, hvp=None, theta_numel=None, S=None,
-                            species=None, cg_tol=1e-7, cg_max=400, ridge=0.0, tangent_self_iters=None,
-                            warm_E=None, verbose=True):
+                            species=None, cg_tol=None, cg_max=None, ridge=0.0, tangent_self_iters=None,
+                            warm_E=None, verbose=True, newton: NewtonOptions | None = None):
     """Gauge-fixed marginal covariance / standard errors of the origination logits ``omega`` at a
     (certified) joint minimum -- the observed Fisher information for the origination weights,
     Schur-complement-correct over (theta, alpha) (each column is a full joint CG solve).
@@ -126,9 +132,12 @@ def origination_information(static, theta, alpha, omega, *, hvp=None, theta_nume
     Returns a dict: ``Sigma_oo`` [|species|,|species|] gauge-fixed marginal covariance, ``se_omega``
     per-species s.e. of the origination logits, ``se_p`` delta-method s.e. of the origination
     probabilities ``p = softmax(omega)`` (``Sigma_p = J Sigma_oo J^T``, ``J = diag(p) - p p^T``),
-    ``p``, ``species``, ``cg_iters``, ``cg_resid``.
+    ``p``, ``species``, ``cg_iters``, ``cg_resid``. ``cg_tol``/``cg_max`` default (``None``) to
+    ``NewtonOptions.cg_tol``/``cg_max``.
     """
     theta, alpha, omega = theta.double(), alpha.double(), omega.double()
+    opts = _curv.resolve_newton(newton, cg_tol=cg_tol, cg_max=cg_max)
+    cg_tol, cg_max = opts.cg_tol, opts.cg_max
     if hvp is None:
         hvp, _loss, _sv, _cache = build_joint_hvp(static, theta, alpha, omega, warm_E=warm_E,
                                                   tangent_self_iters=tangent_self_iters)
@@ -178,10 +187,10 @@ def origination_information(static, theta, alpha, omega, *, hvp=None, theta_nume
 
 
 # --------------------------------------------------------------- Newton on (theta, alpha, omega)
-def newton_joint(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_floor=1e-4, lanczos_m=10,
-                 nu=1.5, decrease=1.5, max_bumps=3, max_cg=40, c1=1e-4, ls_max=25, gtol=1e-2,
-                 max_newton=40, tangent_self_iters=None, lam=0.0, theta_ref=None, lam_tree=0.0,
-                 sp_parent=None, ftol=1e-9, seed=0, verbose=True):
+def newton_joint(static, theta0, alpha0, omega0, *, sigma=None, sigma_floor=None, lanczos_m=None,
+                 nu=None, decrease=None, max_bumps=None, max_cg=None, c1=None, ls_max=None, gtol=None,
+                 max_newton=None, tangent_self_iters=None, lam=0.0, theta_ref=None, lam_tree=0.0,
+                 sp_parent=None, ftol=None, seed=None, verbose=True, newton: NewtonOptions | None = None):
     """Gauge-projected LM-damped Newton on the joint ``z = [theta.reshape(-1); alpha; omega]``.
 
     The Newton system is the gauge-projected ``P_z (H + penalty + lam_damp I) P_z dz = -P_z g_z``,
@@ -191,6 +200,11 @@ def newton_joint(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_floor=1e-4
     rebuilt at each new point. Optional ridge (``lam``/``theta_ref``) and GBM tree-Laplacian
     (``lam_tree``/``sp_parent``) penalties act on the theta block only. Run in fp64. Returns
     ``(theta, alpha, omega, history)``. REQUIRES non-uniform ``alpha0`` and ``omega0``.
+
+    All the LM/Lanczos/CG/line-search knobs (``sigma``, ``sigma_floor``, ``lanczos_m``, ``nu``,
+    ``decrease``, ``max_bumps``, ``max_cg``, ``c1``, ``ls_max``, ``gtol``, ``max_newton``, ``ftol``,
+    ``seed``) default (``None``) to the matching ``NewtonOptions`` field -- pass ``newton=`` to
+    override the whole block at once, or any of these kwargs directly (back-compat).
     """
     theta0 = theta0.double()
     alpha0 = alpha0.double().reshape(-1)
@@ -229,11 +243,13 @@ def newton_joint(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_floor=1e-4
         hvp, _l, _sv, _c = build_joint_hvp(static, th, al, om, tangent_self_iters=tangent_self_iters)
         return make_gauge_operator(hvp, theta_numel, S, penalty_hvp=pen_hvp)
 
+    opts = _curv.resolve_newton(
+        newton, sigma=sigma, sigma_floor=sigma_floor, lanczos_m=lanczos_m, nu=nu, decrease=decrease,
+        max_bumps=max_bumps, max_cg=max_cg, c1=c1, ls_max=ls_max, gtol=gtol, max_newton=max_newton,
+        ftol=ftol, seed=seed)
     z, history = _curv.newton_min(
         z, p_dim, lambda v: proj_z(v, theta_numel, S), vg, build_hvp, theta_numel=theta_numel, S=S,
-        sigma=sigma, sigma_floor=sigma_floor, lanczos_m=lanczos_m, nu=nu, decrease=decrease,
-        max_bumps=max_bumps, max_cg=max_cg, c1=c1, ls_max=ls_max, gtol=gtol, max_newton=max_newton,
-        ftol=ftol, seed=seed, device=device, tag="newton-joint(orig)", verbose=verbose)
+        newton=opts, device=device, tag="newton-joint(orig)", verbose=verbose)
 
     theta_out = z[:theta_numel].reshape(theta_shape).contiguous()
     alpha_out = z[theta_numel:theta_numel + S].contiguous()

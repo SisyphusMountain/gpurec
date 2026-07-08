@@ -2,6 +2,7 @@ import torch
 from gpurec.solver.hvp_exact import make_exact_hvp
 
 from gpurec.api._execution import evaluate_static_loss_grad, stream_batches
+from gpurec.config.newton import NewtonOptions
 from gpurec.solver import curvature as _curv
 from gpurec.solver.origination_curvature import build_joint_hvp
 from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight
@@ -217,10 +218,10 @@ def certify_joint_min_genewise(static, theta, alpha, omega, *, m=120, seed=0,
                 v_min=v_min, m=int(m), S=S, G=G, theta_numel=theta_numel)
 
 
-def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_floor=1e-4,
-                          lanczos_m=10, nu=1.5, decrease=1.5, max_bumps=3, max_cg=40, c1=1e-4,
-                          ls_max=25, gtol=1e-2, max_newton=40, tangent_self_iters=None, ftol=1e-9,
-                          seed=0, cert_m=120, verbose=True):
+def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=None, sigma_floor=None,
+                          lanczos_m=None, nu=None, decrease=None, max_bumps=None, max_cg=None, c1=None,
+                          ls_max=None, gtol=None, max_newton=None, tangent_self_iters=None, ftol=None,
+                          seed=None, cert_m=120, verbose=True, newton: NewtonOptions | None = None):
     """Gauge-projected LM-damped Newton-CG on the genewise joint ``z = [theta (3G); alpha (S); omega (G*S)]``.
 
     Mirrors ``origination_curvature.newton_joint`` with three genewise deltas: (i) ``proj_z_genewise``
@@ -235,6 +236,13 @@ def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_f
     ``gnorm_init``/``gnorm_final`` (``||P g||`` at the start / final iterate), the final ``lam_min`` and
     ``pd`` (from ``certify_joint_min_genewise``, PD not forced), the per-iteration ``iters`` trace, and
     the full ``cert`` dict.
+
+    All the LM/Lanczos/CG/line-search knobs (``sigma``, ``sigma_floor``, ``lanczos_m``, ``nu``,
+    ``decrease``, ``max_bumps``, ``max_cg``, ``c1``, ``ls_max``, ``gtol``, ``max_newton``, ``ftol``,
+    ``seed``) default (``None``) to the matching ``NewtonOptions`` field -- pass ``newton=`` to
+    override the whole block at once, or any of these kwargs directly (back-compat). ``cert_m`` is
+    the genewise certificate's OWN default (120, distinct from ``NewtonOptions.certify_m``'s 200 --
+    the two are not the same knob) and stays a plain literal.
     """
     theta0 = theta0.double()
     alpha0 = alpha0.double().reshape(-1)
@@ -299,11 +307,13 @@ def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=0.01, sigma_f
     # Gauge-projected LM-Newton loop (shared core; genewise projector + the per-family vg/build_hvp
     # closures above). ``decrease`` is the accepted-step damping-decrease factor.
     proj = lambda v: proj_z_genewise(v, theta_numel, S, G)
+    opts = _curv.resolve_newton(
+        newton, sigma=sigma, sigma_floor=sigma_floor, lanczos_m=lanczos_m, nu=nu, decrease=decrease,
+        max_bumps=max_bumps, max_cg=max_cg, c1=c1, ls_max=ls_max, gtol=gtol, max_newton=max_newton,
+        ftol=ftol, seed=seed)
     z, trace = _curv.newton_min(
         z, p_dim, proj, vg, build_hvp, theta_numel=theta_numel, S=S,
-        sigma=sigma, sigma_floor=sigma_floor, lanczos_m=lanczos_m, nu=nu, decrease=decrease,
-        max_bumps=max_bumps, max_cg=max_cg, c1=c1, ls_max=ls_max, gtol=gtol, max_newton=max_newton,
-        ftol=ftol, seed=seed, device=device, tag="newton-joint(gw)", verbose=verbose)
+        newton=opts, device=device, tag="newton-joint(gw)", verbose=verbose)
 
     theta_out, alpha_out, omega_out = split(z)
     alpha_out = alpha_out - alpha_out.mean()

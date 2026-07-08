@@ -6,5 +6,6 @@ solver and implicit-gradient code. This package will grow into a single
 build on this skeleton.
 """
 from gpurec.config.gpurec_config import dtype_rel_tol_default, dtype_rel_tol_floor
+from gpurec.config.newton import NewtonOptions
 
-__all__ = ["dtype_rel_tol_default", "dtype_rel_tol_floor"]
+__all__ = ["dtype_rel_tol_default", "dtype_rel_tol_floor", "NewtonOptions"]

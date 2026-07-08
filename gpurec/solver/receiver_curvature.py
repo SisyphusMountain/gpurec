@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import torch
 
+from gpurec.config.newton import NewtonOptions
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.solver import curvature as _curv
 from gpurec.solver.cg import cg_solve
@@ -143,8 +144,9 @@ def make_gauge_operator(hvp, theta_numel, *, penalty_hvp=None, ridge=0.0):
 
 
 # --------------------------------------------------------------------------------- PD certificate
-def certify_joint_min(static, theta, alpha, *, m=200, seed=0, tangent_self_iters=None, warm_E=None,
-                      hvp=None, theta_numel=None, S=None, penalty_hvp=None, verbose=True):
+def certify_joint_min(static, theta, alpha, *, m=None, seed=None, tangent_self_iters=None, warm_E=None,
+                      hvp=None, theta_numel=None, S=None, penalty_hvp=None, verbose=True,
+                      newton: NewtonOptions | None = None):
     """Gauge-fixed reduced-Hessian PD certificate for the joint ``(theta, alpha)`` minimum.
 
     Runs gauge-projected Lanczos (``lanczos_min_eigpair`` with a ``P_z``-projected start so the whole
@@ -159,9 +161,12 @@ def certify_joint_min(static, theta, alpha, *, m=200, seed=0, tangent_self_iters
       ``v_min``, ``m``, ``S``, ``theta_numel``.
 
     Pass a prebuilt ``hvp`` (+ ``theta_numel``/``S``) to reuse a cache; else it is built here.
+    ``m``/``seed`` default (``None``) to ``NewtonOptions.certify_m``/``seed`` (pass ``newton=`` to
+    override the whole block, or ``m=``/``seed=`` directly -- back-compat kwargs).
     """
     theta = theta.double()
     alpha = alpha.double()
+    opts = _curv.resolve_newton(newton, certify_m=m, seed=seed)
     if hvp is None:
         hvp, _loss, _sv, _cache = build_joint_hvp(static, theta, alpha, warm_E=warm_E,
                                                   tangent_self_iters=tangent_self_iters)
@@ -175,21 +180,21 @@ def certify_joint_min(static, theta, alpha, *, m=200, seed=0, tangent_self_iters
     # certify_min shifts it up so the smallest eigenvalue of the shifted operator is the genuine
     # reduced-Hessian minimum, and reports the Ritz residual against the UNSHIFTED A_z).
     lam_min, ritz_resid, v_min, gauge_comp, leak = _curv.certify_min(
-        hvp, lambda v: proj_z(v, theta_numel), p, m=m, seed=seed, penalty_hvp=penalty_hvp,
-        device=theta.device, leak_fn=lambda Hv: _alpha_leak(Hv, theta_numel))
+        hvp, lambda v: proj_z(v, theta_numel), p, m=opts.certify_m, seed=opts.seed,
+        penalty_hvp=penalty_hvp, device=theta.device, leak_fn=lambda Hv: _alpha_leak(Hv, theta_numel))
     pd = lam_min > 0.0
     if verbose:
         tag = "PD (certified gauge-fixed joint min)" if pd else "NOT PD (saddle / non-stationary)"
         print(f"[recv-cert] lam_min_gauge={lam_min:+.6e}  ritz_resid={ritz_resid:.2e}  "
-              f"raw-HVP leak={leak:.2e}  gauge_comp={gauge_comp:.2e}  m={m}  -> {tag}")
+              f"raw-HVP leak={leak:.2e}  gauge_comp={gauge_comp:.2e}  m={opts.certify_m}  -> {tag}")
     return dict(lam_min_gauge=lam_min, ritz_resid=ritz_resid, leak=leak, pd=bool(pd),
-                gauge_comp=gauge_comp, v_min=v_min, m=int(m), S=S, theta_numel=theta_numel)
+                gauge_comp=gauge_comp, v_min=v_min, m=int(opts.certify_m), S=S, theta_numel=theta_numel)
 
 
 # ------------------------------------------------------------------------- Fisher / uncertainty (alpha)
 def receiver_information(static, theta, alpha, *, hvp=None, theta_numel=None, S=None, species=None,
-                        cg_tol=1e-7, cg_max=400, ridge=0.0, tangent_self_iters=None, warm_E=None,
-                        penalty_hvp=None, verbose=True):
+                        cg_tol=None, cg_max=None, ridge=0.0, tangent_self_iters=None, warm_E=None,
+                        penalty_hvp=None, verbose=True, newton: NewtonOptions | None = None):
     """Gauge-fixed marginal covariance / standard errors of the receiver logits ``alpha`` at a
     (certified) joint minimum -- the observed Fisher information for the receiver weights.
 
@@ -210,9 +215,12 @@ def receiver_information(static, theta, alpha, *, hvp=None, theta_numel=None, S=
     ``species`` selects which receiver coords to profile (default: all S -- the full marginal). Each
     solve costs ~``cg_iters`` joint HVP applies; subset ``species`` to bound cost on large trees.
     ``ridge`` (>0) regularizes the solve if the min is only near-PD; use 0 at a certified PD min.
+    ``cg_tol``/``cg_max`` default (``None``) to ``NewtonOptions.cg_tol``/``cg_max``.
     """
     theta = theta.double()
     alpha = alpha.double()
+    opts = _curv.resolve_newton(newton, cg_tol=cg_tol, cg_max=cg_max)
+    cg_tol, cg_max = opts.cg_tol, opts.cg_max
     if hvp is None:
         hvp, _loss, _sv, _cache = build_joint_hvp(static, theta, alpha, warm_E=warm_E,
                                                   tangent_self_iters=tangent_self_iters)
@@ -262,10 +270,10 @@ def receiver_information(static, theta, alpha, *, hvp=None, theta_numel=None, S=
 
 
 # ---------------------------------------------------------------------------- Newton on (theta, alpha)
-def newton_joint(static, theta0, alpha0, *, sigma=0.01, sigma_floor=1e-4, lanczos_m=10, nu=1.5,
-                 omega=1.5, max_bumps=3, max_cg=40, c1=1e-4, ls_max=25, gtol=1e-2, max_newton=40,
-                 tangent_self_iters=None, lam=0.0, theta_ref=None, lam_tree=0.0, sp_parent=None,
-                 ftol=1e-9, seed=0, verbose=True):
+def newton_joint(static, theta0, alpha0, *, sigma=None, sigma_floor=None, lanczos_m=None, nu=None,
+                 omega=None, max_bumps=None, max_cg=None, c1=None, ls_max=None, gtol=None,
+                 max_newton=None, tangent_self_iters=None, lam=0.0, theta_ref=None, lam_tree=0.0,
+                 sp_parent=None, ftol=None, seed=None, verbose=True, newton: NewtonOptions | None = None):
     """Gauge-projected LM-damped Newton on the joint ``z = [theta.reshape(-1); alpha]``.
 
     The Newton system is the GAUGE-PROJECTED ``P_z (H + penalty + lam_damp I) P_z dz = -P_z g_z``,
@@ -279,6 +287,11 @@ def newton_joint(static, theta0, alpha0, *, sigma=0.01, sigma_floor=1e-4, lanczo
 
     This is what ``newton_lanczos(with_receiver=True)`` delegates to. REQUIRES a non-uniform
     ``alpha0`` (else the receiver curvature is dead -- see ``build_joint_hvp``).
+
+    All the LM/Lanczos/CG/line-search knobs (``sigma``, ``sigma_floor``, ``lanczos_m``, ``nu``,
+    ``omega``, ``max_bumps``, ``max_cg``, ``c1``, ``ls_max``, ``gtol``, ``max_newton``, ``ftol``,
+    ``seed``) default (``None``) to the matching ``NewtonOptions`` field -- pass ``newton=`` to
+    override the whole block at once, or any of these kwargs directly (back-compat).
     """
     theta0 = theta0.double()
     alpha0 = alpha0.double().reshape(-1)
@@ -316,12 +329,15 @@ def newton_joint(static, theta0, alpha0, *, sigma=0.01, sigma_floor=1e-4, lanczo
         return make_gauge_operator(hvp, theta_numel, penalty_hvp=pen_hvp)
 
     # ``omega`` is the accepted-step damping-decrease factor (kept as the public kwarg name for
-    # backward compatibility with newton_cg); the shared core calls it ``decrease``.
+    # backward compatibility with newton_cg); it maps to NewtonOptions.decrease / the shared core's
+    # ``decrease`` field.
+    opts = _curv.resolve_newton(
+        newton, sigma=sigma, sigma_floor=sigma_floor, lanczos_m=lanczos_m, nu=nu, decrease=omega,
+        max_bumps=max_bumps, max_cg=max_cg, c1=c1, ls_max=ls_max, gtol=gtol, max_newton=max_newton,
+        ftol=ftol, seed=seed)
     z, history = _curv.newton_min(
         z, p_dim, lambda v: proj_z(v, theta_numel), vg, build_hvp, theta_numel=theta_numel, S=S,
-        sigma=sigma, sigma_floor=sigma_floor, lanczos_m=lanczos_m, nu=nu, decrease=omega,
-        max_bumps=max_bumps, max_cg=max_cg, c1=c1, ls_max=ls_max, gtol=gtol, max_newton=max_newton,
-        ftol=ftol, seed=seed, device=device, tag="newton-joint", verbose=verbose)
+        newton=opts, device=device, tag="newton-joint", verbose=verbose)
 
     theta_out = z[:theta_numel].reshape(theta_shape).contiguous()
     alpha_out = z[theta_numel:].contiguous()
