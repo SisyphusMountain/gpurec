@@ -8,7 +8,7 @@ module is CPU/fp64 gradcheck-testable in isolation.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -109,6 +109,21 @@ class OriginationPenalty:
     def any_active(self) -> bool:
         return (self.l2 > 0 or self.depth_lambda > 0 or self.root_lambda > 0
                 or self.dirichlet_c > 0)
+
+
+@dataclass
+class PenaltyOptions:
+    """Facade grouping the existing regularizer config into one object: the origination
+    anti-collapse penalty, the TV-prior epsilon, and the ridge-homotopy defaults (CV lambda grid
+    in ``fit/map_cv.py``, margin/floor in ``fit/map_fit.py``). Purely additive -- constructing
+    this does not change any existing penalty call site; ``OriginationPenalty``/``DEFAULT_TV_EPS``
+    remain independently importable and unchanged.
+    """
+    origination: OriginationPenalty = field(default_factory=OriginationPenalty)
+    tv_eps: float = DEFAULT_TV_EPS
+    lambdas: "tuple[float, ...]" = (0.0, 1.0, 10.0, 100.0, 1000.0)
+    lam_margin: float = 1.3
+    lam_floor: float = 1e-3
 
 
 def origination_penalty_value(omega: torch.Tensor, cfg: OriginationPenalty, *, sp_parent=None):
