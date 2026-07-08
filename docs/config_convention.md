@@ -93,6 +93,14 @@ uses the same loader.
   custom `newton=`/`rates=`/`memory=` into a fit entry point is a noted future extension, not
   something this task implements. If you need a non-default `NewtonOptions` today, pass it directly
   to the curvature function you're calling (e.g. `newton_min(..., newton=my_newton_options)`).
+- **`config.regularizer` is even less wired -- it is a passive facade consumed by no code path
+  today.** The TV penalty's `eps` used at runtime is the module constant `DEFAULT_TV_EPS`
+  (`gpurec/solver/penalties.py`), not `PenaltyOptions.tv_eps`; the origination-penalty call sites in
+  `gpurec/solver/value_and_grad.py` are handed an `OriginationPenalty` instance directly rather than
+  reading `PenaltyOptions.origination`; and the ridge hyperparameters (`lam_margin`/`lam_floor` in
+  `gpurec/fit/map_fit.py`, `lambdas` in `gpurec/fit/map_cv.py`) are hardcoded function-signature
+  defaults, not `PenaltyOptions` fields. Setting `regularizer.*` in a TOML today changes nothing
+  observable.
 
 ## Recipe presets vs fit-hyperparameter dicts
 

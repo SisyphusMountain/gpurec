@@ -45,8 +45,9 @@ def make_solver_options(args):
 
     Precedence (highest first): an explicitly-passed ``--pi-iters``/``--neumann-terms``/
     ``--e-max-iter`` flag > the matching field of ``--config``'s ``[solver]`` table > the
-    hardcoded ``SolverOptions`` default (128/64/64). With neither ``--config`` nor any of the
-    three flags passed, this returns ``SolverOptions()`` unchanged -- identical to today.
+    hardcoded ``SolverOptions`` default (``pi_iters=64``, ``neumann_terms=64``, ``e_max_iter=128``).
+    With neither ``--config`` nor any of the three flags passed, this returns ``SolverOptions()``
+    unchanged -- identical to today.
     """
     from dataclasses import replace
 

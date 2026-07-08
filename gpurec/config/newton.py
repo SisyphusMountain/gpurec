@@ -27,8 +27,10 @@ class NewtonOptions:
     max_newton: int = 40           # max Newton iterations
     ftol: float = 1e-9             # relative-improvement stall floor
     seed: int = 0                  # Lanczos start-vector RNG seed
-    fd_eps_blockwise: float = 1e-2 # FD step, genewise 3x3 Hessian
-    fd_eps_hvp: float = 1e-5       # FD step, full-HVP solvers
+    fd_eps_blockwise: float = 1e-2 # FD step, genewise 3x3 Hessian -- RESERVED: validated here but
+                                    # not yet read by fit/genewise_fit.py (FD literal is inline)
+    fd_eps_hvp: float = 1e-5       # FD step, full-HVP solvers -- RESERVED: validated here but not
+                                    # yet read by fit/newton_cg.py (FD literal is inline)
     lam_ceil_factor: float = 10.0  # damping ceiling = factor * lam_max
     forcing_eta: float = 0.1       # inexact-Newton forcing-term cap
     certify_m: int = 200           # Lanczos steps for PD certificate
