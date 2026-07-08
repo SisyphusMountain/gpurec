@@ -11,6 +11,7 @@ from gpurec.api._execution import (
     theta_for_static,
 )
 from gpurec.api.solver_options import SolverOptions
+from gpurec.config import GpurecConfig
 from gpurec.config.rates import RateBounds
 from gpurec.core.scheduling.batching import plan_batch_wave_layouts, preprocess_dataset
 
@@ -43,6 +44,7 @@ class GeneReconModel(torch.nn.Module):
         batch_packing: str = "depth_first_fit",
         max_wave_size: int = 8192,
         solver_options: SolverOptions | dict | None = None,
+        config: GpurecConfig | None = None,
         dtype: torch.dtype = torch.float32,
         per_family_origination: bool = False,
     ):
@@ -52,6 +54,13 @@ class GeneReconModel(torch.nn.Module):
         genewise, specieswise = _mode_flags(mode)
         if per_family_origination and not genewise:
             raise ValueError("per_family_origination requires mode='genewise'")
+        # ``config`` (a top-level ``GpurecConfig``) only supplies ``solver_options`` here --
+        # ``config.newton``/``config.rates``/``config.memory`` belong to the fit/curvature entry
+        # points, not this constructor. When both ``config`` and ``solver_options`` are given, the
+        # explicit ``solver_options`` wins (config is only a fallback default). ``config=None``
+        # (the default) reproduces today's exact behavior.
+        if config is not None and solver_options is None:
+            solver_options = config.solver
         self.solver_options = solver_options
         self.dtype = dtype
 

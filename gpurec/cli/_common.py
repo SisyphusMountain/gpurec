@@ -17,9 +17,16 @@ def add_common_args(parser) -> None:
     parser.add_argument("--mode", choices=["global", "specieswise", "genewise"], default="global")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--dtype", choices=["float32", "float64"], default="float64")
-    parser.add_argument("--pi-iters", type=int, default=64)
-    parser.add_argument("--neumann-terms", type=int, default=64)
-    parser.add_argument("--e-max-iter", type=int, default=128)
+    parser.add_argument("--config", default=None,
+                        help="path to a GpurecConfig TOML file; its [solver] table is the base "
+                             "SolverOptions, overridden by any of --pi-iters/--neumann-terms/"
+                             "--e-max-iter that are explicitly passed")
+    # These three default to None (not their historical 64/64/128 values) so
+    # ``make_solver_options`` can tell "not passed" apart from "passed the same value the
+    # config/default already has" -- an explicitly-passed flag must win over --config.
+    parser.add_argument("--pi-iters", type=int, default=None)
+    parser.add_argument("--neumann-terms", type=int, default=None)
+    parser.add_argument("--e-max-iter", type=int, default=None)
 
 
 def resolve_gene_trees(values) -> list:
@@ -34,9 +41,26 @@ def make_dtype(name: str):
 
 
 def make_solver_options(args):
-    from gpurec.api.solver_options import SolverOptions
-    return SolverOptions(e_max_iter=args.e_max_iter, pi_iters=args.pi_iters,
-                         neumann_terms=args.neumann_terms)
+    """Resolve the effective ``SolverOptions`` for a parsed CLI namespace.
+
+    Precedence (highest first): an explicitly-passed ``--pi-iters``/``--neumann-terms``/
+    ``--e-max-iter`` flag > the matching field of ``--config``'s ``[solver]`` table > the
+    hardcoded ``SolverOptions`` default (128/64/64). With neither ``--config`` nor any of the
+    three flags passed, this returns ``SolverOptions()`` unchanged -- identical to today.
+    """
+    from dataclasses import replace
+
+    from gpurec.config import load_config
+
+    base = load_config(getattr(args, "config", None)).solver
+    overrides = {}
+    if args.pi_iters is not None:
+        overrides["pi_iters"] = args.pi_iters
+    if args.neumann_terms is not None:
+        overrides["neumann_terms"] = args.neumann_terms
+    if args.e_max_iter is not None:
+        overrides["e_max_iter"] = args.e_max_iter
+    return replace(base, **overrides) if overrides else base
 
 
 def build_model(args):
