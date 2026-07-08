@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
+from gpurec.api.solver_options import SolverOptions
 from gpurec.core.parameters.extract_parameters import as_family_species
 
 
@@ -449,10 +450,14 @@ def e_fixed_point_triton(
     sp_child2: torch.Tensor,
     max_ancestor_depth: int,
     *,
-    max_iter: int = 128,
-    tol: float = 1e-8,
+    max_iter: int | None = None,
+    tol: float | None = None,
     use_receiver_weights: bool = True,
 ):
+    if max_iter is None:
+        max_iter = SolverOptions().e_max_iter
+    if tol is None:
+        tol = SolverOptions().e_tol
     max_iter = int(max_iter)
     tol = float(tol)
     if max_iter < 1:

@@ -43,12 +43,19 @@ def _rel_res(A, x, b):
 
 
 def test_old_fp32_crash_mode_now_returns():
-    """Ill-conditioned fp32 @ tol=1e-7 used to RuntimeError at ~1.3e-7; now returns."""
+    """Ill-conditioned fp32 @ tol=1e-7 used to RuntimeError at ~1.3e-7; now returns.
+
+    ``max_iter`` is pinned explicitly here: this synthetic cond=3e4 matrix needs more
+    Krylov steps than the production ``SolverOptions().bicgstab_max_iter`` (128, tuned
+    for the well-conditioned E-adjoint that ``_bicgstab``'s default now falls back to)
+    to reach the fp32 floor -- the test is about the tolerance-clamping contract, not
+    about the choice of default iteration cap.
+    """
     A = _spd(64, cond=3e4, dtype=torch.float32)
     b = A @ torch.randn(64, dtype=torch.float32, generator=torch.Generator().manual_seed(1))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        x = _bicgstab(_matvec(A), b, tol=1e-7)
+        x = _bicgstab(_matvec(A), b, tol=1e-7, max_iter=500)
     assert _rel_res(A, x, b) < 5e-6
 
 

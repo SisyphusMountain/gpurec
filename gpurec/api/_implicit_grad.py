@@ -2,6 +2,7 @@ import warnings
 
 import torch
 
+from gpurec.api.solver_options import SolverOptions
 from gpurec.config import dtype_rel_tol_default as _bicgstab_rel_tol_default, dtype_rel_tol_floor as _bicgstab_rel_tol_floor
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
 from gpurec.core.kernels.dts_fused import compute_dts_forward
@@ -39,7 +40,7 @@ def _bicgstab(
     Av,
     b: torch.Tensor,
     *,
-    max_iter: int = 500,
+    max_iter: int | None = None,
     tol=None,
     breakdown_tol=None,
 ):
@@ -49,6 +50,9 @@ def _bicgstab(
     the dtype-matched default (:func:`_bicgstab_rel_tol_default`). A caller value
     below the dtype floor (:func:`_bicgstab_rel_tol_floor`) is clamped up with a
     warning -- a tighter relative residual is unreachable in that precision.
+
+    ``max_iter`` -- ``None`` -> ``SolverOptions().bicgstab_max_iter`` (the single
+    source of truth for the E-adjoint Krylov cap).
 
     ``breakdown_tol`` is a dimensionless RELATIVE factor: each Krylov inner
     product is tested against this factor times its operand norms, so a breakdown
@@ -62,6 +66,8 @@ def _bicgstab(
     reached the working-precision floor; only a genuinely non-converged solve
     raises ``RuntimeError``.
     """
+    if max_iter is None:
+        max_iter = SolverOptions().bicgstab_max_iter
     max_iter = int(max_iter)
     if max_iter < 1:
         raise ValueError("max_iter must be at least 1")
@@ -293,14 +299,14 @@ def implicit_grad_loglik_vjp_wave(
     family_idx: torch.Tensor,
     specieswise: bool = False,
     genewise: bool = False,
-    neumann_terms: int = 3,
+    neumann_terms: int | None = None,
     self_loop_solver: str = "neumann",
-    bicgstab_max_iter: int = 128,
+    bicgstab_max_iter: int | None = None,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
-    adjoint_pruning_threshold: float = 1e-6,
+    adjoint_pruning_threshold: float | None = None,
     use_adjoint_pruning: bool = True,
-    pibar_side_threshold: float = 0.0,
+    pibar_side_threshold: float | None = None,
     collect_backward_relres: bool = False,
     warm_v: dict | None = None,
     seed_root: torch.Tensor | None = None,
@@ -309,15 +315,23 @@ def implicit_grad_loglik_vjp_wave(
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
 ):
+    if neumann_terms is None:
+        neumann_terms = SolverOptions().neumann_terms
     neumann_terms = int(neumann_terms)
     if neumann_terms < 0:
         raise ValueError("neumann_terms must be non-negative")
     self_loop_solver = str(self_loop_solver).strip().lower()
     if self_loop_solver not in ("neumann", "gmres"):
         raise ValueError("self_loop_solver must be one of: neumann, gmres")
+    if bicgstab_max_iter is None:
+        bicgstab_max_iter = SolverOptions().bicgstab_max_iter
+    if adjoint_pruning_threshold is None:
+        adjoint_pruning_threshold = SolverOptions().adjoint_pruning_threshold
     adjoint_pruning_threshold = float(adjoint_pruning_threshold)
     if adjoint_pruning_threshold < 0.0:
         raise ValueError("adjoint_pruning_threshold must be non-negative")
+    if pibar_side_threshold is None:
+        pibar_side_threshold = SolverOptions().pibar_side_threshold
     pibar_side_threshold = float(pibar_side_threshold)
     if pibar_side_threshold < 0.0:
         raise ValueError("pibar_side_threshold must be non-negative")
@@ -603,12 +617,14 @@ def _e_adjoint_and_theta_vjp(
     grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
     n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
     drop_norm: bool = False,
-    bicgstab_max_iter: int = 128,
+    bicgstab_max_iter: int | None = None,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
     cache=None,
     origination_probs=None,
 ):
+    if bicgstab_max_iter is None:
+        bicgstab_max_iter = SolverOptions().bicgstab_max_iter
     topology_args = (
         species_helpers["sp_parent"],
         species_helpers["sp_child1"],
