@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tomllib
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+from pathlib import Path
 
 import torch
 
@@ -8,6 +10,12 @@ from gpurec.api.solver_options import SolverOptions
 from gpurec.config.memory import MemoryOptions
 from gpurec.config.newton import NewtonOptions
 from gpurec.config.rates import RateBounds
+
+# Package-relative (NOT cwd-relative) path to the hand-written TOML mirror of
+# the dataclass defaults below. Resolved from this module's own file location
+# so it works regardless of the caller's working directory or how gpurec was
+# installed.
+DEFAULTS_TOML_PATH = Path(__file__).resolve().parent / "defaults.toml"
 
 # NOTE: ``gpurec.solver.penalties`` is imported lazily (inside
 # ``_default_penalty_options`` below) rather than at module level. A top-level
@@ -84,6 +92,13 @@ def _merge_into(instance, overrides: dict, path: str):
         current = getattr(instance, key)
         if is_dataclass(current) and isinstance(value, dict):
             updates[key] = _merge_into(current, value, full_path)
+        elif isinstance(current, tuple) and isinstance(value, list):
+            # TOML (and JSON) have no tuple type -- arrays always decode to
+            # Python ``list``. Coerce back to ``tuple`` here so a field whose
+            # dataclass default is a tuple (e.g. ``PenaltyOptions.lambdas``)
+            # round-trips through ``from_dict``/``from_toml`` as a tuple, not a
+            # list, and so equality against the dataclass default still holds.
+            updates[key] = tuple(value)
         else:
             updates[key] = value
     return replace(instance, **updates)
@@ -122,3 +137,35 @@ class GpurecConfig:
         existing field raises ``ValueError`` rather than being ignored.
         """
         return _merge_into(cls(), d, path="")
+
+    @classmethod
+    def from_toml(cls, path: str | Path) -> "GpurecConfig":
+        """Load a (possibly partial) TOML file and deep-merge it onto ``GpurecConfig()``.
+
+        ``path`` is read in binary mode via :mod:`tomllib` (as required by that
+        module) and the resulting dict is passed through :meth:`from_dict`, so a
+        user TOML need only list the fields it wants to override -- and any
+        unknown key (top-level or nested) still raises ``ValueError`` rather
+        than being silently ignored.
+
+        ``gpurec/config/defaults.toml`` (see ``DEFAULTS_TOML_PATH``) is a
+        hand-written mirror of every field's dataclass default; the guard test
+        ``GpurecConfig.from_toml(DEFAULTS_TOML_PATH) == GpurecConfig()`` is the
+        permanent check that the two never drift apart.
+        """
+        with open(path, "rb") as fh:
+            d = tomllib.load(fh)
+        return cls.from_dict(d)
+
+
+def load_config(path: str | Path | None = None) -> GpurecConfig:
+    """Return the effective :class:`GpurecConfig`.
+
+    ``path is None`` (the default) returns ``GpurecConfig()`` directly -- the
+    hardcoded dataclass defaults, with no file IO. When ``path`` is given, it
+    is loaded as a TOML file via :meth:`GpurecConfig.from_toml`, deep-merged
+    onto the defaults so the file need only list overrides.
+    """
+    if path is None:
+        return GpurecConfig()
+    return GpurecConfig.from_toml(path)

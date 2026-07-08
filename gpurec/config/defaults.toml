@@ -1,0 +1,90 @@
+# Hand-written mirror of the ``GpurecConfig()`` dataclass defaults.
+#
+# ``GpurecConfig`` (gpurec/config/gpurec_config.py) is the SOURCE OF TRUTH: this
+# file is checked against it by the permanent guard test
+# ``test_defaults_toml_matches_dataclass_defaults`` (tests/test_config_toml.py),
+# which asserts ``GpurecConfig.from_toml(this file) == GpurecConfig()``. If you
+# change a dataclass default, update this file (and vice versa) or that test
+# will fail.
+#
+# A user-supplied TOML file need only list the fields it wants to override --
+# ``GpurecConfig.from_toml``/``from_dict`` deep-merge onto these defaults.
+#
+# NOTE ON OMITTED FIELDS: TOML has no null/None literal. Every field below whose
+# dataclass default is ``None`` is therefore left OUT of this file entirely (the
+# deep-merge leaves the dataclass's own ``None`` default in place); each such
+# field is called out in a comment at the point it would otherwise appear.
+
+[solver]
+e_max_iter = 128
+e_tol = 1e-8
+pi_iters = 64
+neumann_terms = 64
+self_loop_solver = "neumann"
+bicgstab_max_iter = 128
+# bicgstab_tol: dataclass default is None (dtype-relative auto target) -- cannot
+# be expressed in TOML, omitted so the dataclass default is kept.
+# bicgstab_breakdown_tol: dataclass default is None (BiCGSTAB-only breakdown
+# guard, unused by the GMRES E-adjoint solve) -- omitted, dataclass default kept.
+adjoint_pruning_threshold = 1e-6
+use_adjoint_pruning = true
+pibar_side_threshold = 0.0
+e_tangent_tol = 1e-9
+
+[newton]
+sigma = 0.01
+sigma_floor = 1e-4
+lanczos_m = 10
+nu = 1.5
+decrease = 1.5
+max_bumps = 3
+max_cg = 40
+c1 = 1e-4
+ls_max = 25
+gtol = 1e-2
+max_newton = 40
+ftol = 1e-9
+seed = 0
+fd_eps_blockwise = 1e-2
+fd_eps_hvp = 1e-5
+lam_ceil_factor = 10.0
+forcing_eta = 0.1
+certify_m = 200
+cg_tol = 1e-7
+cg_max = 400
+
+[rates]
+min_rate = 1e-10
+# max_rate: dataclass default is None (no cap by default) -- omitted, dataclass
+# default kept.
+init_rate = 1e-10
+bound_active_eps = 1e-6
+
+[regularizer]
+tv_eps = 1e-3
+lambdas = [0.0, 1.0, 10.0, 100.0, 1000.0]
+lam_margin = 1.3
+lam_floor = 1e-3
+
+[regularizer.origination]
+l2 = 0.0
+depth_lambda = 0.0
+# depth: dataclass default is None (per-species depth tensor, set at runtime) --
+# omitted, dataclass default kept.
+root_lambda = 0.0
+# root_index: dataclass default is None (species-tree root index, set at
+# runtime) -- omitted, dataclass default kept.
+dirichlet_c = 0.0
+barrier_kind = "meanlog"
+# dirichlet_pi: dataclass default is None (reference distribution tensor, set
+# at runtime) -- omitted, dataclass default kept.
+floor = 0.0
+
+[memory]
+fraction = 0.85
+reserve_gib = 1.0
+scratch_tensors = 10
+min_free_gib_driver = 4.0
+min_free_gib_hvp = 8.0
+free_cache_every = 32
+grad_avg_k = 1

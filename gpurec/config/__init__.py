@@ -5,9 +5,11 @@ implicit-gradient code, the per-area option dataclasses, and the top-level
 ``GpurecConfig`` that composes them.
 """
 from gpurec.config.gpurec_config import (
+    DEFAULTS_TOML_PATH,
     GpurecConfig,
     dtype_rel_tol_default,
     dtype_rel_tol_floor,
+    load_config,
 )
 from gpurec.config.memory import MemoryOptions
 from gpurec.config.newton import NewtonOptions
@@ -17,6 +19,7 @@ from gpurec.api.solver_options import SolverOptions
 __all__ = [
     "dtype_rel_tol_default", "dtype_rel_tol_floor",
     "GpurecConfig", "SolverOptions", "NewtonOptions", "RateBounds", "PenaltyOptions", "MemoryOptions",
+    "DEFAULTS_TOML_PATH", "load_config",
 ]
 
 
