@@ -1,6 +1,0 @@
-[FAMILIES]
-- fam1
-starting_gene_tree = /home/enzo/Documents/git/gpurec/consolidate-release/tests/gpurax/fixtures/gene.nwk
-alignment = /home/enzo/Documents/git/gpurec/consolidate-release/tests/gpurax/fixtures/aln.fasta
-mapping = /home/enzo/Documents/git/gpurec/consolidate-release/tests/gpurax/fixtures/map.link
-subst_model = GTR
