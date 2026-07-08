@@ -32,6 +32,7 @@ import torch
 
 from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
+from gpurec.config import GpurecConfig
 from gpurec.config.rates import RateBounds
 from gpurec.core.inference.solver import solve_forward_residual
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
@@ -41,12 +42,16 @@ from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_
 # min_rate/max_rate signature defaults below (Global Constraint 2, task-5 brief).
 _GENEWISE_RATE_BOUNDS = RateBounds.genewise()
 
-# Proven base solver settings (pi_iters / neumann_terms are overridden per tier below).
-_BASE_SOLVER = dict(
-    e_max_iter=128, e_tol=1e-8, self_loop_solver="neumann",
-    bicgstab_max_iter=128, bicgstab_tol=1e-7, bicgstab_breakdown_tol=1e-30,
-    adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0,
-)
+# Proven base solver settings (pi_iters / neumann_terms are overridden per tier below). Single-sourced
+# from ``GpurecConfig.genewise_reference().solver`` (task-10 brief) -- edit the values there, not here.
+_BASE_SOLVER = {
+    k: getattr(GpurecConfig.genewise_reference().solver, k)
+    for k in (
+        "e_max_iter", "e_tol", "self_loop_solver",
+        "bicgstab_max_iter", "bicgstab_tol", "bicgstab_breakdown_tol",
+        "adjoint_pruning_threshold", "use_adjoint_pruning", "pibar_side_threshold",
+    )
+}
 
 # Reference recipe tuned for the standard genewise problem. Import and clone-override per dataset:
 #   fit_genewise(sp, genes, **{**GENEWISE_REFERENCE, "tol": 5e-4})

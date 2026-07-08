@@ -139,6 +139,46 @@ class GpurecConfig:
         return _merge_into(cls(), d, path="")
 
     @classmethod
+    def genewise_reference(cls) -> "GpurecConfig":
+        """The ``fit_genewise`` recipe's solver + rate-bounds config (see ``gpurec/fit/genewise_fit.py``).
+
+        This is the single source for the recipe's base solver settings (pi_iters/neumann_terms are
+        overridden per-tier by the fit loop itself, so they are left at the ``SolverOptions`` default
+        here) and its tighter genewise rate box. ``gpurec.fit.genewise_fit._BASE_SOLVER`` is derived
+        from this factory's ``.solver`` -- values must never be edited independently in the two places.
+        """
+        return cls(
+            solver=SolverOptions(
+                e_max_iter=128, e_tol=1e-8, self_loop_solver="neumann",
+                bicgstab_max_iter=128, bicgstab_tol=1e-7, bicgstab_breakdown_tol=1e-30,
+                adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0,
+            ),
+            rates=RateBounds.genewise(),
+        )
+
+    @classmethod
+    def map_cv_reference(cls) -> "GpurecConfig":
+        """The ``map_cv`` CONVERGED solver config (pi_iters=64, neumann_terms=64; see
+        ``gpurec/fit/map_cv.py``'s ``_CV_SO``), required for the CV-fitted theta to be a true optimum.
+        ``gpurec.fit.map_cv._CV_SO`` is derived from this factory's ``.solver``.
+        """
+        return cls(
+            solver=SolverOptions(
+                e_max_iter=128, e_tol=1e-8, pi_iters=64, neumann_terms=64,
+                self_loop_solver="neumann", bicgstab_max_iter=128, bicgstab_tol=None,
+                bicgstab_breakdown_tol=None, adjoint_pruning_threshold=1e-6,
+                use_adjoint_pruning=True, pibar_side_threshold=0.0,
+            ),
+        )
+
+    @classmethod
+    def optimize_reference(cls) -> "GpurecConfig":
+        """``gpurec.fit.optimize.optimize`` has no separate solver recipe -- ``GeneReconModel`` falls
+        back to the default ``SolverOptions`` wherever ``optimize()`` is used, so the reference config
+        is exactly ``GpurecConfig()`` defaults."""
+        return cls()
+
+    @classmethod
     def from_toml(cls, path: str | Path) -> "GpurecConfig":
         """Load a (possibly partial) TOML file and deep-merge it onto ``GpurecConfig()``.
 

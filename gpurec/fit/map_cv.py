@@ -23,12 +23,15 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import stream_batches
+from gpurec.config import GpurecConfig
 from gpurec.fit.optimize import Schedule
 from gpurec.solver.value_and_grad import make_value_and_grad
 
 # solver settings matching the kernel-bench fixture mint (production truncation, pi=16/neumann=16);
 # used by the parity tests. NOT for the CV fit: at pi=16 the gradient is biased (FD disagrees ~5%),
-# which would corrupt the per-fold optima.
+# which would corrupt the per-fold optima. This is a distinct recipe from ``map_cv_reference`` (which
+# is the CONVERGED pi=64 config below) and has no corresponding ``GpurecConfig`` factory, so it stays
+# a plain literal dict.
 _DEFAULT_SO = dict(
     e_max_iter=128, e_tol=1e-8, pi_iters=16, neumann_terms=16,
     self_loop_solver="neumann", bicgstab_max_iter=128, bicgstab_tol=None,
@@ -38,8 +41,10 @@ _DEFAULT_SO = dict(
 
 # CV default: CONVERGED solver (pi>=64, neumann>=32-64) so the fitted theta is a true minimum and
 # the gradient matches a fp64 finite-difference oracle (verified in _verify_map). Required for a
-# scientifically valid CV curve.
-_CV_SO = {**_DEFAULT_SO, "pi_iters": 64, "neumann_terms": 64}
+# scientifically valid CV curve. Single-sourced from ``GpurecConfig.map_cv_reference().solver``
+# (task-10 brief) -- edit the values there, not here. Keys mirror ``_DEFAULT_SO`` (same solver-field
+# set, pi_iters/neumann_terms overridden to the converged 64/64 tier).
+_CV_SO = {k: getattr(GpurecConfig.map_cv_reference().solver, k) for k in _DEFAULT_SO}
 
 
 def kfold_indices(n, k, seed=0):
