@@ -15,6 +15,7 @@ from __future__ import annotations
 import torch
 
 from gpurec.api._implicit_grad import _gmres, _safe_exp2_ratio
+from gpurec.config.memory import MemoryOptions
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, survival_from_E as _survival_from_E
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.kernels.dts_so import dts_backward_so
@@ -147,7 +148,7 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
     # load-bearing on the big fixtures (memory pressure builds gradually, so checking every K
     # waves still trips the gate in time). 1 = every wave (old behaviour); change per run via env.
     _fc_env = os.environ.get("NEWTON_FREE_CACHE_EVERY")
-    free_cache_every = int(_fc_env) if _fc_env else 32
+    free_cache_every = int(_fc_env) if _fc_env else MemoryOptions().free_cache_every
     free_cache_every = max(1, free_cache_every)
     sh, wl = static.species_helpers, static.wave_layout
     S = int(sh["S"])

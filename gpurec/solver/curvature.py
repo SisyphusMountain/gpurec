@@ -22,6 +22,7 @@ import dataclasses
 
 import torch
 
+from gpurec.config.memory import MemoryOptions
 from gpurec.config.newton import NewtonOptions
 from gpurec.solver.cg import cg_witness, lanczos_extremes, lanczos_min_eigpair
 from gpurec.solver.value_and_grad import free_cuda_cache_if_tight
@@ -137,7 +138,7 @@ def newton_min(z, p_dim, proj, vg, build_hvp, *, theta_numel, S, newton: NewtonO
             break
         if hvp_stale:
             Hz = None
-            free_cuda_cache_if_tight(min_free_gib=8.0)
+            free_cuda_cache_if_tight(min_free_gib=MemoryOptions().min_free_gib_hvp)
             Hz = build_hvp(z)
             hvp_stale = False
 

@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import os
 from numbers import Integral, Real
 
 import torch
+
+from gpurec.config.memory import MemoryOptions
 
 GIB = 1024 ** 3
 
@@ -40,8 +44,8 @@ def dtype_nbytes(dtype: torch.dtype) -> int:
 def cuda_memory_budget_bytes(
     device: torch.device | int | None = None,
     *,
-    default_fraction: float = 0.85,
-    default_reserve_gib: float = 1.0,
+    default_fraction: float = MemoryOptions().fraction,
+    default_reserve_gib: float = MemoryOptions().reserve_gib,
 ) -> int | None:
     if not torch.cuda.is_available():
         return None
@@ -57,7 +61,9 @@ def cuda_memory_budget_bytes(
     return max(0, min(int(total_b * fraction), max(0, int(free_b) - reserve_b)))
 
 
-def proposal0_wave_scratch_bytes(W: int, S: int, dtype: torch.dtype, *, scratch_tensors: int = 10) -> int:
+def proposal0_wave_scratch_bytes(
+    W: int, S: int, dtype: torch.dtype, *, scratch_tensors: int = MemoryOptions().scratch_tensors
+) -> int:
     return (
         _nonnegative_int("W", W)
         * _positive_int("S", S)

@@ -23,6 +23,7 @@ import torch
 
 from gpurec.api._batch_state import _BatchStatic
 from gpurec.api._execution import stream_batches
+from gpurec.config.memory import MemoryOptions
 from gpurec.core.inference.solver import nll_from_root_rows, solve_resident_e_pi
 from gpurec.solver.penalties import (
     tv_prior_and_grad, origination_penalty_and_grad, group_expand, group_reduce,
@@ -38,7 +39,7 @@ FORWARD_SAVED_NAMES = (
 )
 
 
-def free_cuda_cache_if_tight(min_free_gib: float = 4.0):
+def free_cuda_cache_if_tight(min_free_gib: float = MemoryOptions().min_free_gib_driver):
     """Release the caching allocator's pool to the driver when driver-free memory runs low.
 
     The hand-written backward gates its scratch on ``torch.cuda.mem_get_info`` (driver-free
@@ -87,7 +88,8 @@ def forward_solve(batch_statics, theta, receiver_weights, *, warm_E=None):
         return loss, None
 
 
-def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, grad_avg_K: int = 1,
+def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None,
+                        grad_avg_K: int = MemoryOptions().grad_avg_k,
                         prior=None, tree_penalty=None, optimize_receiver: bool = False,
                         origination_weights=None, optimize_origination: bool = False,
                         tv_penalty=None, origination_penalty=None, group_index=None):
