@@ -19,7 +19,7 @@ def add_common_args(parser) -> None:
     parser.add_argument("--dtype", choices=["float32", "float64"], default="float64")
     parser.add_argument("--pi-iters", type=int, default=64)
     parser.add_argument("--neumann-terms", type=int, default=64)
-    parser.add_argument("--e-max-iter", type=int, default=2000)
+    parser.add_argument("--e-max-iter", type=int, default=128)
 
 
 def resolve_gene_trees(values) -> list:

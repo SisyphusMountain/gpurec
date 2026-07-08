@@ -191,6 +191,115 @@ def _bicgstab(
 
 
 @torch.no_grad()
+def _gmres(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
+    """Matrix-free GMRES for the E-adjoint / GGN linear solve ``(I - J_E^T) w = b``.
+
+    GMRES minimizes the residual over the growing Krylov subspace and -- unlike
+    BiCGSTAB -- CANNOT break down on a nonsingular operator: no shadow-residual
+    inner product to lose, so a well-conditioned but moderately non-symmetric
+    E-adjoint (the case that trips BiCGSTAB's biorthogonality guard and makes it
+    raise a spurious "singular/ill-conditioned" error) is solved robustly. The
+    Arnoldi step uses batched classical Gram-Schmidt with one reorthogonalization
+    (CGS2) -- one ``mv`` per step, matching the proven wave self-loop GMRES
+    (:func:`gpurec.core.kernels.wave_backward._gmres_solve_wave_self_loop_fixed_cgs2`)
+    -- and the small Hessenberg least-squares gives the true minimal residual for
+    early stopping.
+
+    ``tol`` is a RELATIVE residual target (``||r|| / max(||b||, 1)``); ``None`` ->
+    the dtype-matched default (:func:`_bicgstab_rel_tol_default`, fp32 1e-6 /
+    fp64 1e-12). A value below the dtype floor (:func:`_bicgstab_rel_tol_floor`)
+    is clamped up with a warning -- unreachable in that precision. Returns the
+    minimal-residual iterate; raises ``RuntimeError`` only if the residual never
+    reaches the acceptance floor within ``max_iter`` Arnoldi steps -- a genuinely
+    singular operator, never a solver artefact.
+    """
+    max_iter = int(max_iter)
+    if max_iter < 1:
+        raise ValueError("max_iter must be at least 1")
+
+    dtype = b.dtype
+    device = b.device
+    floor = _bicgstab_rel_tol_floor(dtype)
+    default = _bicgstab_rel_tol_default(dtype)
+    if tol is None:
+        target = default
+    else:
+        target = float(tol)
+        if target <= 0.0:
+            raise ValueError("tol must be positive")
+        if target < floor:
+            warnings.warn(
+                f"gmres tol={target:.2e} is below the {dtype} finite-precision "
+                f"residual floor {floor:.2e}; clamping to the floor. A tighter "
+                f"relative residual is unreachable in this precision -- use fp64.",
+                RuntimeWarning, stacklevel=2,
+            )
+            target = floor
+    # Any iterate reaching the dtype's natural floor counts as converged-to-precision.
+    accept = max(target, default)
+
+    b_flat = b.reshape(-1)
+    n = int(b_flat.numel())
+    b_norm_t = torch.linalg.vector_norm(b_flat)
+    b_norm = float(b_norm_t.detach().cpu())
+    if b_norm == 0.0:
+        return torch.zeros_like(b)
+    scale = max(b_norm, 1.0)
+
+    m = min(max_iter, n)  # the Krylov dimension cannot exceed the space dimension
+    eps = float(torch.finfo(dtype).eps)
+    tiny = float(torch.finfo(dtype).tiny)
+
+    basis = torch.empty((m + 1, n), dtype=dtype, device=device)
+    basis[0].copy_(b_flat / b_norm_t)          # x0 = 0  ->  r0 = b
+    H = torch.zeros((m + 1, m), dtype=dtype, device=device)
+    e1 = torch.zeros((m + 1,), dtype=dtype, device=device)
+    e1[0] = b_norm_t
+    coeff = torch.empty((m,), dtype=dtype, device=device)
+    coeff2 = torch.empty((m,), dtype=dtype, device=device)
+
+    best_res = b_norm / scale  # relative residual of x = 0
+    y_best = None
+    k_best = 0
+    for j in range(m):
+        w = Av(basis[j].view(b.shape)).reshape(-1)
+        q = basis[: j + 1]
+        c = coeff[: j + 1]
+        torch.mv(q, w, out=c)
+        H[: j + 1, j].copy_(c)
+        w = torch.addmv(w, q.t(), c, beta=1.0, alpha=-1.0)   # CGS pass 1
+        c2 = coeff2[: j + 1]
+        torch.mv(q, w, out=c2)
+        H[: j + 1, j].add_(c2)
+        w = torch.addmv(w, q.t(), c2, beta=1.0, alpha=-1.0)  # CGS pass 2 (reorthogonalize)
+        h_next_t = torch.linalg.vector_norm(w)
+        H[j + 1, j] = h_next_t
+
+        # Minimal residual of the current Krylov iterate via the (j+2, j+1) Hessenberg LS.
+        y = torch.linalg.lstsq(H[: j + 2, : j + 1], e1[: j + 2]).solution
+        res = float(torch.linalg.vector_norm(e1[: j + 2] - H[: j + 2, : j + 1] @ y).detach().cpu())
+        rel = res / scale
+        if rel <= best_res:
+            best_res = rel
+            y_best = y
+            k_best = j + 1
+
+        h_next = float(h_next_t.detach().cpu())
+        if rel <= target or h_next <= eps * scale:  # converged, or happy breakdown (exact)
+            break
+        if j + 1 < m:
+            basis[j + 1].copy_(w / max(h_next, tiny))
+
+    if y_best is not None and best_res <= accept:
+        return torch.mv(basis[:k_best].t(), y_best).view(b.shape)
+    raise RuntimeError(
+        f"E-adjoint GMRES failed to converge at relative residual {best_res:.3e} "
+        f"after {m} Arnoldi steps (target {target:.3e}, dtype {dtype}); the "
+        f"operator is singular or needs more than {m} iterations to solve."
+    )
+
+
+@torch.no_grad()
 def implicit_grad_loglik_vjp_wave(
     wave_layout, species_helpers, *, Pi_star_wave: torch.Tensor,
     Pibar_star_wave: torch.Tensor, E_star: torch.Tensor, E_s1: torch.Tensor,
@@ -204,7 +313,7 @@ def implicit_grad_loglik_vjp_wave(
     genewise: bool = False,
     neumann_terms: int = 3,
     self_loop_solver: str = "neumann",
-    bicgstab_max_iter: int = 500,
+    bicgstab_max_iter: int = 128,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
     adjoint_pruning_threshold: float = 1e-6,
@@ -512,7 +621,7 @@ def _e_adjoint_and_theta_vjp(
     grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
     n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
     drop_norm: bool = False,
-    bicgstab_max_iter: int = 500,
+    bicgstab_max_iter: int = 128,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
     cache=None,
@@ -563,12 +672,13 @@ def _e_adjoint_and_theta_vjp(
             )
         return (wE - gE).reshape(-1)
 
-    wE = _bicgstab(
+    # GMRES (breakdown-free) for the linear E-adjoint solve. ``bicgstab_breakdown_tol``
+    # is a BiCGSTAB-only guard and has no analogue in GMRES, so it is not threaded here.
+    wE = _gmres(
         AG_flat,
         q_flat,
         max_iter=bicgstab_max_iter,
         tol=bicgstab_tol,
-        breakdown_tol=bicgstab_breakdown_tol,
     ).view(E_shape)
     if cache is not None:
         cache["e_side"] = dict(q_E=q_E, wE=wE, aux_to_e=aux_to_e)

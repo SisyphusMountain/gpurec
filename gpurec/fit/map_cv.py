@@ -30,8 +30,8 @@ from gpurec.solver.value_and_grad import make_value_and_grad
 # used by the parity tests. NOT for the CV fit: at pi=16 the gradient is biased (FD disagrees ~5%),
 # which would corrupt the per-fold optima.
 _DEFAULT_SO = dict(
-    e_max_iter=2000, e_tol=1e-8, pi_iters=16, neumann_terms=16,
-    self_loop_solver="neumann", bicgstab_max_iter=500, bicgstab_tol=None,
+    e_max_iter=128, e_tol=1e-8, pi_iters=16, neumann_terms=16,
+    self_loop_solver="neumann", bicgstab_max_iter=128, bicgstab_tol=None,
     bicgstab_breakdown_tol=None, adjoint_pruning_threshold=1e-6,
     use_adjoint_pruning=True, pibar_side_threshold=0.0,
 )

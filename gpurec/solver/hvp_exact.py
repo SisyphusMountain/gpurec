@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import torch
 
-from gpurec.api._implicit_grad import _bicgstab, _safe_exp2_ratio
+from gpurec.api._implicit_grad import _gmres, _safe_exp2_ratio
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, survival_from_E as _survival_from_E
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.kernels.dts_so import dts_backward_so
@@ -496,9 +496,9 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                 gE = jt_E(w_flat.view(E_shape))
                 return (w_flat.view(E_shape) - gE).reshape(-1)
 
-            dwE = _bicgstab(AG_flat, rhs_E, max_iter=so.bicgstab_max_iter,
-                            tol=so.bicgstab_tol, breakdown_tol=so.bicgstab_breakdown_tol
-                            ).view(E_shape)
+            # GMRES (breakdown-free): same linear E-adjoint operator, new rhs.
+            dwE = _gmres(AG_flat, rhs_E, max_iter=so.bicgstab_max_iter,
+                         tol=so.bicgstab_tol).view(E_shape)
             if debug_out is not None:
                 debug_out.update(
                     d_gE=d_gE.clone(), d_gpD=d_gpD.clone(), d_gpS=d_gpS.clone(),

@@ -37,8 +37,8 @@ from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_
 
 # Proven base solver settings (pi_iters / neumann_terms are overridden per tier below).
 _BASE_SOLVER = dict(
-    e_max_iter=2000, e_tol=1e-8, self_loop_solver="neumann",
-    bicgstab_max_iter=500, bicgstab_tol=1e-7, bicgstab_breakdown_tol=1e-30,
+    e_max_iter=128, e_tol=1e-8, self_loop_solver="neumann",
+    bicgstab_max_iter=128, bicgstab_tol=1e-7, bicgstab_breakdown_tol=1e-30,
     adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0,
 )
 

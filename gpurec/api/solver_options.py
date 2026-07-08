@@ -6,20 +6,27 @@ from typing import Optional
 class SolverOptions:
     """Runtime-tunable solver controls for fixed-point and series solves."""
 
-    e_max_iter: int = 2000
+    e_max_iter: int = 128
     e_tol: float = 1e-8
     pi_iters: int = 64
     neumann_terms: int = 64
     self_loop_solver: str = "neumann"
-    bicgstab_max_iter: int = 500
-    # BiCGSTAB E-adjoint solve tolerances. ``None`` = dtype-relative auto (the
-    # robust default): the relative-residual target and breakdown guard are
-    # derived from ``torch.finfo(working_dtype).eps`` inside ``_bicgstab`` (fp32
-    # -> 1e-6 target, fp64 -> 1e-12). A hardcoded fp32-eps value such as the old
-    # 1e-7 sits *below* the achievable fp32 floor and made the solve raise on an
-    # essentially-converged iterate; ``None`` avoids that. Pass an explicit float
-    # only to solve tighter than the dtype default (e.g. 1e-10 in fp64).
+    # Max iterations for the linear E-adjoint / GGN solve. That solve now uses
+    # GMRES (:func:`gpurec.api._implicit_grad._gmres`), which is breakdown-free and
+    # converges in O(10) steps on the well-conditioned E-adjoint, so it early-stops
+    # far below this cap; the cap only bounds the Krylov basis. (Field name kept for
+    # backward compatibility with saved configs.)
+    bicgstab_max_iter: int = 128
+    # E-adjoint solve relative-residual target. ``None`` = dtype-relative auto (the
+    # robust default): the target is derived from ``torch.finfo(working_dtype).eps``
+    # inside the solver (fp32 -> 1e-6, fp64 -> 1e-12). A hardcoded fp32-eps value
+    # such as the old 1e-7 sits *below* the achievable fp32 floor and made the solve
+    # raise on an essentially-converged iterate; ``None`` avoids that. Pass an
+    # explicit float only to solve tighter than the dtype default (e.g. 1e-10 in fp64).
     bicgstab_tol: Optional[float] = None
+    # BiCGSTAB-only breakdown guard; ignored by the GMRES E-adjoint solve. Retained
+    # so existing configs that set it still load. Only used if ``_bicgstab`` is
+    # called directly (e.g. its unit tests).
     bicgstab_breakdown_tol: Optional[float] = None
     adjoint_pruning_threshold: float = 1e-6
     use_adjoint_pruning: bool = True

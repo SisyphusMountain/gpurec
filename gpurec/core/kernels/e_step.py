@@ -449,7 +449,7 @@ def e_fixed_point_triton(
     sp_child2: torch.Tensor,
     max_ancestor_depth: int,
     *,
-    max_iter: int = 2000,
+    max_iter: int = 128,
     tol: float = 1e-8,
     use_receiver_weights: bool = True,
 ):

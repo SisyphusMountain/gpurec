@@ -185,7 +185,7 @@ def e_tangent_fixed_point(
     dlog_pS, dlog_pD, dlog_pL, dmax_coupling,
     log_pS, log_pD, log_pL, max_coupling, col_log_probs,
     node_parent, node_child1, node_child2, max_ancestor_depth,
-    *, max_iter=2000, tol=1e-9, use_col_weights=True, dE0=None, dcol_log_probs=None,
+    *, max_iter=128, tol=1e-9, use_col_weights=True, dE0=None, dcol_log_probs=None,
 ):
     """Solve (I - J_E^EE) dE* = J_E^Ep dp at the frozen E*; return (dE*, dE_s1, dE_s2, dEbar).
 
