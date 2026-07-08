@@ -129,14 +129,36 @@ MAP_CV_REFERENCE = dict(
 
 def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 1000.0),
            mode="specieswise", init_rate=0.1, seed=0, solver_options=None, device="cuda",
-           adam_steps=60, lbfgs_iters=80, maxcor=50, verbose=True):
+           adam_steps=60, lbfgs_iters=80, maxcor=50, verbose=True,
+           config: GpurecConfig | None = None):
     """Run k-fold-over-families CV with a lambda-homotopy. Returns a results dict with the CV curve,
     ``lam_star``, and the final all-families refit ``theta_final``.
 
     ``theta_ref`` (the ridge center) is the constant ``log2(init_rate)`` per-species rate; lambda
     shrinks the per-species rates toward that common rate (the Sanderson smoothing flavor).
+
+    ``config`` (a top-level :class:`GpurecConfig`) threads ``config.solver`` (the same key subset as
+    ``_CV_SO``) into the base solver dict when no explicit ``solver_options`` is passed (explicit
+    always wins), and ``config.regularizer.lambdas`` into the ``lambdas`` kwarg when it is still at
+    its signature default (the reference-defaults ``==preset`` pattern -- see ``fit_genewise``'s
+    ``min_rate``/``max_rate``; documented edge case: explicitly repassing the preset value AND a
+    differing config resolves to the config value). ``lam_margin``/``lam_floor`` belong to
+    ``fit/map_fit.py`` (out of scope) and are NOT threaded here. ``config=None`` (the default)
+    reproduces today's behavior exactly.
+
+    NOT threaded: ``config.rates``/``config.newton``/``config.memory`` (unused/inapplicable to this
+    recipe).
     """
-    so = SolverOptions(**(solver_options or _CV_SO))
+    # REGULARIZER: reference-defaults invariant -- only substitute config.regularizer.lambdas when
+    # `lambdas` is still at its signature-default CV grid, so an explicit lambdas= always wins.
+    if config is not None and lambdas == (0.0, 1.0, 10.0, 100.0, 1000.0):
+        lambdas = config.regularizer.lambdas
+    # SOLVER: config.solver supplies the base dict (same key subset as _CV_SO) only when no
+    # explicit solver_options is given; an explicit solver_options still wins.
+    so_base = dict(_CV_SO)
+    if config is not None and solver_options is None:
+        so_base = {k: getattr(config.solver, k) for k in _CV_SO}
+    so = SolverOptions(**(solver_options or so_base))
     so.validate()
     gene_trees = list(gene_trees)
     n = len(gene_trees)

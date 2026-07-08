@@ -18,6 +18,7 @@ import time
 
 import torch
 
+from gpurec.config import GpurecConfig
 from gpurec.solver.value_and_grad import (forward_solve, free_cuda_cache_if_tight,
                                          make_value_and_grad)
 
@@ -475,7 +476,8 @@ OPTIMIZE_REFERENCE = dict(
 
 def optimize(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr0=1.0,
              schedule="adaptive", max_steps=300, polish_mode="ridge", max_newton=8, verbose=True,
-             polish=None, ridge=None, tv_penalty=None, origination_penalty=None, group_index=None):
+             polish=None, ridge=None, tv_penalty=None, origination_penalty=None, group_index=None,
+             config: GpurecConfig | None = None):
     """Full recipe: first-order stage -> optional exact-fp32 Newton polish. Returns (theta_hat, hist).
 
     Defaults reflect the 666x80 characterization: Adam(lr=1)+adaptive schedule for fast basin
@@ -488,7 +490,27 @@ def optimize(batch_statics, theta0, receiver_weights, *, optimizer="adam", lr0=1
       - ``"ridge_anneal"`` : lambda-continuation (slides toward the valley floor; witness-driven stop).
       - ``"lanczos"``      : un-ridged (lam=0) Newton (NOT recommended here -- bounces).
       - ``"none"``         : Adam alone (competitive for pure NLL; 4x cheaper).
-    ``polish=False`` / ``ridge=False`` are kept as back-compat aliases for "none" / "lanczos"."""
+    ``polish=False`` / ``ridge=False`` are kept as back-compat aliases for "none" / "lanczos".
+
+    ``config`` (a top-level :class:`GpurecConfig`) supplies ``origination_penalty`` from
+    ``config.regularizer.origination`` when no explicit ``origination_penalty`` is passed (explicit
+    always wins). A default ``GpurecConfig().regularizer.origination`` is an ``OriginationPenalty()``
+    at its disabled all-zero default -- a byte-exact no-op equivalent to ``origination_penalty=None``
+    (see ``gpurec.solver.penalties.origination_penalty_and_grad``'s ``any_active()`` gate) -- so
+    ``config=None`` (the default) reproduces today's behavior exactly.
+
+    NOT threaded: ``config.solver`` (already resolved by the caller before ``batch_statics`` was
+    built -- this function never constructs a ``GeneReconModel``); ``config.rates`` (unused --
+    ``optimize`` has no rate box, it just descends already-log2 theta); ``config.newton`` (this
+    stage's Newton uses ``newton_cg.newton_lanczos``, whose kwargs collide by NAME with
+    ``NewtonOptions`` at different values, e.g. ``max_newton=8`` here vs ``NewtonOptions``'s 40 --
+    threading it would silently change behavior, not just plumb it); ``config.memory`` (the
+    ``free_cuda_cache_if_tight`` gates are hardcoded/env-controlled). ``config.regularizer.tv_eps``
+    is SKIPPED too: ``tv_penalty`` is a raw ``(lam, sp_parent[, eps])`` tuple with its own
+    ``DEFAULT_TV_EPS`` fallback inside ``make_value_and_grad``, not a clean single kwarg to thread.
+    """
+    if config is not None and origination_penalty is None:
+        origination_penalty = config.regularizer.origination
     if polish is False:
         polish_mode = "none"
     elif ridge is False and polish_mode == "ridge":

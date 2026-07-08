@@ -111,15 +111,41 @@ def fit_genewise(
     warm_adjoint: bool = True,
     certify: bool = False,
     solver_options: SolverOptions | dict | None = None,
+    config: GpurecConfig | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Fit per-family DTL rates to a converged, box-bounded optimum. See module docstring for the recipe."""
+    """Fit per-family DTL rates to a converged, box-bounded optimum. See module docstring for the recipe.
+
+    ``config`` (a top-level :class:`GpurecConfig`) threads ``config.solver`` (the same key subset as
+    ``_BASE_SOLVER``) and ``config.rates`` (``min_rate``/``max_rate``) when the corresponding explicit
+    kwarg is left at its signature default; an explicit kwarg always wins. ``config=None`` (the
+    default) reproduces today's behavior exactly.
+
+    NOT threaded: ``config.newton`` (this recipe's Newton step is a bespoke box-constrained
+    trust-region FD 3x3 Hessian solve, not a ``NewtonOptions`` consumer); ``config.regularizer``
+    (unused -- this recipe has no regularization term); ``config.memory`` (the adjoint warm-start
+    is controlled by the ``GPUREC_WARM_ADJOINT`` env var + the library's own memory gate, not a
+    config field).
+    """
+    # RATES: reference-defaults invariant (test_fit_genewise_signature_defaults_come_from_genewise_preset)
+    # pins min_rate/max_rate's signature defaults to RateBounds.genewise(). Only substitute
+    # config.rates when the kwarg is still at that preset default, so an explicit min_rate/max_rate
+    # always wins over config. Documented edge case: a caller who explicitly repasses the preset
+    # value AND supplies a differing config gets the config value.
+    if config is not None and min_rate == _GENEWISE_RATE_BOUNDS.min_rate:
+        min_rate = config.rates.min_rate
+    if config is not None and max_rate == _GENEWISE_RATE_BOUNDS.max_rate:
+        max_rate = config.rates.max_rate
     dev = torch.device(device)
     pis = [int(p) for p in pi_tiers]
     cert_pi = max(pis)
     bounds = RateBounds(min_rate=min_rate, max_rate=max_rate)
     lo, hi = log2_rate_bounds(bounds=bounds)
+    # SOLVER: config.solver supplies `base` (same key subset as _BASE_SOLVER) only when no explicit
+    # solver_options is given; an explicit solver_options (SolverOptions or dict) always wins.
     base = dict(_BASE_SOLVER)
+    if config is not None and solver_options is None:
+        base = {k: getattr(config.solver, k) for k in _BASE_SOLVER}
     if isinstance(solver_options, SolverOptions):
         base = {k: getattr(solver_options, k) for k in _BASE_SOLVER}
     elif isinstance(solver_options, dict):
