@@ -21,7 +21,7 @@ from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.api._implicit_grad import _safe_exp2_ratio, implicit_grad_loglik_vjp_wave
 
-from gpurec.solver.forward_tangent import jvp_root_scores
+from gpurec.solver.forward_tangent import jvp_root_scores, DEFAULT_SELF_MAX_ITER
 
 _LN2 = 0.6931471805599453
 
@@ -64,7 +64,8 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
     )
 
 
-def make_ggn_hvp(static, theta, receiver_weights, sv, *, self_tol=None, self_max_iter=200,
+def make_ggn_hvp(static, theta, receiver_weights, sv, *, self_tol=None,
+                 self_max_iter=DEFAULT_SELF_MAX_ITER,
                  vjp_neumann_terms=None, vjp_use_pruning=None, vjp_bicgstab_tol=None):
     """Return hvp(v_vec) computing the GGN/Fisher product M v in theta-space (flat 3S).
 

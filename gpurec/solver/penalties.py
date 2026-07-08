@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import torch
 
+DEFAULT_TV_EPS = 1e-3
+
 
 def _root_mask(sp_parent: torch.Tensor):
     """Return (nonroot_mask[S], parent_safe[S]). Root = (parent < 0) or self-parent."""
@@ -24,7 +26,7 @@ def _root_mask(sp_parent: torch.Tensor):
     return nonroot, parent_safe
 
 
-def tv_prior_and_grad(theta: torch.Tensor, sp_parent: torch.Tensor, lam, eps: float = 1e-3):
+def tv_prior_and_grad(theta: torch.Tensor, sp_parent: torch.Tensor, lam, eps: float = DEFAULT_TV_EPS):
     """Pseudo-Huber total-variation (fused-lasso L1) prior on adjacent parent-child log-rates.
 
     rho(d) = sqrt(d^2 + eps^2) - eps  (~ |d| for |d| >> eps)

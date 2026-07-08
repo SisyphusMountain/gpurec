@@ -26,6 +26,7 @@ from gpurec.api._execution import stream_batches
 from gpurec.core.inference.solver import nll_from_root_rows, solve_resident_e_pi
 from gpurec.solver.penalties import (
     tv_prior_and_grad, origination_penalty_and_grad, group_expand, group_reduce,
+    DEFAULT_TV_EPS,
 )
 
 # Names of the forward-solve intermediates the exact-HVP / tangent path consumes,
@@ -159,10 +160,10 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None, gr
         tp_parent = sp_parent[tp_child].contiguous()                         # [E] their parents
 
     tv_lam = tv_sp_parent = None
-    tv_eps = 1e-3
+    tv_eps = DEFAULT_TV_EPS
     if tv_penalty is not None:
         tv_lam, tv_sp_parent = tv_penalty[0], tv_penalty[1].detach().reshape(-1)
-        tv_eps = tv_penalty[2] if len(tv_penalty) > 2 else 1e-3
+        tv_eps = tv_penalty[2] if len(tv_penalty) > 2 else DEFAULT_TV_EPS
 
     n_groups = None
     if group_index is not None:

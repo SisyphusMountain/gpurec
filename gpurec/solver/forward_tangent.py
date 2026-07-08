@@ -32,6 +32,8 @@ from gpurec.core.kernels.wave_tangent import (
     compute_wave_step_tangent, compute_wave_step_tangent_selfloop,
 )
 
+DEFAULT_SELF_MAX_ITER = 200
+
 
 def param_jvp_uniform(static, theta, v):
     """Forward-mode tangent of extract_parameters_uniform along v (use_col_weights=False path)."""
@@ -149,7 +151,7 @@ def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
     }
 
 
-def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=200, e_tol=None,
+def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAULT_SELF_MAX_ITER, e_tol=None,
                     self_iters=None, return_full=False, keep_d_dts=True, fused_selfloop=True,
                     alpha=None, u_alpha=None):
     """d(Pi_root)/d[theta;alpha] . [v;u_alpha]  -> tensor [n_root_rows, S].

@@ -52,3 +52,26 @@ def test_e_step_fallbacks_agree_with_solver_options():
     tan_params = inspect.signature(e_tangent_fixed_point).parameters
     assert tan_params["max_iter"].default in (None, so.e_max_iter)
     assert tan_params["tol"].default in (None, so.e_tangent_tol)
+
+
+def test_tv_eps_single_source():
+    """``DEFAULT_TV_EPS`` is defined once in ``penalties.py``; ``value_and_grad`` must import
+    (not re-literal) it."""
+    from gpurec.solver.penalties import DEFAULT_TV_EPS
+    from gpurec.solver import value_and_grad as vg
+
+    assert DEFAULT_TV_EPS == 1e-3
+    assert vg.DEFAULT_TV_EPS is DEFAULT_TV_EPS
+
+
+def test_self_max_iter_single_source():
+    """``DEFAULT_SELF_MAX_ITER`` is defined once in ``forward_tangent.py``; ``ggn`` must import
+    (not re-literal) it."""
+    from gpurec.solver import forward_tangent, ggn
+    from gpurec.solver.forward_tangent import DEFAULT_SELF_MAX_ITER
+
+    assert DEFAULT_SELF_MAX_ITER == 200
+    fwd_params = inspect.signature(forward_tangent.jvp_root_scores).parameters
+    assert fwd_params["self_max_iter"].default is DEFAULT_SELF_MAX_ITER
+    ggn_params = inspect.signature(ggn.make_ggn_hvp).parameters
+    assert ggn_params["self_max_iter"].default is DEFAULT_SELF_MAX_ITER
