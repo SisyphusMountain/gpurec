@@ -146,6 +146,10 @@ def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 100
     ``fit/map_fit.py`` (out of scope) and are NOT threaded here. ``config=None`` (the default)
     reproduces today's behavior exactly.
 
+    IMPORTANT -- ``config`` is AUTHORITATIVE: passing any non-default ``config`` replaces this
+    recipe's CV-tuned solver defaults (``_CV_SO``) with ``config.solver``'s values. To keep the CV
+    tuning and change only a few knobs, start from ``GpurecConfig.map_cv_reference()`` and modify it.
+
     NOT threaded: ``config.rates``/``config.newton``/``config.memory`` (unused/inapplicable to this
     recipe).
     """

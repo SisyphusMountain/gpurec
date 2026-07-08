@@ -121,6 +121,14 @@ def fit_genewise(
     kwarg is left at its signature default; an explicit kwarg always wins. ``config=None`` (the
     default) reproduces today's behavior exactly.
 
+    IMPORTANT -- ``config`` is AUTHORITATIVE, not a partial overlay. Because ``config.solver`` is
+    taken wholesale and ``config.rates`` substitutes each field, passing ANY non-default ``config``
+    (even one that only tweaks ``e_max_iter``) replaces this recipe's genewise-tuned defaults
+    (``bicgstab_tol=1e-7``, ``bicgstab_breakdown_tol=1e-30``, rate box ``1e-6``/``2.0``) with
+    ``config``'s values -- which default to the GLOBAL ``SolverOptions()``/``RateBounds()`` defaults.
+    To keep the genewise tuning and change only a few knobs, START FROM THE RECIPE FACTORY and modify
+    it: ``cfg = GpurecConfig.genewise_reference(); cfg.solver.e_max_iter = 999; fit_genewise(..., config=cfg)``.
+
     NOT threaded: ``config.newton`` (this recipe's Newton step is a bespoke box-constrained
     trust-region FD 3x3 Hessian solve, not a ``NewtonOptions`` consumer); ``config.regularizer``
     (unused -- this recipe has no regularization term); ``config.memory`` (the adjoint warm-start
