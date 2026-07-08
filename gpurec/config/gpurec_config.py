@@ -1,4 +1,37 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+
 import torch
+
+from gpurec.api.solver_options import SolverOptions
+from gpurec.config.memory import MemoryOptions
+from gpurec.config.newton import NewtonOptions
+from gpurec.config.rates import RateBounds
+
+# NOTE: ``gpurec.solver.penalties`` is imported lazily (inside
+# ``_default_penalty_options`` below) rather than at module level. A top-level
+# ``from gpurec.solver.penalties import PenaltyOptions`` here forces
+# ``gpurec.solver``'s package ``__init__`` to run, which imports
+# ``gpurec.solver.value_and_grad`` -> ``gpurec.api._execution`` ->
+# ``gpurec.api._implicit_grad``. That module itself imports
+# ``gpurec.config`` (for the dtype-tol helpers) at its top, so when this
+# module is reached *through* that same ``gpurec.api._implicit_grad`` import
+# (the normal path when anything imports plain ``gpurec``), the eager import
+# would try to pull a still-partially-initialized ``gpurec.api._implicit_grad``
+# module and raise ``ImportError: cannot import name ... (most likely due to a
+# circular import)``. Deferring the import to first use (i.e. to when a
+# ``GpurecConfig``/``PenaltyOptions`` default is actually constructed, by
+# which point the whole package graph has finished loading) breaks the cycle
+# without changing any public import path for callers of ``PenaltyOptions``.
+# ``SolverOptions`` has no such cycle (``gpurec.api`` is a plain namespace
+# package with no ``__init__.py``, and ``solver_options.py`` has no gpurec
+# imports of its own), so it stays a normal top-level import.
+
+
+def _default_penalty_options():
+    from gpurec.solver.penalties import PenaltyOptions
+    return PenaltyOptions()
 
 
 def dtype_rel_tol_default(dtype) -> float:
@@ -26,3 +59,66 @@ def dtype_rel_tol_floor(dtype) -> float:
     converged.
     """
     return 4.0 * float(torch.finfo(dtype).eps)
+
+
+def _merge_into(instance, overrides: dict, path: str):
+    """Return a copy of ``instance`` with ``overrides`` deep-merged in.
+
+    ``overrides`` may be a partial dict: keys absent from it keep the value
+    already present on ``instance``. Nested dataclass fields are merged
+    recursively when the override value for that key is itself a dict. Any
+    key (at any nesting depth) that does not name a field of the dataclass
+    being merged into raises ``ValueError`` -- unknown keys are never
+    silently ignored.
+    """
+    if not isinstance(overrides, dict):
+        full = path or "<root>"
+        raise TypeError(f"expected a dict of overrides at {full!r}, got {type(overrides).__name__}")
+    valid_names = {f.name for f in fields(instance)}
+    updates = {}
+    for key, value in overrides.items():
+        if key not in valid_names:
+            full = f"{path}.{key}" if path else key
+            raise ValueError(f"unknown config key: {full!r}")
+        full_path = f"{path}.{key}" if path else key
+        current = getattr(instance, key)
+        if is_dataclass(current) and isinstance(value, dict):
+            updates[key] = _merge_into(current, value, full_path)
+        else:
+            updates[key] = value
+    return replace(instance, **updates)
+
+
+@dataclass
+class GpurecConfig:
+    """Top-level configuration composing the per-area option dataclasses.
+
+    Purely a composition root: constructing ``GpurecConfig()`` is identical to
+    constructing each of the five sub-option dataclasses with their own
+    defaults. No existing dataclass is modified by this module.
+    """
+    solver: SolverOptions = field(default_factory=SolverOptions)
+    newton: NewtonOptions = field(default_factory=NewtonOptions)
+    rates: RateBounds = field(default_factory=RateBounds)
+    regularizer: PenaltyOptions = field(default_factory=_default_penalty_options)
+    memory: MemoryOptions = field(default_factory=MemoryOptions)
+
+    def validate(self) -> None:
+        """Delegate to every sub-option's own ``validate`` (when it defines one)."""
+        for sub in (self.solver, self.newton, self.rates, self.regularizer, self.memory):
+            validate_fn = getattr(sub, "validate", None)
+            if callable(validate_fn):
+                validate_fn()
+
+    def to_dict(self) -> dict:
+        """Nested ``dataclasses.asdict`` of every sub-option."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "GpurecConfig":
+        """Deep-merge a (possibly partial) dict onto ``GpurecConfig()`` defaults.
+
+        Any key -- top-level or nested -- that does not correspond to an
+        existing field raises ``ValueError`` rather than being ignored.
+        """
+        return _merge_into(cls(), d, path="")
