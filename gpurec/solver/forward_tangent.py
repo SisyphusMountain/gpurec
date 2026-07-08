@@ -19,6 +19,7 @@ import warnings
 import torch
 from torch.func import jvp
 
+from gpurec.config import dtype_rel_tol_default
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.parameters.extract_parameters import (
     as_family_param, as_family_species, extract_parameters_uniform,
@@ -97,7 +98,7 @@ def wave_step_constants(sv, S):
 
 
 def _default_tol(dtype):
-    return 1e-12 if dtype == torch.float64 else 1e-6
+    return dtype_rel_tol_default(dtype)
 
 
 def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,

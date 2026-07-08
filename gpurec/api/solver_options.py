@@ -31,6 +31,10 @@ class SolverOptions:
     adjoint_pruning_threshold: float = 1e-6
     use_adjoint_pruning: bool = True
     pibar_side_threshold: float = 0.0
+    # Convergence tolerance for the E-step tangent fixed point in the forward-mode
+    # JVP (`gpurec.solver.forward_tangent`). Distinct from `e_tol` (the primal
+    # E-step fixed point).
+    e_tangent_tol: float = 1e-9
 
     def validate(self) -> None:
         if int(self.e_max_iter) < 1:

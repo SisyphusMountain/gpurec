@@ -2,6 +2,7 @@ import warnings
 
 import torch
 
+from gpurec.config import dtype_rel_tol_default as _bicgstab_rel_tol_default, dtype_rel_tol_floor as _bicgstab_rel_tol_floor
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
 from gpurec.core.kernels.dts_fused import compute_dts_forward
 from gpurec.core.kernels.wave_backward import (
@@ -27,29 +28,10 @@ def _safe_exp2_ratio(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.where(neg_inf, torch.zeros_like(a), torch.exp2(a_safe - b_safe))
 
 
-def _bicgstab_rel_tol_default(dtype) -> float:
-    """Dtype-matched relative-residual target for the E-adjoint BiCGSTAB solve.
-
-    The target must sit ABOVE the finite-precision stagnation floor (a few * the
-    unit roundoff ``eps``) yet stay BELOW the ~2e-4 downstream gradient atomic-noise
-    floor, so the solve is as tight as the working precision *reliably* allows
-    without wasting iterations. These are exactly the values used elsewhere in
-    the codebase for the same purpose (``gpurec.solver.forward_tangent._default_tol``):
-
-      * fp32: ``1e-6`` (~8.4x fp32 eps 1.19e-7).
-      * fp64: ``1e-12`` (~4.5e3x fp64 eps 2.2e-16; tight but trivially reachable).
-    """
-    return 1e-12 if dtype == torch.float64 else 1e-6
-
-
-def _bicgstab_rel_tol_floor(dtype) -> float:
-    """Tightest relative residual the iteration can reach in a given dtype.
-
-    A small multiple of the unit roundoff. Any requested target below this is
-    physically unreachable, so we clamp up to it (with a warning) rather than
-    spin to ``max_iter`` and raise on a solve that is, in fact, fully converged.
-    """
-    return 4.0 * float(torch.finfo(dtype).eps)
+# `_bicgstab_rel_tol_default` / `_bicgstab_rel_tol_floor` moved to
+# `gpurec.config.gpurec_config` (as `dtype_rel_tol_default` / `dtype_rel_tol_floor`)
+# and re-exported above under their original names for back-compat: tests and
+# other callers still import them from here.
 
 
 @torch.no_grad()
