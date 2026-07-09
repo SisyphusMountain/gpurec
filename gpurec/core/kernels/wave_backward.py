@@ -235,7 +235,12 @@ def _gmres_solve_wave_self_loop_fixed_cgs2(
     work2 = torch.empty_like(rhs).reshape(-1)
 
     effective_iter = max_iter
-    breakdown_tol = torch.finfo(rhs.dtype).eps * torch.clamp(b_norm_t, min=1.0)
+    # Happy-breakdown tolerance, purely relative to ||rhs|| and the working precision. ``rhs == 0``
+    # is already handled by the caller, so ``b_norm_t > 0`` here and the tol is strictly positive.
+    # (The old ``clamp(b_norm_t, min=1.0)`` floored the scale at a magic 1.0; dropping it only makes
+    # breakdown *less* eager for small ||rhs||, i.e. it runs more Arnoldi steps and is more accurate,
+    # never less -- so it cannot truncate the Krylov space prematurely.)
+    breakdown_tol = torch.finfo(rhs.dtype).eps * b_norm_t
     for j in range(max_iter):
         w = apply_a(basis[j]).reshape(-1)
         q = basis_2d[: j + 1]
@@ -255,8 +260,10 @@ def _gmres_solve_wave_self_loop_fixed_cgs2(
             effective_iter = j + 1
             break
         if j + 1 < max_iter:
-            denom = torch.clamp(next_norm_t, min=torch.finfo(rhs.dtype).tiny)
-            torch.div(work2, denom, out=basis_2d[j + 1])
+            # Reached only when the breakdown check above did NOT fire, i.e.
+            # ``next_norm_t > breakdown_tol > 0`` -- so the divisor is strictly positive and no
+            # floor is needed (the old ``clamp(next_norm_t, min=tiny)`` was a dead no-op here).
+            torch.div(work2, next_norm_t, out=basis_2d[j + 1])
 
     h_sub = hessenberg[: effective_iter + 1, :effective_iter]
     rhs_sub = e1[: effective_iter + 1]

@@ -361,8 +361,13 @@ class _BatchedLBFGSHistoryMixin:
 
         old_dirs.append(torch.where(valid[:, None], y_k, torch.zeros_like(y_k)))
         old_stps.append(torch.where(valid[:, None], s_k, torch.zeros_like(s_k)))
-        ro.append(torch.where(valid, 1.0 / ys.clamp_min(1e-30), torch.zeros_like(ys)))
-        state["H_diag"] = torch.where(valid, ys / yy.clamp_min(1e-30), h_diag)
+        # ``valid`` already guarantees ys > 1e-10 and yy > 1e-30 (curvature condition above), so the
+        # denominators are safe on the selected rows. torch.where evaluates BOTH branches, so guard
+        # only the discarded (invalid) rows against 1/0 with the mask itself -- no epsilon floor.
+        safe_ys = torch.where(valid, ys, torch.ones_like(ys))
+        safe_yy = torch.where(valid, yy, torch.ones_like(yy))
+        ro.append(torch.where(valid, 1.0 / safe_ys, torch.zeros_like(ys)))
+        state["H_diag"] = torch.where(valid, ys / safe_yy, h_diag)
 
 
 class _BatchedLBFGSStrongWolfeMixin:
@@ -930,8 +935,12 @@ class BatchedLBFGS(
                 break
 
             if state["n_iter"] == 1:
-                grad_l1 = projected_grad.abs().sum(dim=1).clamp_min(1e-30)
-                alpha = torch.minimum(torch.ones_like(grad_l1), 1.0 / grad_l1) * lr
+                grad_l1 = projected_grad.abs().sum(dim=1)
+                # Active rows have a nonzero projected gradient (gtd < 0 was required above), so
+                # grad_l1 > 0 there; guard only the inactive rows (alpha discarded at the
+                # ``where(active, ...)`` below) against 1/0 with the mask -- no epsilon floor.
+                safe_l1 = torch.where(active, grad_l1, torch.ones_like(grad_l1))
+                alpha = torch.minimum(torch.ones_like(grad_l1), 1.0 / safe_l1) * lr
             else:
                 alpha = torch.full((batch_size,), lr, device=device, dtype=dtype)
             alpha = torch.where(active, alpha, torch.zeros_like(alpha))

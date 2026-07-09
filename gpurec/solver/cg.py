@@ -33,6 +33,13 @@ def _lanczos_tridiag(Av, p, *, m, seed=0, device="cuda", dtype=torch.float64, st
     q /= q.norm()
     Q, alphas, betas = [], [], []
     beta, q_prev = 0.0, torch.zeros_like(q)
+    # Invariant-subspace breakdown is detected relative to the operator scale (tracked as the
+    # largest |Rayleigh quotient| seen) and the working precision -- not a hardcoded 1e-12 floor,
+    # which is both dtype-blind (too loose for fp32, arbitrary for fp64) and scale-blind. Below
+    # sqrt(eps)*scale the next Lanczos vector is orthogonalization rounding noise, so normalizing
+    # it (``w / b``) would be meaningless.
+    breakdown_rel = float(torch.finfo(dtype).eps) ** 0.5
+    alpha_scale = 0.0
     for _ in range(int(m)):
         w = Av(q) - beta * q_prev
         a = float(torch.dot(w, q))
@@ -42,7 +49,8 @@ def _lanczos_tridiag(Av, p, *, m, seed=0, device="cuda", dtype=torch.float64, st
         Q.append(q.clone())
         alphas.append(a)
         b = float(w.norm())
-        if b < 1e-12:
+        alpha_scale = max(alpha_scale, abs(a))
+        if b <= breakdown_rel * (alpha_scale if alpha_scale > 0.0 else 1.0):
             break
         q_prev, q, beta = q, w / b, b
         betas.append(b)
@@ -184,10 +192,14 @@ def cg_solve(Av, b, *, tol, max_iter, x0=None):
     for it in range(1, int(max_iter) + 1):
         Ap = Av(p)
         pAp = float(torch.dot(p, Ap))
-        if pAp <= 0.0:  # safety only; damped system is PD
-            if it == 1:
-                x = b / max(pAp / max(float(torch.dot(p, p)), 1e-30), 1e-12) if pAp != 0 else b
-            break
+        if pAp <= 0.0:
+            # The damped Gauss-Newton system should be PD, so this is unreachable in normal
+            # operation. If it does happen, report non-convergence honestly (returning the
+            # current iterate -- x=0 on the first step) rather than fabricating a step: the old
+            # code divided by max(rayleigh, 1e-12), which -- since rayleigh<=0 here -- always
+            # collapsed to 1e-12 and returned ~1e12*b, a silently blown-up "solution". Callers
+            # (e.g. newton_cg) detect the failed/zero step and fall back to steepest descent.
+            return x, it, False
         alpha = rs / pAp
         x = x + alpha * p
         r = r - alpha * Ap
