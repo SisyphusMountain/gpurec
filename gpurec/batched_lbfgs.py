@@ -341,14 +341,22 @@ class _BatchedLBFGSHistoryMixin:
         h_diag: Tensor = state["H_diag"]
 
         ys = _row_dot(y_k, s_k)
-        yy = _row_dot(y_k, y_k)
+        yy = _row_dot(y_k, y_k)  # ||y||^2
+        ss = _row_dot(s_k, s_k)  # ||s||^2
         step_norm = s_k.abs().amax(dim=1)
+        # Scale-invariant curvature condition: cos(s, y) = ys / (||s|| ||y||) > eps_rel.
+        # Dimensionless, so acceptance is invariant to each row's objective/parameter scaling --
+        # critical here, where rows are independent problems of differing magnitude and fp32 is used
+        # for the large ones. Replaces the absolute ``ys > 1e-10`` inherited from torch.optim.LBFGS,
+        # which is only calibrated for a well-scaled fp64 single problem. Subsumes the old
+        # ``yy > 1e-30`` guard: acceptance implies ys > 0 and y != 0.
+        eps_rel = float(torch.finfo(ys.dtype).eps) ** 0.5
         valid = (
             active
             & torch.isfinite(ys)
             & torch.isfinite(yy)
-            & (ys > 1e-10)
-            & (yy > 1e-30)
+            & torch.isfinite(ss)
+            & (ys > eps_rel * (ss * yy).sqrt())
             & (step_norm > tolerance_change)
         )
         if not bool(valid.any()):
