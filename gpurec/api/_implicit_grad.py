@@ -96,7 +96,9 @@ def _bicgstab(
         raise ValueError("breakdown_tol must be positive")
 
     x = torch.zeros_like(b)
-    r = b - Av(x)
+    # x0 = 0 and A is linear, so r0 = b - Av(0) = b exactly; skip the wasted
+    # operator apply on the zero vector.
+    r = b.clone()
     bnorm = max(float(torch.linalg.vector_norm(b).detach().cpu()), 1.0)
     rhat_norm = float(torch.linalg.vector_norm(r).detach().cpu())
     r_norm = rhat_norm
@@ -665,7 +667,10 @@ def _e_adjoint_and_theta_vjp(
             (gE,) = torch.autograd.grad(
                 triton_E_from_E,
                 E_req,
-                grad_outputs=wE.clone(),
+                # autograd.grad treats grad_outputs as read-only, so the
+                # defensive clone is unnecessary; passing wE directly avoids a
+                # full E-vector copy on every E-adjoint matvec.
+                grad_outputs=wE,
                 retain_graph=True,
             )
         return (wE - gE).reshape(-1)
