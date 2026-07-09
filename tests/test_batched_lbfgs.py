@@ -213,3 +213,60 @@ def test_batched_lbfgs_moves_tiny_genewise_model(tmp_path: Path):
     assert final_loss < start_loss
     assert float((model.theta.detach() - start_theta).abs().max().cpu()) > 1e-3
     assert float(final_vec.sum().detach().cpu()) == pytest.approx(final_loss, rel=0.0, abs=1e-8)
+
+
+def test_curvature_acceptance_is_scale_invariant():
+    """History acceptance uses the dimensionless curvature condition
+    cos(s, y) = ys / (||s|| ||y||) > sqrt(eps), so which (s, y) pairs enter the L-BFGS memory
+    must be invariant to per-row rescaling of the objective (y) and parameters (s) -- a rescaling
+    leaves cos(s, y) unchanged. Regression guard against reverting to the absolute ``ys > 1e-10``
+    threshold inherited from torch.optim.LBFGS, which would flip decisions under rescaling.
+    """
+    batch, dim = 4, 3
+    theta = torch.nn.Parameter(torch.zeros(batch, dim, dtype=torch.float64))
+    optimizer = BatchedLBFGS([theta], lr=1.0, max_iter=1, history_size=10)
+
+    s = torch.tensor(
+        [[1.0, 2.0, -1.0], [0.5, -1.0, 2.0], [3.0, 1.0, -2.0], [-1.0, 0.5, 1.5]],
+        dtype=torch.float64,
+    )
+    # Known curvature per row: +definite (accept), negative (reject), orthogonal (reject), +definite.
+    y = torch.stack(
+        [
+            s[0].clone(),                                            # cos = +1  -> accept
+            -s[1].clone(),                                           # cos = -1  -> reject
+            torch.tensor([s[2, 1], -s[2, 0], 0.0], dtype=torch.float64),  # s . y = 0 -> reject
+            2.0 * s[3].clone(),                                      # cos = +1  -> accept
+        ]
+    )
+    expected = torch.tensor([True, False, False, True])
+
+    def accept_mask(s_in: torch.Tensor, y_in: torch.Tensor) -> torch.Tensor:
+        state = {
+            "old_dirs": [],
+            "old_stps": [],
+            "ro": [],
+            "H_diag": torch.ones(batch, dtype=torch.float64),
+        }
+        # tolerance_change=0 isolates the curvature condition from the (absolute) step-size guard.
+        optimizer._append_history(
+            state,
+            s_in.clone(),
+            y_in.clone(),
+            torch.ones(batch, dtype=torch.bool),
+            history_size=10,
+            tolerance_change=0.0,
+        )
+        return state["ro"][-1] != 0.0
+
+    base = accept_mask(s, y)
+    assert torch.equal(base, expected), base
+
+    # Per-row rescaling of objective (cy) and parameters (cs); cos(s, y) is preserved, so the
+    # decisions must not change. The accept rows (0, 3) are scaled so their ys ~ 1e-16 -- far below
+    # the old absolute 1e-10 threshold -- so a revert to ``ys > 1e-10`` would wrongly reject them
+    # here and flip the mask, failing this test.
+    cs = torch.tensor([1e-8, 1e3, 1.0, 1e-8], dtype=torch.float64)[:, None]
+    cy = torch.tensor([1e-8, 1e-4, 1e2, 1e-8], dtype=torch.float64)[:, None]
+    scaled = accept_mask(s * cs, y * cy)
+    assert torch.equal(scaled, base), (scaled, base)
