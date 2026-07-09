@@ -14,12 +14,16 @@ dependencies = [
     "numpy>=1.24",
     "torch>=2.11",
     "triton>=3.6",
+    # Core fitting/optimization requires scipy: solver/cg.py (lanczos_extremes /
+    # lanczos_min_eigpair via scipy.linalg.eigh_tridiagonal) and fit/baselines.py,
+    # fit/map_cv.py (scipy.optimize.minimize) are on the optimize/newton_cg/map_fit paths.
+    "scipy>=1.10",
 ]
 
 # Extra deps for the experiment drivers (not needed by the core library):
-#   experiments/receiver_robustness/archaea_exposure_cv.py -> ete3 (needs six), scipy
+#   experiments/receiver_robustness/archaea_exposure_cv.py -> ete3 (needs six)
 [project.optional-dependencies]
-experiments = ["scipy", "ete3", "six"]
+experiments = ["ete3", "six"]
 
 [project.scripts]
 gpurec = "gpurec.cli.main:main"
