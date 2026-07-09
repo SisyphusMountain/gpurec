@@ -45,3 +45,6 @@ rustree.broken-*/
 # Reference checkpoint bundles: large (~295 MB each), regenerable via
 # scripts/archive_archaea_checkpoint.py. Keep the README/docs tracked.
 checkpoints/**/*.pt
+
+# regression benchmark wall-time logs (machine-specific, not asserted)
+tests/regression/reports/
