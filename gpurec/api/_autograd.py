@@ -43,6 +43,7 @@ class _GeneReconFunction(torch.autograd.Function):
             o_lp, o_p = _origination_log_probs(origination_weights, theta)
             loss = nll_from_root_rows(root_rows, E, origination_log_probs=o_lp, origination_probs=o_p)
 
+        ctx.centered_pi_forward = getattr(static, "centered_pi_forward_state", None) is not None
         ctx.save_for_backward(
             theta,
             receiver_weights,
@@ -87,6 +88,11 @@ class _GeneReconFunction(torch.autograd.Function):
             receiver_log_probs,
         ) = ctx.saved_tensors
         static = ctx.static
+        if bool(getattr(ctx, "centered_pi_forward", False)):
+            raise RuntimeError(
+                "GPUREC_CENTERED_PI_FORWARD currently supports loss evaluation only; "
+                "the offset-aware backward path has not been ported on this branch"
+            )
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         o_lp, o_p = _origination_log_probs(origination_weights, theta)
         grad_theta, grad_receiver_weights = implicit_grad_loglik_vjp_wave(

@@ -420,7 +420,14 @@ class GeneReconModel(torch.nn.Module):
         changed), and gives each batch its tier's ``SolverOptions``. Re-run periodically
         during optimization, since stiffness drifts with ``theta``. Returns a dict with the
         labels, the new batch count, and per-tier family counts.
+
+        ``neumann_terms`` is the **fixed reference** the backward residual is measured at;
+        it defaults to the global base (``solver_options.neumann_terms``) so a family is
+        always classified by "does it converge at base?" — NOT at its already-bumped tier
+        setting, which would make tier-1 families converge, get demoted, and oscillate.
         """
+        if neumann_terms is None:
+            neumann_terms = self.solver_options.neumann_terms
         report = self.convergence_report(pi_iters_high=pi_iters_high, neumann_terms=neumann_terms)
         labels = self.classify_families(report, **(thresholds or {}))
         if group_options is None:

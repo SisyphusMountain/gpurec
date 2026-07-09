@@ -130,6 +130,13 @@ That is **true convergence to float32 precision**.
 
 ## float64 attempt: the adjoint is broken in float64 (and the floor is confirmed real)
 
+> **UPDATE (superseded):** the float64 backward bug described below was a lost-update race in
+> the E-step backward kernel and is **fixed** (commit `f71a38dae`). float64 now gives a
+> correct, deterministic gradient, and float64/mixed precision pushes `|g|inf` from 1.66 down
+> to ~0.43. See [`numerical_precision.md`](numerical_precision.md) for the precision ladder,
+> the fix, and what each recipe reached. The text below records the original (broken) state;
+> it remains correct that **1.66 is the genuine float32 floor**.
+
 Tried one BFGS/GD step in float64 from the 1.66 checkpoint
 (`diagnose_float64_step.py`, `diagnose_float64_full.py`, `diagnose_fd_gradcheck.py`):
 

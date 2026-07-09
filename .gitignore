@@ -41,3 +41,7 @@ logmatmul/
 oliver_code/
 rustree/
 rustree.broken-*/
+
+# Reference checkpoint bundles: large (~295 MB each), regenerable via
+# scripts/archive_archaea_checkpoint.py. Keep the README/docs tracked.
+checkpoints/**/*.pt

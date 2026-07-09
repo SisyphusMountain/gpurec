@@ -72,7 +72,7 @@ def solve_resident_e_pi(
         max_iter=solver_options.e_max_iter,
         tol=solver_options.e_tol,
     )
-    root_rows, pi_wave, pibar_wave, pibar_row_max = pi_wave_forward(
+    pi_forward_result = pi_wave_forward(
         wave_layout=static.wave_layout,
         species_helpers=static.species_helpers,
         e=E,
@@ -88,6 +88,12 @@ def solve_resident_e_pi(
         pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
         pi_residual_out=pi_residual_out,
     )
+    centered_pi_state = None
+    if len(pi_forward_result) == 5:
+        root_rows, pi_wave, pibar_wave, pibar_row_max, centered_pi_state = pi_forward_result
+    else:
+        root_rows, pi_wave, pibar_wave, pibar_row_max = pi_forward_result
+    static.centered_pi_forward_state = centered_pi_state
     return (
         E,
         E_s1,
