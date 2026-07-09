@@ -1,3 +1,0 @@
-[FAMILIES]
-- my_family
-gene_tree = g.nwk
