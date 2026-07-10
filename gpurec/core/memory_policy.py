@@ -56,9 +56,19 @@ def cuda_memory_budget_bytes(
     else:
         idx = int(device)
     free_b, total_b = torch.cuda.mem_get_info(idx)
+    # mem_get_info's free_b is the DRIVER-visible free memory, which counts PyTorch's
+    # reserved-but-unused caching-allocator pool as "used". A new torch allocation (e.g. the
+    # transient self-loop scratch) can be served from that reclaimable pool WITHOUT touching the
+    # driver, so the memory truly available to the next allocation is free_b + (reserved -
+    # allocated). Omitting it makes the budget collapse to ~0 mid-run (when torch holds a large
+    # reserved pool, e.g. the fp64 final_eval backward) and falsely rejects a scratch that fits.
+    # At build time reserved ~= allocated (empty pool) so this adds nothing and the warm-adjoint
+    # fit decision is unchanged; it only credits genuinely-reusable memory when a pool exists.
+    reclaimable_b = max(0, int(torch.cuda.memory_reserved(idx)) - int(torch.cuda.memory_allocated(idx)))
+    available_b = int(free_b) + reclaimable_b
     fraction = float(os.environ.get("GPUREC_MEMORY_POLICY_FRACTION", str(default_fraction)))
     reserve_b = int(float(os.environ.get("GPUREC_MEMORY_POLICY_RESERVE_GIB", str(default_reserve_gib))) * GIB)
-    return max(0, min(int(total_b * fraction), max(0, int(free_b) - reserve_b)))
+    return max(0, min(int(total_b * fraction), max(0, available_b - reserve_b)))
 
 
 def proposal0_wave_scratch_bytes(
