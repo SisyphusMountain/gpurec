@@ -235,7 +235,10 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
             accepted_steps += 1
             theta_vec = trial
             hvp_stale = True  # theta moved -> the cached HVP must be rebuilt next iteration
-            warm_E = sv_t["E"]
+            # multi-batch forward_solve returns saved=None (streams+frees the ~GB intermediates);
+            # fall back to a cold warm-start (correct, just no warm-start speedup). Single-batch
+            # sv_t is a real dict, so this guard is a no-op there.
+            warm_E = sv_t["E"] if sv_t is not None else None
             sv_t = None
             lam_damp = max(lam_floor, lam_damp / omega) if alpha == 1.0 else min(lam_ceil, 1.5 * lam_damp)
             if verbose:
