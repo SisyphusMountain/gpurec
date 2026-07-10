@@ -290,6 +290,80 @@ def _gmres(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
 
 
 @torch.no_grad()
+def _neumann_e_adjoint(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
+    """Solve ``(I - J) x = b`` by Neumann series ``x = sum_k J^k b``, where ``J w = w - Av(w)``.
+
+    Alternative to :func:`_gmres` for the E-adjoint / GGN linear solve. No orthogonalization
+    -> no fp32 Arnoldi residual floor (unlike GMRES, which stalls at a theta-dependent ~1e-6 to
+    5.5e-6 relative residual at large species counts). Valid because the E-step self-map
+    Jacobian ``J`` is a contraction (the forward E fixed point converges), so
+    ``(I-J)^{-1} = sum_k J^k`` converges.
+
+    By telescoping, the true relative residual after summing terms ``k=0..N`` is
+    ``||J^{N+1} b|| / ||b||``; since ``||J|| < 1`` this is bounded above by
+    ``||J^N b|| / ||b||`` -- the quantity actually tracked below (``rel``) -- so ``rel`` is a
+    conservative (upper-bound) proxy for the true residual, off by one power of ``J``.
+
+    ``tol`` is a RELATIVE residual target, matching :func:`_gmres` exactly: ``None`` -> the
+    dtype-matched default (:func:`_bicgstab_rel_tol_default`); a value below the dtype floor
+    (:func:`_bicgstab_rel_tol_floor`) is clamped up with a warning. Returns the best (smallest
+    conservative-residual) iterate; raises ``RuntimeError`` only if that residual never reaches
+    the acceptance floor within ``max_iter`` terms -- a genuinely non-contractive operator, never
+    a solver artefact.
+    """
+    max_iter = int(max_iter)
+    if max_iter < 1:
+        raise ValueError("max_iter must be at least 1")
+
+    dtype = b.dtype
+    floor = _bicgstab_rel_tol_floor(dtype)
+    default = _bicgstab_rel_tol_default(dtype)
+    if tol is None:
+        target = default
+    else:
+        target = float(tol)
+        if target <= 0.0:
+            raise ValueError("tol must be positive")
+        if target < floor:
+            warnings.warn(
+                f"neumann tol={target:.2e} is below the {dtype} finite-precision "
+                f"residual floor {floor:.2e}; clamping to the floor. A tighter "
+                f"relative residual is unreachable in this precision -- use fp64.",
+                RuntimeWarning, stacklevel=2,
+            )
+            target = floor
+    # Any iterate reaching the dtype's natural floor counts as converged-to-precision.
+    accept = max(target, default)
+
+    bnorm = float(torch.linalg.vector_norm(b.reshape(-1)).detach().cpu())
+    if bnorm == 0.0:
+        return b.clone()
+
+    x = b.clone()
+    term = b.clone()
+    best_x = x
+    best_rel = float("inf")
+    for _ in range(max_iter):
+        term = term - Av(term)  # == J @ term
+        x = x + term
+        rel = float(torch.linalg.vector_norm(term.reshape(-1)).detach().cpu()) / bnorm
+        if rel < best_rel:
+            best_rel = rel
+            best_x = x
+        if rel <= target:
+            return x
+
+    if best_rel <= accept:
+        return best_x
+    raise RuntimeError(
+        f"E-adjoint Neumann series failed to converge at conservative relative residual "
+        f"{best_rel:.3e} after {max_iter} terms (target {target:.3e}, dtype {dtype}); the "
+        f"self-map J is likely not a contraction (spectral radius >= 1) or needs more than "
+        f"{max_iter} terms to solve."
+    )
+
+
+@torch.no_grad()
 def implicit_grad_loglik_vjp_wave(
     wave_layout, species_helpers, *, Pi_star_wave: torch.Tensor,
     Pibar_star_wave: torch.Tensor, E_star: torch.Tensor, E_s1: torch.Tensor,
@@ -306,6 +380,7 @@ def implicit_grad_loglik_vjp_wave(
     bicgstab_max_iter: int | None = None,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
+    e_adjoint_solver: str | None = None,
     adjoint_pruning_threshold: float | None = None,
     use_adjoint_pruning: bool = True,
     pibar_side_threshold: float | None = None,
@@ -327,6 +402,11 @@ def implicit_grad_loglik_vjp_wave(
         raise ValueError("self_loop_solver must be one of: neumann, gmres")
     if bicgstab_max_iter is None:
         bicgstab_max_iter = SolverOptions().bicgstab_max_iter
+    if e_adjoint_solver is None:
+        e_adjoint_solver = SolverOptions().e_adjoint_solver
+    e_adjoint_solver = str(e_adjoint_solver).strip().lower()
+    if e_adjoint_solver not in ("gmres", "neumann"):
+        raise ValueError("e_adjoint_solver must be one of: gmres, neumann")
     if adjoint_pruning_threshold is None:
         adjoint_pruning_threshold = SolverOptions().adjoint_pruning_threshold
     adjoint_pruning_threshold = float(adjoint_pruning_threshold)
@@ -608,6 +688,7 @@ def implicit_grad_loglik_vjp_wave(
         bicgstab_max_iter=bicgstab_max_iter,
         bicgstab_tol=bicgstab_tol,
         bicgstab_breakdown_tol=bicgstab_breakdown_tol,
+        e_adjoint_solver=e_adjoint_solver,
         cache=cache,
         origination_probs=origination_probs,
     )
@@ -622,11 +703,17 @@ def _e_adjoint_and_theta_vjp(
     bicgstab_max_iter: int | None = None,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
+    e_adjoint_solver: str | None = None,
     cache=None,
     origination_probs=None,
 ):
     if bicgstab_max_iter is None:
         bicgstab_max_iter = SolverOptions().bicgstab_max_iter
+    if e_adjoint_solver is None:
+        e_adjoint_solver = SolverOptions().e_adjoint_solver
+    e_adjoint_solver = str(e_adjoint_solver).strip().lower()
+    if e_adjoint_solver not in ("gmres", "neumann"):
+        raise ValueError("e_adjoint_solver must be one of: gmres, neumann")
     topology_args = (
         species_helpers["sp_parent"],
         species_helpers["sp_child1"],
@@ -675,9 +762,12 @@ def _e_adjoint_and_theta_vjp(
             )
         return (wE - gE).reshape(-1)
 
-    # GMRES (breakdown-free) for the linear E-adjoint solve. ``bicgstab_breakdown_tol``
-    # is a BiCGSTAB-only guard and has no analogue in GMRES, so it is not threaded here.
-    wE = _gmres(
+    # Linear E-adjoint solve ``(I - J) wE = q``. ``bicgstab_breakdown_tol`` is a
+    # BiCGSTAB-only guard and has no analogue in GMRES/Neumann, so it is not threaded here.
+    # Default "gmres" (breakdown-free); "neumann" avoids GMRES's fp32 Arnoldi
+    # orthogonalization floor at large species counts (see _neumann_e_adjoint).
+    solver = _neumann_e_adjoint if e_adjoint_solver == "neumann" else _gmres
+    wE = solver(
         AG_flat,
         q_flat,
         max_iter=bicgstab_max_iter,

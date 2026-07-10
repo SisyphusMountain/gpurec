@@ -28,6 +28,16 @@ class SolverOptions:
     # so existing configs that set it still load. Only used if ``_bicgstab`` is
     # called directly (e.g. its unit tests).
     bicgstab_breakdown_tol: Optional[float] = None
+    # Solver for the E-adjoint backward linear solve ``(I - J) wE = q`` (the final linear
+    # solve in ``_e_adjoint_and_theta_vjp``, distinct from ``self_loop_solver`` above which
+    # governs the per-wave self-loop). ``"gmres"`` (default, backward compatible): matrix-free
+    # GMRES, breakdown-free but has a theta-dependent fp32 residual floor from Arnoldi
+    # orthogonalization (~1e-6 to 5.5e-6) that can make it fail to converge mid-optimization at
+    # large species counts. ``"neumann"``: Neumann-series solve (no orthogonalization -> no fp32
+    # floor), valid because the E-step self-map Jacobian ``J`` is a contraction (the forward E
+    # fixed point converges) -- validated to reach ~1e-6 relative residual in <=10 terms across a
+    # full-scale fit's backward solves.
+    e_adjoint_solver: str = "gmres"
     adjoint_pruning_threshold: float = 1e-6
     use_adjoint_pruning: bool = True
     pibar_side_threshold: float = 0.0
@@ -55,6 +65,10 @@ class SolverOptions:
             raise ValueError("bicgstab_tol must be positive or None (dtype-auto)")
         if self.bicgstab_breakdown_tol is not None and float(self.bicgstab_breakdown_tol) <= 0.0:
             raise ValueError("bicgstab_breakdown_tol must be positive or None (dtype-auto)")
+        e_adjoint_solver = str(self.e_adjoint_solver).strip().lower()
+        if e_adjoint_solver not in ("gmres", "neumann"):
+            raise ValueError("e_adjoint_solver must be one of: gmres, neumann")
+        self.e_adjoint_solver = e_adjoint_solver
         if float(self.adjoint_pruning_threshold) < 0.0:
             raise ValueError("adjoint_pruning_threshold must be non-negative")
         if float(self.pibar_side_threshold) < 0.0:
