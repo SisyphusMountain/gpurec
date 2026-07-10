@@ -239,19 +239,28 @@ def newton_polish(batch_statics, theta_stage1, receiver_weights, *, ridge=False,
     # (S,3)-specific (it misreads a broadcast global theta), so skip it and let newton_lanczos
     # self-damp its FD-Hessian descent.
     is_global = (theta_f.numel() == 3 and S > 1)
+    # The exact-HVP ridge estimator (_exact_ridge_lambda -> forward_solve + make_exact_hvp) is
+    # single-batch ONLY: multi-batch forward_solve returns no saved-values and make_exact_hvp
+    # rejects a batch list (NotImplementedError). It is also (S,3)-specific (misreads a broadcast
+    # global theta). Use it only for a single-batch, non-global theta; otherwise fall back to
+    # lam=0 and let newton_lanczos self-damp its FD-Hessian descent (the same fallback global
+    # already uses). newton_lanczos downgrades hvp_mode exact->fd for a non-(S,3) theta, so
+    # global/genewise multi-batch then run the multi-batch-safe FD HVP end-to-end.
+    n_batches = len(batch_statics) if isinstance(batch_statics, (list, tuple)) else 1
+    use_exact_ridge = ridge and not is_global and n_batches == 1
     if is_global:
         # each 3-D FD-Newton step is cheap; give it room to reach the gtol stop (the exact-HVP
         # default of 8 is tuned for expensive large-S steps and stops the global fit early).
         max_newton = max(int(max_newton), 30)
     lam = 0.0
-    if ridge and not is_global:
+    if use_exact_ridge:
         lam = _exact_ridge_lambda(batch_statics, theta_f, receiver_weights,
                                   m=max(20, lanczos_m), sigma=sigma, verbose=verbose)
     t_start = time.perf_counter() if t0_wall is None else t0_wall
     theta_hat, h_newton = newton_lanczos(
         batch_statics, theta_f, receiver_weights, hvp_mode="exact", lanczos_m=lanczos_m,
         sigma=sigma, max_newton=max_newton, gtol=gtol, lam=lam,
-        theta_ref=(theta_f if (ridge and not is_global) else None), verbose=verbose,
+        theta_ref=(theta_f if use_exact_ridge else None), verbose=verbose,
     )
     hist = []
     for r in h_newton:

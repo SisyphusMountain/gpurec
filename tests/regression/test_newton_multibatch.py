@@ -1,21 +1,23 @@
-"""Regression test: the ridge-Newton polish (`newton_cg.newton_lanczos`) must not crash on
-multi-batch datasets during its Armijo line search.
+"""Regression test: the ridge-Newton polish must run the FULL default recipe on MULTI-BATCH
+datasets for both global and genewise modes.
 
-Root cause (diagnosed): `forward_solve` (`gpurec/solver/value_and_grad.py`) returns
-`(loss, None)` for MULTIPLE batches (the exact-HVP saved-intermediates dict is a single-batch-only
-artifact; multi-batch streams and frees the ~GB scratch). The line search in `newton_lanczos`
-unconditionally did `warm_E = sv_t["E"]` on the accepted step, which crashes with
-`TypeError: 'NoneType' object is not subscriptable` as soon as a fit runs with more than one
-batch. The guard (`warm_E = sv_t["E"] if sv_t is not None else None`) fixes that access.
+Two multi-batch-unsafe accesses had to be guarded for this to work end-to-end:
 
-`global` (theta `(3,)`) uses `hvp_mode="fd"` and does NOT touch the exact HVP, so once the line
-search is guarded the full default recipe (Adam -> ridge-Newton polish) completes end-to-end at
-multi-batch scale.
+1. `newton_cg.newton_lanczos` line search did `warm_E = sv_t["E"]` on the accepted step, but
+   `forward_solve` (`gpurec/solver/value_and_grad.py`) returns `(loss, None)` for MULTIPLE batches
+   (the exact-HVP saved-intermediates dict is a single-batch artifact; multi-batch streams and
+   frees the ~GB scratch). That crashed with `TypeError: 'NoneType' object is not subscriptable`.
+   Guarded: `warm_E = sv_t["E"] if sv_t is not None else None`.
 
-`genewise` and `specieswise` still route through the SINGLE-BATCH-only exact HVP: `newton_polish`
--> `_exact_ridge_lambda` (optimize.py) -> `make_exact_hvp` -> `hvp_exact._single_static`, which
-raises `NotImplementedError` for >1 batch. That needs the streaming multi-batch exact-HVP task and
-is marked xfail below (NOT fixed here).
+2. For genewise (theta `(G,3)`, so not `is_global`) with the default `ridge=True`, `newton_polish`
+   (`gpurec/fit/optimize.py`) called `_exact_ridge_lambda` -> `forward_solve` + `make_exact_hvp`,
+   both SINGLE-BATCH-only (`make_exact_hvp` raises `NotImplementedError` for a batch list). Guarded
+   the same way global already was: the exact-HVP ridge estimator is used only for a single-batch,
+   non-global theta; otherwise `lam=0` and `newton_lanczos` self-damps its (multi-batch-safe)
+   FD-Hessian descent.
+
+Together these unblock global AND genewise multi-batch full recipes. Specieswise (the exact-HVP
+`hvp_mode="exact"` path) is a separate, harder task and is intentionally NOT covered here.
 """
 import math
 
@@ -32,11 +34,14 @@ from gpurec.bench.simulate import simulate_dataset
 from gpurec.fit.optimize import optimize, final_eval
 
 
-def _run_multibatch_full_recipe(mode, out_dir):
+@pytest.mark.gpu
+@pytest.mark.slow
+@pytest.mark.parametrize("mode", ["global", "genewise"])
+def test_newton_polish_multibatch_full_recipe(mode, tmp_path):
     # n_species=250 / n_families=500 with the default GeneReconModel family_chunk_size=300
-    # guarantees > 1 batch, exercising the multi-batch `forward_solve` -> `sv_t is None` path that
-    # crashed the line search.
-    sp, genes = simulate_dataset(mode, out_dir, n_species=250, n_families=500, dtl=0.05, seed=1)
+    # guarantees > 1 batch, exercising the multi-batch `forward_solve` -> saved=None paths that
+    # crashed the line search (sv_t) and the ridge-lambda estimator (make_exact_hvp).
+    sp, genes = simulate_dataset(mode, tmp_path, n_species=250, n_families=500, dtl=0.05, seed=1)
 
     model = GeneReconModel(
         sp, genes, mode=mode, device="cuda", dtype=torch.float32,
@@ -56,25 +61,3 @@ def _run_multibatch_full_recipe(mode, out_dir):
     rates = 2.0 ** theta_hat.detach()
     assert torch.isfinite(rates).all(), f"{mode}: non-finite rates {rates}"
     assert bool((rates > 0).all()), f"{mode}: non-positive rates {rates}"
-
-
-@pytest.mark.gpu
-@pytest.mark.slow
-def test_newton_polish_multibatch_full_recipe_global(tmp_path):
-    """global mode: hvp_mode='fd', no exact HVP -> the guarded line search completes the full
-    Adam + ridge-Newton recipe at multi-batch scale."""
-    _run_multibatch_full_recipe("global", tmp_path)
-
-
-@pytest.mark.gpu
-@pytest.mark.slow
-@pytest.mark.xfail(
-    reason="multi-batch exact HVP not ported: newton_polish -> _exact_ridge_lambda -> "
-           "make_exact_hvp is single-batch-only (see hvp_exact._single_static); "
-           "pending the streaming multi-batch exact-HVP task",
-    strict=False,
-)
-def test_newton_polish_multibatch_full_recipe_genewise(tmp_path):
-    """genewise mode: the ridge-lambda estimator invokes the single-batch-only exact HVP, which
-    raises NotImplementedError for >1 batch. xfail until the streaming multi-batch exact HVP lands."""
-    _run_multibatch_full_recipe("genewise", tmp_path)
