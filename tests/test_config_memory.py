@@ -63,11 +63,12 @@ def test_curvature_hvp_rebuild_gate_wired_to_memory_options():
 
 
 def test_hvp_exact_free_cache_every_wired_to_memory_options():
-    """make_exact_hvp's NEWTON_FREE_CACHE_EVERY env-var fallback must be MemoryOptions()'s
-    free_cache_every rather than a bare `32` literal."""
+    """make_exact_hvp_single's NEWTON_FREE_CACHE_EVERY env-var fallback must be MemoryOptions()'s
+    free_cache_every rather than a bare `32` literal. (The reverse-sweep body lives in
+    make_exact_hvp_single since make_exact_hvp became a single/multi-batch dispatcher.)"""
     from gpurec.solver import hvp_exact
 
-    src = inspect.getsource(hvp_exact.make_exact_hvp)
+    src = inspect.getsource(hvp_exact.make_exact_hvp_single)
     assert "MemoryOptions" in src
     assert "else 32" not in src
 
