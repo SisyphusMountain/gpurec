@@ -32,9 +32,9 @@ import numpy as np
 
 # Canonical parameters for the committed goldens (full-scale). Seeds are arbitrary but fixed.
 SIM_PARAMS = {
-    "global":      {"seed": 20260709, "n_species": 500, "n_families": 1000, "dtl": 0.05},
-    "genewise":    {"seed": 20260710, "n_species": 500, "n_families": 1000, "dtl": 0.05},
-    "specieswise": {"seed": 20260711, "n_species": 500, "n_families": 1000, "dtl": 0.05},
+    "global":      {"seed": 20260709, "n_species": 500, "n_families": 500, "dtl": 0.05},
+    "genewise":    {"seed": 20260710, "n_species": 500, "n_families": 500, "dtl": 0.05},
+    "specieswise": {"seed": 20260711, "n_species": 500, "n_families": 500, "dtl": 0.05},
 }
 
 

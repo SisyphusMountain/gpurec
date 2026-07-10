@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from gpurec.api.model import GeneReconModel
+from gpurec.api.solver_options import SolverOptions
 from gpurec.fit.optimize import optimize, final_eval
 from gpurec.bench.simulate import simulate_dataset, SIM_PARAMS
 
@@ -24,7 +25,13 @@ def _git_rev(cwd):
 
 
 def fit_mode(mode, species_path, gene_paths):
-    model = GeneReconModel(species_path, gene_paths, mode=mode, device="cuda", dtype=torch.float32)
+    # e_adjoint_solver="neumann": at 500 leaves (S=999) the E-side adjoint solve's fp32 GMRES
+    # (Arnoldi) orthogonalization residual floors around ~1e-6 and fails to converge mid-fit
+    # (theta-dependent). The Neumann series wE = sum_k J^k q has no orthogonalization and reaches
+    # ~1e-6 in <=10 terms -- productionized in Task A, FD-validated to match GMRES gradient. config
+    # (optimize's) does NOT thread solver options, so it must be set at model-build time here.
+    model = GeneReconModel(species_path, gene_paths, mode=mode, device="cuda", dtype=torch.float32,
+                           solver_options=SolverOptions(e_adjoint_solver="neumann"))
     t0 = time.perf_counter()
     # group_index=model.rate_family_idx is only meaningful for the reduced-group rate
     # parameterization (theta as [G,3] group rows expanded to per-species/per-item rows via
