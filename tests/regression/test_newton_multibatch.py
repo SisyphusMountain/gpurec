@@ -16,8 +16,14 @@ Two multi-batch-unsafe accesses had to be guarded for this to work end-to-end:
    non-global theta; otherwise `lam=0` and `newton_lanczos` self-damps its (multi-batch-safe)
    FD-Hessian descent.
 
-Together these unblock global AND genewise multi-batch full recipes. Specieswise (the exact-HVP
-`hvp_mode="exact"` path) is a separate, harder task and is intentionally NOT covered here.
+Together these unblock global AND genewise multi-batch full recipes.
+
+3. Specieswise (theta `(S,3)`) routes through the exact-HVP `hvp_mode="exact"` path AND the
+   exact-HVP ridge estimator. Both now STREAM over batches: `make_exact_hvp` accumulates
+   `H u = sum_b H_b u`, rebuilding each batch's forward saved-intermediates + point cache per HVP
+   and freeing before the next (memory-bounded). The streamed multi-batch curvature is
+   FD-Hessian-validated in `tests/test_hvp_multibatch.py`; here we assert the full recipe completes
+   end-to-end at multi-batch scale for specieswise too.
 """
 import math
 
@@ -36,7 +42,7 @@ from gpurec.fit.optimize import optimize, final_eval
 
 @pytest.mark.gpu
 @pytest.mark.slow
-@pytest.mark.parametrize("mode", ["global", "genewise"])
+@pytest.mark.parametrize("mode", ["global", "genewise", "specieswise"])
 def test_newton_polish_multibatch_full_recipe(mode, tmp_path):
     # n_species=250 / n_families=500 with the default GeneReconModel family_chunk_size=300
     # guarantees > 1 batch, exercising the multi-batch `forward_solve` -> saved=None paths that

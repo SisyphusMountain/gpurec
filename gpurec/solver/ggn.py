@@ -59,6 +59,7 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         adjoint_pruning_threshold=so.adjoint_pruning_threshold,
         use_adjoint_pruning=bool(so.use_adjoint_pruning if use_pruning is None else use_pruning),
         pibar_side_threshold=so.pibar_side_threshold,
+        e_adjoint_solver=so.e_adjoint_solver,
         seed_root=seed_root, drop_norm=drop_norm, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
     )

@@ -239,15 +239,19 @@ def newton_polish(batch_statics, theta_stage1, receiver_weights, *, ridge=False,
     # (S,3)-specific (it misreads a broadcast global theta), so skip it and let newton_lanczos
     # self-damp its FD-Hessian descent.
     is_global = (theta_f.numel() == 3 and S > 1)
-    # The exact-HVP ridge estimator (_exact_ridge_lambda -> forward_solve + make_exact_hvp) is
-    # single-batch ONLY: multi-batch forward_solve returns no saved-values and make_exact_hvp
-    # rejects a batch list (NotImplementedError). It is also (S,3)-specific (misreads a broadcast
-    # global theta). Use it only for a single-batch, non-global theta; otherwise fall back to
-    # lam=0 and let newton_lanczos self-damp its FD-Hessian descent (the same fallback global
-    # already uses). newton_lanczos downgrades hvp_mode exact->fd for a non-(S,3) theta, so
-    # global/genewise multi-batch then run the multi-batch-safe FD HVP end-to-end.
-    n_batches = len(batch_statics) if isinstance(batch_statics, (list, tuple)) else 1
-    use_exact_ridge = ridge and not is_global and n_batches == 1
+    # The exact-HVP ridge estimator (_exact_ridge_lambda -> forward_solve + make_exact_hvp) now
+    # STREAMS over batches (make_exact_hvp accumulates H u = sum_b H_b u, rebuilding each batch's
+    # sv_b/point cache per HVP), so it works at multi-batch scale. But make_exact_hvp is
+    # SPECIESWISE (S,3)-oriented: its tangent sweeps are species-indexed and FD-Hessian-validated
+    # for specieswise theta only. Genewise (G,3) theta is per-family; feeding it into the
+    # species-indexed exact HVP is unvalidated, and the genewise multi-batch full recipe is verified
+    # (commit 92742bca) to complete with lam=0 self-damping. So use the exact ridge ONLY for
+    # specieswise (and never global, whose broadcast (3,) theta has no per-species structure); genewise
+    # + global fall back to lam=0 and let newton_lanczos self-damp its (multi-batch-safe) FD-Hessian
+    # descent (newton_lanczos also downgrades hvp_mode exact->fd for a non-(S,3) theta).
+    _first_static = batch_statics[0] if isinstance(batch_statics, (list, tuple)) else batch_statics
+    is_specieswise = bool(getattr(_first_static, "specieswise", False)) and not bool(getattr(_first_static, "genewise", False))
+    use_exact_ridge = ridge and not is_global and is_specieswise
     if is_global:
         # each 3-D FD-Newton step is cheap; give it room to reach the gtol stop (the exact-HVP
         # default of 8 is tuned for expensive large-S steps and stops the global fit early).
