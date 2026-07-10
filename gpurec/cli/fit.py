@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import math
 import sys
-import time
 
 from . import _common
 
@@ -43,13 +42,6 @@ def _write_genewise(out, res, nll_bits, nll_nats, elapsed_s):
         json.dump(payload, fh, indent=2)
 
 
-def _set_init_rate(model, rate):
-    import torch
-    lr = math.log2(rate)
-    with torch.no_grad():
-        model.theta.fill_(lr)
-
-
 def _global_node_rates(theta_hat, mode, S):
     """Turn a fitted theta into list[(label, D, L, T)] rows (gpurec order == AleRax cols)."""
     t = theta_hat.detach().cpu()
@@ -64,47 +56,38 @@ def _global_node_rates(theta_hat, mode, S):
 
 
 def run_fit(args) -> int:
-    t0 = time.perf_counter()
+    from gpurec.fit.dtl_fit import fit_dtl
 
-    if args.mode == "genewise":
-        from gpurec.fit.genewise_fit import fit_genewise
-        res = fit_genewise(args.species, args.gene, device=args.device,
-                           dtype=_common.make_dtype(args.dtype), certify=True)
-        nll_nats = float(res.get("loss_nats", float("nan")))
-        nll_bits = nll_nats / math.log(2.0)
-        n_fam = int(res.get("n_families", 0))
-        elapsed = time.perf_counter() - t0
-        if not math.isfinite(nll_nats):
-            print(f"error: non-finite NLL for fit(genewise)", file=sys.stderr)
-            return 1
-        print(f"fit(genewise): final NLL = {nll_nats:.6f} nats ({n_fam} families, {elapsed:.1f}s)")
-        if args.out:
-            _write_genewise(args.out, res, nll_bits, nll_nats, elapsed)
-        return 0
+    # Mode->recipe dispatch lives in fit_dtl (the single canonical entry): genewise -> fit_genewise,
+    # global/specieswise -> optimize + final_eval. Pass an explicit solver_options only when the user
+    # actually overrode one (--config / --pi-iters / --neumann-terms / --e-max-iter); otherwise leave
+    # it None so fit_dtl uses its robust Neumann E-adjoint default (fp32 GMRES floors ~1e-6 mid-fit at
+    # large S).
+    user_solver = (args.config is not None or args.pi_iters is not None
+                   or args.neumann_terms is not None or args.e_max_iter is not None)
+    res = fit_dtl(args.species, args.gene, args.mode, device=args.device,
+                  dtype=_common.make_dtype(args.dtype), max_steps=args.steps,
+                  init_rate=args.init_rate,
+                  solver_options=_common.make_solver_options(args) if user_solver else None)
 
-    # global / specieswise
-    from gpurec.fit.optimize import optimize, final_eval
-    model, genes = _common.build_model(args)
-    if args.init_rate is not None:
-        _set_init_rate(model, args.init_rate)
-    # Adam basin-entry, then a Newton polish. newton_lanczos is now theta-shape aware, so a
-    # global (3,) theta polishes too (via the FD Hessian on the broadcast 3-D gradient, since
-    # the exact-HVP kernels are (S,3)-specific); specieswise keeps the exact HVP.
-    theta_hat, _hist = optimize(model.batch_statics, model.theta.detach(),
-                                model.receiver_weights.detach(),
-                                optimizer="adam", schedule="adaptive", max_steps=args.steps,
-                                polish_mode="ridge")
-    loss_bits, gnorm = final_eval(model.batch_statics, theta_hat, model.receiver_weights.detach())
-    loss_bits = float(loss_bits)
-    nll_nats = _common.bits_to_nats(loss_bits)
-    elapsed = time.perf_counter() - t0
+    nll_nats, nll_bits, elapsed = res["nll_nats"], res["nll_bits"], res["wall_s"]
+    n_fam = res["n_families"]
     if not math.isfinite(nll_nats):
         print(f"error: non-finite NLL for fit({args.mode})", file=sys.stderr)
         return 1
+
+    if args.mode == "genewise":
+        print(f"fit(genewise): final NLL = {nll_nats:.6f} nats ({n_fam} families, {elapsed:.1f}s)")
+        if args.out:
+            _write_genewise(args.out, res["genewise_result"], nll_bits, nll_nats, elapsed)
+        return 0
+
+    gnorm = res.get("gnorm", float("nan"))
     print(f"fit({args.mode}): final NLL = {nll_nats:.6f} nats "
-          f"(grad_norm {float(gnorm):.2e}, {elapsed:.1f}s)")
+          f"(grad_norm {gnorm:.2e}, {elapsed:.1f}s)")
     if args.out:
-        S = model.theta.shape[0] if model.theta.dim() > 1 else 1
+        theta_hat = res["theta"]
+        S = theta_hat.shape[0] if theta_hat.dim() > 1 else 1
         _write_outputs(args.out, _global_node_rates(theta_hat, args.mode, S),
-                       loss_bits, nll_nats, elapsed, args.mode, len(genes))
+                       nll_bits, nll_nats, elapsed, args.mode, n_fam)
     return 0
