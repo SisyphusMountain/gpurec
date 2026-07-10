@@ -46,6 +46,19 @@ def _single_static(static):
     return static
 
 
+def _warm_reserved_scratch_bytes(static):
+    """Mirror ``_execution.py``'s memory-gate sourcing: the warm-adjoint cache
+    (``static.warm_v``) is only resident -- and thus only depletes the free-memory budget the
+    gated fast path re-reads -- when ``GPUREC_WARM_ADJOINT`` is set AND the build-time gate
+    (``static.warm_adjoint_ok``) allowed it. Same condition as ``evaluate_static_loss_grad``'s
+    ``_warm_v is not None``; returns ``None`` (cold, unchanged) otherwise.
+    """
+    import os
+    if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
+        return static.warm_scratch_reserved_bytes
+    return None
+
+
 @torch.no_grad()
 def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=None,
                       origination_probs=None):
@@ -56,6 +69,7 @@ def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=N
     grad_theta, grad_col = vjp_root_to_theta(
         static, sv, None, theta, col_weights, drop_norm=False, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
+        reserved_scratch_bytes=_warm_reserved_scratch_bytes(static),
     )
     return grad_theta, grad_col, cache
 
@@ -214,6 +228,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                                         origination_probs=origination_probs)
     acc = cache["accum"]
     wE = cache["e_side"]["wE"]
+    reserved_scratch_bytes = _warm_reserved_scratch_bytes(static)
 
     cst = wave_step_constants(sv, S)
     prm = sv["pibar_row_max"]
@@ -433,6 +448,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     compact_level_child2=sh["compact_level_child2"],
                     grad_receiver_log_probs=d_gcol, use_receiver_weights=use_receiver_weights,
                     self_loop_solver=so.self_loop_solver, return_last_increment=False,
+                    reserved_scratch_bytes=reserved_scratch_bytes,
                 )
                 aw0 = c_aw0 + l_aw0
                 aw1 = c_aw1 + l_aw1

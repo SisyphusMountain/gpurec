@@ -29,7 +29,8 @@ _LN2 = 0.6931471805599453
 @torch.no_grad()
 def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_norm=True,
                       neumann_terms=None, use_pruning=None, bicgstab_tol=None, cache=None,
-                      origination_log_probs=None, origination_probs=None):
+                      origination_log_probs=None, origination_probs=None,
+                      reserved_scratch_bytes=None):
     """J^T applied to a root-score cotangent ``seed_root`` [n_root, S] -> ``(grad_theta [S,3], grad_col)``.
 
     Thin wrapper over the production ``implicit_grad_loglik_vjp_wave``: it unpacks ``static``/``sv``
@@ -39,6 +40,10 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
     d(Pi_root)/dtheta). ``neumann_terms``/``use_pruning``/``bicgstab_tol`` override the solver options
     so the adjoint can be made convergent + unpruned to match the convergent Jvp (M = J^T B J
     symmetric). ``cache`` collects per-wave adjoint state for the exact-HVP tangent sweep.
+    ``reserved_scratch_bytes`` mirrors the gradient path's memory-gate reservation (see
+    ``_execution.py``): the caller sources it from ``static.warm_scratch_reserved_bytes`` only
+    when warm-adjoint is resident for this static, else ``None`` (cold path unchanged) -- this
+    wrapper just forwards it through to the gated fast path.
     """
     so = static.solver_options
     return implicit_grad_loglik_vjp_wave(
@@ -62,6 +67,7 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         e_adjoint_solver=so.e_adjoint_solver,
         seed_root=seed_root, drop_norm=drop_norm, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
+        reserved_scratch_bytes=reserved_scratch_bytes,
     )
 
 
