@@ -303,6 +303,7 @@ def _wave_backward_uniform_2d(
     initial_v=None,
     self_loop_solver="neumann",
     return_last_increment=False,
+    reserved_scratch_bytes=None,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -316,6 +317,7 @@ def _wave_backward_uniform_2d(
         S,
         Pi_star.dtype,
         device=Pi_star.device,
+        reserved_scratch_bytes=reserved_scratch_bytes,
     )
     if not ok:
         raise RuntimeError(
@@ -729,6 +731,7 @@ def wave_backward_uniform_fused(
     initial_v=None,
     self_loop_solver="neumann",
     return_last_increment=False,
+    reserved_scratch_bytes=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -826,6 +829,7 @@ def wave_backward_uniform_fused(
         initial_v=initial_v,
         self_loop_solver=self_loop_solver,
         return_last_increment=return_last_increment,
+        reserved_scratch_bytes=reserved_scratch_bytes,
     )
 
 

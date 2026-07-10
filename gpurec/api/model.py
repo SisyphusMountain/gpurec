@@ -143,6 +143,11 @@ class GeneReconModel(torch.nn.Module):
         )
         for static in self.batch_statics:
             static.warm_adjoint_ok = ok
+            # When warm fits, the build gate verified ``cache + scratch <= budget`` with ``scratch``
+            # covering the largest batch's per-wave scratch (W <= max_batch_clades). Record it so the
+            # forward self-loop gate trusts this reservation instead of re-reading the depleted
+            # post-cache free memory (the double-gate bug). Cleared to None when warm does not fit.
+            static.warm_scratch_reserved_bytes = scratch if ok else None
         self.warm_adjoint_ok = ok
         if not ok:
             gib = 1024 ** 3

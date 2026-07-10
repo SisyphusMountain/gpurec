@@ -386,6 +386,7 @@ def implicit_grad_loglik_vjp_wave(
     pibar_side_threshold: float | None = None,
     collect_backward_relres: bool = False,
     warm_v: dict | None = None,
+    reserved_scratch_bytes: int | None = None,
     seed_root: torch.Tensor | None = None,
     drop_norm: bool = False,
     cache: dict | None = None,
@@ -555,6 +556,7 @@ def implicit_grad_loglik_vjp_wave(
             self_loop_solver=self_loop_solver,
             return_last_increment=collect_backward_relres,
             initial_v=init_v,
+            reserved_scratch_bytes=reserved_scratch_bytes,
         )
         if collect_backward_relres:
             v_k, aw0, aw1, aw2, aw345, aw3, aw4, last_relres = backward_out

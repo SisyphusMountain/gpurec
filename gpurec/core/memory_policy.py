@@ -79,8 +79,25 @@ def proposal0_memory_gate(
     *,
     device: torch.device | int | None = None,
     already_live_bytes: int = 0,
+    reserved_scratch_bytes: int | None = None,
 ) -> tuple[bool, int, int | None]:
-    required = _nonnegative_int("already_live_bytes", already_live_bytes) + proposal0_wave_scratch_bytes(W, S, dtype)
+    """Gate a transient per-wave self-loop scratch allocation of ``W*S`` against the memory budget.
+
+    ``reserved_scratch_bytes`` (default ``None``): when the warm-adjoint fit decision has ALREADY
+    reserved transient scratch headroom for this backward (``warm_adjoint_fits`` verified
+    ``cache + max_batch_scratch <= budget`` at build time, BEFORE the resident cache depleted free
+    memory), pass that reservation here. A single wave's scratch (``W <= max_batch_clades``) is a
+    subset of the reserved ``max_batch_scratch``, so it provably fits -- we must NOT re-read the now
+    depleted ``cuda_memory_budget_bytes`` (which excludes the resident cache and would falsely reject
+    a scratch the build already accounted for). The gate then validates the wave scratch against the
+    reservation instead, so a scratch that GENUINELY exceeds what was reserved is still rejected.
+    When ``None`` (cold path, no resident warm cache) the gate reads current free memory as before.
+    """
+    scratch = proposal0_wave_scratch_bytes(W, S, dtype)
+    required = _nonnegative_int("already_live_bytes", already_live_bytes) + scratch
+    if reserved_scratch_bytes is not None:
+        reserved = _nonnegative_int("reserved_scratch_bytes", reserved_scratch_bytes)
+        return scratch <= reserved, required, reserved
     budget = cuda_memory_budget_bytes(device)
     if budget is None:
         return True, required, budget
