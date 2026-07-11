@@ -40,9 +40,14 @@ SIM_PARAMS = {
 }
 
 # Specieswise has no well-posed one-shot MLE, so its perf-golden fits fit_specieswise at a FIXED,
-# committed prior precision (a deterministic recipe test at a pinned prior; a full map_cv is too
+# committed MAP prior (a deterministic recipe test at a pinned prior; a full map_cv is too
 # expensive/noisy for a golden). See docs/.../2026-07-11-specieswise-recipe-organization-design.md.
-SPECIESWISE_GOLDEN_LAM = 10.0
+# The init AND prior mean theta_ref are a constant log2(SPECIESWISE_GOLDEN_INIT_RATE) per node -- NOT
+# the model's default 1e-10 init, which would center the ridge on ~zero rates and make the fit snap
+# to the prior in ~2 steps. lambda=0.05 chosen from a data-NLL sweep at this init: a genuine
+# regularized fit (~5 Newton steps, ||dtheta||~1.9 from the prior), not an over-regularized collapse.
+SPECIESWISE_GOLDEN_INIT_RATE = 0.1
+SPECIESWISE_GOLDEN_LAM = 0.05
 
 
 def _write(sp_out, pruned_forest, out_dir: Path) -> tuple[str, list[str]]:
