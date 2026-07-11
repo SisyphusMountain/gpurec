@@ -1,21 +1,25 @@
-"""Global (shared-rate) DTL fitting via the genewise recipe specialized to a single block.
+"""Global (shared-rate) DTL fitting via the genewise recipe with per-family curvature ACCUMULATED.
 
 Global mode has one shared rate vector ``theta = [log2 D, log2 L, log2 T]`` (shape ``[3]``) for all
-families, so it is a single 3-parameter box-bounded MLE -- exactly the sub-problem ``fit_genewise``
-solves per family, but with the family gradients/curvature SUMMED into one aggregate 3x3 instead of
-kept per-family. So global uses the same recipe as genewise:
+families. The objective is ``sum_f NLL_f(theta)`` with ``theta`` SHARED, so the gradient is
+``sum_f grad_f`` and the Hessian is ``sum_f H_f``. Global therefore runs the SAME recipe as
+``fit_genewise`` -- driving the genewise per-family forward + batched 3x3 FD-Hessian machinery -- but
+ACCUMULATES the per-family gradients/Hessians into a single shared 3x3 block:
 
-  1. **Adam warm-up** -- a few clipped, box-projected steps for basin entry.
-  2. **Box-constrained trust-region Newton** on the 3x3 forward-difference Hessian (3 gradient evals
-     reusing the base gradient; eigenvalue-floored to ``mu`` -> PD), converging on the projected
-     gradient ``|Pg| < tol``.
+  1. Build a genewise-mode model at the cheap ``fit_pi`` tier (like fit_genewise's forward).
+  2. Adam warm-up (clipped, box-projected) on the aggregate gradient.
+  3. Box-constrained trust-region Newton on the aggregate 3x3 FD Hessian (the SUM of the per-family
+     3x3 FD Hessians), eigenvalue-floored to ``mu`` -> PD, with a loss-plateau stop.
 
-The per-family *rebatching* step of ``fit_genewise`` has no analog here (there is one block, nothing
-to drop) and is unnecessary. This replaces the generic ``optimize`` path (300 Adam steps + a CG
-Newton polish) for global, which is far more work than a 3-parameter problem needs.
+There is NO family rebatching: genewise drops each family once ITS 3 rates converge, but here every
+family constrains the single shared ``theta`` and none can be dropped -- all G families are
+accumulated on every step. The fit runs at ``fit_pi=16`` (the previous global recipe ran the whole
+fit at pi=64 on a full-batch global-mode forward -- ~10x more work); the final fair NLL is evaluated
+at ``eval_pi=64`` (mirroring genewise's certify). Same optimum as the old recipe, ~10x faster.
 """
 from __future__ import annotations
 
+import math
 import time
 
 import torch
@@ -24,46 +28,50 @@ from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
 from gpurec.config.rates import RateBounds
 from gpurec.fit.genewise_fit import _resolve_gene_trees
-from gpurec.fit.optimize import final_eval
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
-from gpurec.solver.value_and_grad import make_value_and_grad
 
 _LN2 = 0.6931471805599453
-# Same recipe knobs as GENEWISE_REFERENCE (the single-block specialization drops the rebatch knobs).
-_GLOBAL_RATE_BOUNDS = RateBounds.genewise()  # [1e-6, 2.0]; non-binding at the DTL optimum (rates ~1e-2)
+# Same rate box as GENEWISE_REFERENCE; [1e-6, 2.0], non-binding at the DTL optimum (rates ~1e-2).
+_GLOBAL_RATE_BOUNDS = RateBounds.genewise()
 
 
 def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
                adam_steps=5, adam_lr=1.0, grad_clip=10.0, tol=1e-3, max_iter=120,
                trust=2.0, fd_eps=1e-2, mu=1e-2, hess_every=5, ftol=1e-6, patience=3,
-               init_rate=None, solver_options=None, verbose=False) -> dict:
-    """Fit the shared 3-vector theta. Returns
-    ``{mode, theta[cpu,3], rates[cpu,3], nll_bits, nll_nats, gnorm, n_families, wall_s, n_steps}``."""
+               fit_pi=16, fit_neu=16, eval_pi=64, eval_neu=64, init_rate=None,
+               solver_options=None, verbose=False) -> dict:
+    """Fit the shared 3-vector theta via the accumulated genewise recipe. Returns
+    ``{mode, theta[cpu,3], rates[cpu,3], nll_bits, nll_nats, gnorm, n_families, wall_s, n_steps}``.
+
+    ``solver_options`` is accepted for API compatibility but not used: this recipe fixes its own
+    forward tiers (``fit_pi``/``fit_neu`` for the fit, ``eval_pi``/``eval_neu`` for the final NLL),
+    always with the Neumann E-adjoint.
+    """
     bounds = _GLOBAL_RATE_BOUNDS
-    lo, hi = log2_rate_bounds(bounds=bounds)          # hi finite (2.0), so bound-active logic matches genewise
+    lo, hi = log2_rate_bounds(bounds=bounds)          # hi finite (2.0), so bound-active logic is well defined
     hi_eps = hi - bounds.bound_active_eps
     lo_eps = lo + bounds.bound_active_eps
-    if solver_options is None:
-        solver_options = SolverOptions(e_adjoint_solver="neumann")
     genes = _resolve_gene_trees(gene_trees)
     t0 = time.perf_counter()
 
-    model = GeneReconModel(species_tree, genes, mode="global", device=device, dtype=dtype,
-                           solver_options=solver_options)
-    rw = model.receiver_weights.detach()
-    vg = make_value_and_grad(model.batch_statics, rw, theta_shape=(3,))
+    # genewise-mode model at the cheap fit tier: per-family loss+grad that we ACCUMULATE (sum over
+    # families) into the shared 3x3. sum_f NLL_f(theta) with theta shared -> grad = sum_f grad_f.
+    so_fit = SolverOptions(pi_iters=fit_pi, neumann_terms=fit_neu, e_adjoint_solver="neumann")
+    model = GeneReconModel(species_tree, genes, mode="genewise", device=device, dtype=dtype,
+                           solver_options=so_fit)
+    G = model.theta.shape[0]
 
     def lg(theta3):
-        """(3,) -> (loss:float, g:(3,)) aggregate over all families."""
-        loss, g, _saved, _w = vg(theta3.detach().reshape(-1), want_grad=True)
-        return float(loss), g.reshape(3).to(dtype)
+        """(3,) shared theta -> (loss:float, g:(3,)) accumulated over all G families (no dropping)."""
+        tG = theta3.detach().reshape(1, 3).expand(G, 3).contiguous()
+        lv, g_fam, _gr = model.genewise_loss_vector_and_grad(theta=tG, need_grad=True)
+        return float(lv.sum()), g_fam.sum(0).reshape(3).to(dtype)
 
-    theta = model.theta.detach().reshape(3).to(dtype).clone()
-    if init_rate is not None:
-        theta.fill_(float(torch.log2(torch.tensor(float(init_rate)))))
+    init = 0.1 if init_rate is None else float(init_rate)
+    theta = torch.full((3,), math.log2(init), device=device, dtype=dtype)
     clamp_log_rate_(theta, bounds=bounds)
 
-    if adam_steps > 0:  # Adam warm-up (basin entry)
+    if adam_steps > 0:  # Adam warm-up (basin entry) on the aggregate gradient
         lf = theta.clone().requires_grad_(True)
         ad = torch.optim.Adam([lf], lr=adam_lr)
         for _ in range(adam_steps):
@@ -81,18 +89,18 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
     n_steps = 0
     prev_loss = float("inf")
     stall = 0
+    last_pg = float("nan")
     mu_t = sub.new_tensor(mu)
     trust_t = sub.new_tensor(trust)
     for it in range(int(max_iter)):
         loss, g3 = lg(sub.reshape(3)); g = g3.reshape(1, 3)
         pg = project_rate_gradient_(sub, g.clone(), bounds=bounds).abs().amax()
+        last_pg = float(pg)
         if verbose:
             print(f"[fit_global] it={it:3d} loss={loss:.6f} |Pg|={float(pg):.3e}", flush=True)
-        # Loss-plateau stop: the absolute projected-gradient tol below is a fp32-noise-floored target
-        # (|Pg| oscillates ~1e-3..1e-2 for an aggregate-over-families objective), so relying on it
-        # alone wastes tens of steps oscillating after the loss is already flat. Stop when the loss
-        # stops improving (relative to |loss|) for `patience` consecutive steps -- the objective, not
-        # its noisy gradient, is the ground truth for "converged".
+        # Loss-plateau stop: tol on the ABSOLUTE projected gradient is fp32-noise-floored (|Pg|
+        # oscillates ~1e-3..1e-2 for an aggregate-over-families objective), so |Pg|<tol alone wastes
+        # tens of steps oscillating after the loss is flat. Stop when the loss stops improving.
         stall = 0 if (prev_loss - loss) > ftol * max(1.0, abs(loss)) else stall + 1
         prev_loss = loss
         if float(pg) < tol or stall >= patience:
@@ -105,7 +113,7 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
                 H[:, :, j] = (gp.reshape(1, 3) - g) / fd_eps     # forward difference, reuse base g
             H = 0.5 * (H + H.transpose(1, 2))
             e, V = torch.linalg.eigh(H)
-            e = torch.maximum(e, mu_t)                            # Levenberg floor -> PD (== clamp(min=mu))
+            e = torch.maximum(e, mu_t)                            # Levenberg floor -> PD
             Hd = V @ torch.diag_embed(e) @ V.transpose(1, 2)
         # freeze coords pinned at a bound with the gradient pushing further out (box-active set)
         fixed = ((sub >= hi_eps) & (g < 0)) | ((sub <= lo_eps) & (g > 0))
@@ -118,10 +126,21 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
         n_steps += 1
 
     theta_hat = sub.reshape(3)
-    nll_bits, gnorm = final_eval(model.batch_statics, theta_hat, rw)   # fair fp64 eval (same unit as coupled path)
-    nll_bits = float(nll_bits)
+
+    # Final fair NLL at the accurate eval tier (mirrors genewise's certify): total data NLL in bits.
+    if (eval_pi, eval_neu) != (fit_pi, fit_neu):
+        del model
+        torch.cuda.empty_cache()
+        so_eval = SolverOptions(pi_iters=eval_pi, neumann_terms=eval_neu, e_adjoint_solver="neumann")
+        eval_model = GeneReconModel(species_tree, genes, mode="genewise", device=device, dtype=dtype,
+                                    solver_options=so_eval)
+    else:
+        eval_model = model
+    Gv = eval_model.theta.shape[0]
+    tG = theta_hat.reshape(1, 3).expand(Gv, 3).contiguous()
+    nll_bits = float(eval_model.genewise_loss_vector(theta=tG).sum())
     wall_s = time.perf_counter() - t0
     return {"mode": "global", "theta": theta_hat.detach().cpu(),
             "rates": (2.0 ** theta_hat.detach().float().cpu()),
-            "nll_bits": nll_bits, "nll_nats": nll_bits * _LN2, "gnorm": float(gnorm),
+            "nll_bits": nll_bits, "nll_nats": nll_bits * _LN2, "gnorm": last_pg,
             "n_families": len(genes), "wall_s": wall_s, "n_steps": n_steps}
