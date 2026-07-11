@@ -46,3 +46,21 @@ def test_fit_specieswise_fits_at_given_lam(tmp_path):
                               lam=1e6, theta_ref=theta_ref, verbose=False)
     drift = (res_big["theta"] - theta_ref.cpu()).abs().max().item()
     assert drift < 1e-1, f"large lam should hold theta near theta_ref, drift={drift}"
+
+
+@pytest.mark.gpu
+def test_map_cv_smoke_uses_fit_specieswise(tmp_path):
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    import inspect
+    from gpurec.fit import map_cv as mod
+    # the rewire: map_cv's body calls fit_specieswise (not the removed L-BFGS fit_map path).
+    assert "fit_specieswise" in inspect.getsource(mod.map_cv)
+
+    from gpurec.bench.simulate import simulate_dataset
+    sp, genes = simulate_dataset("specieswise", tmp_path, n_species=40, n_families=60,
+                                 dtl=0.05, seed=3)
+    out = mod.map_cv(sp, genes, k=2, lambdas=(1.0, 100.0), adam_steps=5, max_newton=4)
+    import math
+    assert out["lam_star"] in (1.0, 100.0)
+    assert all(math.isfinite(v) for v in out["cv"].values())

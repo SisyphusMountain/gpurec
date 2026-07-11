@@ -230,10 +230,10 @@ def test_default_origination_penalty_is_noop_equivalent_to_none():
 # --- map_cv --------------------------------------------------------------
 
 def _run_map_cv_capture(monkeypatch, **kwargs):
-    """Run ``map_cv`` with stubbed ``_build``/``fit_map``/``heldout_nll`` (each replaced by a cheap,
-    deterministic fake) so the k-fold loop completes instantly without any real gene/species tree
-    files or CUDA/Triton solve. Returns ``(result_dict, captured)`` where ``captured["solver_options"]``
-    is the ``SolverOptions`` every ``_build`` call actually received.
+    """Run ``map_cv`` with stubbed ``_build``/``fit_specieswise``/``heldout_nll`` (each replaced by a
+    cheap, deterministic fake) so the k-fold loop completes instantly without any real gene/species
+    tree files or CUDA/Triton solve. Returns ``(result_dict, captured)`` where
+    ``captured["solver_options"]`` is the ``SolverOptions`` every ``_build`` call actually received.
     """
     import gpurec.fit.map_cv as mc
 
@@ -249,14 +249,14 @@ def _run_map_cv_capture(monkeypatch, **kwargs):
         captured["solver_options"] = solver_options
         return _FakeModel()
 
-    def _fake_fit_map(batch_statics, theta0, receiver_weights, *, lam, theta_ref, **fkwargs):
-        return theta0
+    def _fake_fit_specieswise(batch_statics, theta0, receiver_weights, *, lam, theta_ref, **fkwargs):
+        return {"theta": theta0}
 
     def _fake_heldout_nll(batch_statics, theta, receiver_weights):
         return 0.0
 
     monkeypatch.setattr(mc, "_build", _fake_build)
-    monkeypatch.setattr(mc, "fit_map", _fake_fit_map)
+    monkeypatch.setattr(mc, "fit_specieswise", _fake_fit_specieswise)
     monkeypatch.setattr(mc, "heldout_nll", _fake_heldout_nll)
     result = mc.map_cv("sp.nwk", ["g1.nwk", "g2.nwk"], device="cpu", k=2, verbose=False, **kwargs)
     return result, captured
