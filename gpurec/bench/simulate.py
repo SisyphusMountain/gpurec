@@ -84,8 +84,14 @@ def simulate_dataset(mode, out_dir, *, n_species, n_families, dtl, seed):
         d = (dtl * np.exp(rng.normal(0.0, 0.5, n_branch))).tolist()
         t = (dtl * np.exp(rng.normal(0.0, 0.5, n_branch))).tolist()
         l = (dtl * np.exp(rng.normal(0.0, 0.5, n_branch))).tolist()
-        orig = (np.ones(n_branch) / n_branch).tolist()
-        forest = sp_extant.simulate_dtl_batch_with_branch_rates(n_families, d, t, l, orig, seed=seed)
+        # Origination distribution: 0.5 mass at the ROOT (genes that span the whole ~300-leaf tree,
+        # like global/genewise) + 0.5 spread UNIFORMLY over all non-root nodes (genes originating
+        # deeper -> a mix of tree sizes). A fully-uniform distribution (a former hack to satisfy the
+        # "must sum to 1.0" API) put ~half the mass at/near LEAF branches -> degenerate 1-7 leaf gene
+        # trees -> ~44x less data than the other modes and a meaningless 1197-param fit. Sums to 1.0.
+        orig = np.full(n_branch, 0.5 / (n_branch - 1))
+        orig[sp_extant.root_index()] = 0.5
+        forest = sp_extant.simulate_dtl_batch_with_branch_rates(n_families, d, t, l, orig.tolist(), seed=seed)
     else:
         raise ValueError(f"unknown mode {mode!r}")
 
