@@ -1,7 +1,10 @@
 """`gpurec fit` — optimize DTL rates in global / specieswise / genewise mode.
 
-global / specieswise -> gpurec.fit.optimize + final_eval (writes AleRax-format rates).
-genewise            -> gpurec.fit.genewise_fit.fit_genewise (writes a JSON sidecar).
+global   -> gpurec.fit.global_fit.fit_global (writes AleRax-format rates).
+genewise -> gpurec.fit.genewise_fit.fit_genewise (writes a JSON sidecar).
+specieswise -> not a one-shot CLI fit: `fit_dtl` raises `NotImplementedError` and this CLI
+    surfaces that message cleanly (exit 1). Use gpurec.fit.specieswise_fit.fit_specieswise
+    (single MAP prior fit) or gpurec.fit.map_cv.map_cv (cross-validates the prior) directly.
 """
 from __future__ import annotations
 
@@ -14,7 +17,9 @@ from . import _common
 
 def add_args(parser) -> None:
     _common.add_common_args(parser)
-    parser.add_argument("--steps", type=int, default=300, help="optimizer steps (global/specieswise)")
+    parser.add_argument("--steps", type=int, default=300,
+                        help="unused: global uses fit_global's own iteration budget; "
+                             "specieswise is not a supported one-shot CLI fit")
     parser.add_argument("--init-rate", type=float, default=None, help="initial rate for D, T, L")
     parser.add_argument("--out", default=None,
                         help="write fitted rates (AleRax '# node D L T') + <out>.json sidecar")
@@ -59,16 +64,21 @@ def run_fit(args) -> int:
     from gpurec.fit.dtl_fit import fit_dtl
 
     # Mode->recipe dispatch lives in fit_dtl (the single canonical entry): genewise -> fit_genewise,
-    # global/specieswise -> optimize + final_eval. Pass an explicit solver_options only when the user
-    # actually overrode one (--config / --pi-iters / --neumann-terms / --e-max-iter); otherwise leave
-    # it None so fit_dtl uses its robust Neumann E-adjoint default (fp32 GMRES floors ~1e-6 mid-fit at
-    # large S).
+    # global -> fit_global, specieswise -> raises NotImplementedError with guidance to
+    # fit_specieswise/map_cv (no well-posed one-shot fit; caught below and surfaced cleanly).
+    # Pass an explicit solver_options only when the user actually overrode one (--config /
+    # --pi-iters / --neumann-terms / --e-max-iter); otherwise leave it None so fit_dtl uses its
+    # robust Neumann E-adjoint default (fp32 GMRES floors ~1e-6 mid-fit at large S).
     user_solver = (args.config is not None or args.pi_iters is not None
                    or args.neumann_terms is not None or args.e_max_iter is not None)
-    res = fit_dtl(args.species, args.gene, args.mode, device=args.device,
-                  dtype=_common.make_dtype(args.dtype), max_steps=args.steps,
-                  init_rate=args.init_rate,
-                  solver_options=_common.make_solver_options(args) if user_solver else None)
+    try:
+        res = fit_dtl(args.species, args.gene, args.mode, device=args.device,
+                      dtype=_common.make_dtype(args.dtype), max_steps=args.steps,
+                      init_rate=args.init_rate,
+                      solver_options=_common.make_solver_options(args) if user_solver else None)
+    except NotImplementedError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
     nll_nats, nll_bits, elapsed = res["nll_nats"], res["nll_bits"], res["wall_s"]
     n_fam = res["n_families"]

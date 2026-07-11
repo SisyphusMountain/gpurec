@@ -11,6 +11,18 @@ def test_fit_dtl_raises_for_specieswise():
         fit_dtl("sp.nwk", ["g.nwk"], "specieswise")
 
 
+def test_cli_fit_specieswise_exits_cleanly(capsys):
+    import types
+    from gpurec.cli import fit as cli_fit
+    args = types.SimpleNamespace(mode="specieswise", species="sp.nwk", gene=["g.nwk"],
+                                 device="cuda", dtype="float32", config=None, pi_iters=None,
+                                 neumann_terms=None, e_max_iter=None, steps=300, init_rate=None, out=None)
+    rc = cli_fit.run_fit(args)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "fit_specieswise" in err or "map_cv" in err   # the fit_dtl guidance was surfaced cleanly
+
+
 def test_fit_specieswise_requires_lam():
     from gpurec.fit.specieswise_fit import fit_specieswise
     with pytest.raises(ValueError, match="requires an explicit prior"):
