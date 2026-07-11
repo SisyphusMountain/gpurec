@@ -35,8 +35,8 @@ _GLOBAL_RATE_BOUNDS = RateBounds.genewise()  # [1e-6, 2.0]; non-binding at the D
 
 def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
                adam_steps=5, adam_lr=1.0, grad_clip=10.0, tol=1e-3, max_iter=120,
-               trust=2.0, fd_eps=1e-2, mu=1e-2, hess_every=5, init_rate=None,
-               solver_options=None, verbose=False) -> dict:
+               trust=2.0, fd_eps=1e-2, mu=1e-2, hess_every=5, ftol=1e-6, patience=3,
+               init_rate=None, solver_options=None, verbose=False) -> dict:
     """Fit the shared 3-vector theta. Returns
     ``{mode, theta[cpu,3], rates[cpu,3], nll_bits, nll_nats, gnorm, n_families, wall_s, n_steps}``."""
     bounds = _GLOBAL_RATE_BOUNDS
@@ -79,6 +79,8 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
     sub = theta.reshape(1, 3)   # [1,3] so the 3x3 TR-Newton ops match genewise's batched form
     Hd = None
     n_steps = 0
+    prev_loss = float("inf")
+    stall = 0
     mu_t = sub.new_tensor(mu)
     trust_t = sub.new_tensor(trust)
     for it in range(int(max_iter)):
@@ -86,7 +88,14 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
         pg = project_rate_gradient_(sub, g.clone(), bounds=bounds).abs().amax()
         if verbose:
             print(f"[fit_global] it={it:3d} loss={loss:.6f} |Pg|={float(pg):.3e}", flush=True)
-        if float(pg) < tol:
+        # Loss-plateau stop: the absolute projected-gradient tol below is a fp32-noise-floored target
+        # (|Pg| oscillates ~1e-3..1e-2 for an aggregate-over-families objective), so relying on it
+        # alone wastes tens of steps oscillating after the loss is already flat. Stop when the loss
+        # stops improving (relative to |loss|) for `patience` consecutive steps -- the objective, not
+        # its noisy gradient, is the ground truth for "converged".
+        stall = 0 if (prev_loss - loss) > ftol * max(1.0, abs(loss)) else stall + 1
+        prev_loss = loss
+        if float(pg) < tol or stall >= patience:
             break
         if it % hess_every == 0 or Hd is None:
             H = torch.zeros(1, 3, 3, device=device, dtype=dtype)
