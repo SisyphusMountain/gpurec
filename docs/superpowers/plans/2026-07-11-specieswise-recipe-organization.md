@@ -244,11 +244,14 @@ git commit -m "feat(fit): fit_dtl raises for specieswise (no plug-and-play raw M
 
 **Files:**
 - Modify: `gpurec/fit/map_cv.py`
+- Modify: `tests/test_config_wiring.py` (its `_run_map_cv_capture` monkeypatches `mc.fit_map`)
 - Test: `tests/regression/test_specieswise_recipe.py`
 
 **Interfaces:**
 - Consumes: `fit_specieswise` (Task 1).
 - Produces: `map_cv(...)` unchanged public signature/return; internally each fold's fit is `fit_specieswise` (saddle-aware Newton) instead of `fit_map` (L-BFGS). The final all-families refit also uses `fit_specieswise`.
+
+**Pre-existing test to update:** `tests/test_config_wiring.py::_run_map_cv_capture` (lines ~252-259) stubs `mc.fit_map` with `_fake_fit_map(...) -> theta0` (a bare tensor). After the rewire, `map_cv` calls `fit_specieswise` (returning a dict) and reads `["theta"]`, so this stub must become `_fake_fit_specieswise(batch_statics, theta0, receiver_weights, *, lam, theta_ref, **fkwargs) -> {"theta": theta0}` and `monkeypatch.setattr(mc, "fit_specieswise", _fake_fit_specieswise)`. Without this, `test_map_cv_config_solver_field_threaded` / `test_map_cv_config_lambdas_threaded` break.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -292,15 +295,30 @@ In `gpurec/fit/map_cv.py`:
 3. Thread `adam_steps` and `max_newton` through `map_cv`'s signature (defaults `adam_steps=10`, `max_newton=8`) and its `MAP_CV_REFERENCE` dict, replacing the L-BFGS-specific `lbfgs_iters`/`maxcor` knobs (remove them if now unused).
 4. Delete the now-unused `fit_map` function and any import it alone used (`scipy.optimize.minimize`, `Schedule` if unused elsewhere). Keep `heldout_nll`, `kfold_indices`, `_build`, and the CV masking logic untouched.
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: Update the config-wiring stub**
 
-Run: `.venv/bin/python -m pytest "tests/regression/test_specieswise_recipe.py::test_map_cv_smoke_uses_fit_specieswise" -v`
-Expected: PASS (a 2-fold, 2-lambda CV on a 40-species toy completes with a finite CV curve; ~1-3 min on CUDA).
+In `tests/test_config_wiring.py`, in `_run_map_cv_capture`, replace the `fit_map` stub:
 
-- [ ] **Step 5: Commit**
+```python
+    def _fake_fit_specieswise(batch_statics, theta0, receiver_weights, *, lam, theta_ref, **fkwargs):
+        return {"theta": theta0}
+```
+and change `monkeypatch.setattr(mc, "fit_map", _fake_fit_map)` to
+`monkeypatch.setattr(mc, "fit_specieswise", _fake_fit_specieswise)`. Update the docstring's
+`fit_map` mention to `fit_specieswise`.
+
+- [ ] **Step 5: Run tests**
+
+Run:
+```bash
+.venv/bin/python -m pytest "tests/regression/test_specieswise_recipe.py::test_map_cv_smoke_uses_fit_specieswise" tests/test_config_wiring.py -v -p no:cacheprovider
+```
+Expected: the map_cv smoke PASSES (~1-3 min on CUDA), and the two `test_map_cv_config_*` wiring tests PASS (fast, CPU).
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add gpurec/fit/map_cv.py tests/regression/test_specieswise_recipe.py
+git add gpurec/fit/map_cv.py tests/test_config_wiring.py tests/regression/test_specieswise_recipe.py
 git commit -m "refactor(fit): map_cv per-fold worker -> fit_specieswise (saddle-aware Newton, drop inline L-BFGS fit_map)"
 ```
 
