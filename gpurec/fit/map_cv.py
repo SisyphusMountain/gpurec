@@ -24,8 +24,7 @@ import torch
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import stream_batches
 from gpurec.config import GpurecConfig
-from gpurec.fit.optimize import Schedule
-from gpurec.solver.value_and_grad import make_value_and_grad
+from gpurec.fit.specieswise_fit import fit_specieswise
 
 # solver settings matching the kernel-bench fixture mint (production truncation, pi=16/neumann=16);
 # used by the parity tests. NOT for the CV fit: at pi=16 the gradient is biased (FD disagrees ~5%),
@@ -75,61 +74,16 @@ def heldout_nll(batch_statics, theta, receiver_weights):
     return float(loss)
 
 
-def fit_map(batch_statics, theta0, receiver_weights, *, lam, theta_ref,
-            adam_steps=60, adam_lr=1.0, lbfgs_iters=80, maxcor=50, verbose=False):
-    """Fit ``argmin_theta sum_train NLL_i + (lam/2)||theta-theta_ref||^2`` from ``theta0``.
-
-    Adam (basin entry) -> scipy L-BFGS-B (penalized convex-ish endgame), both on the prior-enabled
-    value-and-grad. Returns ``theta_hat`` of ``theta0``'s shape.
-    """
-    import numpy as np
-    from scipy.optimize import minimize
-
-    theta_shape = tuple(theta0.shape)
-    f = make_value_and_grad(batch_statics, receiver_weights, theta_shape=theta_shape,
-                            prior=(lam, theta_ref))
-    dev = theta0.device
-
-    theta = theta0.detach().reshape(theta_shape).float().clone()
-    if adam_steps > 0:
-        leaf = theta.clone().requires_grad_(True)
-        opt = torch.optim.Adam([leaf], lr=adam_lr)
-        sched = Schedule("adaptive", adam_lr, t_max=adam_steps)
-        warm = None
-        for _ in range(int(adam_steps)):
-            loss, g, _sv, warm = f(leaf.detach().reshape(-1), warm_E=warm)
-            opt.param_groups[0]["lr"] = sched.update(loss, g)
-            leaf.grad = g.reshape(theta_shape)
-            opt.step()
-        theta = leaf.detach()
-
-    state = {"warm": None}
-
-    def fun(x_np):
-        x = torch.tensor(x_np, device=dev, dtype=torch.float64)
-        loss, g, _sv, warm = f(x, warm_E=state["warm"])
-        state["warm"] = warm
-        return float(loss), g.double().cpu().numpy().astype(np.float64)
-
-    x0 = theta.reshape(-1).double().cpu().numpy().astype(np.float64)
-    res = minimize(fun, x0, jac=True, method="L-BFGS-B",
-                   options={"maxiter": lbfgs_iters, "maxfun": lbfgs_iters * 2,
-                            "maxcor": maxcor, "ftol": 1e-12, "gtol": 1e-8})
-    if verbose:
-        print(f"    [fit_map lam={lam:.4g}] final F={res.fun:.4f} nit={res.nit}")
-    return torch.tensor(res.x, device=dev, dtype=torch.float32).reshape(theta_shape)
-
-
 # Reference CV tuning; clone-override per dataset. See docs/config_convention.md.
 MAP_CV_REFERENCE = dict(
     k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 1000.0), mode="specieswise", init_rate=0.1, seed=0,
-    adam_steps=60, lbfgs_iters=80, maxcor=50,
+    adam_steps=10, max_newton=8,
 )
 
 
 def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 1000.0),
            mode="specieswise", init_rate=0.1, seed=0, solver_options=None, device="cuda",
-           adam_steps=60, lbfgs_iters=80, maxcor=50, verbose=True,
+           adam_steps=10, max_newton=8, verbose=True,
            config: GpurecConfig | None = None):
     """Run k-fold-over-families CV with a lambda-homotopy. Returns a results dict with the CV curve,
     ``lam_star``, and the final all-families refit ``theta_final``.
@@ -186,9 +140,9 @@ def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 100
                       solver_options=so)
         theta = theta_ref.clone()  # warm-start carried down the homotopy
         for lam in lambdas_desc:   # large lambda first, warm-started downward
-            theta = fit_map(train.batch_statics, theta, rw, lam=lam, theta_ref=theta_ref,
-                            adam_steps=adam_steps, lbfgs_iters=lbfgs_iters, maxcor=maxcor,
-                            verbose=verbose)
+            theta = fit_specieswise(train.batch_statics, theta, rw, lam=lam, theta_ref=theta_ref,
+                                    adam_steps=adam_steps, max_newton=max_newton,
+                                    verbose=verbose)["theta"].to(theta.device)
             ho = heldout_nll(test.batch_statics, theta, rw)
             cv_sum[lam] += ho
             cv_count[lam] += 1
@@ -200,9 +154,10 @@ def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 100
     lam_star = min(finite, key=finite.get) if finite else None
     theta_final = None
     if lam_star is not None:
-        theta_final = fit_map(full.batch_statics, theta_ref.clone(), rw, lam=lam_star,
-                              theta_ref=theta_ref, adam_steps=adam_steps, lbfgs_iters=lbfgs_iters,
-                              maxcor=maxcor, verbose=verbose)
+        theta_final = fit_specieswise(full.batch_statics, theta_ref.clone(), rw, lam=lam_star,
+                                      theta_ref=theta_ref, adam_steps=adam_steps,
+                                      max_newton=max_newton,
+                                      verbose=verbose)["theta"].to(theta_ref.device)
     if verbose:
         print("\n=== CV curve (mean held-out NLL per fold) ===")
         for lam in sorted(cv):
@@ -221,7 +176,7 @@ def _smoke(n_families=120, k=3, device="cuda"):
           "starting_species_tree.newick")
     trees = sorted(glob.glob(f"{root}/families/*/gene_trees/ufboot1000.MFP.geneTree.newick"))[:n_families]
     res = map_cv(sp, trees, k=k, lambdas=(0.0, 1.0, 10.0, 100.0, 1000.0), device=device,
-                 adam_steps=40, lbfgs_iters=60, verbose=True)
+                 adam_steps=10, max_newton=8, verbose=True)
     cv = res["cv"]
     all_finite = all(math.isfinite(v) for v in cv.values())
     best_pos = min((cv[l] for l in cv if l > 0), default=math.inf)

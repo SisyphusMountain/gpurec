@@ -8,6 +8,8 @@ throughout (FD-free here: M is analytic).
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from gpurec.solver.value_and_grad import make_value_and_grad, forward_solve
@@ -225,7 +227,12 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
             trial = (theta_vec.double() + alpha * p).to(theta_vec.dtype)
             lt, st = forward_solve(static, trial.reshape(theta_shape), receiver_weights, warm_E=warm_E)
             Ft = float(lt) + penalty(trial)
-            if Ft <= F + c1 * alpha * gp:
+            # A step large enough to leave the E-step's contractive region makes forward_solve
+            # return a non-finite loss (survival normalization diverges -> NLL -> -inf). Armijo
+            # `Ft <= F + ...` would then *accept* it, since -inf <= (finite) is True, cascading the
+            # whole polish to F=-inf and breaking the adjoint solve. Require a finite Ft so such a
+            # step is rejected and the search backtracks (or fails cleanly and bumps lambda).
+            if math.isfinite(Ft) and Ft <= F + c1 * alpha * gp:
                 accepted, sv_t = True, st
                 break
             alpha *= 0.5
@@ -235,7 +242,10 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
             accepted_steps += 1
             theta_vec = trial
             hvp_stale = True  # theta moved -> the cached HVP must be rebuilt next iteration
-            warm_E = sv_t["E"]
+            # multi-batch forward_solve returns saved=None (streams+frees the ~GB intermediates);
+            # fall back to a cold warm-start (correct, just no warm-start speedup). Single-batch
+            # sv_t is a real dict, so this guard is a no-op there.
+            warm_E = sv_t["E"] if sv_t is not None else None
             sv_t = None
             lam_damp = max(lam_floor, lam_damp / omega) if alpha == 1.0 else min(lam_ceil, 1.5 * lam_damp)
             if verbose:

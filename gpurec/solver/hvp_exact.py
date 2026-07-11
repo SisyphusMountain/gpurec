@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import torch
 
-from gpurec.api._implicit_grad import _gmres, _safe_exp2_ratio
+from gpurec.api._implicit_grad import _gmres, _neumann_e_adjoint, _safe_exp2_ratio
 from gpurec.config.memory import MemoryOptions
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, survival_from_E as _survival_from_E
 from gpurec.core.inference.solver import receiver_weights_are_uniform
@@ -46,6 +46,19 @@ def _single_static(static):
     return static
 
 
+def _warm_reserved_scratch_bytes(static):
+    """Mirror ``_execution.py``'s memory-gate sourcing: the warm-adjoint cache
+    (``static.warm_v``) is only resident -- and thus only depletes the free-memory budget the
+    gated fast path re-reads -- when ``GPUREC_WARM_ADJOINT`` is set AND the build-time gate
+    (``static.warm_adjoint_ok``) allowed it. Same condition as ``evaluate_static_loss_grad``'s
+    ``_warm_v is not None``; returns ``None`` (cold, unchanged) otherwise.
+    """
+    import os
+    if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
+        return static.warm_scratch_reserved_bytes
+    return None
+
+
 @torch.no_grad()
 def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=None,
                       origination_probs=None):
@@ -56,6 +69,7 @@ def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=N
     grad_theta, grad_col = vjp_root_to_theta(
         static, sv, None, theta, col_weights, drop_norm=False, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
+        reserved_scratch_bytes=_warm_reserved_scratch_bytes(static),
     )
     return grad_theta, grad_col, cache
 
@@ -108,8 +122,37 @@ def _head_seed_tangents(root_Pi, E_star, omega, t_root, dE, u_omega, dtype):
 def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None,
                    tangent_self_iters=None, origination_log_probs=None, origination_probs=None,
                    origination_weights=None):
-    """Analytic exact-Hessian HVP. Builds the per-point adjoint cache once (if not given) and
-    returns ``hvp(u_vec) -> H u`` (flat 3S). Runs in the dtype of ``theta``/``sv``.
+    """Analytic exact-Hessian HVP over the FULL dataset ``H u = sum_b H_b u``.
+
+    Dispatches on the number of batches:
+      * single static / length-1 ``batch_statics`` list -> the single-batch primitive
+        (``make_exact_hvp_single``), behaviour-identical to the historical code;
+      * ``batch_statics`` list of length > 1 -> the STREAMING multi-batch wrapper
+        (``_make_exact_hvp_streaming``), which per ``hvp(u)`` call loops the batches, rebuilds
+        each batch's forward saved-intermediates + point cache, accumulates ``H_b u``, and frees
+        the batch before the next (memory-bounded; caches are NOT held resident across batches).
+
+    ``sv`` is used only on the single-batch path; the streaming path obtains each ``sv_b`` itself
+    via ``forward_solve`` on the length-1 batch (multi-batch ``forward_solve`` returns ``sv=None``).
+    """
+    if isinstance(static, (list, tuple)) and len(static) > 1:
+        return _make_exact_hvp_streaming(
+            list(static), theta, col_weights, debug_out=debug_out,
+            tangent_self_iters=tangent_self_iters, origination_log_probs=origination_log_probs,
+            origination_probs=origination_probs, origination_weights=origination_weights,
+        )
+    return make_exact_hvp_single(
+        static, theta, col_weights, sv, cache=cache, debug_out=debug_out,
+        tangent_self_iters=tangent_self_iters, origination_log_probs=origination_log_probs,
+        origination_probs=origination_probs, origination_weights=origination_weights,
+    )
+
+
+def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_out=None,
+                          tangent_self_iters=None, origination_log_probs=None, origination_probs=None,
+                          origination_weights=None):
+    """Analytic exact-Hessian HVP for a SINGLE batch. Builds the per-point adjoint cache once
+    (if not given) and returns ``hvp(u_vec) -> H u`` (flat 3S). Runs in the dtype of ``theta``/``sv``.
 
     ``tangent_self_iters`` sets the FIXED per-wave self-loop iteration count for the tangent
     forward sweep (sync-free; see ``jvp_root_scores``). Resolution order: this argument, then
@@ -185,6 +228,7 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                                         origination_probs=origination_probs)
     acc = cache["accum"]
     wE = cache["e_side"]["wE"]
+    reserved_scratch_bytes = _warm_reserved_scratch_bytes(static)
 
     cst = wave_step_constants(sv, S)
     prm = sv["pibar_row_max"]
@@ -404,6 +448,7 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                     compact_level_child2=sh["compact_level_child2"],
                     grad_receiver_log_probs=d_gcol, use_receiver_weights=use_receiver_weights,
                     self_loop_solver=so.self_loop_solver, return_last_increment=False,
+                    reserved_scratch_bytes=reserved_scratch_bytes,
                 )
                 aw0 = c_aw0 + l_aw0
                 aw1 = c_aw1 + l_aw1
@@ -497,9 +542,12 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
                 gE = jt_E(w_flat.view(E_shape))
                 return (w_flat.view(E_shape) - gE).reshape(-1)
 
-            # GMRES (breakdown-free): same linear E-adjoint operator, new rhs.
-            dwE = _gmres(AG_flat, rhs_E, max_iter=so.bicgstab_max_iter,
-                         tol=so.bicgstab_tol).view(E_shape)
+            # Same linear E-adjoint operator ``(I - J)``, new rhs. Solver is chosen from
+            # solver_options.e_adjoint_solver: "gmres" (breakdown-free) or "neumann" (avoids the
+            # fp32 GMRES orthogonalization floor at large species counts -- required at >=500 species).
+            _e_solver = _neumann_e_adjoint if str(so.e_adjoint_solver).strip().lower() == "neumann" else _gmres
+            dwE = _e_solver(AG_flat, rhs_E, max_iter=so.bicgstab_max_iter,
+                            tol=so.bicgstab_tol).view(E_shape)
             if debug_out is not None:
                 debug_out.update(
                     d_gE=d_gE.clone(), d_gpD=d_gpD.clone(), d_gpS=d_gpS.clone(),
@@ -560,6 +608,114 @@ def make_exact_hvp(static, theta, col_weights, sv, *, cache=None, debug_out=None
             # term). Hv_omega is [G,S] genewise / [S] otherwise; flatten in place.
             return torch.cat([out_theta.reshape(-1), out_col.reshape(-1), Hv_omega.reshape(-1)])
         return torch.cat([out_theta.reshape(-1), out_col.reshape(-1)])
+
+    return hvp
+
+
+def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=None,
+                              tangent_self_iters=None, origination_log_probs=None,
+                              origination_probs=None, origination_weights=None):
+    """STREAMING multi-batch exact HVP: ``H u = sum_b H_b u``.
+
+    The total NLL is a sum over gene families and the batches partition the families into DISJOINT
+    subsets, so ``H = d2L/dtheta2 = sum_b H_b`` exactly (specieswise theta / global theta are SHARED
+    across families; genewise theta is per-family, so each batch's Hessian only touches its own
+    families -- the E-survival term is weighted by each batch's family count, and summing recovers
+    the full-dataset curvature). Nothing couples across batches except the shared read-only ``theta``
+    / ``col_weights`` and the summed output.
+
+    Per ``hvp(u)`` call this loops the batches, rebuilds each batch's forward saved-intermediates
+    ``sv_b`` (via ``forward_solve`` on the length-1 batch -- multi-batch ``forward_solve`` returns
+    ``None``) and its point cache, evaluates ``H_b u``, accumulates, and frees the batch cache
+    before the next. This rebuilds per-batch caches each CG/Lanczos iteration (no cross-iteration
+    amortization) -- the correct memory/robustness tradeoff at scale, where holding every batch's
+    ~GB saved-intermediates + cache resident would OOM.
+
+    Genewise: ``theta`` is the FULL ``[G,3]``; ``forward_solve`` re-selects each batch's families
+    internally, while the per-batch primitive consumes the batch-local ``theta_b`` (gathered by
+    ``static.family_index_tensor``). The batch-local ``H_b u_b`` is scattered back into the full
+    theta output by ``index_add_`` on the disjoint family rows. Specieswise/global: ``theta`` is
+    shared, so each ``H_b u`` is simply summed.
+    """
+    from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight
+
+    genewise = bool(batch_statics[0].genewise)
+    dev = theta.device
+    dtype = theta.dtype
+    theta_numel = int(theta.numel())
+    S = int(col_weights.numel())
+    per_family_orig = (origination_weights is not None and origination_weights.ndim == 2)
+
+    def hvp(u_vec):
+        u_vec = u_vec.to(device=dev, dtype=dtype)
+        n_tail = int(u_vec.numel()) - theta_numel
+        if not genewise:
+            # SHARED theta (specieswise/global): H u = sum_b H_b u. theta / col_weights / any
+            # shared tail (alpha [S], omega [S]) are identical across batches, so a straight sum
+            # of the per-batch primitive outputs is the full-dataset H u.
+            out = None
+            for static_b in batch_statics:
+                _loss, sv_b = forward_solve([static_b], theta, col_weights)
+                hvp_b = make_exact_hvp_single(
+                    static_b, theta, col_weights, sv_b, tangent_self_iters=tangent_self_iters,
+                    origination_log_probs=origination_log_probs,
+                    origination_probs=origination_probs, origination_weights=origination_weights,
+                )
+                contrib = hvp_b(u_vec)
+                out = contrib if out is None else out + contrib
+                del hvp_b, sv_b
+                free_cuda_cache_if_tight()
+            return out
+
+        # GENEWISE: per-family (disjoint) theta blocks. Gather each batch's family rows, apply the
+        # batch-local primitive, scatter back. Supports theta-only u (the ridge/Newton path) and the
+        # joint [theta (3G); alpha (S); omega (G*S)] layout (alpha shared, omega per-family).
+        u_theta = u_vec[:theta_numel].reshape(theta.shape)
+        omega_numel = int(origination_weights.numel()) if origination_weights is not None else 0
+        has_alpha = n_tail >= S
+        has_omega = (omega_numel > 0 and n_tail == S + omega_numel)
+        u_alpha = u_vec[theta_numel:theta_numel + S].contiguous() if has_alpha else None
+        u_omega_full = (u_vec[theta_numel + S:theta_numel + S + omega_numel].reshape(origination_weights.shape)
+                        if has_omega else None)
+
+        out_theta = torch.zeros(theta.shape, device=dev, dtype=dtype)
+        out_alpha = torch.zeros(S, device=dev, dtype=dtype) if has_alpha else None
+        out_omega = torch.zeros_like(origination_weights) if has_omega else None
+        for static_b in batch_statics:
+            fam_b = static_b.family_index_tensor.to(device=dev)
+            G_b = int(fam_b.numel())
+            theta_b = theta.index_select(0, fam_b).contiguous()  # [G_b, 3]
+            orig_b = (origination_weights.index_select(0, fam_b).contiguous() if per_family_orig
+                      else origination_weights)
+            # FULL theta to forward_solve (re-selects the batch families internally); batch-local
+            # theta_b to the primitive (consumes it directly). Both see the identical theta_b.
+            _loss, sv_b = forward_solve([static_b], theta, col_weights)
+            hvp_b = make_exact_hvp_single(
+                static_b, theta_b, col_weights, sv_b, tangent_self_iters=tangent_self_iters,
+                origination_weights=orig_b,
+            )
+            # assemble batch-local u_b in the primitive's [theta_b; alpha; omega_b] layout
+            u_theta_b = u_theta.index_select(0, fam_b).reshape(-1)
+            parts = [u_theta_b]
+            if has_alpha:
+                parts.append(u_alpha)
+            if has_omega:
+                parts.append(u_omega_full.index_select(0, fam_b).reshape(-1))
+            o_b = hvp_b(torch.cat(parts) if len(parts) > 1 else u_theta_b).to(dtype=dtype)
+            out_theta.index_add_(0, fam_b, o_b[:3 * G_b].reshape(G_b, 3))
+            if has_alpha:
+                out_alpha = out_alpha + o_b[3 * G_b:3 * G_b + S]
+            if has_omega:
+                out_omega.index_add_(0, fam_b, o_b[3 * G_b + S:3 * G_b + S + G_b * S].reshape(G_b, S))
+            del hvp_b, sv_b
+            free_cuda_cache_if_tight()
+
+        result = [out_theta.reshape(-1)]
+        if has_alpha:
+            result.append(out_alpha.reshape(-1))
+        if has_omega:
+            result.append(out_omega.reshape(-1))
+        return result[0] if len(result) == 1 else torch.cat(result)
 
     return hvp
 

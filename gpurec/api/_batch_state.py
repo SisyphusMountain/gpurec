@@ -19,6 +19,11 @@ class _BatchStatic:
     warm_E: torch.Tensor | None = None
     warm_v: dict | None = None   # per-wave backward Pi-adjoint warm-start cache (keyed by wave-start ws)
     warm_adjoint_ok: bool = True  # memory gate: False -> ignore GPUREC_WARM_ADJOINT (cache won't fit), run cold
+    # Transient per-wave self-loop scratch headroom (bytes) the warm-adjoint fit decision already
+    # reserved at build time (``warm_adjoint_fits``'s max-batch scratch). Passed to the forward
+    # self-loop gate so it trusts the build reservation instead of re-reading the depleted post-cache
+    # free memory. None -> cold path (gate reads current free memory as usual). See memory_policy.
+    warm_scratch_reserved_bytes: int | None = None
 
 
 def build_batch_static(
