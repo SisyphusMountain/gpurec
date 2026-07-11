@@ -28,7 +28,9 @@ def fit_mode(mode, species_path, gene_paths, *, verbose=False):
     global/genewise are plug-and-play through fit_dtl. specieswise has no one-shot MLE, so it is fit
     by fit_specieswise at the committed SPECIESWISE_GOLDEN_LAM prior (see the design spec)."""
     if mode == "specieswise":
-        import torch
+        # NB: no local `import torch` here -- torch is module-level (line 10). A function-local
+        # import would make `torch` local to ALL of fit_mode and UnboundLocalError the
+        # global/genewise branch's `torch.float32` below.
         from gpurec.api.model import GeneReconModel
         from gpurec.api.solver_options import SolverOptions
         from gpurec.fit.specieswise_fit import fit_specieswise

@@ -30,11 +30,13 @@ from pathlib import Path
 
 import numpy as np
 
-# Canonical parameters for the committed goldens (full-scale). Seeds are arbitrary but fixed.
+# Canonical parameters for the committed goldens. Seeds are arbitrary but fixed. 200 leaves / 200
+# families is large enough to exercise the real recipes (multi-batch, warm-adjoint) while keeping a
+# repeats>1 mint tractable (~minutes/fit rather than the ~hour at 500 leaves).
 SIM_PARAMS = {
-    "global":      {"seed": 20260709, "n_species": 500, "n_families": 500, "dtl": 0.05},
-    "genewise":    {"seed": 20260710, "n_species": 500, "n_families": 500, "dtl": 0.05},
-    "specieswise": {"seed": 20260711, "n_species": 500, "n_families": 500, "dtl": 0.05},
+    "global":      {"seed": 20260709, "n_species": 200, "n_families": 200, "dtl": 0.05},
+    "genewise":    {"seed": 20260710, "n_species": 200, "n_families": 200, "dtl": 0.05},
+    "specieswise": {"seed": 20260711, "n_species": 200, "n_families": 200, "dtl": 0.05},
 }
 
 # Specieswise has no well-posed one-shot MLE, so its perf-golden fits fit_specieswise at a FIXED,

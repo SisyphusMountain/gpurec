@@ -11,6 +11,18 @@ def test_fit_dtl_raises_for_specieswise():
         fit_dtl("sp.nwk", ["g.nwk"], "specieswise")
 
 
+def test_fit_mode_global_path_no_torch_shadow(monkeypatch):
+    """Regression: fit_mode's specieswise branch must NOT do a function-local `import torch` -- that
+    makes `torch` local to ALL of fit_mode and UnboundLocalErrors the global/genewise branch's
+    `torch.float32`. Stub fit_dtl so this runs off-GPU."""
+    import numpy as np
+    from tests.regression import mint_goldens
+    monkeypatch.setattr(mint_goldens, "fit_dtl",
+                        lambda *a, **k: {"nll_bits": 1.0, "rates": np.zeros((1, 3)), "wall_s": 0.1})
+    nll, rates, wall = mint_goldens.fit_mode("global", "sp.nwk", ["g.nwk"])
+    assert nll == 1.0 and np.asarray(rates).shape == (1, 3) and wall == 0.1
+
+
 def test_cli_fit_specieswise_exits_cleanly(capsys):
     import types
     from gpurec.cli import fit as cli_fit
