@@ -37,6 +37,11 @@ SIM_PARAMS = {
     "specieswise": {"seed": 20260711, "n_species": 500, "n_families": 500, "dtl": 0.05},
 }
 
+# Specieswise has no well-posed one-shot MLE, so its perf-golden fits fit_specieswise at a FIXED,
+# committed prior precision (a deterministic recipe test at a pinned prior; a full map_cv is too
+# expensive/noisy for a golden). See docs/.../2026-07-11-specieswise-recipe-organization-design.md.
+SPECIESWISE_GOLDEN_LAM = 10.0
+
 
 def _write(sp_out, pruned_forest, out_dir: Path) -> tuple[str, list[str]]:
     out_dir.mkdir(parents=True, exist_ok=True)

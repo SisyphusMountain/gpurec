@@ -23,10 +23,24 @@ def _git_rev(cwd):
 
 
 def fit_mode(mode, species_path, gene_paths, *, verbose=False):
-    """Fit one mode via the canonical dispatcher (gpurec.fit.dtl_fit.fit_dtl), which routes each
-    mode to its best recipe (genewise -> fit_genewise; global/specieswise -> optimize + final_eval).
-    The benchmark and the `gpurec fit` CLI share this one entry, so both test the same production
-    path. Returns (nll_bits, rates[.,3] order D,L,T, wall_s)."""
+    """Fit one mode via its production recipe; returns (nll_bits, rates[.,3] D,L,T, wall_s).
+
+    global/genewise are plug-and-play through fit_dtl. specieswise has no one-shot MLE, so it is fit
+    by fit_specieswise at the committed SPECIESWISE_GOLDEN_LAM prior (see the design spec)."""
+    if mode == "specieswise":
+        import torch
+        from gpurec.api.model import GeneReconModel
+        from gpurec.api.solver_options import SolverOptions
+        from gpurec.fit.specieswise_fit import fit_specieswise
+        from gpurec.bench.simulate import SPECIESWISE_GOLDEN_LAM
+        model = GeneReconModel(species_path, gene_paths, mode="specieswise", device="cuda",
+                               dtype=torch.float32,
+                               solver_options=SolverOptions(e_adjoint_solver="neumann"))
+        res = fit_specieswise(model.batch_statics, model.theta.detach(),
+                              model.receiver_weights.detach(), lam=SPECIESWISE_GOLDEN_LAM,
+                              verbose=verbose)
+        rates = np.asarray(res["rates"])
+        return float(res["nll_bits"]), rates, float(res["wall_s"])
     res = fit_dtl(species_path, gene_paths, mode, device="cuda", dtype=torch.float32, verbose=verbose)
     rates = np.asarray(res["rates"])   # cpu tensor -> ndarray
     return float(res["nll_bits"]), rates, float(res["wall_s"])
@@ -60,6 +74,8 @@ def mint(mode, repeats=5, verbose=False):
             "dtl": p["dtl"], "device": torch.cuda.get_device_name(0), "dtype": "float32",
             "repeats": repeats, "nll_spread": nll_spread, "rate_spread_rel": rate_spread_rel,
             "minted_utc": datetime.now(timezone.utc).isoformat(),
+            "specieswise_golden_lam": __import__("gpurec.bench.simulate",
+                                                 fromlist=["SPECIESWISE_GOLDEN_LAM"]).SPECIESWISE_GOLDEN_LAM,
         },
         "nll": float(nlls.mean()),
         "rates": R.mean(0).tolist(),
