@@ -4,6 +4,13 @@ pytest.importorskip("rustree")
 torch = pytest.importorskip("torch")
 
 
+def test_fit_dtl_raises_for_specieswise():
+    from gpurec.fit.dtl_fit import fit_dtl
+    with pytest.raises(NotImplementedError, match="fit_specieswise"):
+        # must raise on mode alone -- no model build, no CUDA, dummy paths are never touched.
+        fit_dtl("sp.nwk", ["g.nwk"], "specieswise")
+
+
 def test_fit_specieswise_requires_lam():
     from gpurec.fit.specieswise_fit import fit_specieswise
     with pytest.raises(ValueError, match="requires an explicit prior"):

@@ -12,9 +12,11 @@ this module is the ONLY place that choice is made, so no caller can drift onto t
     uses the SAME recipe (``fit_global``): Adam warm-up + a 3x3 trust-region Newton on the FD Hessian.
     (Validated to reach optimize()'s optimum to <1e-4 rel, ~5x faster.)
   - ``specieswise`` (theta ``[S,3]``): the parameters are COUPLED (a species rate affects every family;
-    families couple species through the transfer matrix), so there is no per-family/per-species
-    decomposition to exploit. It uses ``optimize`` -- Adam basin-entry then a damped Newton polish --
-    plus a fair fp64 ``final_eval``.
+    families couple species through the transfer matrix), so the raw MLE is non-identifiable and
+    boundary-saturated -- there is no well-posed one-shot fit. It is instead fit by MAP+CV: a single
+    MAP prior fit via ``gpurec.fit.specieswise_fit.fit_specieswise``, with the prior strength
+    cross-validated by ``gpurec.fit.map_cv.map_cv``. ``fit_dtl`` raises ``NotImplementedError`` for
+    this mode and points callers at those two entry points directly.
 
 ``fit_genewise`` / ``fit_global`` / ``optimize`` are the internal engines this selects between; they
 are not user-facing fit entry points. Everything that fits DTL rates (the ``gpurec fit`` CLI, the
@@ -27,11 +29,8 @@ import time
 
 import torch
 
-from gpurec.api.model import GeneReconModel
-from gpurec.api.solver_options import SolverOptions
-from gpurec.fit.genewise_fit import _resolve_gene_trees, fit_genewise
+from gpurec.fit.genewise_fit import fit_genewise
 from gpurec.fit.global_fit import fit_global
-from gpurec.fit.optimize import final_eval, optimize
 
 _LN2 = 0.6931471805599453
 _MODES = ("global", "specieswise", "genewise")
@@ -68,22 +67,10 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda", dtype=torch.float3
         return fit_global(species_tree, gene_trees, device=device, dtype=dtype,
                           init_rate=init_rate, solver_options=solver_options, verbose=verbose)
 
-    # specieswise (coupled): Adam basin-entry + damped Newton polish + fair fp64 eval
-    genes = _resolve_gene_trees(gene_trees)
-    if solver_options is None:
-        solver_options = SolverOptions(e_adjoint_solver="neumann")
-    model = GeneReconModel(species_tree, genes, mode=mode, device=device, dtype=dtype,
-                           solver_options=solver_options)
-    if init_rate is not None:
-        with torch.no_grad():
-            model.theta.fill_(float(torch.log2(torch.tensor(float(init_rate)))))
-    theta_hat, _hist = optimize(model.batch_statics, model.theta.detach(),
-                                model.receiver_weights.detach(),
-                                max_steps=max_steps, verbose=verbose)
-    nll_bits, gnorm = final_eval(model.batch_statics, theta_hat, model.receiver_weights.detach())
-    nll_bits = float(nll_bits)
-    wall_s = time.perf_counter() - t0
-    return {"mode": mode, "theta": theta_hat.detach().cpu(),
-            "rates": (2.0 ** theta_hat.detach().float().cpu()),  # [3] or [S,3] order D,L,T
-            "nll_bits": nll_bits, "nll_nats": nll_bits * _LN2, "gnorm": float(gnorm),
-            "n_families": len(genes), "wall_s": wall_s, "model": model}
+    if mode == "specieswise":
+        raise NotImplementedError(
+            "specieswise has no well-posed one-shot fit: the raw MLE over theta[S,3] is "
+            "non-identifiable and boundary-saturated. Fit a single MAP prior with "
+            "gpurec.fit.specieswise_fit.fit_specieswise(model.batch_statics, theta0, rw, lam=<chosen>), "
+            "or cross-validate the prior with gpurec.fit.map_cv.map_cv(species, genes)."
+        )
