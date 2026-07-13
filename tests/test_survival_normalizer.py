@@ -9,16 +9,18 @@ producing spurious ~1e36 gradients.  The compensated form
 non-negative terms) and matches fp64 to the last digit.
 """
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
 
-from gpurec.core.inference.logspace import log2_survival, survival_from_E
+from gpurec.core.inference.logspace import log2_survival, logsumexp2, survival_from_E
 from gpurec.core.inference.solver import nll_from_root_rows
 from gpurec.api._implicit_grad import (
     _likelihood_log2_survival,
     _likelihood_root_seed,
 )
+from gpurec.solver import ggn
 
 LN2 = math.log(2.0)
 
@@ -59,31 +61,96 @@ def test_weighted_survival_matches_fp64():
     assert abs(got - ref) <= 1e-4 * ref, (got, ref)
 
 
-def test_nll_head_promotes_fp32_root_and_extinction_inputs():
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_nll_head_uses_configured_accumulator(accumulator_dtype):
     root = torch.linspace(-308.0, -295.0, 1331, dtype=torch.float32).reshape(1, -1)
     extinction = torch.linspace(-2.0, -0.1, 1331, dtype=torch.float32).reshape(1, -1)
 
-    got = nll_from_root_rows(root, extinction)
-    reference = nll_from_root_rows(root.double(), extinction.double())
+    got = nll_from_root_rows(
+        root,
+        extinction,
+        accumulator_dtype=accumulator_dtype,
+    )
+    reference = nll_from_root_rows(
+        root.to(dtype=accumulator_dtype),
+        extinction.to(dtype=accumulator_dtype),
+    )
 
-    assert got.dtype == torch.float64
+    assert got.dtype == accumulator_dtype
     torch.testing.assert_close(got, reference, rtol=0.0, atol=0.0)
 
 
-def test_uniform_likelihood_adjoint_head_is_fp64_then_rounded():
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_uniform_likelihood_adjoint_head_uses_configured_accumulator(
+    accumulator_dtype,
+):
     root = torch.linspace(-308.0, -295.0, 1331, dtype=torch.float32).reshape(1, -1)
-    actual_seed = _likelihood_root_seed(root, None)
-    reference_seed = -torch.softmax(root.double() * LN2, dim=-1).float()
+    actual_seed = _likelihood_root_seed(
+        root,
+        None,
+        accumulator_dtype=accumulator_dtype,
+    )
+    root_acc = root.to(dtype=accumulator_dtype)
+    reference_seed = -torch.exp2(
+        root_acc - logsumexp2(root_acc, dim=-1, keepdim=True)
+    ).float()
     torch.testing.assert_close(actual_seed, reference_seed, rtol=0.0, atol=0.0)
 
     extinction = torch.full((1, 1331), -1e-6, dtype=torch.float32, requires_grad=True)
-    actual_survival = _likelihood_log2_survival(extinction, None)
+    actual_survival = _likelihood_log2_survival(
+        extinction,
+        None,
+        accumulator_dtype=accumulator_dtype,
+    )
     (actual_grad,) = torch.autograd.grad(actual_survival.sum(), extinction)
 
-    extinction64 = extinction.detach().double().requires_grad_(True)
-    reference_survival = _likelihood_log2_survival(extinction64, None)
-    (reference_grad,) = torch.autograd.grad(reference_survival.sum(), extinction64)
+    extinction_acc = extinction.detach().to(dtype=accumulator_dtype).requires_grad_(True)
+    reference_survival = _likelihood_log2_survival(extinction_acc, None)
+    (reference_grad,) = torch.autograd.grad(reference_survival.sum(), extinction_acc)
     torch.testing.assert_close(actual_grad, reference_grad.float(), rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_ggn_fisher_head_uses_configured_accumulator(
+    monkeypatch,
+    accumulator_dtype,
+):
+    root = torch.tensor(
+        [[-300.125, -299.75, -301.5]],
+        dtype=torch.float32,
+    )
+    tangent = torch.tensor([[0.25, -0.5, 0.75]], dtype=torch.float32)
+    static = SimpleNamespace(
+        species_helpers={"S": 3},
+        wave_layout={"root_clade_ids": torch.tensor([0])},
+        accumulator_dtype=accumulator_dtype,
+    )
+    saved = {"pi_wave": root}
+    captured = {}
+
+    monkeypatch.setattr(ggn, "jvp_root_scores", lambda *_args, **_kwargs: tangent)
+
+    def fake_vjp(*args, **_kwargs):
+        captured["seed"] = args[2]
+        return torch.zeros((3, 3), dtype=torch.float32), None
+
+    monkeypatch.setattr(ggn, "vjp_root_to_theta", fake_vjp)
+    hvp = ggn.make_ggn_hvp(
+        static,
+        torch.zeros((3, 3), dtype=torch.float32),
+        torch.zeros(3, dtype=torch.float32),
+        saved,
+    )
+    hvp(torch.zeros(9, dtype=torch.float32))
+
+    root_acc = root.to(dtype=accumulator_dtype)
+    tangent_acc = tangent.to(dtype=accumulator_dtype)
+    q = torch.exp2(root_acc - logsumexp2(root_acc, dim=-1, keepdim=True))
+    expected = LN2 * q * (
+        tangent_acc - (q * tangent_acc).sum(dim=-1, keepdim=True)
+    )
+    assert captured["seed"].dtype == accumulator_dtype
+    torch.testing.assert_close(captured["seed"], expected, rtol=0.0, atol=0.0)
 
 
 def test_gradient_is_finite_and_matches_fp64():

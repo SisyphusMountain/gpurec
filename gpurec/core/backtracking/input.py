@@ -62,8 +62,10 @@ def sample_reconciliations(model, *, family_index: int = 0, seed: int = 0):
     # at the sampler boundary avoids two full-batch fp64 matrices.
     pi_offset = pi_state.pi_offset.index_select(0, perm)[offset : offset + C]
     pibar_offset = pi_state.pibar_offset.index_select(0, perm)[offset : offset + C]
-    pi_family = pi[offset : offset + C].double() + pi_offset[:, None]
-    pibar_family = pibar[offset : offset + C].double() + pibar_offset[:, None]
+    # Reconstruct in the configured row-gauge precision. Conversion to the
+    # native sampler's fixed host ABI happens only in the argument list below.
+    pi_family = pi[offset : offset + C].to(pi_offset.dtype) + pi_offset[:, None]
+    pibar_family = pibar[offset : offset + C].to(pibar_offset.dtype) + pibar_offset[:, None]
     species_helpers = model.species_helpers
     S = int(species_helpers["S"])
 

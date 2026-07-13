@@ -4,13 +4,18 @@
 
 This historical component audit ran the same resident HOGENOM family through
 absolute fp64, absolute fp32, and centered fp32 diagnostic implementations.
-Production CUDA execution now always uses centered residuals plus fp64 row
-offsets for both fp32 and fp64 models. The diagnostic wraps Python launch
-boundaries and copies outputs before ping-pong buffers are reused. The capture
-includes parameter extraction, every extinction iteration, every Pi wave
-iteration, split-DTS outputs, final Pi/Pibar state, root rows, and the
-likelihood-head decomposition. Centered residuals are reconstructed with their
-fp64 offsets before comparison.
+Production CUDA execution now always uses centered residuals, with model and
+accumulator precision selected by `[precision].model_dtype` and
+`[precision].accumulator_dtype`. All centered fp32 measurements in this report
+used `model_dtype="float32"` and `accumulator_dtype="float64"`; the centered
+fp64 oracle used `float64/float64`. References below to fp64 offsets, heads, or
+small reductions describe that historical measurement setting, not an
+unconditional production dtype. The diagnostic wraps Python launch boundaries
+and copies outputs before ping-pong buffers are reused. The capture includes
+parameter extraction, every extinction iteration, every Pi wave iteration,
+split-DTS outputs, final Pi/Pibar state, root rows, and the likelihood-head
+decomposition. Centered residuals are reconstructed with their offsets before
+comparison.
 
 The historical weighted audit command is shown below. Its comparison driver
 was removed with the alternate absolute implementation and remains available
@@ -65,21 +70,24 @@ specific framing reasons:
 
 ## Applied low-cost fixes
 
-1. The likelihood head now promotes only root rows, E, and optional
-   origination tensors to fp64. Streamed scalar and genewise reductions also
-   retain fp64. Its small root and survival adjoint seeds are evaluated in the
-   same fp64 head and rounded once to the configured state dtype. Dense
-   `[clades, species]` Pi/Pibar storage remains fp32.
+1. The likelihood head promotes only root rows, E, and optional origination
+   tensors to the accumulator dtype. Streamed scalar and genewise reductions
+   retain that dtype. Its small root and survival adjoint seeds are evaluated
+   in the same head and rounded once to the configured state dtype. Dense
+   `[clades, species]` Pi/Pibar storage remains in the model dtype. The audit
+   used an fp64 accumulator with an fp32 model.
 2. Small rate, receiver, and origination log-softmax operations are evaluated
-   in fp64 for fp32 inputs and rounded once back to fp32. Nonuniform
-   origination weights remain fp64 through the likelihood head so the direct
-   gradient differentiates the same function returned by the forward pass.
+   in the accumulator dtype and rounded once back to the model dtype.
+   Nonuniform origination weights remain in the accumulator dtype through the
+   likelihood head so the direct gradient differentiates the same function
+   returned by the forward pass. That accumulator was fp64 in this audit.
 3. Leaf terms now use the actual observation log-probability as their frame.
 4. A split wave computes a raw-residual shift in its first existing consuming
-   traversal and publishes a one-fp64-scalar-per-row virtual centered offset.
-   DTS storage remains immutable. The shift is folded algebraically into the
-   existing fp64 correction, so there is no additional launch, maximum pass,
-   or per-species operation.
+   traversal and publishes a one-accumulator-scalar-per-row virtual centered
+   offset. DTS storage remains immutable. The shift is folded algebraically
+   into the existing accumulator-dtype correction, so there is no additional
+   launch, maximum pass, or per-species operation. This scalar was fp64 in the
+   audit.
 
 The remaining error is ordinary fp32 arithmetic inside the hot Pi recurrence
 and its approximate `exp2`, rather than an avoidable global frame loss.
@@ -120,12 +128,15 @@ the full fp32 run is the memory and performance gate.
   measurements and would enlarge a dense hot state.
 - Moving an fp32 model's whole Pi wave reductions to fp64 would address the
   remaining error, but it is not a low-cost fix on this workload. A model
-  configured as fp64 instead uses fp64 centered residuals throughout.
+  with both precision fields configured as float64 instead uses fp64 centered
+  residuals throughout.
 - Computing CCP split log-probabilities or every row maximum in fp64 offers a
   much smaller possible gain and touches derivative contracts. It is deferred
   unless a harder weighted/specieswise trace identifies it as dominant.
 
-For fp32 models, the result is a targeted mixed-precision design: fp64 for
-small reductions and row gauges, fp32 for dense storage and hot kernels, with
-explicit trace data showing where that boundary is useful. Fp64 models retain
-the same centered contract with fp64 dense residuals.
+For the audited fp32/fp64 configuration, the result is a targeted
+mixed-precision design: fp64 for small reductions and row gauges, fp32 for
+dense storage and hot kernels, with explicit trace data showing where that
+boundary is useful. Production also supports fp32/fp32 and fp64/fp64 under the
+same centered contract; fp64/fp32 is rejected because the accumulator may not
+be narrower than the model state.

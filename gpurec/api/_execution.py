@@ -12,7 +12,10 @@ from gpurec.core.inference.solver import (
     receiver_weights_are_uniform,
     solve_resident_e_pi,
 )
-from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
+from gpurec.core.parameters.extract_parameters import (
+    origination_log_probs_from_weights,
+    resolve_accumulator_dtype,
+)
 
 
 def _backward_offsets(static: _BatchStatic) -> dict[str, torch.Tensor]:
@@ -43,17 +46,46 @@ def origination_weights_for_static(static: _BatchStatic, origination_weights: to
     )
 
 
-def _origination_log_probs(origination_weights: torch.Tensor, *, like: torch.Tensor):
-    """Fp64 head probabilities, or ``(None, None)`` for the uniform fast path."""
+def _origination_log_probs(
+    origination_weights: torch.Tensor,
+    *,
+    like: torch.Tensor,
+    accumulator_dtype: torch.dtype,
+):
+    """Head probabilities, or ``(None, None)`` for the uniform fast path."""
     if origination_weights_are_uniform(origination_weights):
         return None, None
-    # The likelihood is an fp64 head, so promote the raw weights before the
-    # softmax. This also keeps its direct origination gradient aligned with the
-    # exact function returned by the forward pass.
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=like.dtype,
+    )
+    # Match the configured head before the softmax so its direct origination
+    # gradient differentiates the exact function returned by the forward pass.
     o_lp = origination_log_probs_from_weights(
-        origination_weights.to(device=like.device, dtype=torch.float64)
+        origination_weights.to(device=like.device, dtype=accumulator_dtype),
+        accumulator_dtype=accumulator_dtype,
     )
     return o_lp, torch.exp2(o_lp)
+
+
+def _static_accumulator_dtype(static: _BatchStatic, fallback: torch.dtype) -> torch.dtype:
+    return resolve_accumulator_dtype(
+        getattr(static, "accumulator_dtype", None),
+        fallback=fallback,
+    )
+
+
+def _stream_accumulator_dtype(
+    batch_statics: list[_BatchStatic],
+    fallback: torch.dtype,
+) -> torch.dtype:
+    if not batch_statics:
+        return resolve_accumulator_dtype(None, fallback=fallback)
+    dtype = _static_accumulator_dtype(batch_statics[0], fallback)
+    for static in batch_statics[1:]:
+        if _static_accumulator_dtype(static, fallback) != dtype:
+            raise ValueError("all streamed batches must share one accumulator dtype")
+    return dtype
 
 
 def evaluate_static_loss_grad(
@@ -65,6 +97,7 @@ def evaluate_static_loss_grad(
     need_grad: bool,
     need_origination_grad: bool = False,
 ):
+    accumulator_dtype = _static_accumulator_dtype(static, theta.dtype)
     with torch.no_grad():
         (
             E,
@@ -84,8 +117,18 @@ def evaluate_static_loss_grad(
             static, theta, receiver_weights, warm_start_E=static.warm_E
         )
         origination_weights_static = origination_weights_for_static(static, origination_weights)
-        o_lp, o_p = _origination_log_probs(origination_weights_static, like=theta)
-        loss = nll_from_root_rows(root_rows, E, origination_log_probs=o_lp, origination_probs=o_p).detach()
+        o_lp, o_p = _origination_log_probs(
+            origination_weights_static,
+            like=theta,
+            accumulator_dtype=accumulator_dtype,
+        )
+        loss = nll_from_root_rows(
+            root_rows,
+            E,
+            origination_log_probs=o_lp,
+            origination_probs=o_p,
+            accumulator_dtype=accumulator_dtype,
+        ).detach()
         static.warm_E = E.detach()
         if not need_grad:
             return loss, None, None, None
@@ -132,12 +175,18 @@ def evaluate_static_loss_grad(
             reserved_scratch_bytes=(static.warm_scratch_reserved_bytes if _warm_v is not None else None),
             origination_log_probs=o_lp,
             origination_probs=o_p,
+            accumulator_dtype=accumulator_dtype,
             **_backward_offsets(static),
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
         grad_origination = (
-            origination_grad_from_root_rows(root_rows, E, origination_weights_static).detach()
+            origination_grad_from_root_rows(
+                root_rows,
+                E,
+                origination_weights_static,
+                accumulator_dtype=accumulator_dtype,
+            ).detach()
             if need_origination_grad
             else None
         )
@@ -161,6 +210,7 @@ def evaluate_static_convergence(
     each a 1-D float tensor of length ``n_families_in_batch``.
     """
     with torch.no_grad():
+        accumulator_dtype = _static_accumulator_dtype(static, theta.dtype)
         C = int(static.wave_layout["leaf_species_index"].numel())
         pi_residual = torch.zeros(C, device=theta.device, dtype=torch.float32)
         (
@@ -205,6 +255,7 @@ def evaluate_static_convergence(
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
             collect_backward_relres=True,
+            accumulator_dtype=accumulator_dtype,
             **_backward_offsets(static),
         )
     return forward_resid, backward_relres, backward_vk_mag
@@ -222,6 +273,7 @@ def evaluate_static_loss_vector_grad(
 ):
     if not static.genewise:
         raise ValueError("per-family loss vectors require genewise mode")
+    accumulator_dtype = _static_accumulator_dtype(static, theta.dtype)
     with torch.no_grad():
         (
             E,
@@ -241,9 +293,17 @@ def evaluate_static_loss_vector_grad(
             static, theta, receiver_weights, warm_start_E=static.warm_E
         )
         origination_weights_static = origination_weights_for_static(static, origination_weights)
-        o_lp, o_p = _origination_log_probs(origination_weights_static, like=theta)
+        o_lp, o_p = _origination_log_probs(
+            origination_weights_static,
+            like=theta,
+            accumulator_dtype=accumulator_dtype,
+        )
         loss_vec = nll_vector_from_root_rows(
-            root_rows, E, origination_log_probs=o_lp, origination_probs=o_p
+            root_rows,
+            E,
+            origination_log_probs=o_lp,
+            origination_probs=o_p,
+            accumulator_dtype=accumulator_dtype,
         ).detach()
         if update_warm_start:
             static.warm_E = E.detach()
@@ -292,12 +352,18 @@ def evaluate_static_loss_vector_grad(
             reserved_scratch_bytes=(static.warm_scratch_reserved_bytes if _warm_v is not None else None),
             origination_log_probs=o_lp,
             origination_probs=o_p,
+            accumulator_dtype=accumulator_dtype,
             **_backward_offsets(static),
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
         grad_origination = (
-            origination_grad_from_root_rows(root_rows, E, origination_weights_static).detach()
+            origination_grad_from_root_rows(
+                root_rows,
+                E,
+                origination_weights_static,
+                accumulator_dtype=accumulator_dtype,
+            ).detach()
             if need_origination_grad
             else None
         )
@@ -314,9 +380,7 @@ def stream_batches(
     need_grad: bool,
     need_origination_grad: bool = False,
 ):
-    # The likelihood head and cross-batch family sum are fp64 reductions; the
-    # dense forward state remains in its row-gauged storage.
-    loss_dtype = torch.float64
+    loss_dtype = _stream_accumulator_dtype(batch_statics, theta.dtype)
     total = torch.zeros((), dtype=loss_dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None
     grad_receiver_total = torch.zeros_like(receiver_weights) if need_grad else None
@@ -372,7 +436,7 @@ def stream_genewise_loss_vector_grad(
 ):
     if theta.ndim < 1:
         raise ValueError("genewise theta must have a family batch dimension")
-    loss_dtype = torch.float64
+    loss_dtype = _stream_accumulator_dtype(batch_statics, theta.dtype)
     loss_total = torch.empty((int(theta.shape[0]),), dtype=loss_dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None
     grad_receiver_total = torch.zeros_like(receiver_weights) if need_grad else None

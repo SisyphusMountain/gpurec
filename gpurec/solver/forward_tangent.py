@@ -41,7 +41,11 @@ def param_jvp_uniform(static, theta, v):
 
     def f(th):
         return extract_parameters_uniform(
-            th, unnorm_row_max, specieswise=static.specieswise, genewise=static.genewise
+            th,
+            unnorm_row_max,
+            specieswise=static.specieswise,
+            genewise=static.genewise,
+            accumulator_dtype=getattr(static, "accumulator_dtype", None),
         )
 
     primals, tangents = jvp(f, (theta,), (v,))
@@ -73,6 +77,7 @@ def param_jvp_weighted(static, theta, alpha, u_theta, u_alpha):
         return extract_parameters_weighted_receivers(
             th, a, sh, specieswise=static.specieswise, genewise=static.genewise,
             uniform_fast=True,
+            accumulator_dtype=getattr(static, "accumulator_dtype", None),
         )
 
     primals, tangents = jvp(f, (theta, al), (u_theta, ua))

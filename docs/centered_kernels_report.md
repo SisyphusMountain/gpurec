@@ -10,6 +10,12 @@ was the dominant forward-error source. Fixing the centered leaf and split-DTS
 frames makes centered fp32 materially more accurate on the one-family fp64
 oracle:
 
+This is a historical benchmark report. Its centered fp32 runs used
+`model_dtype="float32"` with `accumulator_dtype="float64"`, and the fp64 oracle
+used `float64/float64`. Current production precision is configurable; the
+reported numbers have not been reinterpreted as measurements of another dtype
+pair.
+
 | one-family quantity | absolute fp32 | centered fp32 | improvement |
 |---|---:|---:|---:|
 | loss absolute error | `6.199e-5` | `9.096e-6` | **6.8x** |
@@ -39,9 +45,11 @@ short-term GPU clock drift better than ratios of independent medians.
 ## Implementation and correctness gates
 
 CUDA Pi/Pibar matrices are always stored as centered residuals in the model
-dtype, with one fp64 offset per row. This is a solver invariant for both fp32
-and fp64 models; there is no Python, TOML, CLI, environment, or internal
-absolute-storage fallback.
+dtype, with one configured-accumulator offset per row. Centered storage is a
+solver invariant for both fp32 and fp64 models; Python/TOML/CLI configuration
+selects precision, not an absolute-storage fallback. Supported
+model/accumulator pairs are fp32/fp32, fp32/fp64, and fp64/fp64. Fp64/fp32 is
+rejected because the accumulator may not be narrower than model state.
 
 The state contract is specified in
 [`centered_state_contract.md`](centered_state_contract.md). Inactive and wholly
@@ -53,21 +61,23 @@ its sampler boundary.
 The final precision changes are deliberately narrow:
 
 - root rows, E, origination values, cross-batch loss reductions, and the small
-  root/survival adjoint seeds use an fp64 likelihood head for every model
-  dtype;
-- fp32 parameter log-softmaxes are computed in fp64 and rounded once;
+  root/survival adjoint seeds use the configured accumulator dtype;
+- parameter log-softmaxes are computed in the accumulator dtype and rounded
+  once to the model dtype;
 - leaf observations select their actual frame rather than an assumed zero
   frame; and
 - the first split-DTS consumer tracks its raw residual maximum and publishes a
-  temporary fp64 virtual centered offset. DTS storage stays immutable, and the
-  shift folds into the existing correction without another per-species
-  operation.
+  temporary accumulator-dtype virtual centered offset. DTS storage stays
+  immutable, and the shift folds into the existing correction without another
+  per-species operation.
+
+For every benchmark in this report, that accumulator dtype was fp64.
 
 Coverage includes uniform and weighted receiver/origination models, nonzero
 leaf observations, fanout-one and grouped DTS, pruned/all-`-inf` rows, streamed
 batches, autograd lifetime, native-vs-fp64 first order, JVP, second-order
 contractions, exact HVP, GGN, finite differences, parameter rounding, and fp64
-head promotion.
+head promotion in the historical fp32/fp64 configuration.
 
 Final validation command:
 
@@ -95,6 +105,10 @@ around every host `perf_counter` sample. Three warmups exclude compilation and
 12 raw samples are retained. The historical paired phase alternates which
 experimental implementation runs first and reverses that order for gradient
 evaluation. Peak values are PyTorch CUDA allocation peaks.
+
+The centered fp32 benchmark precision corresponds to
+`[precision] model_dtype="float32", accumulator_dtype="float64"`; the reference
+uses both fields set to `"float64"`.
 
 The full workload has 1,055 families, 1,036,963 clades, 1,331 species nodes,
 and five streamed batches in specieswise mode. Warm-adjoint caching is disabled
@@ -164,8 +178,8 @@ The repeatability delta reflects nondeterministic fp32 atomic order and is not
 an error-to-reference measurement. Both historical fp32 variants have stable repeated losses,
 and five fixed SGD steps remain finite and monotonically decreasing.
 
-The fp64 likelihood head is independent of Pi storage framing. For the same
-historical absolute fp32 roots, its loss is `304.852344664`, versus
+The fp64 likelihood head used by this audit is independent of Pi storage
+framing. For the same historical absolute fp32 roots, its loss is `304.852344664`, versus
 `304.852355957` for a manual fp32 head. Centering supplies the larger additional
 gain by preserving Pi/DTS row-local low bits.
 
@@ -177,8 +191,8 @@ The one-family reference is the accuracy gate; the full workload is the timing
 and memory gate. Previous allocation measurements for the same centered state
 shape were 4,780,808,704 B absolute versus approximately 4,805,954,048 B
 centered for forward (+0.53%), and 6,670,900,736 B versus 6,691,231,232 B for
-loss+gradient (+0.30%). The virtual DTS frame adds only one temporary fp64
-scalar per split-wave row.
+loss+gradient (+0.30%). In this fp32/fp64 configuration, the virtual DTS frame
+adds only one temporary fp64 scalar per split-wave row.
 
 ## Why these fixes
 
@@ -186,14 +200,16 @@ The trace rules out several more expensive ideas. Recomputing Pi in fp64 while
 keeping fp32-rounded upstream inputs reduces the unweighted loss error to about
 `3.4e-6`; changing only E has a sub-micro effect. Thus an fp64 E state or all-
 fp64 hot wave reduction has a poor cost/benefit ratio. Correctly rounded small
-softmaxes and fp64 head reductions are cheap, while maintaining local Pi/DTS
-frames attacks the measured dominant error without changing dense storage.
+softmaxes and fp64 head reductions were cheap in the audited fp32/fp64 policy,
+while maintaining local Pi/DTS frames attacks the measured dominant error
+without changing dense storage.
 
 ## Conclusion
 
 Centered state is the canonical CUDA representation with complete derivative
-coverage for fp32 and fp64 models. The fp32/fp64 tensor capture demonstrates a
-real centered-Pi benefit: roughly 7--16x on the unweighted loss/gradient gates
-and 8--15x on the weighted forward/root gates. For fp32 models the fixes retain
-fp32 dense kernels and confine fp64 to small reductions and row gauges; fp64
-models use fp64 residuals and the same centered-state contract.
+coverage for supported model/accumulator precision pairs. The fp32/fp64 tensor
+capture demonstrates a real centered-Pi benefit: roughly 7--16x on the
+unweighted loss/gradient gates and 8--15x on the weighted forward/root gates.
+In the measured configuration, the fixes retain fp32 dense kernels and confine
+fp64 to small reductions and row gauges. Production also supports fp32/fp32
+and fp64/fp64 with the same centered-state contract; fp64/fp32 is rejected.

@@ -16,10 +16,11 @@ def add_common_args(parser) -> None:
                         help="gene tree file(s), a glob, a directory, or an AleRax [FAMILIES] listfile")
     parser.add_argument("--mode", choices=["global", "specieswise", "genewise"], default="global")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
-    parser.add_argument("--dtype", choices=["float32", "float64"], default="float64")
+    parser.add_argument("--dtype", choices=["float32", "float64"], default=None,
+                        help="model dtype; overrides [precision].model_dtype from --config")
     parser.add_argument("--config", default=None,
-                        help="path to a GpurecConfig TOML file; its [solver] table is the base "
-                             "SolverOptions, overridden by explicit solver flags")
+                        help="path to a GpurecConfig TOML file; [solver] and [precision] provide "
+                             "defaults overridden by explicit CLI flags")
     # These default to None (not their SolverOptions values) so
     # ``make_solver_options`` can tell "not passed" apart from "passed the same value the
     # config/default already has" -- an explicitly-passed flag must win over --config.
@@ -34,9 +35,11 @@ def resolve_gene_trees(values) -> list:
     return _resolve_gene_trees(values)
 
 
-def make_dtype(name: str):
-    import torch
-    return torch.float64 if name == "float64" else torch.float32
+def make_dtype(name: str | None):
+    from gpurec.config import PrecisionOptions, resolve_torch_dtype
+
+    effective_name = PrecisionOptions().model_dtype if name is None else name
+    return resolve_torch_dtype(effective_name)
 
 
 def make_solver_options(args):
@@ -66,8 +69,12 @@ def make_solver_options(args):
 def build_model(args):
     """Build a GeneReconModel from parsed args (lazy heavy import). Returns (model, genes)."""
     from gpurec.api.model import GeneReconModel
+    from gpurec.config import load_config
+
     genes = resolve_gene_trees(args.gene)
+    config = load_config(getattr(args, "config", None))
     model = GeneReconModel(args.species, genes, mode=args.mode, device=args.device,
-                           dtype=make_dtype(args.dtype),
+                           dtype=(None if args.dtype is None else make_dtype(args.dtype)),
+                           config=config,
                            solver_options=make_solver_options(args))
     return model, genes

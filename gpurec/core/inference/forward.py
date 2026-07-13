@@ -25,6 +25,7 @@ def pi_wave_forward(
     family_idx: torch.Tensor,
     pi_iters: int = 6,
     pi_residual_out: torch.Tensor | None = None,
+    accumulator_dtype: torch.dtype | None = None,
 ):
     pi_iters = int(pi_iters)
     if pi_iters < 2 or pi_iters % 2 != 0:
@@ -33,6 +34,12 @@ def pi_wave_forward(
         raise RuntimeError("Pi forward requires CUDA")
     if e.dtype not in (torch.float32, torch.float64):
         raise RuntimeError("Pi forward requires fp32 or fp64 residual storage")
+    if accumulator_dtype is None:
+        accumulator_dtype = e.dtype
+    if accumulator_dtype not in (torch.float32, torch.float64):
+        raise TypeError("accumulator_dtype must be torch.float32 or torch.float64")
+    if e.dtype == torch.float64 and accumulator_dtype != torch.float64:
+        raise TypeError("accumulator_dtype must not be narrower than the Pi residual dtype")
 
     C = int(wave_layout["leaf_species_index"].numel())
     S = int(species_helpers["S"])
@@ -41,8 +48,8 @@ def pi_wave_forward(
 
     pi = torch.empty((C, S), dtype=dtype, device=device)
     pibar = torch.empty((C, S), dtype=dtype, device=device)
-    pi_offset = torch.zeros((C,), dtype=torch.float64, device=device)
-    pibar_offset = torch.zeros((C,), dtype=torch.float64, device=device)
+    pi_offset = torch.zeros((C,), dtype=accumulator_dtype, device=device)
+    pibar_offset = torch.zeros((C,), dtype=accumulator_dtype, device=device)
 
     family_rows = int(e.shape[0])
     e_family = as_family_species(e, S, family_rows)

@@ -30,7 +30,11 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core.kernels.pi_forward import _prepare_wave_launch, _tl_float_dtype
+from gpurec.core.kernels.pi_forward import (
+    _prepare_wave_launch,
+    _tl_float_dtype,
+    _validate_offset_tensor,
+)
 
 
 @triton.jit
@@ -299,25 +303,31 @@ def wave_backward_so(
     block_s = int(triton.next_power_of_2(S))
     dev, dt = Pi_star.device, Pi_star.dtype
     expected_rows = int(Pi_star.shape[0])
-    for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
-        if value.ndim != 1 or int(value.shape[0]) != expected_rows:
-            raise ValueError(f"{name} must have shape [{expected_rows}]")
-        if value.dtype != torch.float64:
-            raise TypeError(f"{name} must use torch.float64")
-        if value.device != dev:
-            raise ValueError(f"{name} must be on the Pi device")
-    pi_offset = pi_offset.contiguous()
-    pibar_offset = pibar_offset.contiguous()
+    pi_offset = _validate_offset_tensor(
+        "pi_offset",
+        pi_offset,
+        rows=expected_rows,
+        device=dev,
+        residual_dtype=Pi_star.dtype,
+    )
+    accumulator_dtype = pi_offset.dtype
+    pibar_offset = _validate_offset_tensor(
+        "pibar_offset",
+        pibar_offset,
+        rows=expected_rows,
+        device=dev,
+        dtype=accumulator_dtype,
+    )
     if has_splits:
         if dts_offset is None:
             raise ValueError("dts_offset is required for split-wave second order")
-        if dts_offset.ndim != 1 or int(dts_offset.shape[0]) != int(W):
-            raise ValueError(f"dts_offset must have shape [{int(W)}]")
-        if dts_offset.dtype != torch.float64:
-            raise TypeError("dts_offset must use torch.float64")
-        if dts_offset.device != dev:
-            raise ValueError("dts_offset must be on the Pi device")
-        dts_offset = dts_offset.contiguous()
+        dts_offset = _validate_offset_tensor(
+            "dts_offset",
+            dts_offset,
+            rows=W,
+            device=dev,
+            dtype=accumulator_dtype,
+        )
     elif dts_offset is not None:
         raise ValueError("dts_offset is only valid for a split wave")
     d_out = torch.empty((W, S), device=dev, dtype=dt)

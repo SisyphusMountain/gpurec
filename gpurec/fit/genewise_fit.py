@@ -32,7 +32,7 @@ import torch
 
 from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
-from gpurec.config import GpurecConfig
+from gpurec.config import GpurecConfig, PrecisionOptions, resolve_torch_dtype
 from gpurec.config.rates import RateBounds
 from gpurec.core.inference.solver import solve_forward_residual
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
@@ -86,7 +86,7 @@ def fit_genewise(
     gene_trees,
     *,
     device="cuda",
-    dtype: torch.dtype = torch.float32,
+    dtype: torch.dtype | str | None = None,
     min_rate: float = _GENEWISE_RATE_BOUNDS.min_rate,
     max_rate: float = _GENEWISE_RATE_BOUNDS.max_rate,
     # --- the recipe (defaults = the accepted optimized recipe) ---
@@ -135,6 +135,13 @@ def fit_genewise(
     is controlled by the ``GPUREC_WARM_ADJOINT`` env var + the library's own memory gate, not a
     config field).
     """
+    precision = config.precision if config is not None else PrecisionOptions()
+    if dtype is None:
+        dtype = precision.model_torch_dtype
+    elif isinstance(dtype, str):
+        dtype = resolve_torch_dtype(dtype)
+    precision.validate(model_dtype=dtype)
+
     # RATES: reference-defaults invariant (test_fit_genewise_signature_defaults_come_from_genewise_preset)
     # pins min_rate/max_rate's signature defaults to RateBounds.genewise(). Only substitute
     # config.rates when the kwarg is still at that preset default, so an explicit min_rate/max_rate
@@ -168,7 +175,7 @@ def fit_genewise(
 
     def build(paths, pi, neu):
         m = GeneReconModel(str(species_tree), [str(p) for p in paths], mode="genewise",
-                           device=dev, solver_options=sopts(pi, neu),
+                           device=dev, dtype=dtype, config=config, solver_options=sopts(pi, neu),
                            **({} if clade_budget is None else {"clade_budget": clade_budget}))
         m.receiver_weights.requires_grad_(False)   # uniform transfer recipients (UndatedDTL default)
         return m
@@ -185,7 +192,7 @@ def fit_genewise(
         return th
 
     def forward_resid(m, th, pi):
-        out = torch.zeros(len(m.families), device=dev, dtype=torch.float32)
+        out = torch.zeros(len(m.families), device=dev, dtype=dtype)
         rw = m.receiver_weights.detach()
         with torch.no_grad():
             for static in m.batch_statics:

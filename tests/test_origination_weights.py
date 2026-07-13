@@ -4,7 +4,7 @@ Origination weights are a per-species softmax distribution over the candidate or
 They enter ONLY the final NLL aggregation (not the fixed-point solve or kernels), so:
   * the default (uniform) path is byte-identical to the legacy uniform-origination likelihood, and
   * their gradient is exact and cheap.
-These tests verify fp64 finite differences and fp32-to-fp64 head alignment.
+These tests verify finite differences and configured accumulator alignment.
 """
 from pathlib import Path
 
@@ -71,30 +71,44 @@ def test_fp32_origination_gradient_matches_promoted_head():
     weights = torch.randn(11, dtype=torch.float32)
 
     promoted = weights.double().requires_grad_(True)
-    log_probs = origination_log_probs_from_weights(promoted)
+    log_probs = origination_log_probs_from_weights(
+        promoted,
+        accumulator_dtype=torch.float64,
+    )
     loss = nll_vector_from_root_rows(
         root,
         extinction,
         origination_log_probs=log_probs,
         origination_probs=torch.exp2(log_probs),
+        accumulator_dtype=torch.float64,
     ).sum()
     (reference,) = torch.autograd.grad(loss, promoted)
 
-    actual = origination_grad_from_root_rows(root, extinction, weights)
+    actual = origination_grad_from_root_rows(
+        root,
+        extinction,
+        weights,
+        accumulator_dtype=torch.float64,
+    )
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, reference.float(), rtol=0.0, atol=0.0)
 
 
-def test_fp32_execution_promotes_raw_origination_weights_for_head():
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_fp32_execution_uses_configured_origination_head(accumulator_dtype):
     weights = torch.linspace(-2.0, 1.0, 17, dtype=torch.float32)
     log_probs, probabilities = _origination_log_probs(
         weights,
         like=torch.empty((), dtype=torch.float32),
+        accumulator_dtype=accumulator_dtype,
     )
-    reference = origination_log_probs_from_weights(weights.double())
+    reference = origination_log_probs_from_weights(
+        weights.to(dtype=accumulator_dtype),
+        accumulator_dtype=accumulator_dtype,
+    )
 
-    assert log_probs.dtype == torch.float64
-    assert probabilities.dtype == torch.float64
+    assert log_probs.dtype == accumulator_dtype
+    assert probabilities.dtype == accumulator_dtype
     torch.testing.assert_close(log_probs, reference, rtol=0.0, atol=0.0)
     torch.testing.assert_close(probabilities, torch.exp2(reference), rtol=0.0, atol=0.0)
 

@@ -20,6 +20,7 @@ import torch
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.api._implicit_grad import _safe_exp2_ratio, implicit_grad_loglik_vjp_wave
+from gpurec.core.parameters.extract_parameters import resolve_accumulator_dtype
 
 from gpurec.solver.forward_tangent import jvp_root_scores, DEFAULT_SELF_MAX_ITER
 
@@ -72,6 +73,10 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         e_adjoint_solver=so.e_adjoint_solver,
         seed_root=seed_root, drop_norm=drop_norm, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
+        accumulator_dtype=resolve_accumulator_dtype(
+            getattr(static, "accumulator_dtype", None),
+            fallback=sv["pi_wave"].dtype,
+        ),
         reserved_scratch_bytes=reserved_scratch_bytes,
         pi_offset=pi_state.pi_offset,
         pibar_offset=pi_state.pibar_offset,
@@ -90,13 +95,21 @@ def make_ggn_hvp(static, theta, receiver_weights, sv, *, self_tol=None,
     S = int(static.species_helpers["S"])
     root_ids = static.wave_layout["root_clade_ids"]
     root_Pi = sv["pi_wave"].index_select(0, root_ids)
-    root_lse = _logsumexp2(root_Pi, dim=-1, keepdim=True)
-    q = _safe_exp2_ratio(root_Pi, root_lse)  # posterior softmax2 per root row
+    accumulator_dtype = resolve_accumulator_dtype(
+        getattr(static, "accumulator_dtype", None),
+        fallback=root_Pi.dtype,
+    )
+    root_head = root_Pi.to(dtype=accumulator_dtype)
+    root_lse = _logsumexp2(root_head, dim=-1, keepdim=True)
+    q = _safe_exp2_ratio(root_head, root_lse)  # posterior softmax2 per root row
 
     def hvp(v_vec):
         v = v_vec.reshape(S, 3).to(theta.dtype)
         t = jvp_root_scores(static, theta, v, sv, self_tol=self_tol, self_max_iter=self_max_iter)
-        u = _LN2 * q * (t - (q * t).sum(dim=-1, keepdim=True))  # B t  (PSD Fisher covariance)
+        t_head = t.to(dtype=accumulator_dtype)
+        u = _LN2 * q * (
+            t_head - (q * t_head).sum(dim=-1, keepdim=True)
+        )  # B t  (PSD Fisher covariance)
         gt, _gc = vjp_root_to_theta(static, sv, u, theta, receiver_weights, drop_norm=True,
                                     neumann_terms=vjp_neumann_terms, use_pruning=vjp_use_pruning,
                                     bicgstab_tol=vjp_bicgstab_tol)

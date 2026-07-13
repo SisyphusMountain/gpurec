@@ -13,7 +13,16 @@ Public Python API for building, evaluating, and differentiating GPURec models.
 
 Generated `__pycache__` files are interpreter artifacts and are not part of the source API.
 
-CUDA Pi/Pibar state always uses centered residuals in the model dtype plus fp64
-row offsets. The final likelihood head and streamed family/batch loss
-reductions use fp64, including for fp32 models; parameter gradients are
-returned in their configured dtype.
+CUDA Pi/Pibar state always uses centered residuals in the model dtype plus row
+offsets in the configured accumulator dtype. `[precision].model_dtype` controls
+parameters and dense E/Pi residual state; `[precision].accumulator_dtype`
+controls row offsets, the final likelihood head, streamed family/batch
+reductions, small parameter softmaxes, and floating preprocessing statics.
+Parameter gradients are returned in the model dtype.
+
+The supported model/accumulator pairs are `float32/float32`,
+`float32/float64`, and `float64/float64`; `float64/float32` is rejected. The
+default is `float32/float64`. `GeneReconModel(dtype=...)` overrides only the
+configured model dtype. `GeneReconModel(config=...)` always supplies the
+accumulator dtype and supplies the model dtype when no explicit `dtype=` is
+given.

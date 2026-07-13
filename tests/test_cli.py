@@ -21,7 +21,7 @@ def test_reconcile_arg_parsing():
     assert args.command == "reconcile"
     assert args.species == "sp.nwk" and args.gene == ["g.nwk"]
     assert (args.delta, args.tau, args.lambda_) == (0.1, 0.2, 0.3)
-    assert args.mode == "global" and args.dtype == "float64"
+    assert args.mode == "global" and args.dtype is None
 
 
 def test_reconcile_requires_species():

@@ -20,7 +20,11 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core.kernels.pi_forward import _prepare_wave_launch, _tl_float_dtype
+from gpurec.core.kernels.pi_forward import (
+    _prepare_wave_launch,
+    _tl_float_dtype,
+    _validate_offset_tensor,
+)
 
 # Launch tuning: num_warps for _wave_step_tangent_kernel. Tuned on the representative 666x80 fixture
 # (S=1331, BLOCK_S=2048): num_warps=4 is ~7.4% faster on the total HVP than the old default of 8
@@ -374,22 +378,26 @@ def _wave_step_tangent_selfloop_kernel(
 
 def _prepare_wave_offsets(Pi_in, pi_offset, dts_offset, has_splits, W):
     """Validate the required Pi gauge and the split-wave DTS gauge."""
-    if pi_offset.ndim != 1 or int(pi_offset.shape[0]) != int(Pi_in.shape[0]):
-        raise ValueError(f"pi_offset must have shape [{int(Pi_in.shape[0])}]")
-    if pi_offset.dtype != torch.float64 or pi_offset.device != Pi_in.device:
-        raise TypeError("pi_offset must be fp64 on the Pi device")
+    pi_offset = _validate_offset_tensor(
+        "pi_offset",
+        pi_offset,
+        rows=Pi_in.shape[0],
+        device=Pi_in.device,
+        residual_dtype=Pi_in.dtype,
+    )
     if has_splits:
         if dts_offset is None:
             raise ValueError("dts_offset is required for a split wave")
-        if dts_offset.ndim != 1 or int(dts_offset.shape[0]) != int(W):
-            raise ValueError(f"dts_offset must have shape [{int(W)}]")
-        if dts_offset.dtype != torch.float64:
-            raise TypeError("dts_offset must use torch.float64")
-        if dts_offset.device != Pi_in.device:
-            raise ValueError("dts_offset must be on the Pi device")
+        dts_offset = _validate_offset_tensor(
+            "dts_offset",
+            dts_offset,
+            rows=W,
+            device=Pi_in.device,
+            dtype=pi_offset.dtype,
+        )
     elif dts_offset is not None:
         raise ValueError("dts_offset is only valid for a split wave")
-    return pi_offset.contiguous(), (dts_offset.contiguous() if has_splits else pi_offset)
+    return pi_offset, (dts_offset if has_splits else pi_offset)
 
 
 def compute_wave_step_tangent_selfloop(

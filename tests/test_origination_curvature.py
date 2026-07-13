@@ -7,6 +7,7 @@ exact, the gauge-projected PD certificate matches the dense gauge-projected eige
 origination Fisher CG solve converges to finite standard errors.
 """
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -15,6 +16,30 @@ from gpurec import GeneReconModel, SolverOptions
 from gpurec.core.scheduling import batching
 
 DT = torch.float64
+
+
+def test_origination_information_mixed_accumulator_and_curvature_dtypes():
+    from gpurec.solver.origination_curvature import origination_information
+
+    static = SimpleNamespace(accumulator_dtype=torch.float32)
+    info = origination_information(
+        static,
+        torch.zeros(1, dtype=torch.float32),
+        torch.tensor([-0.2, 0.2], dtype=torch.float32),
+        torch.tensor([-0.3, 0.3], dtype=torch.float32),
+        hvp=lambda v: v,
+        theta_numel=1,
+        S=2,
+        ridge=1.0,
+        cg_tol=1e-12,
+        cg_max=20,
+        verbose=False,
+    )
+
+    assert info["p"].dtype == torch.float32
+    assert info["Sigma_oo"].dtype == torch.float64
+    assert info["se_p"].dtype == torch.float64
+    assert torch.isfinite(info["se_p"]).all()
 
 
 def _require_cuda_triton() -> torch.device:

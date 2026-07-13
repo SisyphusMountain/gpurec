@@ -5,13 +5,40 @@ import torch
 from gpurec.core.inference.logspace import safe_log2
 
 _LN2 = 0.6931471805599453
+_SUPPORTED_ACCUMULATOR_DTYPES = (torch.float32, torch.float64)
+
+
+def resolve_accumulator_dtype(
+    accumulator_dtype: torch.dtype | None,
+    *,
+    fallback: torch.dtype,
+) -> torch.dtype:
+    """Resolve and validate the dtype used by small numerical reductions.
+
+    Callers that own runtime configuration pass ``accumulator_dtype``
+    explicitly. Standalone helpers fall back to their input dtype instead of
+    silently selecting a wider, hardcoded precision.
+    """
+
+    dtype = fallback if accumulator_dtype is None else accumulator_dtype
+    if dtype not in _SUPPORTED_ACCUMULATOR_DTYPES:
+        raise TypeError("accumulator_dtype must be torch.float32 or torch.float64")
+    return dtype
 
 
 def _log_softmax2(
-    logits: torch.Tensor, *, inputs_are_log2: bool = True
+    logits: torch.Tensor,
+    *,
+    inputs_are_log2: bool = True,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
-    """Base-2 log-softmax with a cheap fp64 evaluation for fp32 logits."""
-    compute = logits.double() if logits.dtype == torch.float32 else logits
+    """Base-2 log-softmax evaluated in the selected accumulator dtype."""
+
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=logits.dtype,
+    )
+    compute = logits.to(dtype=accumulator_dtype)
     if inputs_are_log2:
         compute = compute * _LN2
     return (torch.log_softmax(compute, dim=-1) / _LN2).to(logits.dtype)
@@ -34,14 +61,20 @@ def as_family_species(t, S, family_rows):
     return param.expand(int(family_rows), int(S)).contiguous()
 
 
-def extract_parameters_uniform(theta, unnorm_row_max, *, specieswise=False, genewise=False):
-    # unnorm_row_max is a full-precision float64 batch static (batching.py); cast to the compute
-    # dtype so the transfer term runs at the model's precision (f64 keeps it; f32 downcasts to the
-    # old value). Mirrors the receiver_weights cast in extract_parameters_weighted_receivers.
+def extract_parameters_uniform(
+    theta,
+    unnorm_row_max,
+    *,
+    specieswise=False,
+    genewise=False,
+    accumulator_dtype: torch.dtype | None = None,
+):
+    # The preprocessing static uses the configured accumulator dtype. Cast it
+    # to the model dtype at this dense-compute boundary.
     unnorm_row_max = unnorm_row_max.to(device=theta.device, dtype=theta.dtype)
     zeros = theta.new_zeros((*theta.shape[:-1], 1))
     logits = torch.cat((zeros, theta), dim=-1)
-    result = _log_softmax2(logits)
+    result = _log_softmax2(logits, accumulator_dtype=accumulator_dtype)
     log_pT = result[..., 3]
     if specieswise and not genewise:
         max_transfer = log_pT + unnorm_row_max
@@ -50,18 +83,34 @@ def extract_parameters_uniform(theta, unnorm_row_max, *, specieswise=False, gene
     return result[..., 0], result[..., 1], result[..., 2], max_transfer
 
 
-def receiver_log_probs_from_weights(receiver_weights: torch.Tensor) -> torch.Tensor:
-    return _log_softmax2(receiver_weights, inputs_are_log2=False)
+def receiver_log_probs_from_weights(
+    receiver_weights: torch.Tensor,
+    *,
+    accumulator_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    return _log_softmax2(
+        receiver_weights,
+        inputs_are_log2=False,
+        accumulator_dtype=accumulator_dtype,
+    )
 
 
-def origination_log_probs_from_weights(origination_weights: torch.Tensor) -> torch.Tensor:
+def origination_log_probs_from_weights(
+    origination_weights: torch.Tensor,
+    *,
+    accumulator_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
     """Base-2 log of the per-branch origination distribution (softmax over the S species nodes).
 
     Mirrors ``receiver_log_probs_from_weights``: ``origination_weights`` are unconstrained logits,
     gauge-fixed by the softmax (invariant under a constant shift). The default all-equal weights
     give ``-log2(S)`` everywhere, i.e. the uniform origination prior the model assumes by default.
     """
-    return _log_softmax2(origination_weights, inputs_are_log2=False)
+    return _log_softmax2(
+        origination_weights,
+        inputs_are_log2=False,
+        accumulator_dtype=accumulator_dtype,
+    )
 
 
 def receiver_valid_log_normalizer(
@@ -105,12 +154,16 @@ def extract_parameters_weighted_receivers(
     specieswise=False,
     genewise=False,
     uniform_fast=False,
+    accumulator_dtype: torch.dtype | None = None,
 ):
     zeros = theta.new_zeros((*theta.shape[:-1], 1))
     logits = torch.cat((zeros, theta), dim=-1)
-    result = _log_softmax2(logits)
+    result = _log_softmax2(logits, accumulator_dtype=accumulator_dtype)
     log_pT = result[..., 3]
-    receiver_log_probs = receiver_log_probs_from_weights(receiver_weights.to(device=theta.device, dtype=theta.dtype))
+    receiver_log_probs = receiver_log_probs_from_weights(
+        receiver_weights.to(device=theta.device, dtype=theta.dtype),
+        accumulator_dtype=accumulator_dtype,
+    )
     receiver_norm = receiver_valid_log_normalizer(
         receiver_log_probs,
         species_helpers["sp_parent"],

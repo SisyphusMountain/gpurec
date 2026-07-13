@@ -6,6 +6,7 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import evaluate_static_convergence
+from gpurec.core.inference.forward import pi_wave_forward
 from gpurec.core.inference.solver import solve_forward_residual, solve_resident_e_pi
 from gpurec.core.kernels.pi_forward import (
     compute_dts_forward,
@@ -74,9 +75,55 @@ C_1 3
 
 
 @pytest.mark.gpu
+def test_pi_wave_forward_rejects_accumulator_narrower_than_residual() -> None:
+    _require_cuda()
+    value = torch.zeros((1, 1), device="cuda", dtype=torch.float64)
+    with pytest.raises(TypeError, match="must not be narrower"):
+        pi_wave_forward(
+            {},
+            {},
+            value,
+            value,
+            value,
+            value,
+            value,
+            value,
+            value,
+            value.reshape(-1),
+            family_idx=torch.zeros(1, device="cuda", dtype=torch.long),
+            accumulator_dtype=torch.float32,
+        )
+
+
+@pytest.mark.gpu
+def test_dts_forward_rejects_mixed_offset_dtypes() -> None:
+    _require_cuda()
+    pi = torch.zeros((1, 1), device="cuda", dtype=torch.float32)
+    index = torch.empty(0, device="cuda", dtype=torch.long)
+    with pytest.raises(TypeError, match="match accumulator dtype"):
+        compute_dts_forward(
+            pi,
+            torch.zeros(1, device="cuda", dtype=torch.float32),
+            pi.clone(),
+            torch.zeros(1, device="cuda", dtype=torch.float64),
+            index,
+            index,
+            torch.ones(1, device="cuda", dtype=torch.long),
+            torch.ones(1, device="cuda", dtype=torch.long),
+            1,
+            index,
+            pi,
+            pi,
+            torch.zeros(1, device="cuda", dtype=torch.long),
+        )
+
+
+@pytest.mark.gpu
 @pytest.mark.parametrize("use_receiver_weights", [False, True])
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
 def test_centered_leaf_initialization_matches_nonzero_observation_seed(
     use_receiver_weights: bool,
+    accumulator_dtype: torch.dtype,
 ) -> None:
     _require_cuda()
     device = torch.device("cuda")
@@ -118,7 +165,7 @@ def test_centered_leaf_initialization_matches_nonzero_observation_seed(
     )
 
     residual = torch.empty((1, S), device=device, dtype=dtype)
-    offset = torch.empty((1,), device=device, dtype=torch.float64)
+    offset = torch.empty((1,), device=device, dtype=accumulator_dtype)
     args = (
         0,
         1,
@@ -145,7 +192,7 @@ def test_centered_leaf_initialization_matches_nonzero_observation_seed(
     # The same canonical kernel in fp64 is the precision oracle. Inputs remain
     # in the same gauges; only the residual arithmetic changes dtype.
     reference_residual = torch.empty((1, S), device=device, dtype=torch.float64)
-    reference_offset = torch.empty_like(offset)
+    reference_offset = torch.empty((1,), device=device, dtype=torch.float64)
     args64 = tuple(
         value.double() if torch.is_tensor(value) and value.is_floating_point() else value
         for value in args
@@ -156,16 +203,19 @@ def test_centered_leaf_initialization_matches_nonzero_observation_seed(
         *args64,
         use_receiver_weights=use_receiver_weights,
     )
-    reconstructed = residual.double() + offset[:, None]
+    reconstructed = residual.to(accumulator_dtype) + offset[:, None]
     reference = reference_residual + reference_offset[:, None]
     torch.testing.assert_close(
-        reconstructed, reference, rtol=0.0, atol=5e-7
+        reconstructed.double(), reference, rtol=0.0, atol=5e-7
     )
     torch.testing.assert_close(offset, reconstructed.amax(dim=1), rtol=0.0, atol=5e-7)
 
 
 @pytest.mark.gpu
-def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows() -> None:
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows(
+    accumulator_dtype: torch.dtype,
+) -> None:
     _require_cuda()
     device = torch.device("cuda")
     dtype = torch.float32
@@ -178,7 +228,9 @@ def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows()
         device=device,
         dtype=dtype,
     )
-    pi_in_offset = torch.tensor([100.0, -40.0], device=device, dtype=torch.float64)
+    pi_in_offset = torch.tensor(
+        [100.0, -40.0], device=device, dtype=accumulator_dtype
+    )
     pi_out = torch.empty_like(pi_in)
     pi_out_offset = torch.empty_like(pi_in_offset)
     pibar = torch.empty_like(pi_in)
@@ -189,7 +241,9 @@ def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows()
     # The split offsets deliberately move each output into a different frame,
     # but their residual rows are impossible and do not change the recurrence.
     dts = torch.full_like(pi_in, neg_inf)
-    dts_offset = torch.tensor([105.0, -30.0], device=device, dtype=torch.float64)
+    dts_offset = torch.tensor(
+        [105.0, -30.0], device=device, dtype=accumulator_dtype
+    )
     max_transfer = torch.zeros((W, S), device=device, dtype=dtype)
     dl_const = torch.tensor(
         [[0.25, -0.5, 1.0], [neg_inf, neg_inf, neg_inf]],
@@ -242,7 +296,7 @@ def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows()
     torch.testing.assert_close(reconstructed, expected_absolute, rtol=0.0, atol=1e-6)
     torch.testing.assert_close(
         pi_out_offset,
-        torch.tensor([105.0, 0.0], device=device, dtype=torch.float64),
+        torch.tensor([105.0, 0.0], device=device, dtype=accumulator_dtype),
         rtol=0.0,
         atol=0.0,
     )
@@ -403,8 +457,10 @@ def test_centered_split_input_uses_raw_max_for_virtual_dts_frame(
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("fanout", [1, 3])
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
 def test_centered_dts_accepts_float64_split_statics_and_matches_float64_reference(
     fanout: int,
+    accumulator_dtype: torch.dtype,
 ) -> None:
     _require_cuda()
     device = torch.device("cuda")
@@ -430,10 +486,10 @@ def test_centered_dts_accepts_float64_split_statics_and_matches_float64_referenc
         dtype=torch.float32,
     )
     pi_offset = torch.tensor(
-        [1200.125, -50.25, 800.5, 2.0], device=device, dtype=torch.float64
+        [1200.125, -50.25, 800.5, 2.0], device=device, dtype=accumulator_dtype
     )
     pibar_offset = torch.tensor(
-        [1199.75, -49.875, 801.25, 1.5], device=device, dtype=torch.float64
+        [1199.75, -49.875, 801.25, 1.5], device=device, dtype=accumulator_dtype
     )
     pairs = [(0, 1), (2, 3), (1, 2)][:fanout]
     lefts = torch.tensor([left for left, _ in pairs], device=device)
@@ -485,9 +541,9 @@ def test_centered_dts_accepts_float64_split_statics_and_matches_float64_referenc
 
     reference_residual, reference_offset = compute_dts_forward(
         pi.double(),
-        pi_offset,
+        pi_offset.double(),
         pibar.double(),
-        pibar_offset,
+        pibar_offset.double(),
         lefts,
         rights,
         sp_child1,
@@ -502,8 +558,9 @@ def test_centered_dts_accepts_float64_split_statics_and_matches_float64_referenc
     )
     reconstructed = centered_out.double() + out_offset[:, None]
     reference = reference_residual + reference_offset[:, None]
-    torch.testing.assert_close(reconstructed, reference, rtol=0.0, atol=1e-5)
-    assert out_offset.dtype == torch.float64
+    atol = 3e-4 if accumulator_dtype == torch.float32 else 1e-5
+    torch.testing.assert_close(reconstructed, reference, rtol=0.0, atol=atol)
+    assert out_offset.dtype == accumulator_dtype
 
 
 @pytest.mark.gpu

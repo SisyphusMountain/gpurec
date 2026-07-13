@@ -88,7 +88,11 @@ def forward_solve(batch_statics, theta, receiver_weights, *, warm_E=None):
             saved["pi_state"] = getattr(static, "pi_forward_state", None)
             if saved["pi_state"] is None:
                 raise RuntimeError("Pi forward did not publish its row-offset state")
-            loss = nll_from_root_rows(saved["root_rows"], saved["E"])
+            loss = nll_from_root_rows(
+                saved["root_rows"],
+                saved["E"],
+                accumulator_dtype=getattr(static, "accumulator_dtype", None),
+            )
             return loss, saved
         loss, _g, _gr, _go = stream_batches(
             statics, theta, receiver_weights, torch.zeros_like(receiver_weights),

@@ -18,7 +18,11 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core.kernels.pi_forward import _load_rate, _tl_float_dtype
+from gpurec.core.kernels.pi_forward import (
+    _load_rate,
+    _tl_float_dtype,
+    _validate_offset_tensor,
+)
 
 
 @triton.jit
@@ -121,24 +125,34 @@ def compute_dts_tangent(
     S = int(Pi.shape[1])
     d_out = torch.zeros((W, S), device=Pi.device, dtype=Pi.dtype)
     C = int(Pi.shape[0])
-    for name, offset, rows in (
-        ("pi_offset", pi_offset, C),
-        ("pibar_offset", pibar_offset, C),
-        ("dts_offset", dts_offset, int(W)),
-    ):
-        if offset.ndim != 1 or int(offset.shape[0]) != rows:
-            raise ValueError(f"{name} must have shape [{rows}]")
-        if offset.dtype != torch.float64 or offset.device != Pi.device:
-            raise TypeError(f"{name} must be fp64 on the Pi device")
-    pi_offset = pi_offset.contiguous()
-    pibar_offset = pibar_offset.contiguous()
-    dts_offset = dts_offset.contiguous()
+    pi_offset = _validate_offset_tensor(
+        "pi_offset",
+        pi_offset,
+        rows=C,
+        device=Pi.device,
+        residual_dtype=Pi.dtype,
+    )
+    accumulator_dtype = pi_offset.dtype
+    pibar_offset = _validate_offset_tensor(
+        "pibar_offset",
+        pibar_offset,
+        rows=C,
+        device=Pi.device,
+        dtype=accumulator_dtype,
+    )
+    dts_offset = _validate_offset_tensor(
+        "dts_offset",
+        dts_offset,
+        rows=W,
+        device=Pi.device,
+        dtype=accumulator_dtype,
+    )
     if N == 0:
         return d_out
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        # float64 batch static -> compute dtype at the canonical forward boundary.
+        # Batch static -> compute dtype at the canonical forward boundary.
         log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
     by_state = log_pD_vec.ndim == 2 and int(log_pD_vec.shape[1]) != 1
     row_stride = 0 if int(log_pD_vec.shape[0]) == 1 else int(log_pD_vec.stride(0))

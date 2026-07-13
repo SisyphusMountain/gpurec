@@ -9,6 +9,7 @@ from gpurec.core.parameters.extract_parameters import (
     extract_parameters_uniform,
     extract_parameters_weighted_receivers,
     origination_log_probs_from_weights,
+    resolve_accumulator_dtype,
 )
 
 
@@ -33,6 +34,10 @@ def solve_resident_e_pi(
 ):
     solver_options = static.solver_options
     solver_options.validate()
+    accumulator_dtype = resolve_accumulator_dtype(
+        getattr(static, "accumulator_dtype", None),
+        fallback=theta.dtype,
+    )
     use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
     S = int(static.species_helpers["S"])
     if use_receiver_weights:
@@ -42,6 +47,7 @@ def solve_resident_e_pi(
             static.species_helpers,
             specieswise=static.specieswise,
             genewise=static.genewise,
+            accumulator_dtype=accumulator_dtype,
         )
     else:
         log_p_s, log_p_d, log_p_l, max_transfer = extract_parameters_uniform(
@@ -49,6 +55,7 @@ def solve_resident_e_pi(
             static.species_helpers["unnorm_row_max"].to(device=theta.device, dtype=theta.dtype),
             specieswise=static.specieswise,
             genewise=static.genewise,
+            accumulator_dtype=accumulator_dtype,
         )
         receiver_log_probs = theta.new_full((S,), -math.log2(S))
     e_shape = (int(static.wave_layout["root_clade_ids"].numel()) if static.genewise else 1, S)
@@ -87,6 +94,7 @@ def solve_resident_e_pi(
         family_idx=static.rate_family_idx,
         pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
         pi_residual_out=pi_residual_out,
+        accumulator_dtype=accumulator_dtype,
     )
     root_rows, pi_wave, pibar_wave, pibar_row_max, pi_state = pi_forward_result
     static.pi_forward_state = pi_state
@@ -146,6 +154,7 @@ def nll_vector_from_root_rows(
     *,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     """Per-family negative log-likelihood from the root Pi-rows and extinction E.
 
@@ -157,20 +166,23 @@ def nll_vector_from_root_rows(
     origination prior (numerator) and the survival normalizer. The weighted form reduces exactly to
     the uniform form when the weights are equal.
 
-    The likelihood head is intentionally evaluated in fp64 even when the large
-    dynamic-programming state is fp32. Only ``[families, species]`` root rows
-    and the much smaller E/origination tensors are promoted; this removes the
-    final reduction's fp32 rounding without changing kernel storage.
+    The likelihood head is evaluated in ``accumulator_dtype``. Runtime callers
+    pass the configured dtype explicitly; standalone callers default to the
+    root-row dtype.
     """
-    root_rows = root_rows.to(torch.float64)
-    E = E.to(device=root_rows.device, dtype=torch.float64)
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=root_rows.dtype,
+    )
+    root_rows = root_rows.to(dtype=accumulator_dtype)
+    E = E.to(device=root_rows.device, dtype=accumulator_dtype)
     if origination_log_probs is not None:
         origination_log_probs = origination_log_probs.to(
-            device=root_rows.device, dtype=torch.float64
+            device=root_rows.device, dtype=accumulator_dtype
         )
     if origination_probs is not None:
         origination_probs = origination_probs.to(
-            device=root_rows.device, dtype=torch.float64
+            device=root_rows.device, dtype=accumulator_dtype
         )
     if origination_log_probs is None:
         return -(
@@ -190,14 +202,23 @@ def nll_from_root_rows(
     *,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     return nll_vector_from_root_rows(
-        root_rows, E, origination_log_probs=origination_log_probs, origination_probs=origination_probs
+        root_rows,
+        E,
+        origination_log_probs=origination_log_probs,
+        origination_probs=origination_probs,
+        accumulator_dtype=accumulator_dtype,
     ).sum()
 
 
 def origination_grad_from_root_rows(
-    root_rows: torch.Tensor, E: torch.Tensor, origination_weights: torch.Tensor
+    root_rows: torch.Tensor,
+    E: torch.Tensor,
+    origination_weights: torch.Tensor,
+    *,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     """``d(sum_families NLL)/d(origination_weights)`` at fixed ``root_rows``, ``E``.
 
@@ -207,16 +228,26 @@ def origination_grad_from_root_rows(
     genewise per-family origination weights ``[G,S]``, autograd preserves that shape and this returns
     ``[G,S]`` instead.
     """
-    # Match the fp64 likelihood head while returning the configured parameter
-    # dtype below. Autograd carries the small softmax/reduction in fp64 only.
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=root_rows.dtype,
+    )
+    # Match the configured likelihood head while returning the parameter dtype.
     ow = origination_weights.detach().to(
-        device=root_rows.device, dtype=torch.float64
+        device=root_rows.device, dtype=accumulator_dtype
     ).requires_grad_(True)
     with torch.enable_grad():
-        olp = origination_log_probs_from_weights(ow)
+        olp = origination_log_probs_from_weights(
+            ow,
+            accumulator_dtype=accumulator_dtype,
+        )
         op = torch.exp2(olp)
         loss = nll_vector_from_root_rows(
-            root_rows.detach(), E.detach(), origination_log_probs=olp, origination_probs=op
+            root_rows.detach(),
+            E.detach(),
+            origination_log_probs=olp,
+            origination_probs=op,
+            accumulator_dtype=accumulator_dtype,
         ).sum()
         (g,) = torch.autograd.grad(loss, ow)
     return g.to(dtype=origination_weights.dtype)

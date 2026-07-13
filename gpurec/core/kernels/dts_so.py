@@ -23,7 +23,11 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core.kernels.pi_forward import _load_rate, _tl_float_dtype
+from gpurec.core.kernels.pi_forward import (
+    _load_rate,
+    _tl_float_dtype,
+    _validate_offset_tensor,
+)
 
 
 @triton.jit
@@ -271,22 +275,27 @@ def dts_backward_so(
     N = int(sl.numel())
     dev, dt = Pi.device, Pi.dtype
     expected_rows = int(Pi.shape[0])
-    for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
-        if value.ndim != 1 or int(value.shape[0]) != expected_rows:
-            raise ValueError(f"{name} must have shape [{expected_rows}]")
-        if value.dtype != torch.float64:
-            raise TypeError(f"{name} must use torch.float64")
-        if value.device != dev:
-            raise ValueError(f"{name} must be on the Pi device")
-    pi_offset = pi_offset.contiguous()
-    pibar_offset = pibar_offset.contiguous()
+    pi_offset = _validate_offset_tensor(
+        "pi_offset",
+        pi_offset,
+        rows=expected_rows,
+        device=dev,
+        residual_dtype=Pi.dtype,
+    )
+    pibar_offset = _validate_offset_tensor(
+        "pibar_offset",
+        pibar_offset,
+        rows=expected_rows,
+        device=dev,
+        dtype=pi_offset.dtype,
+    )
     if N == 0:
         return
     lsp = meta.get("log_split_probs")
     if lsp is None:
         lsp = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        # float64 batch static -> compute dtype at the canonical forward boundary.
+        # Batch static -> compute dtype at the canonical forward boundary.
         lsp = lsp.reshape(N).to(Pi.dtype).contiguous()
     by_state = log_pD_param.ndim == 2 and int(log_pD_param.shape[1]) != 1
     row_stride = 0 if int(log_pD_param.shape[0]) == 1 else int(log_pD_param.stride(0))

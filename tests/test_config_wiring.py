@@ -14,12 +14,13 @@ Also covers Task 13: threading ``GpurecConfig`` into the three fit entry points
 from pathlib import Path
 import tempfile
 
+import pytest
 import torch
 
 from gpurec.api.solver_options import SolverOptions
 from gpurec.cli import _common
 from gpurec.cli.main import build_parser
-from gpurec.config import GpurecConfig
+from gpurec.config import GpurecConfig, PrecisionOptions
 from gpurec.config.rates import RateBounds
 from gpurec.solver.penalties import OriginationPenalty, PenaltyOptions
 
@@ -60,6 +61,59 @@ def test_model_config_none_reproduces_default_solver_options():
     assert model.solver_options == SolverOptions()
 
 
+def test_model_uses_config_precision_and_copies_it_to_batch_statics():
+    cfg = GpurecConfig(
+        precision=PrecisionOptions(model_dtype="float64", accumulator_dtype="float64")
+    )
+    model = _build_cpu_model(config=cfg)
+
+    assert model.theta.dtype == torch.float64
+    assert model.dtype == torch.float64
+    assert model.accumulator_dtype == torch.float64
+    assert model.precision_options == cfg.precision
+    assert all(static.precision_options == cfg.precision for static in model.batch_statics)
+    assert all(static.accumulator_dtype == torch.float64 for static in model.batch_statics)
+    assert model.species_helpers["unnorm_row_max"].dtype == torch.float64
+    for static in model.batch_statics:
+        for meta in static.wave_layout["wave_metas"]:
+            if "log_split_probs" in meta:
+                assert meta["log_split_probs"].dtype == torch.float64
+
+
+def test_model_float32_accumulator_reaches_preprocessing_statics():
+    cfg = GpurecConfig(
+        precision=PrecisionOptions(model_dtype="float32", accumulator_dtype="float32")
+    )
+    model = _build_cpu_model(config=cfg)
+
+    assert model.accumulator_dtype == torch.float32
+    assert model.species_helpers["unnorm_row_max"].dtype == torch.float32
+    for static in model.batch_statics:
+        for meta in static.wave_layout["wave_metas"]:
+            if "log_split_probs" in meta:
+                assert meta["log_split_probs"].dtype == torch.float32
+
+
+def test_model_explicit_dtype_overrides_config_precision():
+    cfg = GpurecConfig(
+        precision=PrecisionOptions(model_dtype="float64", accumulator_dtype="float64")
+    )
+    model = _build_cpu_model(config=cfg, dtype=torch.float32)
+
+    assert model.theta.dtype == torch.float32
+    assert model.precision_options.model_dtype == "float32"
+    # Resolving an explicit override must not mutate the caller's config.
+    assert cfg.precision.model_dtype == "float64"
+
+
+def test_model_rejects_accumulator_narrower_than_effective_model_dtype():
+    cfg = GpurecConfig(
+        precision=PrecisionOptions(model_dtype="float64", accumulator_dtype="float32")
+    )
+    with pytest.raises(ValueError, match="at least as wide"):
+        _build_cpu_model(config=cfg)
+
+
 # --- (b)/(c) CLI -----------------------------------------------------------
 
 def test_default_solver_options_unchanged_without_config_or_flags():
@@ -91,6 +145,38 @@ def test_explicit_flag_overrides_config(tmp_path):
          "--config", str(toml_path), "--pi-iters", "16"])
     opts = _common.make_solver_options(args)
     assert opts.pi_iters == 16  # explicit flag beats config
+
+
+def test_cli_config_model_dtype_is_effective_and_explicit_dtype_wins(tmp_path):
+    species = tmp_path / "species.nwk"
+    gene = tmp_path / "family_0.nwk"
+    config = tmp_path / "precision.toml"
+    species.write_text("(A:1,B:1)Root:1;\n", encoding="utf-8")
+    gene.write_text("(A_1:1,B_1:1)GeneRoot:1;\n", encoding="utf-8")
+    config.write_text(
+        '[precision]\nmodel_dtype = "float64"\naccumulator_dtype = "float64"\n',
+        encoding="utf-8",
+    )
+
+    common = [
+        "reconcile",
+        "--species",
+        str(species),
+        "--gene",
+        str(gene),
+        "--device",
+        "cpu",
+        "--config",
+        str(config),
+    ]
+    configured, _ = _common.build_model(build_parser().parse_args(common))
+    overridden, _ = _common.build_model(
+        build_parser().parse_args([*common, "--dtype", "float32"])
+    )
+
+    assert configured.theta.dtype == torch.float64
+    assert overridden.theta.dtype == torch.float32
+    assert configured.accumulator_dtype == overridden.accumulator_dtype == torch.float64
 
 
 # ================================================================================================

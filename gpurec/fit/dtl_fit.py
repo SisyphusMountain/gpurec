@@ -29,6 +29,7 @@ import time
 
 import torch
 
+from gpurec.config import GpurecConfig
 from gpurec.fit.genewise_fit import fit_genewise
 from gpurec.fit.global_fit import fit_global
 
@@ -36,8 +37,9 @@ _LN2 = 0.6931471805599453
 _MODES = ("global", "specieswise", "genewise")
 
 
-def fit_dtl(species_tree, gene_trees, mode, *, device="cuda", dtype=torch.float32,
-            max_steps=300, init_rate=None, solver_options=None, verbose=False) -> dict:
+def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
+            dtype: torch.dtype | str | None = None, max_steps=300, init_rate=None,
+            solver_options=None, config: GpurecConfig | None = None, verbose=False) -> dict:
     """Fit DTL rates with the best recipe for ``mode``. Returns a normalized result dict:
     ``{mode, theta[cpu], rates[cpu], nll_bits, nll_nats, n_families, wall_s, ...}`` (``gnorm`` for the
     coupled modes; ``genewise_result`` -- the full ``fit_genewise`` dict -- for genewise).
@@ -54,7 +56,8 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda", dtype=torch.float3
     if mode == "genewise":
         # fit_genewise resolves its own gene-tree spec and rebuilds tiered models internally.
         res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype,
-                           certify=True, solver_options=solver_options, verbose=verbose)
+                           certify=True, solver_options=solver_options, config=config,
+                           verbose=verbose)
         wall_s = time.perf_counter() - t0
         nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)
         return {"mode": mode, "theta": res["theta"].detach().cpu(),
@@ -65,7 +68,8 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda", dtype=torch.float3
     if mode == "global":
         # single shared 3x3 block -> genewise's 3x3 TR-Newton (fit_global). Returns the normalized dict.
         return fit_global(species_tree, gene_trees, device=device, dtype=dtype,
-                          init_rate=init_rate, solver_options=solver_options, verbose=verbose)
+                          init_rate=init_rate, solver_options=solver_options, config=config,
+                          verbose=verbose)
 
     if mode == "specieswise":
         raise NotImplementedError(

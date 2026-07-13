@@ -8,8 +8,15 @@ until ``defaults.toml`` is updated to match (or vice versa).
 import dataclasses
 
 import pytest
+import torch
 
-from gpurec.config import DEFAULTS_TOML_PATH, GpurecConfig, load_config
+from gpurec.config import (
+    DEFAULTS_TOML_PATH,
+    GpurecConfig,
+    PrecisionOptions,
+    load_config,
+    resolve_torch_dtype,
+)
 
 
 def test_defaults_toml_matches_dataclass_defaults():
@@ -28,6 +35,30 @@ def test_user_toml_overrides_merge():
     assert cfg.solver.pi_iters == 128 and cfg.newton.max_cg == 40
 
 
+def test_precision_defaults_are_toml_safe_and_resolve_to_torch_dtypes():
+    precision = PrecisionOptions()
+    precision.validate()
+
+    assert precision.model_dtype == "float32"
+    assert precision.accumulator_dtype == "float64"
+    assert precision.model_torch_dtype == torch.float32
+    assert precision.accumulator_torch_dtype == torch.float64
+    assert resolve_torch_dtype(" FLOAT64 ") == torch.float64
+
+
+def test_precision_validation_normalizes_names_and_rejects_narrow_accumulator():
+    precision = PrecisionOptions(model_dtype=" FLOAT32 ", accumulator_dtype=" FLOAT64 ")
+    precision.validate()
+    assert precision == PrecisionOptions()
+
+    with pytest.raises(ValueError, match="at least as wide"):
+        PrecisionOptions(model_dtype="float64", accumulator_dtype="float32").validate()
+    with pytest.raises(ValueError, match="at least as wide"):
+        PrecisionOptions(accumulator_dtype="float32").validate(model_dtype=torch.float64)
+    with pytest.raises(ValueError, match="unsupported floating-point dtype"):
+        PrecisionOptions(model_dtype="bfloat16").validate()
+
+
 def test_from_toml_partial_file_merges_onto_defaults(tmp_path):
     p = tmp_path / "user.toml"
     p.write_text("[solver]\npi_iters = 128\n")
@@ -40,6 +71,7 @@ def test_from_toml_partial_file_merges_onto_defaults(tmp_path):
             continue
         assert getattr(cfg.solver, f.name) == getattr(default.solver, f.name)
     assert cfg.newton == default.newton
+    assert cfg.precision == default.precision
     assert cfg.rates == default.rates
     assert cfg.regularizer == default.regularizer
     assert cfg.memory == default.memory
@@ -66,9 +98,21 @@ def test_load_config_with_path_loads_and_merges(tmp_path):
     assert cfg.rates.min_rate == 1e-8
     assert cfg.rates.max_rate == default.rates.max_rate  # untouched None default
     assert cfg.solver == default.solver
+    assert cfg.precision == default.precision
     assert cfg.newton == default.newton
     assert cfg.regularizer == default.regularizer
     assert cfg.memory == default.memory
+
+
+def test_precision_partial_toml_override_merges_and_validates(tmp_path):
+    p = tmp_path / "precision.toml"
+    p.write_text('[precision]\nmodel_dtype = "float64"\n', encoding="utf-8")
+
+    cfg = GpurecConfig.from_toml(p)
+    cfg.validate()
+
+    assert cfg.precision.model_dtype == "float64"
+    assert cfg.precision.accumulator_dtype == "float64"
 
 
 def test_none_only_fields_are_omitted_from_defaults_toml_and_stay_none():

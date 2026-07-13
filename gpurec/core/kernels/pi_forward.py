@@ -9,11 +9,32 @@ __all__ = [
     "_load_rate",
     "_prepare_wave_launch",
     "_tl_float_dtype",
+    "_validate_offset_tensor",
 ]
+
+
+_SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64)
 
 
 def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
+
+
+def _validate_offset_tensor(
+    name, value, *, rows, device, dtype=None, residual_dtype=None
+):
+    """Return a contiguous row-offset tensor after structural dtype checks."""
+    if value.ndim != 1 or int(value.shape[0]) != int(rows):
+        raise ValueError(f"{name} must have shape [{int(rows)}]")
+    if value.dtype not in _SUPPORTED_FLOAT_DTYPES:
+        raise TypeError(f"{name} must use torch.float32 or torch.float64")
+    if residual_dtype == torch.float64 and value.dtype != torch.float64:
+        raise TypeError(f"{name} must not be narrower than the residual dtype")
+    if dtype is not None and value.dtype != dtype:
+        raise TypeError(f"{name} must match accumulator dtype {dtype}")
+    if value.device != device:
+        raise ValueError(f"{name} must be on {device}")
+    return value.contiguous()
 
 
 def _prepare_wave_launch(S: int, const_tensor) -> tuple[int, int]:
@@ -145,6 +166,7 @@ def _leaf_initial_wave_step_kernel(
     BLOCK_S: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
+    ACC_DTYPE: tl.constexpr,
 ):
     NEG_LARGE: tl.constexpr = -float("inf")
 
@@ -212,7 +234,7 @@ def _leaf_initial_wave_step_kernel(
         row_max = tl.maximum(row_max, tl.max(tl.where(mask, result, NEG_LARGE), axis=0))
 
     row_max_safe = tl.where(row_max != NEG_LARGE, row_max, 0.0)
-    tl.store(Pi_new_offset_ptr + global_row, row_max_safe.to(tl.float64))
+    tl.store(Pi_new_offset_ptr + global_row, row_max_safe.to(ACC_DTYPE))
     out_global_base = global_row * stride
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -302,6 +324,7 @@ def _wave_step_kernel(
     COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
+    ACC_DTYPE: tl.constexpr,
 ):
     NEG_LARGE: tl.constexpr = -float("inf")
 
@@ -326,7 +349,7 @@ def _wave_step_kernel(
         DTYPE,
     )
     # ``row_max`` is already required for Pibar. Absorb it lazily into the
-    # fp64 row frame so the recurrence consumes near-zero residuals without an
+    # accumulator-dtype row frame so the recurrence consumes near-zero residuals without an
     # exact recenter/store pass over the input row.
     if INPUT_IS_DTS:
         if USE_RECEIVER_WEIGHTS:
@@ -348,13 +371,13 @@ def _wave_step_kernel(
         # put ordinary Pi iterates in their local frame. Avoid repeating four
         # vector shifts on every later fixed-point iteration.
         row_shift = tl.zeros((), dtype=DTYPE)
-    effective_pi_offset = pi_offset + row_shift.to(tl.float64)
+    effective_pi_offset = pi_offset + row_shift.to(ACC_DTYPE)
 
     term_base = effective_pi_offset
     if has_splits:
         dts_offset = tl.load(DTS_offset_ptr + w)
         if INPUT_IS_DTS:
-            dts_center_offset = dts_offset + row_shift.to(tl.float64)
+            dts_center_offset = dts_offset + row_shift.to(ACC_DTYPE)
         else:
             dts_center_offset = tl.load(DTS_center_offset_ptr + w)
         term_base = tl.maximum(term_base, dts_center_offset)
@@ -368,10 +391,10 @@ def _wave_step_kernel(
         # The leaf source represents ``leaf_obs_logp``, not a zero-frame
         # value. Using 0 here forced every negative HOGENOM row back into the
         # absolute frame after the exactly gauged leaf initializer.
-        term_base = tl.maximum(term_base, leaf_obs_logp.to(tl.float64))
+        term_base = tl.maximum(term_base, leaf_obs_logp.to(ACC_DTYPE))
     pi_corr = (effective_pi_offset - term_base).to(DTYPE)
     # DTS storage remains in its original gauge. The virtual row offset
-    # participates only in base selection; one fp64 subtraction folds its
+    # participates only in base selection; one accumulator subtraction folds its
     # shift into the same correction the recurrence already applies.
     dts_corr = (dts_offset - term_base).to(DTYPE)
     leaf_corr = (0.0 - term_base).to(DTYPE)
@@ -454,18 +477,18 @@ def _wave_step_kernel(
             )
 
         if COMPUTE_DIFF:
-            # Compare represented absolute values in fp64 without materializing
-            # either large absolute fp32 row.
+            # Compare represented absolute values in the accumulator dtype
+            # without materializing either large absolute row.
             finite = mask & (result != NEG_LARGE) & (pi_w != NEG_LARGE)
             diff = tl.where(
                 finite,
                 tl.abs(
-                    result.to(tl.float64)
-                    - pi_w.to(tl.float64)
+                    result.to(ACC_DTYPE)
+                    - pi_w.to(ACC_DTYPE)
                     + term_base
                     - effective_pi_offset
                 ),
-                tl.zeros([BLOCK_S], dtype=tl.float64),
+                tl.zeros([BLOCK_S], dtype=ACC_DTYPE),
             )
             row_max_diff = tl.maximum(row_max_diff, tl.max(diff, axis=0).to(tl.float32))
 
@@ -558,6 +581,7 @@ def _dts_eq1_kernel(
     BY_SPECIES: tl.constexpr,
     USE_ACTIVE: tl.constexpr,
     DTYPE: tl.constexpr,
+    ACC_DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
     n = tl.program_id(0)
@@ -595,6 +619,7 @@ def _dts_eq1_kernel(
     pibar_off_r = tl.load(Pibar_offset + right)
     base = tl.maximum(pi_off_l + pi_off_r, pi_off_l + pibar_off_r)
     base = tl.maximum(base, pi_off_r + pibar_off_l)
+    base = base.to(ACC_DTYPE)
     corr0 = (pi_off_l + pi_off_r - base).to(DTYPE)
     corr1 = (pi_off_l + pibar_off_r - base).to(DTYPE)
     corr2 = (pi_off_r + pibar_off_l - base).to(DTYPE)
@@ -665,6 +690,7 @@ def _dts_ge2_stage1_kernel(
     BY_SPECIES: tl.constexpr,
     USE_ACTIVE: tl.constexpr,
     DTYPE: tl.constexpr,
+    ACC_DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
     group = tl.program_id(0)
@@ -686,10 +712,10 @@ def _dts_ge2_stage1_kernel(
     tile_end = tl.minimum(tile_start + TILE_SPLITS, end)
     m = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
     acc = tl.zeros([BLOCK_S], dtype=DTYPE)
-    # Use a tile-local fp64 frame and advance it as split offsets increase.
+    # Use a tile-local accumulator frame and advance it as split offsets increase.
     # This folds the old group-wide offset prepass into work stage 1 already
     # performs, without rescanning every split once per species block.
-    tile_base_offset = tl.full((), value=NEG_INF, dtype=tl.float64)
+    tile_base_offset = tl.full((), value=NEG_INF, dtype=ACC_DTYPE)
     split_rel = tile_start
     while split_rel < tile_end:
         split_i = split_offset + split_rel
@@ -786,6 +812,7 @@ def _dts_ge2_stage2_kernel(
     BLOCK_S: tl.constexpr,
     USE_ACTIVE: tl.constexpr,
     DTYPE: tl.constexpr,
+    ACC_DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
     group = tl.program_id(0)
@@ -803,7 +830,7 @@ def _dts_ge2_stage2_kernel(
     n_tiles = tl.cdiv(end - start, TILE_SPLITS)
     m = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
     acc = tl.zeros([BLOCK_S], dtype=DTYPE)
-    row_base_offset = tl.full((), value=NEG_INF, dtype=tl.float64)
+    row_base_offset = tl.full((), value=NEG_INF, dtype=ACC_DTYPE)
     tile_id = 0
     while tile_id < n_tiles:
         partial_row = group * MAX_TILES + tile_id
@@ -858,6 +885,13 @@ def compute_leaf_initial_wave_step(
     family_idx,
     use_receiver_weights=True,
 ):
+    Pi_out_offset = _validate_offset_tensor(
+        "Pi_out_offset",
+        Pi_out_offset,
+        rows=Pi_out.shape[0],
+        device=Pi_out.device,
+        residual_dtype=Pi_out.dtype,
+    )
     block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
     _leaf_initial_wave_step_kernel[(W,)](
         Pi_out,
@@ -883,6 +917,7 @@ def compute_leaf_initial_wave_step(
         BLOCK_S=block_s,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_out.dtype),
+        ACC_DTYPE=_tl_float_dtype(Pi_out_offset.dtype),
         num_warps=8,
     )
 
@@ -922,6 +957,28 @@ def compute_wave_step(
     use_receiver_weights=True,
     pi_residual_out=None,
 ):
+    Pi_in_offset = _validate_offset_tensor(
+        "Pi_in_offset",
+        Pi_in_offset,
+        rows=Pi_in.shape[0],
+        device=Pi_in.device,
+        residual_dtype=Pi_in.dtype,
+    )
+    accumulator_dtype = Pi_in_offset.dtype
+    Pi_out_offset = _validate_offset_tensor(
+        "Pi_out_offset",
+        Pi_out_offset,
+        rows=Pi_out.shape[0],
+        device=Pi_in.device,
+        dtype=accumulator_dtype,
+    )
+    Pibar_offset = _validate_offset_tensor(
+        "Pibar_offset",
+        Pibar_offset,
+        rows=Pibar.shape[0],
+        device=Pi_in.device,
+        dtype=accumulator_dtype,
+    )
     has_splits = DTS_reduced is not None
     if has_splits and DTS_offset is None:
         raise ValueError("DTS_offset is required with row-gauged split DTS input")
@@ -936,6 +993,21 @@ def compute_wave_step(
         DTS_reduced = Pi_in
         DTS_offset = Pi_in_offset
         DTS_center_offset = Pi_in_offset
+    else:
+        DTS_offset = _validate_offset_tensor(
+            "DTS_offset",
+            DTS_offset,
+            rows=W,
+            device=Pi_in.device,
+            dtype=accumulator_dtype,
+        )
+        DTS_center_offset = _validate_offset_tensor(
+            "DTS_center_offset",
+            DTS_center_offset,
+            rows=W,
+            device=Pi_in.device,
+            dtype=accumulator_dtype,
+        )
     if input_ws is not None and (
         not has_splits
         or int(input_ws) != 0
@@ -991,6 +1063,7 @@ def compute_wave_step(
         COMPUTE_DIFF=compute_diff,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
+        ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
         num_warps=8,
     )
 
@@ -1021,17 +1094,30 @@ def compute_dts_forward(
 ):
     N = int(lefts.shape[0])
     S = int(Pi.shape[1])
+    Pi_offset = _validate_offset_tensor(
+        "Pi_offset",
+        Pi_offset,
+        rows=Pi.shape[0],
+        device=Pi.device,
+        residual_dtype=Pi.dtype,
+    )
+    accumulator_dtype = Pi_offset.dtype
+    Pibar_offset = _validate_offset_tensor(
+        "Pibar_offset",
+        Pibar_offset,
+        rows=Pibar.shape[0],
+        device=Pi.device,
+        dtype=accumulator_dtype,
+    )
     out = torch.full((W, S), float("-inf"), device=Pi.device, dtype=Pi.dtype)
-    out_offset = torch.zeros((W,), device=Pi.device, dtype=torch.float64)
+    out_offset = torch.zeros((W,), device=Pi.device, dtype=accumulator_dtype)
     if N == 0:
         return out, out_offset
-    Pi_offset = Pi_offset.to(device=Pi.device, dtype=torch.float64).contiguous()
-    Pibar_offset = Pibar_offset.to(device=Pi.device, dtype=torch.float64).contiguous()
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        # Preprocessing owns split statics in fp64. Match the normal DTS boundary:
-        # fp32 residual kernels must not acquire an fp64 loop-carried accumulator.
+        # Preprocessing owns split statics. Match the residual compute dtype at
+        # the DTS boundary so they do not change the loop-carried arithmetic.
         log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
     if n_eq1 is None:
         n_eq1 = N
@@ -1070,6 +1156,7 @@ def compute_dts_forward(
             BY_SPECIES=bool(by_species),
             USE_ACTIVE=bool(active_parent_rows is not None),
             DTYPE=_tl_float_dtype(Pi.dtype),
+            ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
         )
 
     if ge2_parent_ids is None or int(ge2_parent_ids.numel()) == 0:
@@ -1083,7 +1170,7 @@ def compute_dts_forward(
     partial_max = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
     partial_sum = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
     partial_offset = torch.empty(
-        (n_groups * max_tiles,), device=Pi.device, dtype=torch.float64
+        (n_groups * max_tiles,), device=Pi.device, dtype=accumulator_dtype
     )
     _dts_ge2_stage1_kernel[(n_groups, max_tiles, triton.cdiv(S, block_s))](
         Pi,
@@ -1114,6 +1201,7 @@ def compute_dts_forward(
         BY_SPECIES=bool(by_species),
         USE_ACTIVE=bool(active_parent_rows is not None),
         DTYPE=_tl_float_dtype(Pi.dtype),
+        ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
     )
     _dts_ge2_stage2_kernel[(n_groups, triton.cdiv(S, block_s))](
         ge2_ptr,
@@ -1130,5 +1218,6 @@ def compute_dts_forward(
         BLOCK_S=block_s,
         USE_ACTIVE=bool(active_parent_rows is not None),
         DTYPE=_tl_float_dtype(Pi.dtype),
+        ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
     )
     return out, out_offset

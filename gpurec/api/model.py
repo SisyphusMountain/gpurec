@@ -11,7 +11,7 @@ from gpurec.api._execution import (
     theta_for_static,
 )
 from gpurec.api.solver_options import SolverOptions
-from gpurec.config import GpurecConfig
+from gpurec.config import GpurecConfig, PrecisionOptions, torch_dtype_name
 from gpurec.config.rates import RateBounds
 from gpurec.core.scheduling.batching import plan_batch_wave_layouts, preprocess_dataset
 
@@ -45,7 +45,7 @@ class GeneReconModel(torch.nn.Module):
         max_wave_size: int = 8192,
         solver_options: SolverOptions | dict | None = None,
         config: GpurecConfig | None = None,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype | str | None = None,
         per_family_origination: bool = False,
     ):
         super().__init__()
@@ -54,19 +54,28 @@ class GeneReconModel(torch.nn.Module):
         genewise, specieswise = _mode_flags(mode)
         if per_family_origination and not genewise:
             raise ValueError("per_family_origination requires mode='genewise'")
-        # ``config`` (a top-level ``GpurecConfig``) only supplies ``solver_options`` here --
-        # ``config.newton``/``config.rates``/``config.memory`` belong to the fit/curvature entry
-        # points, not this constructor. When both ``config`` and ``solver_options`` are given, the
-        # explicit ``solver_options`` wins (config is only a fallback default). ``config=None``
-        # (the default) reproduces today's exact behavior.
+        # ``config`` supplies solver and precision defaults here. Explicit
+        # ``solver_options`` and ``dtype`` arguments win over their matching
+        # config values; the remaining config sections belong to fit/curvature
+        # entry points rather than this constructor.
         if config is not None and solver_options is None:
             solver_options = config.solver
+        precision_options = _replace_dataclass(
+            config.precision if config is not None else PrecisionOptions()
+        )
+        if dtype is not None:
+            precision_options.model_dtype = torch_dtype_name(dtype)
+        precision_options.validate()
+        dtype = precision_options.model_torch_dtype
         self.solver_options = solver_options
+        self.precision_options = precision_options
+        self.accumulator_dtype = precision_options.accumulator_torch_dtype
         self.dtype = dtype
 
         raw = preprocess_dataset(
             str(species_tree),
             gene_trees,
+            accumulator_dtype=self.accumulator_dtype,
             family_chunk_size=family_chunk_size,
             clade_budget=clade_budget,
             batch_packing=batch_packing,
@@ -167,6 +176,8 @@ class GeneReconModel(torch.nn.Module):
             genewise=self.genewise,
             specieswise=self.specieswise,
             solver_options=self.solver_options,
+            precision_options=self.precision_options,
+            accumulator_dtype=self.accumulator_dtype,
             device=device,
             max_wave_size=max_wave_size,
         )

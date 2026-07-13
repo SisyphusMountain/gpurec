@@ -28,7 +28,10 @@ import torch
 
 from gpurec.config.newton import NewtonOptions
 from gpurec.core.inference.solver import origination_weights_are_uniform, receiver_weights_are_uniform
-from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
+from gpurec.core.parameters.extract_parameters import (
+    origination_log_probs_from_weights,
+    resolve_accumulator_dtype,
+)
 from gpurec.solver import curvature as _curv
 from gpurec.solver.cg import cg_solve
 from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp
@@ -45,9 +48,17 @@ def proj_z(u: torch.Tensor, theta_numel: int, S: int) -> torch.Tensor:
     return torch.cat([th, a - a.mean(), o - o.mean()])
 
 
-def softmax_origination(omega: torch.Tensor) -> torch.Tensor:
+def softmax_origination(
+    omega: torch.Tensor,
+    *,
+    accumulator_dtype: torch.dtype | None = None,
+) -> torch.Tensor:
     """Origination distribution ``p = softmax(omega)`` (the model's ``2^{origination_log_probs}``)."""
-    return torch.softmax(omega.double(), dim=-1)
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=omega.dtype,
+    )
+    return torch.softmax(omega.to(dtype=accumulator_dtype), dim=-1)
 
 
 # ---------------------------------------------------------------------------- joint-HVP construction
@@ -64,7 +75,14 @@ def build_joint_hvp(static, theta, alpha, omega, *, warm_E=None, tangent_self_it
         raise ValueError("build_joint_hvp requires a NON-uniform alpha (perturb it first).")
     if origination_weights_are_uniform(omega):
         raise ValueError("build_joint_hvp requires a NON-uniform omega (perturb it first).")
-    lw = origination_log_probs_from_weights(omega)
+    accumulator_dtype = resolve_accumulator_dtype(
+        getattr(static, "accumulator_dtype", None),
+        fallback=theta.dtype,
+    )
+    lw = origination_log_probs_from_weights(
+        omega.to(dtype=accumulator_dtype),
+        accumulator_dtype=accumulator_dtype,
+    )
     w = torch.exp2(lw)
     if sv is None:
         loss, sv = forward_solve(static, theta, alpha, warm_E=warm_E)
@@ -172,10 +190,18 @@ def origination_information(static, theta, alpha, omega, *, hvp=None, theta_nume
         Sigma_oo = 0.5 * (Sigma_oo + Sigma_oo.T)
     se_omega = Sigma_oo.diagonal().clamp_min(0.0).sqrt()
 
-    pdist = softmax_origination(omega)
+    pdist = softmax_origination(
+        omega,
+        accumulator_dtype=getattr(static, "accumulator_dtype", None),
+    )
     se_p = None
     if len(species) == S:
-        J = torch.diag(pdist) - torch.outer(pdist, pdist)  # softmax Jacobian dp/domega
+        # The probability head follows the configured accumulator, while this
+        # outer curvature routine may intentionally solve in a wider dtype.
+        # Perform the covariance contraction in the covariance dtype without
+        # changing the returned probability dtype.
+        p_cov = pdist.to(dtype=Sigma_oo.dtype)
+        J = torch.diag(p_cov) - torch.outer(p_cov, p_cov)  # softmax Jacobian dp/domega
         Sigma_p = J @ Sigma_oo @ J.T
         se_p = Sigma_p.diagonal().clamp_min(0.0).sqrt()
     if verbose:

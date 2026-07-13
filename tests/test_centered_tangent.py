@@ -71,7 +71,11 @@ C_1 3
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("fanout", [1, 3])
-def test_centered_dts_tangent_matches_absolute_fp64(fanout: int) -> None:
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_centered_dts_tangent_matches_absolute_fp64(
+    fanout: int,
+    accumulator_dtype: torch.dtype,
+) -> None:
     """Pin child-combination frame corrections for both eq1 and ge2 DTS."""
     _require_cuda()
     device = torch.device("cuda")
@@ -98,10 +102,10 @@ def test_centered_dts_tangent_matches_absolute_fp64(fanout: int) -> None:
     )
     # Large, deliberately unrelated gauges make a missing correction obvious.
     pi_offset = torch.tensor(
-        [1200.125, -50.25, 800.5, 2.0], device=device, dtype=torch.float64
+        [1200.125, -50.25, 800.5, 2.0], device=device, dtype=accumulator_dtype
     )
     pibar_offset = torch.tensor(
-        [1199.75, -49.875, 801.25, 1.5], device=device, dtype=torch.float64
+        [1199.75, -49.875, 801.25, 1.5], device=device, dtype=accumulator_dtype
     )
     dpi = torch.tensor(
         [
@@ -191,9 +195,9 @@ def test_centered_dts_tangent_matches_absolute_fp64(fanout: int) -> None:
 
     dts_reference, dts_reference_offset = compute_dts_forward(
         pi.double(),
-        pi_offset,
+        pi_offset.double(),
         pibar.double(),
-        pibar_offset,
+        pibar_offset.double(),
         lefts,
         rights,
         sp_child1,
@@ -224,8 +228,8 @@ def test_centered_dts_tangent_matches_absolute_fp64(fanout: int) -> None:
         dts_reference,
         family_idx,
         log_split_probs=log_split_probs,
-        pi_offset=pi_offset,
-        pibar_offset=pibar_offset,
+        pi_offset=pi_offset.double(),
+        pibar_offset=pibar_offset.double(),
         dts_offset=dts_reference_offset,
         **layout,
     )

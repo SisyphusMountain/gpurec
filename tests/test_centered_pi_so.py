@@ -5,6 +5,7 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import evaluate_static_loss_grad
+from gpurec.config import GpurecConfig, PrecisionOptions
 from gpurec.core.kernels.dts_so import dts_backward_so
 from gpurec.core.kernels.wave_so import wave_backward_so
 from gpurec.solver.hvp_exact import make_exact_hvp
@@ -65,9 +66,11 @@ C_1 3
 
 @pytest.mark.gpu
 @pytest.mark.parametrize(("has_splits", "weighted"), [(False, True), (True, False)])
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
 def test_centered_wave_so_matches_reconstructed_absolute(
     has_splits: bool,
     weighted: bool,
+    accumulator_dtype: torch.dtype,
 ) -> None:
     device = _require_cuda()
     dtype = torch.float32
@@ -78,8 +81,10 @@ def test_centered_wave_so_matches_reconstructed_absolute(
     pibar = torch.tensor(
         [[-1.0, -0.4, -1.7], [-0.6, -1.5, -0.9]], device=device, dtype=dtype
     )
-    pi_offset = torch.tensor([2.0, 4.0], device=device, dtype=torch.float64)
-    pibar_offset = torch.tensor([2.75, 1.5], device=device, dtype=torch.float64)
+    pi_offset = torch.tensor([2.0, 4.0], device=device, dtype=accumulator_dtype)
+    pibar_offset = torch.tensor(
+        [2.75, 1.5], device=device, dtype=accumulator_dtype
+    )
     pi_absolute = (pi.double() + pi_offset[:, None]).to(dtype)
     pibar_absolute = (pibar.double() + pibar_offset[:, None]).to(dtype)
 
@@ -117,7 +122,7 @@ def test_centered_wave_so_matches_reconstructed_absolute(
         [[0.0, 0.0, 0.0], [0.04, -0.02, 0.01]], device=device, dtype=dtype
     )
 
-    dts_offset = torch.tensor([5.5], device=device, dtype=torch.float64)
+    dts_offset = torch.tensor([5.5], device=device, dtype=accumulator_dtype)
     dts = torch.tensor([[-0.45, -1.3, -0.7]], device=device, dtype=dtype)
     dts_absolute = (dts.double() + dts_offset[:, None]).to(dtype)
     d_dts = torch.tensor([[0.09, -0.05, 0.02]], device=device, dtype=dtype)
@@ -184,7 +189,11 @@ def test_centered_wave_so_matches_reconstructed_absolute(
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("fanout", [1, 2])
-def test_centered_dts_so_matches_reconstructed_absolute(fanout: int) -> None:
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_centered_dts_so_matches_reconstructed_absolute(
+    fanout: int,
+    accumulator_dtype: torch.dtype,
+) -> None:
     device = _require_cuda()
     dtype = torch.float32
     S, C, ws = 3, 3, 2
@@ -206,8 +215,12 @@ def test_centered_dts_so_matches_reconstructed_absolute(fanout: int) -> None:
         device=device,
         dtype=dtype,
     )
-    pi_offset = torch.tensor([2.0, -1.0, 4.0], device=device, dtype=torch.float64)
-    pibar_offset = torch.tensor([0.5, 1.5, 3.25], device=device, dtype=torch.float64)
+    pi_offset = torch.tensor(
+        [2.0, -1.0, 4.0], device=device, dtype=accumulator_dtype
+    )
+    pibar_offset = torch.tensor(
+        [0.5, 1.5, 3.25], device=device, dtype=accumulator_dtype
+    )
     pi_absolute = (pi.double() + pi_offset[:, None]).to(dtype)
     pibar_absolute = (pibar.double() + pibar_offset[:, None]).to(dtype)
     row_max_residual = pi.amax(dim=1)
@@ -309,14 +322,22 @@ def test_centered_dts_so_matches_reconstructed_absolute(fanout: int) -> None:
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
 def test_exact_hvp_matches_fp64_and_finite_difference(
     weighted: bool,
+    accumulator_dtype: torch.dtype,
 ) -> None:
     _require_cuda()
     data = Path("tests/data/alerax/test_trees_200")
     species_tree, gene_tree = data / "sp.nwk", data / "g.nwk"
 
-    def build(dtype: torch.dtype, e_tol: float) -> GeneReconModel:
+    def build(
+        dtype: torch.dtype,
+        e_tol: float,
+        accumulator: torch.dtype,
+    ) -> GeneReconModel:
+        dtype_name = "float64" if dtype == torch.float64 else "float32"
+        accumulator_name = "float64" if accumulator == torch.float64 else "float32"
         return GeneReconModel(
             species_tree,
             [gene_tree],
@@ -327,6 +348,12 @@ def test_exact_hvp_matches_fp64_and_finite_difference(
             clade_budget=None,
             batch_packing="sequential",
             max_wave_size=8,
+            config=GpurecConfig(
+                precision=PrecisionOptions(
+                    model_dtype=dtype_name,
+                    accumulator_dtype=accumulator_name,
+                )
+            ),
             solver_options=SolverOptions(
                 e_max_iter=512,
                 e_tol=e_tol,
@@ -336,8 +363,8 @@ def test_exact_hvp_matches_fp64_and_finite_difference(
             ),
         )
 
-    centered_model = build(torch.float32, 1e-8)
-    reference_model = build(torch.float64, 1e-12)
+    centered_model = build(torch.float32, 1e-8, accumulator_dtype)
+    reference_model = build(torch.float64, 1e-12, torch.float64)
     theta = torch.full((1, 3), -3.321928, device="cuda", dtype=torch.float32)
     receiver = torch.zeros_like(centered_model.receiver_weights)
     if weighted:

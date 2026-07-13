@@ -23,6 +23,7 @@ import torch
 
 from gpurec.api._batch_state import _BatchStatic
 from gpurec.api.solver_options import SolverOptions
+from gpurec.config import PrecisionOptions
 from gpurec.solver.value_and_grad import make_value_and_grad
 
 _KBENCH = os.environ.get(
@@ -64,6 +65,9 @@ def gpurec_static_from_capture(cap, device):
     so_kw = {k: v for k, v in cap["meta"]["solver_options"].items() if k in _accepted}
     so = SolverOptions(**so_kw)
     so.validate()
+    model_dtype = "float64" if cap["inputs"]["theta"].dtype == torch.float64 else "float32"
+    precision = PrecisionOptions(model_dtype=model_dtype)
+    precision.validate()
     n_items = int(cap["meta"]["n_items"])
     return _BatchStatic(
         wave_layout=wave_layout,
@@ -74,6 +78,8 @@ def gpurec_static_from_capture(cap, device):
         family_indices=list(range(n_items)),
         family_index_tensor=torch.arange(n_items, dtype=torch.long, device=device),
         solver_options=so,
+        precision_options=precision,
+        accumulator_dtype=precision.accumulator_torch_dtype,
         warm_E=None,
     )
 

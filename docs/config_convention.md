@@ -5,28 +5,29 @@ never edited into a library function body. The library ships only reference/neut
 
 ## The hierarchy: `GpurecConfig`
 
-`gpurec.config.GpurecConfig` is the single composition root. It is a plain dataclass of five
+`gpurec.config.GpurecConfig` is the single composition root. It is a plain dataclass of six
 per-area option dataclasses, each with its own defaults:
 
 | Field                | Type             | Defined in                     |
 |----------------------|------------------|---------------------------------|
 | `config.solver`      | `SolverOptions`  | `gpurec/api/solver_options.py` |
+| `config.precision`   | `PrecisionOptions` | `gpurec/config/precision.py` |
 | `config.newton`      | `NewtonOptions`  | `gpurec/config/newton.py`      |
 | `config.rates`       | `RateBounds`     | `gpurec/config/rates.py`       |
 | `config.regularizer` | `PenaltyOptions` | `gpurec/solver/penalties.py`   |
 | `config.memory`      | `MemoryOptions`  | `gpurec/config/memory.py`      |
 
-All five are re-exported from `gpurec.config` (`from gpurec.config import GpurecConfig,
-SolverOptions, NewtonOptions, RateBounds, PenaltyOptions, MemoryOptions`), so a script never needs
-to know which sub-module a given option class actually lives in.
+All six are re-exported from `gpurec.config` (`from gpurec.config import GpurecConfig,
+SolverOptions, PrecisionOptions, NewtonOptions, RateBounds, PenaltyOptions, MemoryOptions`), so a
+script never needs to know which sub-module a given option class actually lives in.
 
 `GpurecConfig()` with no arguments constructs every sub-option at its own dataclass default --
-identical to building each of the five independently. `config.validate()` delegates to each
+identical to building each of the six independently. `config.validate()` delegates to each
 sub-option's own `validate()` (where one exists).
 
 ## Source of truth
 
-The dataclass defaults in the five files above are authoritative. `gpurec/config/defaults.toml` is
+The dataclass defaults in the six files above are authoritative. `gpurec/config/defaults.toml` is
 a hand-written TOML mirror of those same defaults, and the test
 `test_defaults_toml_matches_dataclass_defaults` (`tests/test_config_toml.py`) asserts
 `GpurecConfig.from_toml(DEFAULTS_TOML_PATH) == GpurecConfig()`. If you change a dataclass default,
@@ -42,9 +43,12 @@ deep-merge leaves the dataclass's own `None` in place.
 **1. A Python dataclass in your script** (preferred for one-off experiments):
 
 ```python
-from gpurec.config import GpurecConfig, SolverOptions
+from gpurec.config import GpurecConfig, PrecisionOptions, SolverOptions
 
-config = GpurecConfig(solver=SolverOptions(pi_iters=32, e_tol=1e-7))
+config = GpurecConfig(
+    solver=SolverOptions(pi_iters=32, e_tol=1e-7),
+    precision=PrecisionOptions(model_dtype="float32", accumulator_dtype="float64"),
+)
 model = GeneReconModel(species_tree, gene_trees, mode="genewise", config=config)
 ```
 
@@ -56,6 +60,10 @@ model = GeneReconModel(species_tree, gene_trees, mode="genewise", config=config)
 [solver]
 pi_iters = 32
 e_tol = 1e-7
+
+[precision]
+model_dtype = "float32"
+accumulator_dtype = "float64"
 ```
 
 ```python
@@ -70,37 +78,48 @@ uses the same loader.
 
 ## How it's actually wired (read before assuming more than this)
 
-- **`config.solver` -> `GeneReconModel(config=...)`.** `GeneReconModel.__init__`
-  (`gpurec/api/model.py`) takes an optional `config: GpurecConfig`; when given (and no explicit
-  `solver_options=` is also passed), it pulls `config.solver` out and uses it as the model's
-  `SolverOptions`. That is the *only* field of `config` this constructor reads.
-- **`config.solver` -> the CLI's `--config file.toml`.** `gpurec/cli/_common.py::make_solver_options`
-  loads the file via `load_config(args.config).solver`, then layers any explicitly-passed
-  `--pi-iters`/`--neumann-terms`/`--e-max-iter` flag on top (flag > `--config` file > hardcoded
-  `SolverOptions` default), and hands the result to `GeneReconModel(solver_options=...)`.
-- **Honesty caveat -- `config.newton`/`config.rates`/`config.memory` are NOT auto-threaded into the
-  fit entry points.** `NewtonOptions`, `RateBounds`, and `MemoryOptions` are each real, in-use
+- **`config.solver` and `config.precision` -> `GeneReconModel(config=...)`.**
+  `GeneReconModel.__init__` (`gpurec/api/model.py`) reads both sections. An explicit
+  `solver_options=` overrides `config.solver`, and an explicit `dtype=` overrides
+  `config.precision.model_dtype`. `config.precision.accumulator_dtype` still applies when
+  `dtype=` overrides the model dtype and must be at least as wide as that effective dtype.
+- **Precision responsibilities.** `model_dtype` controls parameters and dense E/Pi residual
+  state. `accumulator_dtype` controls centered row offsets, the likelihood head and streamed
+  reductions, small parameter softmaxes, and floating preprocessing statics. Both accept
+  `"float32"` and `"float64"`. The supported pairs are `float32/float32`, `float32/float64`, and
+  `float64/float64` (model/accumulator); `float64/float32` is rejected because an accumulator may
+  be wider than model state but never narrower. This policy covers model execution and its
+  centered derivative paths; legacy outer optimization-vector policies are unchanged.
+- **CLI precedence.** For model precision, explicit `--dtype` >
+  `[precision].model_dtype` in `--config` > the `PrecisionOptions` default. There is no separate
+  accumulator flag: set `[precision].accumulator_dtype` in TOML or pass a `GpurecConfig` from
+  Python. For solver fields, an explicitly passed `--pi-iters`/`--neumann-terms`/`--e-max-iter`
+  flag > the matching `[solver]` value > the `SolverOptions` default.
+- **Fit and rebuild paths retain precision.** `fit_dtl`, `fit_genewise`, and `fit_global`
+  pass their `config` through model construction and internal rebuilds. An explicit
+  Python `dtype=` remains the model-dtype override; the configured accumulator policy is retained.
+- **Honesty caveat -- `config.newton`/`config.rates`/`config.memory` are not universally threaded
+  into fit entry points.** `NewtonOptions`, `RateBounds`, and `MemoryOptions` are each real, in-use
   defaults: the curvature solvers (`gpurec/solver/curvature.py` and its three consumers
   `genewise_curvature.py`/`origination_curvature.py`/`receiver_curvature.py`) accept a `newton:
   NewtonOptions | None` kwarg that falls back to `NewtonOptions()`; the rate optimizer and the
   genewise fit recipe use `RateBounds()`/`RateBounds.genewise()`; the memory-policy helpers
   (`gpurec/core/memory_policy.py`, `gpurec/solver/value_and_grad.py`, `gpurec/solver/hvp_exact.py`)
-  use `MemoryOptions()` field values as their signature defaults. **But** `fit_genewise`,
-  `optimize`, and `map_cv` (`gpurec/fit/genewise_fit.py`, `gpurec/fit/optimize.py`,
-  `gpurec/fit/map_cv.py`) do not accept a `GpurecConfig`/`NewtonOptions`/`RateBounds`/
-  `MemoryOptions` argument that would let a caller override those three sub-options for a fit run --
-  they only consume `config.solver` indirectly (via the `*_reference()` factories below). Passing a
+  use `MemoryOptions()` field values as their signature defaults. `fit_genewise` also consumes its
+  documented `config.rates` fields. The entry points above accept `GpurecConfig` for
+  solver/precision propagation, and individual recipes may consume another documented section,
+  but passing a
   custom `newton=`/`rates=`/`memory=` into a fit entry point is a noted future extension, not
   something this task implements. If you need a non-default `NewtonOptions` today, pass it directly
   to the curvature function you're calling (e.g. `newton_min(..., newton=my_newton_options)`).
-- **`config.regularizer` is even less wired -- it is a passive facade consumed by no code path
-  today.** The TV penalty's `eps` used at runtime is the module constant `DEFAULT_TV_EPS`
+- **`config.regularizer` is only partly wired.** `map_cv` consumes
+  `config.regularizer.lambdas` when an explicit `lambdas=` override is absent. The TV penalty's
+  `eps` used at runtime is the module constant `DEFAULT_TV_EPS`
   (`gpurec/solver/penalties.py`), not `PenaltyOptions.tv_eps`; the origination-penalty call sites in
   `gpurec/solver/value_and_grad.py` are handed an `OriginationPenalty` instance directly rather than
-  reading `PenaltyOptions.origination`; and the ridge hyperparameters (`lam_margin`/`lam_floor` in
-  `gpurec/fit/map_fit.py`, `lambdas` in `gpurec/fit/map_cv.py`) are hardcoded function-signature
-  defaults, not `PenaltyOptions` fields. Setting `regularizer.*` in a TOML today changes nothing
-  observable.
+  reading `PenaltyOptions.origination`; and the remaining ridge hyperparameters
+  (`lam_margin`/`lam_floor` in `gpurec/fit/map_fit.py`) are function-signature defaults rather than
+  automatically consuming their `PenaltyOptions` fields.
 
 ## Recipe presets vs fit-hyperparameter dicts
 

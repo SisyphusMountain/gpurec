@@ -5,6 +5,7 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._implicit_grad import implicit_grad_loglik_vjp_wave
+from gpurec.config import GpurecConfig, PrecisionOptions
 from gpurec.core.inference.solver import (
     receiver_weights_are_uniform,
     solve_resident_e_pi,
@@ -83,8 +84,15 @@ def _options(dtype: torch.dtype) -> SolverOptions:
 
 
 def _model(
-    species_tree: Path, genes: list[Path], dtype: torch.dtype = torch.float32
+    species_tree: Path,
+    genes: list[Path],
+    dtype: torch.dtype = torch.float32,
+    accumulator_dtype: torch.dtype = torch.float64,
 ) -> GeneReconModel:
+    dtype_name = "float64" if dtype == torch.float64 else "float32"
+    accumulator_name = (
+        "float64" if accumulator_dtype == torch.float64 else "float32"
+    )
     return GeneReconModel(
         species_tree,
         genes,
@@ -95,6 +103,12 @@ def _model(
         batch_packing="sequential",
         max_wave_size=8,
         solver_options=_options(dtype),
+        config=GpurecConfig(
+            precision=PrecisionOptions(
+                model_dtype=dtype_name,
+                accumulator_dtype=accumulator_name,
+            )
+        ),
     )
 
 
@@ -166,14 +180,18 @@ def _implicit_kwargs(model, solved, receiver_weights, origination_weights):
 @pytest.mark.gpu
 @pytest.mark.parametrize("weighted", [False, True])
 @pytest.mark.parametrize("pruned", [False, True])
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
 def test_native_backward_matches_fp64(
     tmp_path: Path,
     weighted: bool,
     pruned: bool,
+    accumulator_dtype: torch.dtype,
 ) -> None:
     _require_native_cuda()
     species_tree, gene = _write_split_fanout_example(tmp_path)
-    model = _model(species_tree, [gene])
+    model = _model(
+        species_tree, [gene], accumulator_dtype=accumulator_dtype
+    )
     reference_model = _model(species_tree, [gene], torch.float64)
     theta, receiver, origination = _inputs(model, weighted)
     theta64, receiver64, origination64 = (

@@ -27,7 +27,10 @@ from gpurec.core.kernels.wave_backward import (
 )
 from gpurec.core.kernels.wave_so import wave_backward_so
 from gpurec.core.parameters.extract_parameters import (
-    as_family_param, as_family_species, extract_parameters_weighted_receivers,
+    as_family_param,
+    as_family_species,
+    extract_parameters_weighted_receivers,
+    resolve_accumulator_dtype,
 )
 from gpurec.solver.forward_tangent import jvp_root_scores, wave_step_constants
 from gpurec.solver.ggn import vjp_root_to_theta
@@ -93,7 +96,16 @@ def _scatter_accum(acc, item_rows_for_wave, contrib, item_rows):
         acc.index_add_(0, item_rows_for_wave, contrib)
 
 
-def _head_seed_tangents(root_Pi, E_star, omega, t_root, dE, u_omega, dtype):
+def _head_seed_tangents(
+    root_Pi,
+    E_star,
+    omega,
+    t_root,
+    dE,
+    u_omega,
+    dtype,
+    accumulator_dtype,
+):
     """Origination-weighted head-HVP seed tangents (double-backward on the small NLL aggregation head
     ``h = sum_fam nll(root_rows, E, omega)``; correct by construction and consistent with the kernels'
     seed convention -- the hand-coded uniform ``d_seed`` equals ``ds_root`` here at uniform omega).
@@ -106,15 +118,32 @@ def _head_seed_tangents(root_Pi, E_star, omega, t_root, dE, u_omega, dtype):
     from gpurec.core.inference.solver import nll_vector_from_root_rows
     from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
 
-    rP = root_Pi.detach().requires_grad_(True)
-    Ev = E_star.detach().requires_grad_(True)
-    om = omega.detach().to(device=rP.device, dtype=rP.dtype).requires_grad_(True)
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=root_Pi.dtype,
+    )
+    rP = root_Pi.detach().to(dtype=accumulator_dtype).requires_grad_(True)
+    Ev = E_star.detach().to(dtype=accumulator_dtype).requires_grad_(True)
+    om = omega.detach().to(device=rP.device, dtype=accumulator_dtype).requires_grad_(True)
     with torch.enable_grad():
-        olp = origination_log_probs_from_weights(om)
+        olp = origination_log_probs_from_weights(
+            om,
+            accumulator_dtype=accumulator_dtype,
+        )
         op = torch.exp2(olp)
-        nll = nll_vector_from_root_rows(rP, Ev, origination_log_probs=olp, origination_probs=op).sum()
+        nll = nll_vector_from_root_rows(
+            rP,
+            Ev,
+            origination_log_probs=olp,
+            origination_probs=op,
+            accumulator_dtype=accumulator_dtype,
+        ).sum()
         s_root, s_E, s_om = torch.autograd.grad(nll, (rP, Ev, om), create_graph=True)
-        inner = ((s_root * t_root).sum() + (s_E * dE).sum() + (s_om * u_omega.to(s_om.dtype)).sum())
+        inner = (
+            (s_root * t_root.to(dtype=accumulator_dtype)).sum()
+            + (s_E * dE.to(dtype=accumulator_dtype)).sum()
+            + (s_om * u_omega.to(s_om.dtype)).sum()
+        )
         ds_root, ds_E, Hv_om = torch.autograd.grad(inner, (rP, Ev, om))
     return ds_root.to(dtype), ds_E.to(dtype), Hv_om.to(dtype)
 
@@ -207,6 +236,10 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     root_ids = wl["root_clade_ids"]
     n_fam = int(root_ids.numel())
     dtype = sv["pi_wave"].dtype
+    accumulator_dtype = resolve_accumulator_dtype(
+        getattr(static, "accumulator_dtype", None),
+        fallback=dtype,
+    )
     C = int(sv["pi_wave"].shape[0])
     E_star = sv["E"]
     G = int(E_star.shape[0])
@@ -226,7 +259,10 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     # only enabling the head double-backward that produces Hv_omega.
     if origination_weights is not None and origination_log_probs is None:
         from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
-        origination_log_probs = origination_log_probs_from_weights(origination_weights)
+        origination_log_probs = origination_log_probs_from_weights(
+            origination_weights.to(device=theta.device, dtype=accumulator_dtype),
+            accumulator_dtype=accumulator_dtype,
+        )
         origination_probs = torch.exp2(origination_log_probs)
 
     if cache is None:
@@ -263,7 +299,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                                          grad_outputs=(g_s1, g_s2, g_ebar), retain_graph=True)
         return out
 
-    norm = _survival_from_E(E_star, keepdim=True)  # uniform survival; consumed only in the origination-uniform tangent below
+    # Uniform survival head state, used only by the origination-uniform tangent.
+    norm = _survival_from_E(
+        E_star.to(dtype=accumulator_dtype),
+        keepdim=True,
+    )
     fam_factor = 1.0 if G == n_fam else float(n_fam)
 
     zeros_state = lambda: torch.zeros_like(E_star)
@@ -313,6 +353,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     pS_h, pD_h, pL_h, mt_h, col_h = extract_parameters_weighted_receivers(
         theta_req, col_req, sh, specieswise=static.specieswise, genewise=static.genewise,
         uniform_fast=not use_receiver_weights,
+        accumulator_dtype=accumulator_dtype,
     )
     pS_hp = as_family_param(pS_h, G, S)
     pD_hp = as_family_param(pD_h, G, S)
@@ -385,11 +426,26 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             root_Pi = sv["pi_wave"].index_select(0, root_ids)
             Hv_omega = ds_E_surv = None
             if origination_log_probs is None:
-                q = _safe_exp2_ratio(root_Pi, _logsumexp2(root_Pi, dim=-1, keepdim=True))
-                d_seed = -_LN2 * q * (t_root - (q * t_root).sum(dim=-1, keepdim=True))
+                root_head = root_Pi.to(dtype=accumulator_dtype)
+                t_root_head = t_root.to(dtype=accumulator_dtype)
+                q = _safe_exp2_ratio(
+                    root_head,
+                    _logsumexp2(root_head, dim=-1, keepdim=True),
+                )
+                d_seed = -_LN2 * q * (
+                    t_root_head - (q * t_root_head).sum(dim=-1, keepdim=True)
+                )
             else:
                 d_seed, ds_E_surv, Hv_omega = _head_seed_tangents(
-                    root_Pi, E_star, origination_weights, t_root, dE, u_omega, dtype)
+                    root_Pi,
+                    E_star,
+                    origination_weights,
+                    t_root,
+                    dE,
+                    u_omega,
+                    dtype,
+                    accumulator_dtype,
+                )
 
             d_rhs = torch.zeros((C, S), device=theta.device, dtype=dtype)
             d_rhs.index_copy_(0, root_ids, d_seed.to(dtype))
@@ -547,9 +603,14 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             so_aux = e_step_backward_so(*x_args, zero_g, acc["grad_E_s1"], acc["grad_E_s2"],
                                         acc["grad_Ebar"], *dx, use_col_weights=use_col_weights)
             if origination_log_probs is None:
-                e2E = torch.exp2(E_star)
-                dnorm = -_LN2 * (e2E * dE).mean(dim=-1, keepdim=True)
-                dg_norm = fam_factor * (-_LN2 * e2E * dE / (S * norm) + e2E * dnorm / (S * norm * norm))
+                e2E = torch.exp2(E_star.to(dtype=accumulator_dtype))
+                dE_head = dE.to(dtype=accumulator_dtype)
+                dnorm = -_LN2 * (e2E * dE_head).mean(dim=-1, keepdim=True)
+                dg_norm = fam_factor * (
+                    -_LN2 * e2E * dE_head / (S * norm)
+                    + e2E * dnorm / (S * norm * norm)
+                )
+                dg_norm = dg_norm.to(dtype=dtype)
             else:
                 dg_norm = ds_E_surv  # weighted + omega-coupled survival tangent (autograd head)
             dq_E = d_gE + aux_lin + so_aux[0] + dg_norm

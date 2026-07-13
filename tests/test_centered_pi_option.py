@@ -14,10 +14,15 @@ from gpurec.fit import dtl_fit, global_fit
 from gpurec.solver import value_and_grad
 
 
-def _static(*, genewise: bool = False):
+def _static(
+    *,
+    genewise: bool = False,
+    accumulator_dtype: torch.dtype = torch.float64,
+):
     return SimpleNamespace(
         solver_options=SolverOptions(),
         genewise=genewise,
+        accumulator_dtype=accumulator_dtype,
     )
 
 
@@ -251,12 +256,27 @@ def test_backtracking_reconstructs_selected_family(monkeypatch):
     assert native_args[6].tolist() == [[-110.0, -111.0], [-220.0, -221.0]]
 
 
-def test_streamed_scalar_loss_preserves_fp64(monkeypatch):
-    statics = [_static(), _static()]
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_streamed_scalar_loss_uses_configured_accumulator(
+    monkeypatch,
+    accumulator_dtype,
+):
+    statics = [
+        _static(accumulator_dtype=accumulator_dtype),
+        _static(accumulator_dtype=accumulator_dtype),
+    ]
+    source_dtype = (
+        torch.float64 if accumulator_dtype == torch.float32 else torch.float32
+    )
     monkeypatch.setattr(
         _execution,
         "evaluate_static_loss_grad",
-        lambda *_args, **_kwargs: (torch.tensor(0.25, dtype=torch.float64), None, None, None),
+        lambda *_args, **_kwargs: (
+            torch.tensor(0.25, dtype=source_dtype),
+            None,
+            None,
+            None,
+        ),
     )
 
     loss, *_ = _execution.stream_batches(
@@ -268,11 +288,11 @@ def test_streamed_scalar_loss_preserves_fp64(monkeypatch):
         need_grad=False,
     )
 
-    assert loss.dtype == torch.float64
+    assert loss.dtype == accumulator_dtype
     assert loss.item() == 0.5
 
 
-def test_streamed_scalar_loss_uses_fp64_head_dtype(monkeypatch):
+def test_streamed_scalar_loss_without_policy_derives_theta_dtype(monkeypatch):
     static = SimpleNamespace(solver_options=SolverOptions())
     monkeypatch.setattr(
         _execution,
@@ -289,13 +309,20 @@ def test_streamed_scalar_loss_uses_fp64_head_dtype(monkeypatch):
         need_grad=False,
     )
 
-    assert loss.dtype == torch.float64
+    assert loss.dtype == torch.float32
 
 
-def test_streamed_genewise_loss_preserves_fp64(monkeypatch):
+@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
+def test_streamed_genewise_loss_uses_configured_accumulator(
+    monkeypatch,
+    accumulator_dtype,
+):
     statics = []
     for index in range(2):
-        static = _static(genewise=True)
+        static = _static(
+            genewise=True,
+            accumulator_dtype=accumulator_dtype,
+        )
         static.family_index_tensor = torch.tensor([index])
         statics.append(static)
     monkeypatch.setattr(
@@ -312,5 +339,23 @@ def test_streamed_genewise_loss_preserves_fp64(monkeypatch):
         need_grad=False,
     )
 
-    assert loss.dtype == torch.float64
-    torch.testing.assert_close(loss, torch.tensor([0.25, 0.25], dtype=torch.float64))
+    assert loss.dtype == accumulator_dtype
+    torch.testing.assert_close(
+        loss,
+        torch.tensor([0.25, 0.25], dtype=accumulator_dtype),
+    )
+
+
+def test_streaming_rejects_mixed_accumulator_dtypes():
+    with pytest.raises(ValueError, match="share one accumulator dtype"):
+        _execution.stream_batches(
+            [
+                _static(accumulator_dtype=torch.float32),
+                _static(accumulator_dtype=torch.float64),
+            ],
+            torch.zeros(3),
+            torch.zeros(2),
+            torch.zeros(2),
+            genewise=False,
+            need_grad=False,
+        )

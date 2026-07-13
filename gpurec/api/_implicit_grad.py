@@ -16,6 +16,7 @@ from gpurec.core.parameters.extract_parameters import (
     as_family_param,
     as_family_species,
     extract_parameters_weighted_receivers,
+    resolve_accumulator_dtype,
 )
 from gpurec.core.kernels.e_step import e_step_triton_autograd
 
@@ -32,9 +33,16 @@ def _safe_exp2_ratio(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 def _likelihood_root_seed(
     root_pi: torch.Tensor,
     origination_log_probs: torch.Tensor | None,
+    *,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
-    """Return the fp64-head root cotangent rounded once to state dtype."""
-    head = root_pi.to(torch.float64)
+    """Return the configured-head root cotangent rounded to state dtype."""
+
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=root_pi.dtype,
+    )
+    head = root_pi.to(dtype=accumulator_dtype)
     if origination_log_probs is not None:
         head = head + origination_log_probs.to(device=head.device, dtype=head.dtype)
     root_lse = _logsumexp2(head, dim=-1, keepdim=True)
@@ -44,14 +52,24 @@ def _likelihood_root_seed(
 def _likelihood_log2_survival(
     extinction: torch.Tensor,
     origination_probs: torch.Tensor | None,
+    *,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
-    """Evaluate the likelihood head's survival normalizer in fp64."""
+    """Evaluate the likelihood head's survival normalizer."""
+
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=extinction.dtype,
+    )
     probabilities = (
         None
         if origination_probs is None
-        else origination_probs.to(device=extinction.device, dtype=torch.float64)
+        else origination_probs.to(
+            device=extinction.device,
+            dtype=accumulator_dtype,
+        )
     )
-    return _log2_survival(extinction.to(torch.float64), probabilities)
+    return _log2_survival(extinction.to(dtype=accumulator_dtype), probabilities)
 
 
 # `_bicgstab_rel_tol_default` / `_bicgstab_rel_tol_floor` moved to
@@ -417,6 +435,7 @@ def implicit_grad_loglik_vjp_wave(
     cache: dict | None = None,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
+    accumulator_dtype: torch.dtype | None = None,
     pi_offset: torch.Tensor,
     pibar_offset: torch.Tensor,
 ):
@@ -449,13 +468,22 @@ def implicit_grad_loglik_vjp_wave(
     C, S = Pi_star_wave.shape
     device = Pi_star_wave.device
     dtype = Pi_star_wave.dtype
+    offset_dtype = pi_offset.dtype
+    if offset_dtype not in (torch.float32, torch.float64):
+        raise TypeError("pi_offset must use torch.float32 or torch.float64")
     for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
         if value.ndim != 1 or int(value.shape[0]) != int(C):
             raise ValueError(f"{name} must have shape [{int(C)}]")
-        if value.dtype != torch.float64:
-            raise TypeError(f"{name} must use torch.float64")
+        if value.dtype != offset_dtype:
+            raise TypeError("Pi/Pibar offsets must share one accumulator dtype")
         if value.device != device:
             raise ValueError(f"{name} must be on the Pi device")
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=offset_dtype,
+    )
+    if accumulator_dtype != offset_dtype:
+        raise TypeError("accumulator_dtype must match the Pi/Pibar offset dtype")
     pi_offset = pi_offset.contiguous()
     pibar_offset = pibar_offset.contiguous()
     family_rows = int(E_star.shape[0])
@@ -482,7 +510,11 @@ def implicit_grad_loglik_vjp_wave(
     # seed_root=None -> the loss seed -softmax2(root_Pi_w) (production); a caller-supplied root
     # cotangent (the GGN/J^T path) is used verbatim.
     seed = (
-        _likelihood_root_seed(root_Pi, origination_log_probs)
+        _likelihood_root_seed(
+            root_Pi,
+            origination_log_probs,
+            accumulator_dtype=accumulator_dtype,
+        )
         if seed_root is None
         else seed_root.to(dtype)
     )
@@ -744,6 +776,7 @@ def implicit_grad_loglik_vjp_wave(
         e_adjoint_solver=e_adjoint_solver,
         cache=cache,
         origination_probs=origination_probs,
+        accumulator_dtype=accumulator_dtype,
     )
 
 
@@ -759,6 +792,7 @@ def _e_adjoint_and_theta_vjp(
     e_adjoint_solver: str | None = None,
     cache=None,
     origination_probs=None,
+    accumulator_dtype: torch.dtype | None = None,
 ):
     if bicgstab_max_iter is None:
         bicgstab_max_iter = SolverOptions().bicgstab_max_iter
@@ -767,6 +801,10 @@ def _e_adjoint_and_theta_vjp(
     e_adjoint_solver = str(e_adjoint_solver).strip().lower()
     if e_adjoint_solver not in ("gmres", "neumann"):
         raise ValueError("e_adjoint_solver must be one of: gmres, neumann")
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=E_star.dtype,
+    )
     topology_args = (
         species_helpers["sp_parent"],
         species_helpers["sp_child1"],
@@ -791,7 +829,11 @@ def _e_adjoint_and_theta_vjp(
         aux_outputs = (E_s1_from_E, E_s2_from_E, Ebar_from_E)
         aux_grads = (grad_E_s1, grad_E_s2, grad_Ebar)
         if not drop_norm:
-            denom = _likelihood_log2_survival(E_req, origination_probs)
+            denom = _likelihood_log2_survival(
+                E_req,
+                origination_probs,
+                accumulator_dtype=accumulator_dtype,
+            )
             direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
             aux_outputs = (direct_obj, *aux_outputs)
             aux_grads = (torch.ones_like(direct_obj), *aux_grads)
@@ -839,6 +881,7 @@ def _e_adjoint_and_theta_vjp(
             specieswise=specieswise,
             genewise=genewise,
             uniform_fast=not use_receiver_weights,
+            accumulator_dtype=accumulator_dtype,
         )
         S = int(species_helpers["S"])
         family_rows = int(E_star.shape[0])

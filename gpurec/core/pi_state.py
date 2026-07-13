@@ -13,6 +13,9 @@ from dataclasses import dataclass
 import torch
 
 
+_SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64)
+
+
 @dataclass(frozen=True)
 class PiState:
     """Offsets paired with Pi/Pibar residuals returned by one forward solve."""
@@ -32,7 +35,7 @@ class PiState:
         pibar = pibar_residual
         if pi.ndim != 2 or pibar.shape != pi.shape:
             raise ValueError("Pi and Pibar residuals must share shape [rows, species]")
-        if pi.dtype not in (torch.float32, torch.float64) or pibar.dtype != pi.dtype:
+        if pi.dtype not in _SUPPORTED_FLOAT_DTYPES or pibar.dtype != pi.dtype:
             raise TypeError(
                 "Pi/Pibar residuals must share dtype torch.float32 or torch.float64"
             )
@@ -41,14 +44,21 @@ class PiState:
         if not pi.is_contiguous() or not pibar.is_contiguous():
             raise ValueError("Pi/Pibar residuals must be contiguous")
         rows = int(pi.shape[0])
+        accumulator_dtype = self.pi_offset.dtype
+        if accumulator_dtype not in _SUPPORTED_FLOAT_DTYPES:
+            raise TypeError("Pi/Pibar offsets must use torch.float32 or torch.float64")
+        if pi.dtype == torch.float64 and accumulator_dtype != torch.float64:
+            raise TypeError("Pi/Pibar offsets must not be narrower than the residual dtype")
         for name, offset in (
             ("pi_offset", self.pi_offset),
             ("pibar_offset", self.pibar_offset),
         ):
             if offset.ndim != 1 or int(offset.shape[0]) != rows:
                 raise ValueError(f"{name} must have shape [{rows}]")
-            if offset.dtype != torch.float64:
-                raise TypeError(f"{name} must use torch.float64")
+            if offset.dtype != accumulator_dtype:
+                raise TypeError(
+                    f"{name} must match accumulator dtype {accumulator_dtype}"
+                )
             if offset.device != pi.device:
                 raise ValueError(f"{name} must be on {pi.device}")
             if not offset.is_contiguous():
@@ -85,15 +95,21 @@ class PiState:
 
     @staticmethod
     def reconstruct_rows(residual: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
-        """Reconstruct rows in fp64 without clamping non-finite state."""
+        """Reconstruct rows in the offset accumulator dtype without clamping."""
 
         if residual.ndim != 2:
             raise ValueError("residual must have shape [rows, species]")
+        if residual.dtype not in _SUPPORTED_FLOAT_DTYPES:
+            raise TypeError("residual must use torch.float32 or torch.float64")
         if offset.ndim != 1 or int(offset.shape[0]) != int(residual.shape[0]):
             raise ValueError("offset must contain one value per residual row")
-        if offset.dtype != torch.float64 or offset.device != residual.device:
-            raise TypeError("offset must be fp64 on the residual device")
-        return residual.double() + offset[:, None]
+        if offset.dtype not in _SUPPORTED_FLOAT_DTYPES:
+            raise TypeError("offset must use torch.float32 or torch.float64")
+        if residual.dtype == torch.float64 and offset.dtype != torch.float64:
+            raise TypeError("offset must not be narrower than the residual dtype")
+        if offset.device != residual.device:
+            raise TypeError("offset must be on the residual device")
+        return residual.to(dtype=offset.dtype) + offset[:, None]
 
     def reconstruct_pi(self, pi_residual: torch.Tensor) -> torch.Tensor:
         return self.reconstruct_rows(pi_residual, self.pi_offset)
@@ -102,4 +118,4 @@ class PiState:
         return self.reconstruct_rows(pibar_residual, self.pibar_offset)
 
     def reconstruct_pibar_row_max(self, pibar_row_max: torch.Tensor) -> torch.Tensor:
-        return pibar_row_max.double() + self.pi_offset
+        return pibar_row_max.to(dtype=self.pi_offset.dtype) + self.pi_offset

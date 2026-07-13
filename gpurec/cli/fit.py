@@ -61,6 +61,7 @@ def _global_node_rates(theta_hat, mode, S):
 
 
 def run_fit(args) -> int:
+    from gpurec.config import load_config
     from gpurec.fit.dtl_fit import fit_dtl
 
     # Mode->recipe dispatch lives in fit_dtl (the single canonical entry): genewise -> fit_genewise,
@@ -75,9 +76,11 @@ def run_fit(args) -> int:
         or args.neumann_terms is not None
         or args.e_max_iter is not None
     )
+    config = load_config(args.config)
     try:
         res = fit_dtl(args.species, args.gene, args.mode, device=args.device,
-                      dtype=_common.make_dtype(args.dtype), max_steps=args.steps,
+                      dtype=(None if args.dtype is None else _common.make_dtype(args.dtype)),
+                      config=config, max_steps=args.steps,
                       init_rate=args.init_rate,
                       solver_options=_common.make_solver_options(args) if user_solver else None)
     except NotImplementedError as e:

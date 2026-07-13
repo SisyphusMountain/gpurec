@@ -15,11 +15,11 @@ Pibar_abs[c, s] = Pibar_residual[c, s] + Pibar_offset[c]
 ```
 
 `Pi_residual` and `Pibar_residual` are contiguous CUDA matrices in the model
-dtype (fp32 or fp64) with shape `[C, S]`. Their offsets are contiguous fp64 CUDA
-vectors with shape `[C]` on the same device. A temporary split reduction has
-the same contract with shape `[W, S]` in the model dtype and an fp64 offset
-vector of shape `[W]`; its owner is the wave that created it and its row index
-is wave-local.
+dtype (fp32 or fp64) with shape `[C, S]`. Their offsets are contiguous CUDA
+vectors in the configured accumulator dtype with shape `[C]` on the same
+device. A temporary split reduction has the same contract with shape `[W, S]`
+in the model dtype and an accumulator-dtype offset vector of shape `[W]`; its
+owner is the wave that created it and its row index is wave-local.
 
 Offsets are gauges, not model variables. Choosing a different finite offset and
 applying the opposite shift to every finite residual lane represents exactly the
@@ -27,9 +27,9 @@ same state and must not change loss or derivatives. Production wave iterations
 therefore use a cheap heuristic gauge; consumers must not assume that the row
 maximum is zero. Leaf seeding uses an exact maximum. The first split-wave
 consumer may fold its already-computed raw residual maximum into a temporary
-fp64 virtual DTS offset. Storage remains in its original gauge; the consumer
-combines the virtual shift with its existing fp64 correction. This avoids
-another launch, row-maximum pass, or mutable input.
+accumulator-dtype virtual DTS offset. Storage remains in its original gauge;
+the consumer combines the virtual shift with its existing accumulator-dtype
+correction. This avoids another launch, row-maximum pass, or mutable input.
 
 ## Ownership and lifetime
 
@@ -42,14 +42,15 @@ another launch, row-maximum pass, or mutable input.
 - `compute_dts_forward` allocates a wave-local residual and offset pair.
   The pair must remain together until the consuming wave step or derivative is
   complete.
-- The first DTS-consuming iteration publishes one temporary fp64 virtual offset
-  per wave-local row. Later iterations use it for base selection while reading
-  the original residual/offset pair. The virtual offset is not published
-  forward state, and derivative consumers recompute their own DTS state.
+- The first DTS-consuming iteration publishes one temporary accumulator-dtype
+  virtual offset per wave-local row. Later iterations use it for base selection
+  while reading the original residual/offset pair. The virtual offset is not
+  published forward state, and derivative consumers recompute their own DTS
+  state.
 - Root rows are an intentional reconstruction point. They are reconstructed in
-  fp64 before the likelihood reduction so the scalar objective retains the
-  offset precision.
-- fp64 runs use the same row-gauged kernels and provide the high-precision
+  the accumulator dtype before the likelihood reduction so the scalar objective
+  retains the offset precision.
+- fp64/fp64 runs use the same row-gauged kernels and provide the high-precision
   correctness reference without a second implementation. Native consumers
   operate in a local frame by applying offset differences before dense
   arithmetic.
@@ -71,9 +72,10 @@ state its frame in its name or docstring.
 
 A centered consumer must do exactly one of the following:
 
-1. stay in a local target frame and add fp64 offset differences before casting
-   the small correction to the compute dtype; or
-2. reconstruct the complete input in fp64 at a named reference boundary.
+1. stay in a local target frame and add accumulator-dtype offset differences
+   before casting the small correction to the compute dtype; or
+2. reconstruct the complete input in the accumulator dtype at a named
+   reduction boundary.
 
 Reconstructing a large absolute row and casting it back to the dense compute
 dtype is invalid because it defeats the local framing that centered storage is
@@ -115,26 +117,31 @@ mix Pi row-max metadata and Pibar require `Pi_offset - Pibar_offset`.
 ## Dtypes, gradients, and public support
 
 Production Pi/Pibar state always uses model-dtype residuals (fp32 or fp64) plus
-fp64 offsets on CUDA. Parameter/E tensors retain that configured model dtype.
+configured-accumulator offsets on CUDA. Parameter/E tensors retain the model
+dtype; likelihood heads, streamed reductions, small parameter softmaxes, and
+floating preprocessing statics use the accumulator dtype.
 Offset selection is bookkeeping and is not differentiated; derivatives are
 derivatives of the represented absolute recurrence. Returned gradients must
 match the model parameter dtype.
 
-This representation is a solver invariant, not a selectable option. There is
-no absolute-storage production fallback. An operation may advertise support
-only after its uniform/weighted, split-fanout, nonzero-leaf, fp32/fp64, and
-finite/non-finite parity gates pass.
+The supported model/accumulator pairs are fp32/fp32, fp32/fp64, and fp64/fp64.
+Fp64/fp32 is rejected because the accumulator may not be narrower than model
+state. Centered representation remains a solver invariant, not a selectable
+option; precision is configurable, but there is no absolute-storage production
+fallback. An operation may advertise support only after its uniform/weighted,
+split-fanout, nonzero-leaf, supported-precision, and finite/non-finite parity
+gates pass.
 
 ## Consumer inventory
 
 | layer | files | centered obligation |
 |---|---|---|
-| forward Pi/Pibar | `core/kernels/pi_forward.py`, `core/inference/forward.py` | native residual+offset producer; fp64 root reconstruction |
+| forward Pi/Pibar | `core/kernels/pi_forward.py`, `core/inference/forward.py` | native residual+offset producer; accumulator-dtype root reconstruction |
 | split reduction | `core/kernels/pi_forward.py` | native DTS residual+offset producer, including one and multiple splits |
-| likelihood/streaming | `core/inference/solver.py`, `api/_execution.py`, `api/_autograd.py` | preserve fp64 reconstructed scalar across batches and save the matching offsets |
-| first-order adjoint | `core/kernels/wave_backward*.py`, `api/_implicit_grad.py` | offset-aware wave and cross-DTS ratios; the same canonical path in fp64 is the oracle |
+| likelihood/streaming | `core/inference/solver.py`, `api/_execution.py`, `api/_autograd.py` | preserve the accumulator-dtype scalar across batches and save the matching offsets |
+| first-order adjoint | `core/kernels/wave_backward*.py`, `api/_implicit_grad.py` | offset-aware wave and cross-DTS ratios; the same canonical path in fp64/fp64 is the oracle |
 | convergence diagnostics | `core/inference/solver.py`, `api/_execution.py` | compare represented absolute iterates or frame-aligned residuals |
-| backtracking | `core/backtracking/*` | never serialize or replay a residual without its offsets |
+| backtracking | `core/backtracking/*` | never serialize or replay a residual without its offsets; the native host ABI still requires f64 arrays at its boundary |
 | JVP/tangent | `core/kernels/wave_tangent.py`, `dts_tangent.py`, `solver/forward_tangent.py` | use offset-aware primal weights; tangent values themselves are gauge-invariant |
 | second order/HVP | `core/kernels/wave_so.py`, `dts_so.py`, `solver/hvp_exact.py` | use the same offset-aware primal weights as first order |
 | curvature consumers | `solver/*curvature.py`, `solver/ggn.py` | require a centered-capable tangent/HVP provider or fail before reading state |
