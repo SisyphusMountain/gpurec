@@ -18,14 +18,14 @@ new kernels.**
 
 | Op | Self CUDA | Calls (1 HVP) | What it is |
 |---|---|---|---|
-| `_wave_step_tangent_kernel` | 138.6 ms (25.8%) | **12,193** | tangent self-loop Jacobi (#1) |
+| `_update_reconciliation_likelihood_jvp_kernel` | 138.6 ms (25.8%) | **12,193** | tangent self-loop Jacobi (#1) |
 | `aten::max` (+reduce_kernel) | 115 ms (21.4%) | **24,173** | per-iter convergence check `diff/scale` (#1) |
 | `aten::index_add_` (+indexFunc) | 66 ms (12.3%) | 6,486 | dts SO tree host walk (#6) |
 | `aten::abs` | 31.9 ms (5.9%) | 49,494 | convergence check + masks |
 | `_local_scalar_dense` + Memcpy DtoH | 44 ms (8.2%) | **27,556 DtoH** | host syncs (#1, .any() in #6) |
-| `_wave_so_kernel` | 5.5 ms (1.0%) | 142 | the new SO contraction |
-| `_dts_split_so_kernel` | 6.5 ms (1.2%) | 141 | the new dts SO |
-| `_dts_cross_backward_accum_kernel` | 5.5 ms (1.0%) | 141 | frozen reused solve |
+| `_reconciliation_vjp_directional_derivative_kernel` | 5.5 ms (1.0%) | 142 | the new SO contraction |
+| `_gene_split_event_vjp_directional_derivative_kernel` | 6.5 ms (1.2%) | 141 | the new dts SO |
+| `_accumulate_gene_split_event_vjp_kernel` | 5.5 ms (1.0%) | 141 | frozen reused solve |
 
 **Confirmed:** suspect #1 dominates. ~142 waves × ~86 Jacobi iters each = 12,193 tangent
 launches, **two host-syncing max-reductions per iteration** (24,173 max + 27,556 DtoH
@@ -55,7 +55,7 @@ matching the primal forward truncation). Adaptive path preserved for `self_iters
 
 Result (small fp32, **isolated, co-tenant gone**):
 - steady HVP **597 ms → 446 ms** wall (1.34×); self-CUDA **537 ms → ~218 ms** (2.46× less GPU work).
-- `_wave_step_tangent_kernel`: 12,193 calls / 138 ms → **2,272 calls / 22.6 ms** (= 16×142).
+- `_update_reconciliation_likelihood_jvp_kernel`: 12,193 calls / 138 ms → **2,272 calls / 22.6 ms** (= 16×142).
 - `aten::max` (24,173 calls / 115 ms) and the bulk of the 27,556 DtoH syncs: **gone**.
 - Accuracy unchanged: hvp gate PASS, rel 8.3e-5 / 1.15e-4, symmetry 9.4e-4 (residual was
   always dominated by the backward neumann/bicgstab truncation, not the forward count).
@@ -70,24 +70,24 @@ bound. Next: #6 (Triton-ize / de-sync the dts tree walk), then #2/#3 (per-wave
 ## FIX #6 LANDED (2026-06-13) — dts SO tree walk Triton-ized
 
 Replaced the host-side parent-chain `index_add_` loop (per wave: 2 sides × `max_ancestor_depth`
-levels × 2 launches + a `.any()` host sync per level) with one fused `_dts_tree_so_kernel`
+levels × 2 launches + a `.any()` host sync per level) with one fused `_transfer_subtree_vjp_directional_derivative_kernel`
 (`dts_so.py`) mirroring the production compact level-walk: bottom-up subtree-or-self
 accumulation on BOTH `ud→sub` and `dud→dsub` in place, then scatters
-`dp'(A−sub) + p'(dA−dsub)` into d_rhs + d_grad_col. Staging changed to stacked `[2N,S]`
+`dp'(A−sub) + p'(dA−dsub)` into d_rhs + d_grad_receiver_log_probs. Staging changed to stacked `[2N,S]`
 (contiguous views, no split-kernel change). New required `compact_level_*` args threaded
 from `state_helpers` through `hvp_exact.py` and the `verify.py` gate.
 
 Result (small fp32, isolated):
 - steady HVP **446 ms → 140 ms** (3.2×); self-CUDA **~218 ms → 81 ms**.
-- `index_add_`/`indexFuncLargeIndex` (66 ms, 6,486 calls) → **gone**; new `_dts_tree_so_kernel`
+- `index_add_`/`indexFuncLargeIndex` (66 ms, 6,486 calls) → **gone**; new `_transfer_subtree_vjp_directional_derivative_kernel`
   9.9 ms / 141 calls. The host walk was also serializing the CPU (per-level syncs + thousands
   of launches), so killing it helped wall more than its GPU share suggested.
-- Accuracy unchanged: dts_so gate ~3e-9 (incl. d_rhs/d_grad_col), hvp gate bit-identical
+- Accuracy unchanged: dts_so gate ~3e-9 (incl. d_rhs/d_grad_receiver_log_probs), hvp gate bit-identical
   (8.3e-5 / 1.15e-4, symmetry 9.4e-4).
 
 **Cumulative: 597 ms → 140 ms (4.3×) on small fp32; ~9.8× vs the fd-fp64 baseline (1369 ms).**
 
-New profile (healthy, no host hog): `_wave_step_tangent_kernel` 29% (23.7 ms, 2,272 = 16×142
+New profile (healthy, no host hog): `_update_reconciliation_likelihood_jvp_kernel` 29% (23.7 ms, 2,272 = 16×142
 tangent-sweep launches) is now top; `_dts_tree_so` 12%, `_dts_split_so` 8%, `aten::sum` 7.7%
 (the A/dA totals I added — fuseable into the split kernel), `_wave_so` 7.5%, frozen kernels
 ~6–7% each. Wall 140 ms vs self-CUDA 81 ms ⇒ ~60 ms CPU/launch gap remains.
@@ -111,9 +111,9 @@ iters/point). Kept as a correct cleanup.
 
 ## PHASE A GLUE-OP FUSION LANDED (2026-06-13)
 
-A1: `_dts_tree_so_kernel` now computes the row totals `A`/`dA` internally (pre-pass sum before
+A1: `_transfer_subtree_vjp_directional_derivative_kernel` now computes the row totals `A`/`dA` internally (pre-pass sum before
 the in-place level walk), dropping the host `ud.sum(1)`/`dud.sum(1)` (282 launches/HVP) + 2
-buffers. A2: `_wave_so_kernel` folds the wave's own `d_rhs[ws:ws+W]` into `d_Av` (gated by
+buffers. A2: `_reconciliation_vjp_directional_derivative_kernel` folds the wave's own `d_rhs[ws:ws+W]` into `d_Av` (gated by
 `FOLD_RHS`), so `d_Av` IS the frozen-solve seed — removes the host `seed = d_rhs + d_Av` add
 (142/HVP) + the seed buffer. Both bit-identical (dts_so/wave_so ~3e-9; hvp 8.3e-5/1.15e-4/9.4e-4)
 and memory-better (good for 1007x64).
@@ -124,7 +124,7 @@ nature of glue-op fusion**: each removed op is individually cheap (~1–5 µs GP
 dispatch), so a 10% launch cut buys ~1.5% wall.
 
 **Phase B (scatter-accum fusion) NOT pursued.** It would remove ~1,000 launches (the 7 scatters
-+ 6 `aw=c+l` adds/wave), but by the same linear logic that is ~3–4% wall at most, for a much
++ 6 event-VJP combination adds/wave), but by the same linear logic that is ~3–4% wall at most, for a much
 riskier change (one fused 7-target kernel handling both G=1 reductions and G>1 `index_add`).
 Not worth it. The measurement makes the verdict clear: **the only lever that meaningfully moves
 a launch-bound HVP is CUDA-graph capture** (eliminates per-launch CPU cost for all ~4,300 at
@@ -192,7 +192,7 @@ reduction (6 ms GPU) into `_dts_split_so` — but we are CPU/launch-bound, so it
 6. **The dts SO tree part is host-side Python** (`dts_so.py::dts_backward_so`, tree
    section): per wave per HVP, a Python loop over `max_ancestor_depth` × 2 sides of
    `index_add_` launches, with a `bool(valid.any())` device sync per level. Fix: port
-   to a Triton kernel mirroring `uniform_cross_pibar_vjp_tree_from_ud_fused`'s
+   to a Triton kernel mirroring `accumulate_transfer_complement_vjp_from_donor_adjoint`'s
    compact-level walk (`compact_level_*` structures already in `state_helpers`);
    minimal fix: drop the `.any()` early-break.
 
@@ -201,19 +201,18 @@ reduction (6 ms GPU) into `_dts_split_so` — but we are CPU/launch-bound, so it
    two ancestor walks + atomic path scatter into `sub`/`dsub` scratch). Candidates:
    register-resident patterns from commit a1920aa; fusing the SO contraction into the
    seed computation of the immediately following frozen solve (same wave state read
-   back-to-back); buffer reuse for the 6 `d_aw*` + `sub`/`dsub` allocations per wave
-   and `ud_l/ud_r/dud_l/dud_r` per split wave (interacts with #2: `empty_cache`
+   back-to-back); buffer reuse for the six event-VJP derivatives plus `sub`/`dsub` allocations per wave
+   and the left/right donor-adjoint and directional-donor-adjoint buffers per
+   split wave (interacts with #2: `empty_cache`
    defeats allocator reuse).
 
-## Correctness flags (none blocking)
+## Correctness status
 
-- **Latent col-gradient inconsistency** (`dts_so.py`, tree part):
-  `d_grad_col += contrib_t.sum(0)` accumulates unconditionally, even with
-  `use_col_weights=False` where `p_prime` has no col dependence (true derivative 0).
-  Invisible today because uniform col weights make `cot_col`'s head contribution
-  vanish; will silently corrupt H if col weights are activated. Audit the whole SO path
-  against what the primal kernels do with `grad_col_log_probs` under
-  `use_col_weights=False`, and re-gate with col weights on.
+- **Resolved receiver-gradient inconsistency** (`dts_so.py`, tree part):
+  the receiver-log-probability cotangent is now accumulated only when
+  `use_receiver_weights=True`; the uniform branch returns an exact zero.
+  Weighted and uniform regression tests cover both first- and second-order
+  paths.
 - **All FD gates ran on a G=1 fixture.** Unexercised by any oracle: `_scatter_accum`'s
   G>1 branches, `e_step_so`'s per-g-row parallelism, the known-latent e_step atomic
   race surface. Direction: run the e_so/wave_so/dts_so gates on a (possibly synthetic)
@@ -251,9 +250,9 @@ ncu SpeedOfLight). New ranking (after the committed num_warps=4 on `_wave_step_t
 
 **Implemented (committed, gated bit-identical fp64 / hvp gate unchanged):**
 
-1. **Fused tangent self-loop** (`wave_tangent._wave_step_tangent_selfloop_kernel`). The forward
+1. **Fused tangent self-loop** (`wave_tangent._apply_reconciliation_self_loop_jvp_iterations_kernel`). The forward
    tangent self-loop launched `compute_wave_step_tangent` ~16x/wave, but the primal softmax weights
-   (e0..e5/inv/m), `r`/`row_max`/`row_sum`/`ancestor_sum`/`pibar`, children, leaf, dts and ALL
+   (named event masses/inv/m), `r`/`row_max`/`row_sum`/`ancestor_sum`/`pibar`, children, leaf, dts and ALL
    tangent constants are loop-INVARIANT — only `dpi` varies. New kernel hoists the invariants and
    runs the n_iters Jacobi steps register-resident (ancestor walk gathers the precomputed invariant
    `r` + live `dpi`; no global pi/dpi reloads). nsys: `_wave_step_tangent` 1041M → 817M ns (−21.5%),

@@ -93,11 +93,11 @@ def pi_wave_forward(
                 log_p_s_param,
                 family_idx=family_idx,
                 log_split_probs=meta.get("log_split_probs"),
-                n_eq1=meta.get("n_eq1"),
-                eq1_reduce_idx=meta.get("eq1_reduce_idx"),
-                ge2_ptr=meta.get("ge2_ptr"),
-                ge2_parent_ids=meta.get("ge2_parent_ids"),
-                ge2_max_fanout=meta.get("ge2_max_fanout"),
+                n_single_split_parents=meta.get("n_eq1"),
+                single_split_parent_rows=meta.get("eq1_reduce_idx"),
+                multiple_split_group_ptr=meta.get("ge2_ptr"),
+                multiple_split_parent_rows=meta.get("ge2_parent_ids"),
+                max_splits_per_multiple_parent=meta.get("ge2_max_fanout"),
                 family_offset=ws,
             )
             # Virtual gauge used only by the forward wave consumer. DTS

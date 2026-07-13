@@ -13,8 +13,8 @@ no-op kept only for signature parity.
 
 Terminology rename applied at the kbench -> gpurec port boundary: item->family,
 col->receiver, state->species, solve_e_pi->solve_resident_e_pi,
-col_weights->receiver_weights, max_coupling->max_transfer,
-col_log_probs->receiver_log_probs.
+col_weights->receiver_weights, and max_coupling->max_transfer. The legacy
+receiver-column terminology has been migrated to receiver log weights.
 """
 
 from __future__ import annotations
@@ -32,7 +32,8 @@ from gpurec.solver.penalties import (
 
 # Names of the forward-solve intermediates the exact-HVP / tangent path consumes,
 # in the order ``solve_resident_e_pi`` returns them. gpurec rename of kbench's
-# FORWARD_SAVED_NAMES: max_coupling -> max_transfer, col_log_probs -> receiver_log_probs.
+# FORWARD_SAVED_NAMES: max_coupling -> max_transfer and the legacy column-log
+# probabilities -> receiver_log_probs.
 #
 # Row-gauged storage has no extra tuple entry: ``forward_solve`` snapshots the
 # exact sidecar produced by this solve under ``saved["pi_state"]``.

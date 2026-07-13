@@ -6,19 +6,33 @@ outer accumulations are not expected to be the dominant runtime cost.
 
 ## Problem
 
-`_e_step_backward_prepare_2d_kernel` computes the local E-step adjoint for one
+`_stage_extinction_and_transfer_complement_vjp_kernel` computes the local E-step adjoint for one
 family row. Within that Triton program, each species lane first writes the
 species-local contribution:
 
 ```python
-tl.store(grad_E_ptr + base + offs, 2.0 * q1 + q2, mask=mask)
+tl.store(
+    grad_E_ptr + base + offs,
+    2.0 * duplication_event_vjp + transfer_event_vjp,
+    mask=mask,
+)
 ```
 
 Then each lane adds parent-to-child contributions into the child species slots:
 
 ```python
-tl.atomic_add(grad_E_ptr + base + c1, q0 + g_s1_out, sem="relaxed", mask=c1_valid)
-tl.atomic_add(grad_E_ptr + base + c2, q0 + g_s2_out, sem="relaxed", mask=c2_valid)
+tl.atomic_add(
+    grad_E_ptr + base + c1,
+    speciation_event_vjp + g_s1_out,
+    sem="relaxed",
+    mask=c1_valid,
+)
+tl.atomic_add(
+    grad_E_ptr + base + c2,
+    speciation_event_vjp + g_s2_out,
+    sem="relaxed",
+    mask=c2_valid,
+)
 ```
 
 The intended value is:

@@ -16,17 +16,17 @@ wall ≈ 136 ms ⇒ ~50 ms/HVP of CPU-dispatch + inter-kernel GPU-idle gap.
 
 | Kernel | Time | % | Launches |
 |---|---|---|---|
-| `_wave_step_tangent_kernel` | 23.6 ms | 28% | 2,272 (16 iters × 142 waves) |
-| `_dts_tree_so_kernel` | 11.5 ms | 13% | 141 |
-| `_dts_split_so_kernel` | 8.0 ms | 9% | 141 |
-| `_dts_cross_backward_accum_kernel` | 6.3 ms | 7% | 141 |
-| `_wave_so_kernel` | 5.8 ms | 6% | 142 |
-| `_uniform_cross_pibar_vjp_tree_…compact` | 5.8 ms | 6% | 141 |
+| `_update_reconciliation_likelihood_jvp_kernel` | 23.6 ms | 28% | 2,272 (16 iters × 142 waves) |
+| `_transfer_subtree_vjp_directional_derivative_kernel` | 11.5 ms | 13% | 141 |
+| `_gene_split_event_vjp_directional_derivative_kernel` | 8.0 ms | 9% | 141 |
+| `_accumulate_gene_split_event_vjp_kernel` | 6.3 ms | 7% | 141 |
+| `_reconciliation_vjp_directional_derivative_kernel` | 5.8 ms | 6% | 142 |
+| `_accumulate_transfer_subtree_vjp_kernel` | 5.8 ms | 6% | 141 |
 | `reduce_kernel` (aten) | 4.9 ms | 5% | 1,005 |
-| `_dts_tangent_kernel` | 4.4 ms | 5% | 282 |
-| `_dts_ge2_stage1_kernel` | 3.4 ms | 4% | 140 |
+| `_gene_split_reduction_jvp_kernel` | 4.4 ms | 5% | 282 |
+| `_stage_multiple_gene_split_event_reduction_kernel` | 3.4 ms | 4% | 140 |
 | vectorized add (aten) | 2.7 ms | 3% | 2,112 |
-| others (neumann/precompute/param_store/col_grad/…) | ~8 ms | ~9% | — |
+| others (Neumann/precompute/parameter-store/receiver-gradient/…) | ~8 ms | ~9% | — |
 
 **CUDA API time (per HVP, ÷3) — the CPU side:**
 
@@ -47,17 +47,17 @@ gates, inside the frozen kernels.)
 
 | Kernel | dur | SM % | Mem % | Occ (ach/theo) | grid |
 |---|---|---|---|---|---|
-| `_wave_step_tangent` (large wave) | 10.6 µs | **54.6** | 54.6 | 79 / 100 | 4208 |
-| `_dts_tree_so` | 11.5 µs | 32.9 | 32.9 | 42 / 100 | 802 |
-| `_dts_split_so` | 6.8 µs | 7.6 | 33.1 | 22 / 100 | 401 |
-| `_dts_cross_backward_accum` | 7.4 µs | 17.5 | 19.1 | 35 / 83 | 401 |
-| `_uniform_cross_pibar_vjp…compact` | 10.0 µs | 15.8 | 15.8 | 34 / 100 | 802 |
-| `_wave_so` | 6.0 µs | **2.7** | 8.2 | **17** / 83 | **51** |
+| `_update_reconciliation_likelihood_jvp_kernel` (large wave) | 10.6 µs | **54.6** | 54.6 | 79 / 100 | 4208 |
+| `_transfer_subtree_vjp_directional_derivative_kernel` | 11.5 µs | 32.9 | 32.9 | 42 / 100 | 802 |
+| `_gene_split_event_vjp_directional_derivative_kernel` | 6.8 µs | 7.6 | 33.1 | 22 / 100 | 401 |
+| `_accumulate_gene_split_event_vjp_kernel` | 7.4 µs | 17.5 | 19.1 | 35 / 83 | 401 |
+| `_accumulate_transfer_subtree_vjp_kernel` | 10.0 µs | 15.8 | 15.8 | 34 / 100 | 802 |
+| `_reconciliation_vjp_directional_derivative_kernel` | 6.0 µs | **2.7** | 8.2 | **17** / 83 | **51** |
 
-Every kernel except `_wave_step_tangent` on *large* waves runs at **low occupancy (17–42%) and low
+Every kernel except `_update_reconciliation_likelihood_jvp_kernel` on *large* waves runs at **low occupancy (17–42%) and low
 throughput (SM 3–33%, Mem 8–33%)**. Root cause: **grids are tiny** — one program per wave-row, and
-most waves have few rows (`_wave_so` here: grid=51 on a ~128-SM GPU). The GPU is under-occupied, so
-these kernels are dominated by launch + memory latency, not by useful work. `_wave_step_tangent` is
+most waves have few rows (`_reconciliation_vjp_directional_derivative_kernel` here: grid=51 on a ~128-SM GPU). The GPU is under-occupied, so
+these kernels are dominated by launch + memory latency, not by useful work. `_update_reconciliation_likelihood_jvp_kernel` is
 the exception only because its big-wave instances (grid 4208) fill the machine (SM 55%, occ 79%);
 its 2,272 launches still include many tiny waves.
 

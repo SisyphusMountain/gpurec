@@ -93,7 +93,7 @@ Baseline reference values (any kernel change must reproduce these):
 
 ```
 hvp small : dir0 max_rel=8.32e-5  dir1 max_rel=1.15e-4  symmetry rel_asym=9.41e-4   (tol 5e-4 / 5e-3)
-wave_so   : d(A^T v) + d_aw* buckets  max_rel ~3e-9
+wave_so   : d(A^T v) + named event-VJP buckets  max_rel ~3e-9
 dts_so    : d_rhs/d_grad_*           max_rel ~3e-9
 e_so      : d_grad_*                 max_rel ~3e-9
 ```

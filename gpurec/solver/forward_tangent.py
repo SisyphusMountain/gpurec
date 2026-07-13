@@ -36,7 +36,7 @@ DEFAULT_SELF_MAX_ITER = 200
 
 
 def param_jvp_uniform(static, theta, v):
-    """Forward-mode tangent of extract_parameters_uniform along v (use_col_weights=False path)."""
+    """Forward-mode tangent of extract_parameters_uniform along v (use_receiver_weights=False path)."""
     unnorm_row_max = static.species_helpers["unnorm_row_max"].to(device=theta.device, dtype=theta.dtype)
 
     def f(th):
@@ -49,20 +49,20 @@ def param_jvp_uniform(static, theta, v):
         )
 
     primals, tangents = jvp(f, (theta,), (v,))
-    # (log_pS, log_pD, log_pL, max_coupling)
+    # (log_pS, log_pD, log_pL, max_transfer)
     return tangents
 
 
 def param_jvp_weighted(static, theta, alpha, u_theta, u_alpha):
     """Forward-mode tangent of ``extract_parameters_weighted_receivers`` along (u_theta, u_alpha).
 
-    Returns ``(dlog_pS, dlog_pD, dlog_pL, dmax_transfer, dcol)`` where the new alpha coupling lives
+    Returns ``(dlog_pS, dlog_pD, dlog_pL, dmax_transfer, dreceiver_log_probs)`` where the new alpha coupling lives
     in TWO outputs that ``param_jvp_uniform`` lacked:
 
     * ``dmax_transfer`` now carries the ``alpha -> receiver_log_probs -> receiver_valid_log_normalizer
       (receiver_norm) -> max_transfer`` coupling (the DOMINANT alpha->rate sensitivity; the uniform
       extractor dropped ``receiver_norm`` entirely);
-    * ``dcol = dreceiver_log_probs`` is the softmax-Jacobian applied to ``u_alpha``,
+    * ``dreceiver_log_probs`` is the softmax-Jacobian applied to ``u_alpha``,
       ``(diag(w) - w w^T) u_alpha / ln2`` in log2-space — autograd computes it, do NOT hand-roll.
       This is the alpha tangent SEED threaded into the e-step / wave / dts tangents.
 
@@ -86,21 +86,39 @@ def param_jvp_weighted(static, theta, alpha, u_theta, u_alpha):
 
 
 def wave_step_constants(sv, S):
-    """Base per-item wave-step constants (mirrors pi_wave_forward)."""
-    item_rows = int(sv["E"].shape[0])
-    e_item = as_family_species(sv["E"], S, item_rows)
-    ebar_item = as_family_species(sv["Ebar"], S, item_rows)
-    e_s1_item = as_family_species(sv["E_s1"], S, item_rows)
-    e_s2_item = as_family_species(sv["E_s2"], S, item_rows)
-    mc_item = as_family_species(sv["max_transfer"].squeeze(-1), S, item_rows)
-    pd_item = as_family_species(sv["log_pD"], S, item_rows)
-    ps_item = as_family_species(sv["log_pS"], S, item_rows)
+    """Base per-family wave-step constants (mirrors pi_wave_forward)."""
+    family_rows = int(sv["E"].shape[0])
+    extinction = as_family_species(sv["E"], S, family_rows)
+    extinction_complement = as_family_species(sv["Ebar"], S, family_rows)
+    extinction_child1 = as_family_species(sv["E_s1"], S, family_rows)
+    extinction_child2 = as_family_species(sv["E_s2"], S, family_rows)
+    max_transfer = as_family_species(
+        sv["max_transfer"].squeeze(-1), S, family_rows
+    )
+    duplication_log_probability = as_family_species(
+        sv["log_pD"], S, family_rows
+    )
+    speciation_log_probability = as_family_species(
+        sv["log_pS"], S, family_rows
+    )
     return {
-        "dl": 1.0 + pd_item + e_item, "ebar": ebar_item, "e": e_item,
-        "sl1": ps_item + e_s2_item, "sl2": ps_item + e_s1_item,
-        "mc": mc_item, "leaf": ps_item,
-        "pd_param": as_family_param(sv["log_pD"], item_rows, S),
-        "ps_param": as_family_param(sv["log_pS"], item_rows, S),
+        "duplication_loss_const": 1.0
+        + duplication_log_probability
+        + extinction,
+        "extinction_complement": extinction_complement,
+        "extinction": extinction,
+        "speciation_child1_const": speciation_log_probability
+        + extinction_child2,
+        "speciation_child2_const": speciation_log_probability
+        + extinction_child1,
+        "max_transfer": max_transfer,
+        "leaf_log_probability": speciation_log_probability,
+        "duplication_log_probability_param": as_family_param(
+            sv["log_pD"], family_rows, S
+        ),
+        "speciation_log_probability_param": as_family_param(
+            sv["log_pS"], family_rows, S
+        ),
     }
 
 
@@ -109,50 +127,75 @@ def _default_tol(dtype):
 
 
 def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
-                            alpha=None, u_alpha=None, use_col_weights=False):
+                            alpha=None, u_alpha=None, use_receiver_weights=False):
     """E + parameter tangents assembled into the wave-step tangent constants.
 
-    ``alpha``/``u_alpha`` (and ``use_col_weights``) turn on the WEIGHTED forward tangent: the
-    parameter JVP differentiates through ``receiver_norm`` (so ``dmax_coupling`` carries the alpha
-    coupling) and the softmax-Jacobian seed ``dcol = dreceiver_log_probs`` is threaded into the
+    ``alpha``/``u_alpha`` (and ``use_receiver_weights``) turn on the WEIGHTED forward tangent: the
+    parameter JVP differentiates through ``receiver_norm`` (so ``dmax_transfer`` carries the alpha
+    coupling) and the softmax-Jacobian seed ``dreceiver_log_probs`` is threaded into the
     E-step tangent fixed point ALONGSIDE the wave tangent (consistency required: an inconsistent
-    dcol -> O(1) FD failure). With ``alpha=None`` this is the legacy uniform theta-only tangent
+    dreceiver_log_probs -> O(1) FD failure). With ``alpha=None`` this is the legacy uniform theta-only tangent
     (bit-for-bit)."""
     sh = static.species_helpers
     if alpha is None:
-        dlog_pS, dlog_pD, dlog_pL, dmax_coupling = param_jvp_uniform(static, theta, v)
-        dcol = None
+        dlog_pS, dlog_pD, dlog_pL, dmax_transfer = param_jvp_uniform(static, theta, v)
+        dreceiver_log_probs = None
     else:
-        dlog_pS, dlog_pD, dlog_pL, dmax_coupling, dcol = param_jvp_weighted(
+        dlog_pS, dlog_pD, dlog_pL, dmax_transfer, dreceiver_log_probs = param_jvp_weighted(
             static, theta, alpha, v, u_alpha,
         )
     dE, dE_s1, dE_s2, dEbar = e_tangent_fixed_point(
-        sv["E"], dlog_pS, dlog_pD, dlog_pL, dmax_coupling,
+        sv["E"], dlog_pS, dlog_pD, dlog_pL, dmax_transfer,
         sv["log_pS"], sv["log_pD"], sv["log_pL"], sv["max_transfer"], sv["receiver_log_probs"],
         sh["sp_parent"], sh["sp_child1"], sh["sp_child2"], int(sh["max_ancestor_depth"]),
         max_iter=int(static.solver_options.e_max_iter), tol=e_tol,
-        use_col_weights=bool(use_col_weights), dcol_log_probs=dcol,
+        use_receiver_weights=bool(use_receiver_weights), dreceiver_log_probs=dreceiver_log_probs,
     )
     if raw_out is not None:
-        raw_out.update(dlog_pS=dlog_pS, dlog_pD=dlog_pD, dlog_pL=dlog_pL,
-                       dmax_coupling=dmax_coupling, dE=dE, dE_s1=dE_s1, dE_s2=dE_s2, dEbar=dEbar,
-                       dreceiver_log_probs=dcol)
+        raw_out.update(
+            dlog_pS=dlog_pS,
+            dlog_pD=dlog_pD,
+            dlog_pL=dlog_pL,
+            d_max_transfer=dmax_transfer,
+            d_extinction=dE,
+            d_extinction_child1=dE_s1,
+            d_extinction_child2=dE_s2,
+            d_extinction_complement=dEbar,
+            dreceiver_log_probs=dreceiver_log_probs,
+        )
     S_ = S
-    item_rows = int(sv["E"].shape[0])
-    de_item = as_family_species(dE, S_, item_rows)
-    debar_item = as_family_species(dEbar, S_, item_rows)
-    de_s1_item = as_family_species(dE_s1, S_, item_rows)
-    de_s2_item = as_family_species(dE_s2, S_, item_rows)
-    dpd_item = as_family_species(dlog_pD, S_, item_rows)
-    dps_item = as_family_species(dlog_pS, S_, item_rows)
-    dmc_item = as_family_species(dmax_coupling.squeeze(-1), S_, item_rows)
+    family_rows = int(sv["E"].shape[0])
+    d_extinction = as_family_species(dE, S_, family_rows)
+    d_extinction_complement = as_family_species(dEbar, S_, family_rows)
+    d_extinction_child1 = as_family_species(dE_s1, S_, family_rows)
+    d_extinction_child2 = as_family_species(dE_s2, S_, family_rows)
+    d_duplication_log_probability = as_family_species(
+        dlog_pD, S_, family_rows
+    )
+    d_speciation_log_probability = as_family_species(
+        dlog_pS, S_, family_rows
+    )
+    d_max_transfer = as_family_species(
+        dmax_transfer.squeeze(-1), S_, family_rows
+    )
     return {
-        "dDL": dpd_item + de_item, "dEbar": debar_item, "dE": de_item,
-        "dSL1": dps_item + de_s2_item, "dSL2": dps_item + de_s1_item,
-        "dMC": dmc_item, "dleaf": dps_item,
-        "dpd_param": as_family_param(dlog_pD, item_rows, S_),
-        "dps_param": as_family_param(dlog_pS, item_rows, S_),
-        "_dcol": dcol,  # softmax-Jacobian alpha seed (None on the legacy uniform path)
+        "d_duplication_loss_const": d_duplication_log_probability
+        + d_extinction,
+        "d_extinction_complement": d_extinction_complement,
+        "d_extinction": d_extinction,
+        "d_speciation_child1_const": d_speciation_log_probability
+        + d_extinction_child2,
+        "d_speciation_child2_const": d_speciation_log_probability
+        + d_extinction_child1,
+        "d_max_transfer": d_max_transfer,
+        "d_leaf_log_probability": d_speciation_log_probability,
+        "d_duplication_log_probability_param": as_family_param(
+            dlog_pD, family_rows, S_
+        ),
+        "d_speciation_log_probability_param": as_family_param(
+            dlog_pS, family_rows, S_
+        ),
+        "_dreceiver_log_probs": dreceiver_log_probs,
     }
 
 
@@ -168,17 +211,16 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     adaptive converge-to-``self_tol`` loop used by the fp64 verification gates.
 
     ``alpha``/``u_alpha`` turn on the WEIGHTED forward tangent (S3): the parameter JVP goes through
-    ``extract_parameters_weighted_receivers`` so ``dMC`` carries the alpha->receiver_norm coupling,
-    and the softmax-Jacobian seed ``dcol = dreceiver_log_probs`` is threaded IDENTICALLY into the
-    E-step tangent fixed point AND the wave-step tangent (use_col_weights=True). At a non-uniform
+    ``extract_parameters_weighted_receivers`` so ``dmax_transfer`` carries the alpha->receiver_norm coupling,
+    and the softmax-Jacobian seed ``dreceiver_log_probs`` is threaded identically into the
+    E-step tangent fixed point AND the wave-step tangent (use_receiver_weights=True). At a non-uniform
     base this is what makes the tangent FINITE and self-consistent with the weighted primal (the
     legacy uniform tangent NaNs there). ``alpha=None`` -> legacy uniform theta-only tangent.
 
     With ``return_full=True`` returns (root_tangents, full) where ``full`` carries everything the
-    exact-HVP tangent-adjoint sweep needs: dPi/dPibar [C,S] buffers, per-wave d_dts (dict keyed by
-    wave start), the tangent constants dict (dDL/dEbar/dE/dSL1/dSL2/dMC/dleaf/dpd_param/
-    dps_param), the raw parameter tangents (dlog_pS, dlog_pD, dlog_pL, dmax_coupling), the E
-    tangents (dE*, dE_s1, dE_s2, dEbar), and ``dreceiver_log_probs`` (= dcol, the alpha seed).
+    exact-HVP tangent-adjoint sweep needs: dPi/dPibar [C,S] buffers, per-wave
+    gene-split tangents keyed by wave start, equation-named wave constants,
+    raw parameter tangents, extinction tangents, and ``dreceiver_log_probs``.
     """
     sh, wl = static.species_helpers, static.wave_layout
     S = int(sh["S"])
@@ -186,25 +228,27 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
         self_tol = _default_tol(theta.dtype)
     if e_tol is None:
         e_tol = _default_tol(theta.dtype)
-    item_idx = static.rate_family_idx
-    leaf_state_idx = wl["leaf_species_index"].to(torch.int32)
-    c1, c2, parent = sh["sp_child1"], sh["sp_child2"], sh["sp_parent"]
-    mad = int(sh["max_ancestor_depth"])
+    family_idx = static.rate_family_idx
+    leaf_species_idx = wl["leaf_species_index"].to(torch.int32)
+    species_child1 = sh["sp_child1"]
+    species_child2 = sh["sp_child2"]
+    species_parent = sh["sp_parent"]
+    max_ancestor_depth = int(sh["max_ancestor_depth"])
 
     # S3: weighted tangent iff a non-uniform base alpha is supplied (matches the primal's
-    # use_receiver_weights derivation). dcol is the softmax-Jacobian seed; col is the live
+    # use_receiver_weights derivation). dreceiver_log_probs is the softmax-Jacobian seed; col is the live
     # receiver_log_probs already stored in sv.
     weighted = alpha is not None
-    use_col_weights = bool(weighted) and not receiver_weights_are_uniform(alpha)
-    col_logp = sv["receiver_log_probs"]
+    use_receiver_weights = bool(weighted) and not receiver_weights_are_uniform(alpha)
+    receiver_log_probs = sv["receiver_log_probs"]
 
     base = wave_step_constants(sv, S)
     raw = {} if return_full else None
-    dcst = _wave_tangent_constants(
+    tangent_constants = _wave_tangent_constants(
         static, theta, v, sv, S, e_tol, raw_out=raw,
-        alpha=alpha if weighted else None, u_alpha=u_alpha, use_col_weights=use_col_weights,
+        alpha=alpha if weighted else None, u_alpha=u_alpha, use_receiver_weights=use_receiver_weights,
     )
-    dcol = dcst.pop("_dcol")
+    dreceiver_log_probs = tangent_constants.pop("_dreceiver_log_probs")
 
     pi = sv["pi_wave"]
     pibar = sv["pibar_wave"]
@@ -215,19 +259,36 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     C = int(pi.shape[0])
     dpi = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
     dpibar = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
-    d_dts_by_ws = {} if return_full else None
+    d_gene_split_by_wave_start = {} if return_full else None
 
-    def step(dPi_out, dts_r, d_dts, dts_offset, ws, W, has_leaf, store):
+    def step(
+        dPi_out,
+        gene_split_log_likelihood,
+        d_gene_split_log_likelihood,
+        gene_split_offset,
+        ws,
+        W,
+        has_leaf,
+        store,
+    ):
         compute_wave_step_tangent(
             pi, dpi, dPi_out, ws, W, S,
-            base["mc"], dcst["dMC"], base["dl"], dcst["dDL"], base["ebar"], dcst["dEbar"],
-            base["e"], dcst["dE"], base["sl1"], dcst["dSL1"], base["sl2"], dcst["dSL2"],
-            col_logp, c1, c2, parent, mad, dts_r, d_dts,
-            leaf_state_idx=leaf_state_idx, leaf_logp=base["leaf"], dleaf_logp=dcst["dleaf"],
-            item_idx=item_idx, dPibar_out=(dpibar if store else None),
-            has_leaf_term=has_leaf, input_ws=None, use_col_weights=use_col_weights,
-            dcol_log_probs=dcol,
-            pi_offset=pi_offset, dts_offset=dts_offset,
+            base["max_transfer"], tangent_constants["d_max_transfer"],
+            base["duplication_loss_const"], tangent_constants["d_duplication_loss_const"],
+            base["extinction_complement"], tangent_constants["d_extinction_complement"],
+            base["extinction"], tangent_constants["d_extinction"],
+            base["speciation_child1_const"], tangent_constants["d_speciation_child1_const"],
+            base["speciation_child2_const"], tangent_constants["d_speciation_child2_const"],
+            receiver_log_probs, species_child1, species_child2, species_parent,
+            max_ancestor_depth,
+            gene_split_log_likelihood, d_gene_split_log_likelihood,
+            leaf_species_idx=leaf_species_idx,
+            leaf_logp=base["leaf_log_probability"],
+            d_leaf_logp=tangent_constants["d_leaf_log_probability"],
+            family_idx=family_idx, dPibar_out=(dpibar if store else None),
+            has_leaf_term=has_leaf, input_ws=None, use_receiver_weights=use_receiver_weights,
+            dreceiver_log_probs=dreceiver_log_probs,
+            pi_offset=pi_offset, gene_split_offset=gene_split_offset,
         )
 
     for meta in wl["wave_metas"]:
@@ -235,25 +296,39 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
         has_splits = "sl" in meta
         has_leaf = not has_splits
         if has_splits:
-            dts_r, dts_offset = compute_dts_forward(
+            gene_split_log_likelihood, gene_split_offset = compute_dts_forward(
                 pi, pi_offset, pibar, pibar_offset,
-                meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
-                base["pd_param"], base["ps_param"], family_idx=item_idx,
-                log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
-                eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
-                ge2_parent_ids=meta.get("ge2_parent_ids"),
-                ge2_max_fanout=meta.get("ge2_max_fanout"), family_offset=ws,
+                meta["sl"], meta["sr"], species_child1, species_child2,
+                W, meta["reduce_idx"],
+                base["duplication_log_probability_param"],
+                base["speciation_log_probability_param"], family_idx=family_idx,
+                log_split_probs=meta.get("log_split_probs"), n_single_split_parents=meta.get("n_eq1"),
+                single_split_parent_rows=meta.get("eq1_reduce_idx"), multiple_split_group_ptr=meta.get("ge2_ptr"),
+                multiple_split_parent_rows=meta.get("ge2_parent_ids"),
+                max_splits_per_multiple_parent=meta.get("ge2_max_fanout"), family_offset=ws,
             )
-            d_dts = compute_dts_tangent(
-                pi, pibar, dpi, dpibar, meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
-                base["pd_param"], base["ps_param"], dcst["dpd_param"], dcst["dps_param"], dts_r, item_idx,
-                log_split_probs=meta.get("log_split_probs"), item_offset=ws,
-                pi_offset=pi_offset, pibar_offset=pibar_offset, dts_offset=dts_offset,
+            d_gene_split_log_likelihood = compute_dts_tangent(
+                pi, pibar, dpi, dpibar, meta["sl"], meta["sr"],
+                species_child1, species_child2, W, meta["reduce_idx"],
+                base["duplication_log_probability_param"],
+                base["speciation_log_probability_param"],
+                tangent_constants["d_duplication_log_probability_param"],
+                tangent_constants["d_speciation_log_probability_param"],
+                gene_split_log_likelihood, family_idx,
+                log_split_probs=meta.get("log_split_probs"), family_offset=ws,
+                pi_offset=pi_offset, pibar_offset=pibar_offset,
+                gene_split_offset=gene_split_offset,
             )
         else:
-            dts_r = d_dts = dts_offset = None
-        if return_full and d_dts is not None and keep_d_dts:
-            d_dts_by_ws[ws] = d_dts
+            gene_split_log_likelihood = None
+            d_gene_split_log_likelihood = None
+            gene_split_offset = None
+        if (
+            return_full
+            and d_gene_split_log_likelihood is not None
+            and keep_d_dts
+        ):
+            d_gene_split_by_wave_start[ws] = d_gene_split_log_likelihood
 
         if self_iters is not None and fused_selfloop:
             # fixed-count, sync-free Jacobi matching the primal forward's pi_iters truncation.
@@ -263,25 +338,60 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
             # looping `step` n_it times in-place (last step writes dpibar).
             compute_wave_step_tangent_selfloop(
                 pi, dpi, ws, W, S, max(int(self_iters), 1),
-                base["mc"], dcst["dMC"], base["dl"], dcst["dDL"], base["ebar"], dcst["dEbar"],
-                base["e"], dcst["dE"], base["sl1"], dcst["dSL1"], base["sl2"], dcst["dSL2"],
-                col_logp, c1, c2, parent, mad, dts_r, d_dts,
-                leaf_state_idx=leaf_state_idx, leaf_logp=base["leaf"], dleaf_logp=dcst["dleaf"],
-                item_idx=item_idx, dPibar_out=dpibar, has_leaf_term=has_leaf,
-                use_col_weights=use_col_weights, dcol_log_probs=dcol,
-                pi_offset=pi_offset, dts_offset=dts_offset,
+                base["max_transfer"], tangent_constants["d_max_transfer"],
+                base["duplication_loss_const"], tangent_constants["d_duplication_loss_const"],
+                base["extinction_complement"], tangent_constants["d_extinction_complement"],
+                base["extinction"], tangent_constants["d_extinction"],
+                base["speciation_child1_const"], tangent_constants["d_speciation_child1_const"],
+                base["speciation_child2_const"], tangent_constants["d_speciation_child2_const"],
+                receiver_log_probs, species_child1, species_child2, species_parent,
+                max_ancestor_depth,
+                gene_split_log_likelihood, d_gene_split_log_likelihood,
+                leaf_species_idx=leaf_species_idx,
+                leaf_logp=base["leaf_log_probability"],
+                d_leaf_logp=tangent_constants["d_leaf_log_probability"],
+                family_idx=family_idx, dPibar_out=dpibar, has_leaf_term=has_leaf,
+                use_receiver_weights=use_receiver_weights, dreceiver_log_probs=dreceiver_log_probs,
+                pi_offset=pi_offset, gene_split_offset=gene_split_offset,
             )
         elif self_iters is not None:
             # reference (unfused) fixed-count path: one launch per Jacobi step
             n_it = max(int(self_iters), 1)
             for _ in range(n_it - 1):
-                step(dpi, dts_r, d_dts, dts_offset, ws, W, has_leaf, store=False)  # in-place Jacobi
-            step(dpi, dts_r, d_dts, dts_offset, ws, W, has_leaf, store=True)  # last step writes dpibar
+                step(
+                    dpi,
+                    gene_split_log_likelihood,
+                    d_gene_split_log_likelihood,
+                    gene_split_offset,
+                    ws,
+                    W,
+                    has_leaf,
+                    store=False,
+                )
+            step(
+                dpi,
+                gene_split_log_likelihood,
+                d_gene_split_log_likelihood,
+                gene_split_offset,
+                ws,
+                W,
+                has_leaf,
+                store=True,
+            )
         else:
             prev = dpi.narrow(0, ws, W).clone()
             converged = False
             for _ in range(int(self_max_iter)):
-                step(dpi, dts_r, d_dts, dts_offset, ws, W, has_leaf, store=False)  # in-place Jacobi on dpi[ws:ws+W]
+                step(
+                    dpi,
+                    gene_split_log_likelihood,
+                    d_gene_split_log_likelihood,
+                    gene_split_offset,
+                    ws,
+                    W,
+                    has_leaf,
+                    store=False,
+                )
                 cur = dpi.narrow(0, ws, W)
                 diff = float((cur - prev).abs().max())
                 scale = float(cur.abs().max())
@@ -299,9 +409,24 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                     "may be inaccurate. Raise self_max_iter (default 200) or self_tol.",
                     RuntimeWarning, stacklevel=2,
                 )
-            step(dpi, dts_r, d_dts, dts_offset, ws, W, has_leaf, store=True)  # write converged dpibar[ws:ws+W]
+            step(
+                dpi,
+                gene_split_log_likelihood,
+                d_gene_split_log_likelihood,
+                gene_split_offset,
+                ws,
+                W,
+                has_leaf,
+                store=True,
+            )
 
     roots = dpi.index_select(0, wl["root_clade_ids"])
     if return_full:
-        return roots, dict(dPi=dpi, dPibar=dpibar, d_dts=d_dts_by_ws, dcst=dcst, **raw)
+        return roots, dict(
+            dPi=dpi,
+            dPibar=dpibar,
+            d_gene_split_by_wave_start=d_gene_split_by_wave_start,
+            tangent_constants=tangent_constants,
+            **raw,
+        )
     return roots

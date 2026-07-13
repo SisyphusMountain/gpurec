@@ -7,10 +7,10 @@ from gpurec.config import dtype_rel_tol_default as _bicgstab_rel_tol_default, dt
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
 from gpurec.core.kernels.pi_forward import compute_dts_forward
 from gpurec.core.kernels.wave_backward import (
-    active_mask_from_rhs_absmax_fused,
-    dts_cross_backward_accum_fused,
-    uniform_cross_pibar_vjp_tree_from_ud_fused,
-    wave_backward_uniform_fused,
+    compute_active_adjoint_row_mask,
+    accumulate_gene_split_event_vjp,
+    accumulate_transfer_complement_vjp_from_donor_adjoint,
+    solve_reconciliation_wave_vjp,
 )
 from gpurec.core.parameters.extract_parameters import (
     as_family_param,
@@ -562,7 +562,7 @@ def implicit_grad_loglik_vjp_wave(
         W = int(meta["W"])
         init_v = warm_v.get(ws) if warm_v is not None else None   # per-wave adjoint warm-start
         rhs_k = accumulated_rhs[ws : ws + W]
-        active_mask = active_mask_from_rhs_absmax_fused(
+        active_mask = compute_active_adjoint_row_mask(
             rhs_k,
             adjoint_pruning_threshold,
             use_pruning=bool(use_adjoint_pruning),
@@ -585,18 +585,18 @@ def implicit_grad_loglik_vjp_wave(
                 log_pS_param,
                 family_idx=family_idx,
                 log_split_probs=meta.get("log_split_probs"),
-                n_eq1=meta.get("n_eq1"),
-                eq1_reduce_idx=meta.get("eq1_reduce_idx"),
-                ge2_ptr=meta.get("ge2_ptr"),
-                ge2_parent_ids=meta.get("ge2_parent_ids"),
-                ge2_max_fanout=meta.get("ge2_max_fanout"),
+                n_single_split_parents=meta.get("n_eq1"),
+                single_split_parent_rows=meta.get("eq1_reduce_idx"),
+                multiple_split_group_ptr=meta.get("ge2_ptr"),
+                multiple_split_parent_rows=meta.get("ge2_parent_ids"),
+                max_splits_per_multiple_parent=meta.get("ge2_max_fanout"),
                 active_parent_rows=active_mask,
                 family_offset=ws,
             )
         else:
             dts_r = None
             dts_offset = None
-        backward_out = wave_backward_uniform_fused(
+        backward_out = solve_reconciliation_wave_vjp(
             Pi_star_wave,
             Pibar_star_wave,
             ws,
@@ -619,7 +619,7 @@ def implicit_grad_loglik_vjp_wave(
             leaf_logp=log_pS_family,
             has_leaf_term=has_leaf_term,
             active_mask=active_mask,
-            sp_parent=species_helpers["sp_parent"],
+            species_parent=species_helpers["sp_parent"],
             max_ancestor_depth=int(species_helpers["max_ancestor_depth"]),
             pibar_row_max=uniform_pibar_row_max,
             family_idx=family_idx,
@@ -636,10 +636,19 @@ def implicit_grad_loglik_vjp_wave(
             reserved_scratch_bytes=reserved_scratch_bytes,
             pi_offset=pi_offset,
             pibar_offset=pibar_offset,
-            dts_offset=dts_offset,
+            gene_split_offset=dts_offset,
         )
         if collect_backward_relres:
-            v_k, aw0, aw1, aw2, aw345, aw3, aw4, last_relres = backward_out
+            (
+                v_k,
+                duplication_loss_event_vjp,
+                transfer_loss_event_vjp,
+                transfer_event_vjp,
+                speciation_leaf_event_vjp,
+                speciation_child1_event_vjp,
+                speciation_child2_event_vjp,
+                last_relres,
+            ) = backward_out
             wave_family = clade_family[ws : ws + W]
             row_active = active_mask.reshape(active_mask.shape[0], -1).ne(0).any(dim=1)
             vk_norm = torch.where(
@@ -661,7 +670,15 @@ def implicit_grad_loglik_vjp_wave(
                     include_self=True,
                 )
         else:
-            v_k, aw0, aw1, aw2, aw345, aw3, aw4 = backward_out
+            (
+                v_k,
+                duplication_loss_event_vjp,
+                transfer_loss_event_vjp,
+                transfer_event_vjp,
+                speciation_leaf_event_vjp,
+                speciation_child1_event_vjp,
+                speciation_child2_event_vjp,
+            ) = backward_out
         if warm_v is not None:
             # Cache the solved adjoint for next call's warm-start, but ZERO the pruned/inactive rows first
             # -- they hold uninitialized scratch, and reusing that garbage as initial_v poisons the next
@@ -684,25 +701,41 @@ def implicit_grad_loglik_vjp_wave(
                 has_splits=has_splits, has_leaf_term=has_leaf_term, meta=meta,
             ))
         family_rows_for_wave = family_idx[ws : ws + W]
-        _scatter_accum(grad_log_pD, family_rows_for_wave, aw0)
-        _scatter_accum(grad_log_pS, family_rows_for_wave, aw345)
-        _scatter_accum(grad_E_acc, family_rows_for_wave, aw0 + aw2)
-        _scatter_accum(grad_Ebar_acc, family_rows_for_wave, aw1)
-        _scatter_accum(grad_E_s1_acc, family_rows_for_wave, aw4)
-        _scatter_accum(grad_E_s2_acc, family_rows_for_wave, aw3)
-        _scatter_accum(grad_max_transfer_mat, family_rows_for_wave, aw2)
+        _scatter_accum(grad_log_pD, family_rows_for_wave, duplication_loss_event_vjp)
+        _scatter_accum(grad_log_pS, family_rows_for_wave, speciation_leaf_event_vjp)
+        _scatter_accum(
+            grad_E_acc,
+            family_rows_for_wave,
+            duplication_loss_event_vjp + transfer_event_vjp,
+        )
+        _scatter_accum(grad_Ebar_acc, family_rows_for_wave, transfer_loss_event_vjp)
+        _scatter_accum(grad_E_s1_acc, family_rows_for_wave, speciation_child2_event_vjp)
+        _scatter_accum(grad_E_s2_acc, family_rows_for_wave, speciation_child1_event_vjp)
+        _scatter_accum(grad_max_transfer_mat, family_rows_for_wave, transfer_event_vjp)
         if has_splits and dts_r is not None:
-            sl = meta["sl"]
-            sr = meta["sr"]
-            grad_Pibar_l, grad_Pibar_r, pibar_side_active, _param_pD, _param_pS = dts_cross_backward_accum_fused(
+            split_left_rows = meta["sl"]
+            split_right_rows = meta["sr"]
+            (
+                donor_adjoint,
+                total_donor_adjoint,
+                active_donor_side,
+                _duplication_parameter_vjp,
+                _speciation_parameter_vjp,
+            ) = accumulate_gene_split_event_vjp(
                 Pi_star_wave,
                 Pibar_star_wave,
                 v_k,
                 ws,
-                sl,
-                sr,
+                split_left_rows,
+                split_right_rows,
                 meta["reduce_idx"],
-                meta.get("log_split_probs", sl.new_zeros((int(sl.numel()),), dtype=Pi_star_wave.dtype)),
+                meta.get(
+                    "log_split_probs",
+                    split_left_rows.new_zeros(
+                        (int(split_left_rows.numel()),),
+                        dtype=Pi_star_wave.dtype,
+                    ),
+                ),
                 log_pD_param,
                 log_pS_param,
                 sp_child1,
@@ -713,35 +746,38 @@ def implicit_grad_loglik_vjp_wave(
                 merge_s_term=True,
                 grad_log_pD=grad_log_pD,
                 grad_log_pS=grad_log_pS,
-                grad_mt=grad_max_transfer_mat,
+                grad_max_transfer=grad_max_transfer_mat,
                 accum_param_reductions=True,
-                accum_mt_reduction=True,
-                output_pibar_ud=True,
-                output_pibar_side_active=True,
+                accum_max_transfer_reduction=True,
+                output_donor_adjoint=True,
+                output_active_donor_sides=True,
                 pibar_side_threshold=pibar_side_threshold,
-                mt_squeezed=max_transfer_family,
+                max_transfer=max_transfer_family,
                 pibar_row_max=uniform_pibar_row_max,
-                grad_mt_two_stage=bool(grad_max_transfer_mat.ndim == 2 and int(grad_max_transfer_mat.shape[0]) == 1),
-                grad_mt_two_stage_tile_splits=128,
+                grad_max_transfer_two_stage=bool(
+                    grad_max_transfer_mat.ndim == 2
+                    and int(grad_max_transfer_mat.shape[0]) == 1
+                ),
+                grad_max_transfer_two_stage_tile_splits=128,
                 skip_inactive_pibar_output_zero=True,
                 family_idx=family_idx,
                 pi_offset=pi_offset,
                 pibar_offset=pibar_offset,
             )
-            uniform_cross_pibar_vjp_tree_from_ud_fused(
+            accumulate_transfer_complement_vjp_from_donor_adjoint(
                 Pi_star_wave,
                 receiver_log_probs,
-                grad_Pibar_l,
-                grad_Pibar_r,
-                sl,
-                sr,
+                donor_adjoint,
+                total_donor_adjoint,
+                split_left_rows,
+                split_right_rows,
                 accumulated_rhs,
                 S,
                 active_mask=active_mask,
                 reduce_idx=meta["reduce_idx"],
                 pibar_row_max=uniform_pibar_row_max,
-                skip_zero_sides=True,
-                side_active=pibar_side_active,
+                skip_zero_donor_sides=True,
+                active_donor_side=active_donor_side,
                 compact_level_ptr=compact_level_ptr,
                 compact_level_parents=compact_level_parents,
                 compact_level_child1=compact_level_child1,

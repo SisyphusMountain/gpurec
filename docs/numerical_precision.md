@@ -83,7 +83,7 @@ Before float64 could be used, the float64 **backward** returned garbage:
 
 - `|g|inf` = **1431 / 60 / 83** across reruns (non-deterministic), wrong signs, and `−g64`
   was an *ascent* direction (loss rose monotonically along it). **No error was raised.**
-- Root cause: `_e_step_backward_prepare_2d_kernel` issued plain `tl.store` to `grad_E` /
+- Root cause: `_stage_extinction_and_transfer_complement_vjp_kernel` issued plain `tl.store` to `grad_E` /
   `excluded_u`, then `tl.atomic_add` into **overlapping** rows (a state's species-children
   `c1`/`c2` and `sp_parent` ancestors are other states handled by **other warps of the same
   CTA**) with **no barrier**. A warp's `atomic_add` could land *before* another warp's

@@ -14,8 +14,8 @@ from gpurec.core.kernels.pi_forward import (
     _validate_offset_tensor,
 )
 
-# Launch tuning: num_warps for _wave_step_tangent_kernel. Tuned on the representative 666x80 fixture
-# (S=1331, BLOCK_S=2048): num_warps=4 is ~7.4% faster on the total HVP than the old default of 8
+# Launch tuning for the reconciliation-likelihood JVP. Tuned on the representative 666x80 fixture
+# (S=1331, BLOCK_S=2048): num_warps=4 is ~7.4% faster on the reconciliation_event_scaled_mass HVP than the old default of 8
 # (sweep {2,4,8,16,32}; 2 spills catastrophically, 8/16/32 slower). The win is NOT from occupancy —
 # both 4 and 8 pin to 8 active warps/SM (16.67%), register+shared-limited — but from more elements
 # per thread (16 vs 8 → better ILP) and 2 resident blocks/SM (vs 1) hiding the cold-DRAM latency.
@@ -24,21 +24,23 @@ _WST_NUM_WARPS = int(os.environ.get("NEWTON_WST_NUM_WARPS", "4"))
 
 
 @triton.jit
-def _wave_step_tangent_kernel(
+def _update_reconciliation_likelihood_jvp_kernel(
     Pi_ptr, dPi_ptr,
     Pi_offset_ptr,
     ws, pi_ws,
-    max_coupling_ptr, dMC_ptr,
-    DL_ptr, dDL_ptr,
+    max_transfer_ptr, dmax_transfer_ptr,
+    duplication_loss_const_ptr, d_duplication_loss_const_ptr,
     Ebar_ptr, dEbar_ptr,
     E_ptr, dE_ptr,
-    SL1_ptr, dSL1_ptr,
-    SL2_ptr, dSL2_ptr,
-    col_log_probs_ptr, dcol_log_probs_ptr,
-    node_child1_ptr, node_child2_ptr, node_parent_ptr,
-    leaf_state_ptr, leaf_logp_ptr, dleaf_logp_ptr,
-    item_idx_ptr,
-    DTS_ptr, dDTS_ptr, DTS_offset_ptr,
+    speciation_child1_const_ptr, d_speciation_child1_const_ptr,
+    speciation_child2_const_ptr, d_speciation_child2_const_ptr,
+    receiver_log_probs_ptr, dreceiver_log_probs_ptr,
+    species_child1_ptr, species_child2_ptr, species_parent_ptr,
+    leaf_species_ptr, leaf_logp_ptr, d_leaf_logp_ptr,
+    family_idx_ptr,
+    gene_split_log_likelihood_ptr,
+    d_gene_split_log_likelihood_ptr,
+    gene_split_offset_ptr,
     has_splits: tl.constexpr,
     dPi_new_ptr,
     dPibar_out_ptr,
@@ -49,7 +51,7 @@ def _wave_step_tangent_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
-    USE_COL_WEIGHTS: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     NEG = -float("inf")
@@ -57,8 +59,8 @@ def _wave_step_tangent_kernel(
     pi_base = (pi_ws + w) * stride
     out_base = w * stride
     global_base = (ws + w) * stride
-    item_const = tl.load(item_idx_ptr + ws + w)
-    const_base = item_const * CONST_ROW_STRIDE
+    family = tl.load(family_idx_ptr + ws + w)
+    const_base = family * CONST_ROW_STRIDE
 
     s_offs = tl.arange(0, BLOCK_S)
     mask = s_offs < S
@@ -69,140 +71,222 @@ def _wave_step_tangent_kernel(
     # represented absolute rows and therefore need no offset tangent.
     pi_offset = tl.load(Pi_offset_ptr + pi_ws + w)
 
-    pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
-    dpi_w = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
-    if USE_COL_WEIGHTS:
-        colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
-        dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)
-        weighted = colw + pi_w
-        # col a variable: the pibar denom weights p'=2^(colw+pi-rm) gain a col-row tangent ->
-        # d(weighted)=dpi+dcol enters dRS/dAS (row_max FROZEN -> cancels). The +ln2 p' dcol of
-        # the SO kernel; here ln2 cancels in the log2-denom tangent (dpibar=(dRS-dAS)/denom).
-        dweighted = dpi_w + dcolw
+    reconciliation_log_likelihood = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
+    d_reconciliation_log_likelihood = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
+    if USE_RECEIVER_WEIGHTS:
+        receiver_log_probability = tl.load(receiver_log_probs_ptr + s_offs, mask=mask, other=NEG)
+        d_receiver_log_probability = tl.load(
+            dreceiver_log_probs_ptr + s_offs, mask=mask, other=0.0
+        )
+        receiver_weighted_reconciliation_log_likelihood = receiver_log_probability + reconciliation_log_likelihood
+        d_receiver_weighted_reconciliation_log_likelihood = d_reconciliation_log_likelihood + d_receiver_log_probability
     else:
-        weighted = pi_w
-        dweighted = dpi_w
-    row_max = tl.max(weighted, axis=0)
+        receiver_weighted_reconciliation_log_likelihood = reconciliation_log_likelihood
+        d_receiver_weighted_reconciliation_log_likelihood = d_reconciliation_log_likelihood
+    row_max = tl.max(receiver_weighted_reconciliation_log_likelihood, axis=0)
     row_max_safe = tl.where(row_max != NEG, row_max, tl.zeros([1], dtype=DTYPE))
-    r = tl.where(mask, tl.exp2(weighted - row_max_safe), zero)
-    row_sum = tl.sum(r, axis=0)
-    dRS = tl.sum(tl.where(mask, r * dweighted, zero), axis=0)
+    receiver_mass = tl.where(
+        mask, tl.exp2(receiver_weighted_reconciliation_log_likelihood - row_max_safe), zero
+    )
+    total_receiver_mass = tl.sum(receiver_mass, axis=0)
+    total_receiver_tangent_numerator = tl.sum(
+        tl.where(mask, receiver_mass * d_receiver_weighted_reconciliation_log_likelihood, zero), axis=0
+    )
 
-    cur = s_offs
-    ancestor_sum = zero
-    dAS = zero
+    ancestor_species = s_offs
+    excluded_ancestor_mass = zero
+    excluded_ancestor_tangent_numerator = zero
     for _ in range(0, MAX_ANCESTOR_DEPTH):
-        cv = mask & (cur >= 0) & (cur < S)
-        pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cv, other=NEG)
-        dpi_anc = tl.load(dPi_ptr + pi_base + cur, mask=cv, other=0.0)
-        if USE_COL_WEIGHTS:
-            col_anc = tl.load(col_log_probs_ptr + cur, mask=cv, other=NEG)
-            dcol_anc = tl.load(dcol_log_probs_ptr + cur, mask=cv, other=0.0)
-            r_anc = tl.where(cv, tl.exp2(col_anc + pi_anc - row_max_safe), zero)
-            dweighted_anc = dpi_anc + dcol_anc
+        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
+        ancestor_reconciliation_log_likelihood = tl.load(Pi_ptr + pi_base + ancestor_species, mask=ancestor_valid, other=NEG)
+        d_ancestor_reconciliation_log_likelihood = tl.load(dPi_ptr + pi_base + ancestor_species, mask=ancestor_valid, other=0.0)
+        if USE_RECEIVER_WEIGHTS:
+            ancestor_receiver_log_probability = tl.load(
+                receiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=NEG
+            )
+            d_ancestor_receiver_log_probability = tl.load(
+                dreceiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=0.0
+            )
+            ancestor_receiver_mass = tl.where(
+                ancestor_valid, tl.exp2(ancestor_receiver_log_probability + ancestor_reconciliation_log_likelihood - row_max_safe), zero
+            )
+            d_ancestor_weighted_reconciliation_log_likelihood = d_ancestor_reconciliation_log_likelihood + d_ancestor_receiver_log_probability
         else:
-            r_anc = tl.where(cv, tl.exp2(pi_anc - row_max_safe), zero)
-            dweighted_anc = dpi_anc
-        ancestor_sum += r_anc
-        dAS += r_anc * dweighted_anc
-        cur = tl.load(node_parent_ptr + cur, mask=cv, other=-1).to(tl.int32)
+            ancestor_receiver_mass = tl.where(
+                ancestor_valid, tl.exp2(ancestor_reconciliation_log_likelihood - row_max_safe), zero
+            )
+            d_ancestor_weighted_reconciliation_log_likelihood = d_ancestor_reconciliation_log_likelihood
+        excluded_ancestor_mass += ancestor_receiver_mass
+        excluded_ancestor_tangent_numerator += (
+            ancestor_receiver_mass * d_ancestor_weighted_reconciliation_log_likelihood
+        )
+        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
 
     const_offsets = const_base + s_offs
-    mc = tl.load(max_coupling_ptr + const_offsets, mask=mask, other=0.0)
-    dmc = tl.load(dMC_ptr + const_offsets, mask=mask, other=0.0)
-    denom = row_sum - ancestor_sum
-    pos = denom > 0.0
-    safe_denom = tl.where(pos, denom, tl.full([BLOCK_S], 1.0, DTYPE))
-    pibar = tl.where(pos, tl.log2(safe_denom) + row_max + mc, NEG)
-    dpibar = tl.where(pos, (dRS - dAS) / safe_denom + dmc, zero)
+    max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
+    d_max_transfer = tl.load(dmax_transfer_ptr + const_offsets, mask=mask, other=0.0)
+    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    has_valid_receiver_mass = valid_receiver_mass > 0.0
+    safe_valid_receiver_mass = tl.where(
+        has_valid_receiver_mass,
+        valid_receiver_mass,
+        tl.full([BLOCK_S], 1.0, DTYPE),
+    )
+    transfer_complement_log_likelihood = tl.where(
+        has_valid_receiver_mass,
+        tl.log2(safe_valid_receiver_mass) + row_max + max_transfer,
+        NEG,
+    )
+    d_transfer_complement_log_likelihood = tl.where(
+        has_valid_receiver_mass,
+        (
+            total_receiver_tangent_numerator
+            - excluded_ancestor_tangent_numerator
+        )
+        / safe_valid_receiver_mass
+        + d_max_transfer,
+        zero,
+    )
 
-    dl = tl.load(DL_ptr + const_offsets, mask=mask, other=NEG)
-    ddl = tl.load(dDL_ptr + const_offsets, mask=mask, other=0.0)
-    ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG)
-    debar = tl.load(dEbar_ptr + const_offsets, mask=mask, other=0.0)
-    e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG)
-    de = tl.load(dE_ptr + const_offsets, mask=mask, other=0.0)
-    sl1 = tl.load(SL1_ptr + const_offsets, mask=mask, other=NEG)
-    dsl1 = tl.load(dSL1_ptr + const_offsets, mask=mask, other=0.0)
-    sl2 = tl.load(SL2_ptr + const_offsets, mask=mask, other=NEG)
-    dsl2 = tl.load(dSL2_ptr + const_offsets, mask=mask, other=0.0)
+    duplication_loss_const = tl.load(
+        duplication_loss_const_ptr + const_offsets, mask=mask, other=NEG
+    )
+    d_duplication_loss_const = tl.load(
+        d_duplication_loss_const_ptr + const_offsets, mask=mask, other=0.0
+    )
+    extinction_complement_log_probability = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG)
+    d_extinction_complement_log_probability = tl.load(dEbar_ptr + const_offsets, mask=mask, other=0.0)
+    extinction_log_probability = tl.load(E_ptr + const_offsets, mask=mask, other=NEG)
+    d_extinction_log_probability = tl.load(dE_ptr + const_offsets, mask=mask, other=0.0)
+    speciation_child1_const = tl.load(
+        speciation_child1_const_ptr + const_offsets, mask=mask, other=NEG
+    )
+    d_speciation_child1_const = tl.load(
+        d_speciation_child1_const_ptr + const_offsets, mask=mask, other=0.0
+    )
+    speciation_child2_const = tl.load(
+        speciation_child2_const_ptr + const_offsets, mask=mask, other=NEG
+    )
+    d_speciation_child2_const = tl.load(
+        d_speciation_child2_const_ptr + const_offsets, mask=mask, other=0.0
+    )
 
-    c1 = tl.load(node_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(node_child2_ptr + s_offs, mask=mask, other=S)
+    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
+    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
     c1_valid = mask & (c1 < S)
     c2_valid = mask & (c2 < S)
-    pi_s1 = tl.where(c1_valid, tl.gather(pi_w, tl.where(c1_valid, c1, 0), axis=0), NEG)
-    pi_s2 = tl.where(c2_valid, tl.gather(pi_w, tl.where(c2_valid, c2, 0), axis=0), NEG)
-    dpi_s1 = tl.where(c1_valid, tl.gather(dpi_w, tl.where(c1_valid, c1, 0), axis=0), zero)
-    dpi_s2 = tl.where(c2_valid, tl.gather(dpi_w, tl.where(c2_valid, c2, 0), axis=0), zero)
+    reconciliation_child1_log_likelihood = tl.where(
+        c1_valid, tl.gather(reconciliation_log_likelihood, tl.where(c1_valid, c1, 0), axis=0), NEG
+    )
+    reconciliation_child2_log_likelihood = tl.where(
+        c2_valid, tl.gather(reconciliation_log_likelihood, tl.where(c2_valid, c2, 0), axis=0), NEG
+    )
+    d_reconciliation_child1_log_likelihood = tl.where(
+        c1_valid, tl.gather(d_reconciliation_log_likelihood, tl.where(c1_valid, c1, 0), axis=0), zero
+    )
+    d_reconciliation_child2_log_likelihood = tl.where(
+        c2_valid, tl.gather(d_reconciliation_log_likelihood, tl.where(c2_valid, c2, 0), axis=0), zero
+    )
 
-    t0 = dl + pi_w
-    dt0 = ddl + dpi_w
-    t1 = pi_w + ebar
-    dt1 = dpi_w + debar
-    t2 = pibar + e_val
-    dt2 = dpibar + de
-    t3 = sl1 + pi_s1
-    dt3 = dsl1 + dpi_s1
-    t4 = sl2 + pi_s2
-    dt4 = dsl2 + dpi_s2
+    duplication_loss_log_term = duplication_loss_const + reconciliation_log_likelihood
+    d_duplication_loss_log_term = d_duplication_loss_const + d_reconciliation_log_likelihood
+    transfer_loss_log_term = reconciliation_log_likelihood + extinction_complement_log_probability
+    d_transfer_loss_log_term = d_reconciliation_log_likelihood + d_extinction_complement_log_probability
+    transfer_log_term = transfer_complement_log_likelihood + extinction_log_probability
+    d_transfer_log_term = d_transfer_complement_log_likelihood + d_extinction_log_probability
+    speciation_child1_log_term = speciation_child1_const + reconciliation_child1_log_likelihood
+    d_speciation_child1_log_term = d_speciation_child1_const + d_reconciliation_child1_log_likelihood
+    speciation_child2_log_term = speciation_child2_const + reconciliation_child2_log_likelihood
+    d_speciation_child2_log_term = d_speciation_child2_const + d_reconciliation_child2_log_likelihood
     if USE_LEAF_INDEX:
-        leaf_state = tl.load(leaf_state_ptr + ws + w)
-        leaf_hit = mask & (leaf_state == s_offs)
-        leaf_logp = tl.load(leaf_logp_ptr + item_const * S + s_offs, mask=mask, other=NEG)
-        dleaf = tl.load(dleaf_logp_ptr + item_const * S + s_offs, mask=mask, other=0.0)
+        leaf_species = tl.load(leaf_species_ptr + ws + w)
+        leaf_hit = mask & (leaf_species == s_offs)
+        leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG)
+        d_leaf_logp = tl.load(
+            d_leaf_logp_ptr + family * S + s_offs, mask=mask, other=0.0
+        )
         leaf_logp = leaf_logp + (0.0 - pi_offset).to(DTYPE)
-        t5 = tl.where(leaf_hit, leaf_logp, NEG)
-        dt5 = tl.where(leaf_hit, dleaf, zero)
+        leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG)
+        d_leaf_observation_log_term = tl.where(leaf_hit, d_leaf_logp, zero)
     else:
-        t5 = tl.full([BLOCK_S], NEG, dtype=DTYPE)
-        dt5 = zero
+        leaf_observation_log_term = tl.full([BLOCK_S], NEG, dtype=DTYPE)
+        d_leaf_observation_log_term = zero
 
-    m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), tl.maximum(t4, t5))
+    logsumexp_max = tl.maximum(
+        tl.maximum(tl.maximum(duplication_loss_log_term, transfer_loss_log_term),
+                   tl.maximum(transfer_log_term, speciation_child1_log_term)),
+        tl.maximum(speciation_child2_log_term, leaf_observation_log_term),
+    )
     if has_splits:
-        dts_r = tl.load(DTS_ptr + out_base + s_offs, mask=mask, other=NEG)
-        dts_offset = tl.load(DTS_offset_ptr + w)
-        dts_r = dts_r + (dts_offset - pi_offset).to(DTYPE)
-        ddts = tl.load(dDTS_ptr + out_base + s_offs, mask=mask, other=0.0)
-        m = tl.maximum(m, dts_r)
-    m_safe = tl.where(m != NEG, m, zero)
-    e0 = tl.exp2(t0 - m_safe)
-    e1 = tl.exp2(t1 - m_safe)
-    e2 = tl.exp2(t2 - m_safe)
-    e3 = tl.exp2(t3 - m_safe)
-    e4 = tl.exp2(t4 - m_safe)
-    e5 = tl.exp2(t5 - m_safe)
-    total = e0 + e1 + e2 + e3 + e4 + e5
-    num = e0 * dt0 + e1 * dt1 + e2 * dt2 + e3 * dt3 + e4 * dt4 + e5 * dt5
+        gene_split_log_likelihood = tl.load(
+            gene_split_log_likelihood_ptr + out_base + s_offs,
+            mask=mask,
+            other=NEG,
+        )
+        gene_split_offset = tl.load(gene_split_offset_ptr + w)
+        gene_split_log_likelihood = gene_split_log_likelihood + (gene_split_offset - pi_offset).to(DTYPE)
+        d_gene_split_log_likelihood = tl.load(
+            d_gene_split_log_likelihood_ptr + out_base + s_offs,
+            mask=mask,
+            other=0.0,
+        )
+        logsumexp_max = tl.maximum(logsumexp_max, gene_split_log_likelihood)
+    logsumexp_max_safe = tl.where(logsumexp_max != NEG, logsumexp_max, zero)
+    duplication_loss_mass = tl.exp2(duplication_loss_log_term - logsumexp_max_safe)
+    transfer_loss_mass = tl.exp2(transfer_loss_log_term - logsumexp_max_safe)
+    transfer_mass = tl.exp2(transfer_log_term - logsumexp_max_safe)
+    speciation_child1_mass = tl.exp2(speciation_child1_log_term - logsumexp_max_safe)
+    speciation_child2_mass = tl.exp2(speciation_child2_log_term - logsumexp_max_safe)
+    leaf_observation_mass = tl.exp2(leaf_observation_log_term - logsumexp_max_safe)
+    reconciliation_event_scaled_mass = (
+        duplication_loss_mass + transfer_loss_mass + transfer_mass
+        + speciation_child1_mass + speciation_child2_mass + leaf_observation_mass
+    )
+    event_tangent_numerator = (
+        duplication_loss_mass * d_duplication_loss_log_term
+        + transfer_loss_mass * d_transfer_loss_log_term
+        + transfer_mass * d_transfer_log_term
+        + speciation_child1_mass * d_speciation_child1_log_term
+        + speciation_child2_mass * d_speciation_child2_log_term
+        + leaf_observation_mass * d_leaf_observation_log_term
+    )
     if has_splits:
-        edts = tl.exp2(dts_r - m_safe)
-        total += edts
-        num += edts * ddts
-    result = tl.log2(total) + m
-    inv = tl.where(total > 0.0, 1.0 / total, zero)
-    dPi_new = tl.where(mask & (result != NEG), num * inv, zero)
-    tl.store(dPi_new_ptr + out_base + s_offs, dPi_new, mask=mask)
+        gene_split_mass = tl.exp2(gene_split_log_likelihood - logsumexp_max_safe)
+        reconciliation_event_scaled_mass += gene_split_mass
+        event_tangent_numerator += gene_split_mass * d_gene_split_log_likelihood
+    updated_reconciliation_log_likelihood = tl.log2(reconciliation_event_scaled_mass) + logsumexp_max
+    inverse_reconciliation_event_scaled_mass = tl.where(
+        reconciliation_event_scaled_mass > 0.0, 1.0 / reconciliation_event_scaled_mass, zero
+    )
+    d_updated_reconciliation_log_likelihood = tl.where(
+        mask & (updated_reconciliation_log_likelihood != NEG),
+        event_tangent_numerator * inverse_reconciliation_event_scaled_mass,
+        zero,
+    )
+    tl.store(dPi_new_ptr + out_base + s_offs, d_updated_reconciliation_log_likelihood, mask=mask)
 
     if STORE_PIBAR:
-        tl.store(dPibar_out_ptr + global_base + s_offs, dpibar, mask=mask)
+        tl.store(dPibar_out_ptr + global_base + s_offs, d_transfer_complement_log_likelihood, mask=mask)
 
 
 @triton.jit
-def _wave_step_tangent_selfloop_kernel(
+def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     Pi_ptr, dPi_ptr,
     Pi_offset_ptr,
     ws, pi_ws,
-    max_coupling_ptr, dMC_ptr,
-    DL_ptr, dDL_ptr,
+    max_transfer_ptr, dmax_transfer_ptr,
+    duplication_loss_const_ptr, d_duplication_loss_const_ptr,
     Ebar_ptr, dEbar_ptr,
     E_ptr, dE_ptr,
-    SL1_ptr, dSL1_ptr,
-    SL2_ptr, dSL2_ptr,
-    col_log_probs_ptr, dcol_log_probs_ptr,
-    node_child1_ptr, node_child2_ptr, node_parent_ptr,
-    leaf_state_ptr, leaf_logp_ptr, dleaf_logp_ptr,
-    item_idx_ptr,
-    DTS_ptr, dDTS_ptr, DTS_offset_ptr,
+    speciation_child1_const_ptr, d_speciation_child1_const_ptr,
+    speciation_child2_const_ptr, d_speciation_child2_const_ptr,
+    receiver_log_probs_ptr, dreceiver_log_probs_ptr,
+    species_child1_ptr, species_child2_ptr, species_parent_ptr,
+    leaf_species_ptr, leaf_logp_ptr, d_leaf_logp_ptr,
+    family_idx_ptr,
+    gene_split_log_likelihood_ptr,
+    d_gene_split_log_likelihood_ptr,
+    gene_split_offset_ptr,
     has_splits: tl.constexpr,
     dPi_new_ptr,
     dPibar_out_ptr,
@@ -214,7 +298,7 @@ def _wave_step_tangent_selfloop_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
-    USE_COL_WEIGHTS: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fuse fixed-count wave-tangent self-loop iterations."""
@@ -223,8 +307,8 @@ def _wave_step_tangent_selfloop_kernel(
     pi_base = (pi_ws + w) * stride
     out_base = w * stride
     global_base = (ws + w) * stride
-    item_const = tl.load(item_idx_ptr + ws + w)
-    const_base = item_const * CONST_ROW_STRIDE
+    family = tl.load(family_idx_ptr + ws + w)
+    const_base = family * CONST_ROW_STRIDE
 
     s_offs = tl.arange(0, BLOCK_S)
     mask = s_offs < S
@@ -233,130 +317,173 @@ def _wave_step_tangent_selfloop_kernel(
     pi_offset = tl.load(Pi_offset_ptr + pi_ws + w)
 
     # ---- invariant setup (computed once) ----
-    pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
-    if USE_COL_WEIGHTS:
-        colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
-        dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)  # invariant col seed
-        weighted = colw + pi_w
+    reconciliation_log_likelihood = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
+    if USE_RECEIVER_WEIGHTS:
+        receiver_log_probability = tl.load(receiver_log_probs_ptr + s_offs, mask=mask, other=NEG)
+        d_receiver_log_probability = tl.load(
+            dreceiver_log_probs_ptr + s_offs, mask=mask, other=0.0
+        )
+        receiver_weighted_reconciliation_log_likelihood = receiver_log_probability + reconciliation_log_likelihood
     else:
-        dcolw = zero
-        weighted = pi_w
-    row_max = tl.max(weighted, axis=0)
+        d_receiver_log_probability = zero
+        receiver_weighted_reconciliation_log_likelihood = reconciliation_log_likelihood
+    row_max = tl.max(receiver_weighted_reconciliation_log_likelihood, axis=0)
     row_max_safe = tl.where(row_max != NEG, row_max, tl.zeros([1], dtype=DTYPE))
-    r = tl.where(mask, tl.exp2(weighted - row_max_safe), zero)
-    row_sum = tl.sum(r, axis=0)
+    receiver_mass = tl.where(mask, tl.exp2(receiver_weighted_reconciliation_log_likelihood - row_max_safe), zero)
+    total_receiver_mass = tl.sum(receiver_mass, axis=0)
 
-    # primal ancestor sum (invariant) -> denom
-    cur = s_offs
-    ancestor_sum = zero
+    # primal ancestor sum (invariant) -> valid_receiver_mass
+    ancestor_species = s_offs
+    excluded_ancestor_mass = zero
     for _ in range(0, MAX_ANCESTOR_DEPTH):
-        cv = mask & (cur >= 0) & (cur < S)
-        r_anc = tl.where(cv, tl.gather(r, tl.where(cv, cur, 0), axis=0), zero)
-        ancestor_sum += r_anc
-        cur = tl.load(node_parent_ptr + cur, mask=cv, other=-1).to(tl.int32)
+        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
+        ancestor_receiver_mass = tl.where(
+            ancestor_valid, tl.gather(receiver_mass, tl.where(ancestor_valid, ancestor_species, 0), axis=0), zero
+        )
+        excluded_ancestor_mass += ancestor_receiver_mass
+        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
 
     const_offsets = const_base + s_offs
-    mc = tl.load(max_coupling_ptr + const_offsets, mask=mask, other=0.0)
-    dmc = tl.load(dMC_ptr + const_offsets, mask=mask, other=0.0)
-    denom = row_sum - ancestor_sum
-    pos = denom > 0.0
-    safe_denom = tl.where(pos, denom, tl.full([BLOCK_S], 1.0, DTYPE))
-    inv_denom = tl.where(pos, 1.0 / safe_denom, zero)
-    pibar = tl.where(pos, tl.log2(safe_denom) + row_max + mc, NEG)
+    max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
+    d_max_transfer = tl.load(dmax_transfer_ptr + const_offsets, mask=mask, other=0.0)
+    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    has_valid_receiver_mass = valid_receiver_mass > 0.0
+    safe_valid_receiver_mass = tl.where(
+        has_valid_receiver_mass,
+        valid_receiver_mass,
+        tl.full([BLOCK_S], 1.0, DTYPE),
+    )
+    inverse_valid_receiver_mass = tl.where(
+        has_valid_receiver_mass, 1.0 / safe_valid_receiver_mass, zero
+    )
+    transfer_complement_log_likelihood = tl.where(
+        has_valid_receiver_mass,
+        tl.log2(safe_valid_receiver_mass) + row_max + max_transfer,
+        NEG,
+    )
 
-    dl = tl.load(DL_ptr + const_offsets, mask=mask, other=NEG)
-    ddl = tl.load(dDL_ptr + const_offsets, mask=mask, other=0.0)
-    ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG)
-    debar = tl.load(dEbar_ptr + const_offsets, mask=mask, other=0.0)
-    e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG)
-    de = tl.load(dE_ptr + const_offsets, mask=mask, other=0.0)
-    sl1 = tl.load(SL1_ptr + const_offsets, mask=mask, other=NEG)
-    dsl1 = tl.load(dSL1_ptr + const_offsets, mask=mask, other=0.0)
-    sl2 = tl.load(SL2_ptr + const_offsets, mask=mask, other=NEG)
-    dsl2 = tl.load(dSL2_ptr + const_offsets, mask=mask, other=0.0)
+    duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=mask, other=NEG)
+    d_duplication_loss_const = tl.load(d_duplication_loss_const_ptr + const_offsets, mask=mask, other=0.0)
+    extinction_complement_log_probability = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG)
+    d_extinction_complement_log_probability = tl.load(dEbar_ptr + const_offsets, mask=mask, other=0.0)
+    extinction_log_probability = tl.load(E_ptr + const_offsets, mask=mask, other=NEG)
+    d_extinction_log_probability = tl.load(dE_ptr + const_offsets, mask=mask, other=0.0)
+    speciation_child1_const = tl.load(speciation_child1_const_ptr + const_offsets, mask=mask, other=NEG)
+    d_speciation_child1_const = tl.load(d_speciation_child1_const_ptr + const_offsets, mask=mask, other=0.0)
+    speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=mask, other=NEG)
+    d_speciation_child2_const = tl.load(d_speciation_child2_const_ptr + const_offsets, mask=mask, other=0.0)
 
-    c1 = tl.load(node_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(node_child2_ptr + s_offs, mask=mask, other=S)
+    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
+    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
     c1_valid = mask & (c1 < S)
     c2_valid = mask & (c2 < S)
-    pi_s1 = tl.where(c1_valid, tl.gather(pi_w, tl.where(c1_valid, c1, 0), axis=0), NEG)
-    pi_s2 = tl.where(c2_valid, tl.gather(pi_w, tl.where(c2_valid, c2, 0), axis=0), NEG)
+    reconciliation_child1_log_likelihood = tl.where(c1_valid, tl.gather(reconciliation_log_likelihood, tl.where(c1_valid, c1, 0), axis=0), NEG)
+    reconciliation_child2_log_likelihood = tl.where(c2_valid, tl.gather(reconciliation_log_likelihood, tl.where(c2_valid, c2, 0), axis=0), NEG)
 
-    t0 = dl + pi_w
-    t1 = pi_w + ebar
-    t2 = pibar + e_val
-    t3 = sl1 + pi_s1
-    t4 = sl2 + pi_s2
+    duplication_loss_log_term = duplication_loss_const + reconciliation_log_likelihood
+    transfer_loss_log_term = reconciliation_log_likelihood + extinction_complement_log_probability
+    transfer_log_term = transfer_complement_log_likelihood + extinction_log_probability
+    speciation_child1_log_term = speciation_child1_const + reconciliation_child1_log_likelihood
+    speciation_child2_log_term = speciation_child2_const + reconciliation_child2_log_likelihood
     if USE_LEAF_INDEX:
-        leaf_state = tl.load(leaf_state_ptr + ws + w)
-        leaf_hit = mask & (leaf_state == s_offs)
-        leaf_logp = tl.load(leaf_logp_ptr + item_const * S + s_offs, mask=mask, other=NEG)
-        dleaf = tl.load(dleaf_logp_ptr + item_const * S + s_offs, mask=mask, other=0.0)
+        leaf_species = tl.load(leaf_species_ptr + ws + w)
+        leaf_hit = mask & (leaf_species == s_offs)
+        leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG)
+        d_leaf_logp = tl.load(
+            d_leaf_logp_ptr + family * S + s_offs, mask=mask, other=0.0
+        )
         leaf_logp = leaf_logp + (0.0 - pi_offset).to(DTYPE)
-        t5 = tl.where(leaf_hit, leaf_logp, NEG)
-        dt5 = tl.where(leaf_hit, dleaf, zero)
+        leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG)
+        d_leaf_observation_log_term = tl.where(leaf_hit, d_leaf_logp, zero)
     else:
-        t5 = tl.full([BLOCK_S], NEG, dtype=DTYPE)
-        dt5 = zero
+        leaf_observation_log_term = tl.full([BLOCK_S], NEG, dtype=DTYPE)
+        d_leaf_observation_log_term = zero
 
-    m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), tl.maximum(t4, t5))
+    logsumexp_max = tl.maximum(
+        tl.maximum(tl.maximum(duplication_loss_log_term, transfer_loss_log_term),
+                   tl.maximum(transfer_log_term, speciation_child1_log_term)),
+        tl.maximum(speciation_child2_log_term, leaf_observation_log_term),
+    )
     if has_splits:
-        dts_r = tl.load(DTS_ptr + out_base + s_offs, mask=mask, other=NEG)
-        dts_offset = tl.load(DTS_offset_ptr + w)
-        dts_r = dts_r + (dts_offset - pi_offset).to(DTYPE)
-        ddts = tl.load(dDTS_ptr + out_base + s_offs, mask=mask, other=0.0)
-        m = tl.maximum(m, dts_r)
-    m_safe = tl.where(m != NEG, m, zero)
-    e0 = tl.exp2(t0 - m_safe)
-    e1 = tl.exp2(t1 - m_safe)
-    e2 = tl.exp2(t2 - m_safe)
-    e3 = tl.exp2(t3 - m_safe)
-    e4 = tl.exp2(t4 - m_safe)
-    e5 = tl.exp2(t5 - m_safe)
-    total = e0 + e1 + e2 + e3 + e4 + e5
-    num_dts = zero
+        gene_split_log_likelihood = tl.load(gene_split_log_likelihood_ptr + out_base + s_offs, mask=mask, other=NEG)
+        gene_split_offset = tl.load(gene_split_offset_ptr + w)
+        gene_split_log_likelihood = gene_split_log_likelihood + (gene_split_offset - pi_offset).to(DTYPE)
+        d_gene_split_log_likelihood = tl.load(d_gene_split_log_likelihood_ptr + out_base + s_offs, mask=mask, other=0.0)
+        logsumexp_max = tl.maximum(logsumexp_max, gene_split_log_likelihood)
+    logsumexp_max_safe = tl.where(logsumexp_max != NEG, logsumexp_max, zero)
+    duplication_loss_mass = tl.exp2(duplication_loss_log_term - logsumexp_max_safe)
+    transfer_loss_mass = tl.exp2(transfer_loss_log_term - logsumexp_max_safe)
+    transfer_mass = tl.exp2(transfer_log_term - logsumexp_max_safe)
+    speciation_child1_mass = tl.exp2(speciation_child1_log_term - logsumexp_max_safe)
+    speciation_child2_mass = tl.exp2(speciation_child2_log_term - logsumexp_max_safe)
+    leaf_observation_mass = tl.exp2(leaf_observation_log_term - logsumexp_max_safe)
+    reconciliation_event_scaled_mass = (
+        duplication_loss_mass + transfer_loss_mass + transfer_mass
+        + speciation_child1_mass + speciation_child2_mass + leaf_observation_mass
+    )
+    gene_split_tangent_numerator = zero
     if has_splits:
-        edts = tl.exp2(dts_r - m_safe)
-        total += edts
-        num_dts = edts * ddts
-    result = tl.log2(total) + m
-    inv = tl.where(total > 0.0, 1.0 / total, zero)
-    valid = mask & (result != NEG)
+        gene_split_mass = tl.exp2(gene_split_log_likelihood - logsumexp_max_safe)
+        reconciliation_event_scaled_mass += gene_split_mass
+        gene_split_tangent_numerator = gene_split_mass * d_gene_split_log_likelihood
+    updated_reconciliation_log_likelihood = tl.log2(reconciliation_event_scaled_mass) + logsumexp_max
+    inverse_reconciliation_event_scaled_mass = tl.where(reconciliation_event_scaled_mass > 0.0, 1.0 / reconciliation_event_scaled_mass, zero)
+    valid = mask & (updated_reconciliation_log_likelihood != NEG)
 
-    # ---- tangent self-loop (register-resident; only dpi_w varies) ----
-    dpi_w = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
-    dpibar = zero
+    # ---- tangent self-loop (register-resident; only d_reconciliation_log_likelihood varies) ----
+    d_reconciliation_log_likelihood = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
+    d_transfer_complement_log_likelihood = zero
     for _it in range(0, n_iters):
-        # col a variable -> d(weighted)=dpi+dcol in the Ebar/pibar denom tangent (dcolw invariant)
-        dweighted = dpi_w + dcolw
-        dRS = tl.sum(tl.where(mask, r * dweighted, zero), axis=0)
-        cur = s_offs
-        dAS = zero
+        d_receiver_weighted_reconciliation_log_likelihood = d_reconciliation_log_likelihood + d_receiver_log_probability
+        total_receiver_tangent_numerator = tl.sum(
+            tl.where(mask, receiver_mass * d_receiver_weighted_reconciliation_log_likelihood, zero), axis=0
+        )
+        ancestor_species = s_offs
+        excluded_ancestor_tangent_numerator = zero
         for _ in range(0, MAX_ANCESTOR_DEPTH):
-            cv = mask & (cur >= 0) & (cur < S)
-            r_anc = tl.where(cv, tl.gather(r, tl.where(cv, cur, 0), axis=0), zero)
-            dpi_anc = tl.where(cv, tl.gather(dpi_w, tl.where(cv, cur, 0), axis=0), zero)
-            dcol_anc = tl.where(cv, tl.gather(dcolw, tl.where(cv, cur, 0), axis=0), zero)
-            dAS += r_anc * (dpi_anc + dcol_anc)
-            cur = tl.load(node_parent_ptr + cur, mask=cv, other=-1).to(tl.int32)
-        dpibar = tl.where(pos, (dRS - dAS) * inv_denom + dmc, zero)
-        dpi_s1 = tl.where(c1_valid, tl.gather(dpi_w, tl.where(c1_valid, c1, 0), axis=0), zero)
-        dpi_s2 = tl.where(c2_valid, tl.gather(dpi_w, tl.where(c2_valid, c2, 0), axis=0), zero)
-        dt0 = ddl + dpi_w
-        dt1 = dpi_w + debar
-        dt2 = dpibar + de
-        dt3 = dsl1 + dpi_s1
-        dt4 = dsl2 + dpi_s2
-        num = e0 * dt0 + e1 * dt1 + e2 * dt2 + e3 * dt3 + e4 * dt4 + e5 * dt5 + num_dts
-        dpi_w = tl.where(valid, num * inv, zero)
+            ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
+            ancestor_receiver_mass = tl.where(
+                ancestor_valid, tl.gather(receiver_mass, tl.where(ancestor_valid, ancestor_species, 0), axis=0), zero
+            )
+            d_ancestor_reconciliation_log_likelihood = tl.where(ancestor_valid, tl.gather(d_reconciliation_log_likelihood, tl.where(ancestor_valid, ancestor_species, 0), axis=0), zero)
+            d_ancestor_receiver_log_probability = tl.where(ancestor_valid, tl.gather(d_receiver_log_probability, tl.where(ancestor_valid, ancestor_species, 0), axis=0), zero)
+            excluded_ancestor_tangent_numerator += ancestor_receiver_mass * (d_ancestor_reconciliation_log_likelihood + d_ancestor_receiver_log_probability)
+            ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
+        d_transfer_complement_log_likelihood = tl.where(
+            has_valid_receiver_mass,
+            (
+                total_receiver_tangent_numerator
+                - excluded_ancestor_tangent_numerator
+            )
+            * inverse_valid_receiver_mass
+            + d_max_transfer,
+            zero,
+        )
+        d_reconciliation_child1_log_likelihood = tl.where(c1_valid, tl.gather(d_reconciliation_log_likelihood, tl.where(c1_valid, c1, 0), axis=0), zero)
+        d_reconciliation_child2_log_likelihood = tl.where(c2_valid, tl.gather(d_reconciliation_log_likelihood, tl.where(c2_valid, c2, 0), axis=0), zero)
+        d_duplication_loss_log_term = d_duplication_loss_const + d_reconciliation_log_likelihood
+        d_transfer_loss_log_term = d_reconciliation_log_likelihood + d_extinction_complement_log_probability
+        d_transfer_log_term = d_transfer_complement_log_likelihood + d_extinction_log_probability
+        d_speciation_child1_log_term = d_speciation_child1_const + d_reconciliation_child1_log_likelihood
+        d_speciation_child2_log_term = d_speciation_child2_const + d_reconciliation_child2_log_likelihood
+        event_tangent_numerator = (
+            duplication_loss_mass * d_duplication_loss_log_term
+            + transfer_loss_mass * d_transfer_loss_log_term
+            + transfer_mass * d_transfer_log_term
+            + speciation_child1_mass * d_speciation_child1_log_term
+            + speciation_child2_mass * d_speciation_child2_log_term
+            + leaf_observation_mass * d_leaf_observation_log_term
+            + gene_split_tangent_numerator
+        )
+        d_reconciliation_log_likelihood = tl.where(valid, event_tangent_numerator * inverse_reconciliation_event_scaled_mass, zero)
 
-    tl.store(dPi_new_ptr + out_base + s_offs, dpi_w, mask=mask)
+    tl.store(dPi_new_ptr + out_base + s_offs, d_reconciliation_log_likelihood, mask=mask)
     if STORE_PIBAR:
-        tl.store(dPibar_out_ptr + global_base + s_offs, dpibar, mask=mask)
+        tl.store(dPibar_out_ptr + global_base + s_offs, d_transfer_complement_log_likelihood, mask=mask)
 
 
-def _prepare_wave_offsets(Pi_in, pi_offset, dts_offset, has_splits, W):
-    """Validate the required Pi gauge and the split-wave DTS gauge."""
+def _prepare_wave_offsets(Pi_in, pi_offset, gene_split_offset, has_splits, W):
+    """Validate the reconciliation and gene-split gauges."""
     pi_offset = _validate_offset_tensor(
         "pi_offset",
         pi_offset,
@@ -365,54 +492,67 @@ def _prepare_wave_offsets(Pi_in, pi_offset, dts_offset, has_splits, W):
         residual_dtype=Pi_in.dtype,
     )
     if has_splits:
-        if dts_offset is None:
-            raise ValueError("dts_offset is required for a split wave")
-        dts_offset = _validate_offset_tensor(
-            "dts_offset",
-            dts_offset,
+        if gene_split_offset is None:
+            raise ValueError("gene_split_offset is required for a split wave")
+        gene_split_offset = _validate_offset_tensor(
+            "gene_split_offset",
+            gene_split_offset,
             rows=W,
             device=Pi_in.device,
             dtype=pi_offset.dtype,
         )
-    elif dts_offset is not None:
-        raise ValueError("dts_offset is only valid for a split wave")
-    return pi_offset, (dts_offset if has_splits else pi_offset)
+    elif gene_split_offset is not None:
+        raise ValueError("gene_split_offset is only valid for a split wave")
+    return pi_offset, (gene_split_offset if has_splits else pi_offset)
 
 
 def compute_wave_step_tangent_selfloop(
     Pi_in, dPi_io, ws, W, S, n_iters,
-    max_coupling_mat, dMC, DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
-    col_log_probs, node_child1, node_child2, node_parent, max_ancestor_depth,
-    DTS_reduced=None, dDTS=None,
-    *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx,
-    dPibar_out=None, has_leaf_term=True, use_col_weights=True, dcol_log_probs=None,
-    pi_offset, dts_offset=None,
+    max_transfer_mat, dmax_transfer,
+    duplication_loss_const, d_duplication_loss_const,
+    Ebar, dEbar, E, dE,
+    speciation_child1_const, d_speciation_child1_const,
+    speciation_child2_const, d_speciation_child2_const,
+    receiver_log_probs, species_child1, species_child2, species_parent, max_ancestor_depth,
+    gene_split_log_likelihood=None, d_gene_split_log_likelihood=None,
+    *, leaf_species_idx, leaf_logp, d_leaf_logp, family_idx,
+    dPibar_out=None, has_leaf_term=True, use_receiver_weights=True,
+    dreceiver_log_probs=None,
+    pi_offset, gene_split_offset=None,
 ):
     """Run fixed-count wave-tangent iterations; see the LaTeX reference."""
-    has_splits = DTS_reduced is not None
-    pi_offset_arg, dts_offset_arg = _prepare_wave_offsets(
-        Pi_in, pi_offset, dts_offset, has_splits, W
+    has_splits = gene_split_log_likelihood is not None
+    pi_offset_arg, gene_split_offset_arg = _prepare_wave_offsets(
+        Pi_in, pi_offset, gene_split_offset, has_splits, W
     )
-    _, const_row_stride = _prepare_wave_launch(S, DL)
+    _, const_row_stride = _prepare_wave_launch(S, duplication_loss_const)
     block_s = int(triton.next_power_of_2(S))
     store_pibar = dPibar_out is not None
     dPi_out_rows = dPi_io.narrow(0, int(ws), int(W))
     dummy = Pi_in
-    dcol = (col_log_probs if dcol_log_probs is None
-            else dcol_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype).reshape(S).contiguous())
-    _wave_step_tangent_selfloop_kernel[(int(W),)](
+    dreceiver_log_probs = (
+        torch.zeros_like(receiver_log_probs)
+        if dreceiver_log_probs is None
+        else dreceiver_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype)
+        .reshape(S)
+        .contiguous()
+    )
+    _apply_reconciliation_self_loop_jvp_iterations_kernel[(int(W),)](
         Pi_in, dPi_io,
         pi_offset_arg,
         ws, ws,
-        max_coupling_mat, dMC,
-        DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
-        col_log_probs, dcol,
-        node_child1, node_child2, node_parent,
-        leaf_state_idx, leaf_logp, dleaf_logp,
-        item_idx,
-        DTS_reduced if has_splits else dummy,
-        dDTS if has_splits else dummy,
-        dts_offset_arg,
+        max_transfer_mat, dmax_transfer,
+        duplication_loss_const, d_duplication_loss_const,
+        Ebar, dEbar, E, dE,
+        speciation_child1_const, d_speciation_child1_const,
+        speciation_child2_const, d_speciation_child2_const,
+        receiver_log_probs, dreceiver_log_probs,
+        species_child1, species_child2, species_parent,
+        leaf_species_idx, leaf_logp, d_leaf_logp,
+        family_idx,
+        gene_split_log_likelihood if has_splits else dummy,
+        d_gene_split_log_likelihood if has_splits else dummy,
+        gene_split_offset_arg,
         has_splits,
         dPi_out_rows,
         dPibar_out if store_pibar else dummy,
@@ -424,7 +564,7 @@ def compute_wave_step_tangent_selfloop(
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
-        USE_COL_WEIGHTS=bool(use_col_weights),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=_WST_NUM_WARPS,
     )
@@ -432,38 +572,51 @@ def compute_wave_step_tangent_selfloop(
 
 def compute_wave_step_tangent(
     Pi_in, dPi_in, dPi_out, ws, W, S,
-    max_coupling_mat, dMC, DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
-    col_log_probs, node_child1, node_child2, node_parent, max_ancestor_depth,
-    DTS_reduced=None, dDTS=None,
-    *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx,
-    dPibar_out=None, has_leaf_term=True, input_ws=None, use_col_weights=True, dcol_log_probs=None,
-    pi_offset, dts_offset=None,
+    max_transfer_mat, dmax_transfer,
+    duplication_loss_const, d_duplication_loss_const,
+    Ebar, dEbar, E, dE,
+    speciation_child1_const, d_speciation_child1_const,
+    speciation_child2_const, d_speciation_child2_const,
+    receiver_log_probs, species_child1, species_child2, species_parent, max_ancestor_depth,
+    gene_split_log_likelihood=None, d_gene_split_log_likelihood=None,
+    *, leaf_species_idx, leaf_logp, d_leaf_logp, family_idx,
+    dPibar_out=None, has_leaf_term=True, input_ws=None,
+    use_receiver_weights=True, dreceiver_log_probs=None,
+    pi_offset, gene_split_offset=None,
 ):
     """Apply the wave-step JVP documented in the LaTeX reference."""
-    has_splits = DTS_reduced is not None
-    pi_offset_arg, dts_offset_arg = _prepare_wave_offsets(
-        Pi_in, pi_offset, dts_offset, has_splits, W
+    has_splits = gene_split_log_likelihood is not None
+    pi_offset_arg, gene_split_offset_arg = _prepare_wave_offsets(
+        Pi_in, pi_offset, gene_split_offset, has_splits, W
     )
-    _, const_row_stride = _prepare_wave_launch(S, DL)
+    _, const_row_stride = _prepare_wave_launch(S, duplication_loss_const)
     block_s = int(triton.next_power_of_2(S))
     store_pibar = dPibar_out is not None
     dPi_out_rows = dPi_out.narrow(0, int(ws), int(W))
     dummy = Pi_in  # unused placeholder for None pointers
-    dcol = (col_log_probs if dcol_log_probs is None
-            else dcol_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype).reshape(S).contiguous())
-    _wave_step_tangent_kernel[(int(W),)](
+    dreceiver_log_probs = (
+        torch.zeros_like(receiver_log_probs)
+        if dreceiver_log_probs is None
+        else dreceiver_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype)
+        .reshape(S)
+        .contiguous()
+    )
+    _update_reconciliation_likelihood_jvp_kernel[(int(W),)](
         Pi_in, dPi_in,
         pi_offset_arg,
         ws, ws if input_ws is None else int(input_ws),
-        max_coupling_mat, dMC,
-        DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
-        col_log_probs, dcol,
-        node_child1, node_child2, node_parent,
-        leaf_state_idx, leaf_logp, dleaf_logp,
-        item_idx,
-        DTS_reduced if has_splits else dummy,
-        dDTS if has_splits else dummy,
-        dts_offset_arg,
+        max_transfer_mat, dmax_transfer,
+        duplication_loss_const, d_duplication_loss_const,
+        Ebar, dEbar, E, dE,
+        speciation_child1_const, d_speciation_child1_const,
+        speciation_child2_const, d_speciation_child2_const,
+        receiver_log_probs, dreceiver_log_probs,
+        species_child1, species_child2, species_parent,
+        leaf_species_idx, leaf_logp, d_leaf_logp,
+        family_idx,
+        gene_split_log_likelihood if has_splits else dummy,
+        d_gene_split_log_likelihood if has_splits else dummy,
+        gene_split_offset_arg,
         has_splits,
         dPi_out_rows,
         dPibar_out if store_pibar else dummy,
@@ -474,7 +627,7 @@ def compute_wave_step_tangent(
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
-        USE_COL_WEIGHTS=bool(use_col_weights),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=_WST_NUM_WARPS,
     )

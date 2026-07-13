@@ -11,6 +11,7 @@
 \newcommand{\Sub}{\operatorname{Sub}}
 \newcommand{\dd}{\mathrm{d}}
 \newcommand{\kernel}[1]{\nolinkurl{#1}}
+\newcommand{\kernelref}[2]{\href{../../gpurec/core/kernels/#1}{\nolinkurl{#2}}}
 \newcommand{\R}{\mathbb{R}}
 
 \title{Mathematical Reference for the \texttt{gpurec} Triton Kernels}
@@ -44,15 +45,55 @@ parent of state $s$.  We include $s$ itself in its ancestral path:
 \[
   \Anc(s)=\{s,\operatorname{pa}(s),\operatorname{pa}^2(s),\ldots\}.
 \]
-The receiver log-weight is $\rho_s$.  In the uniform-receiver model,
-$\rho_s=0$ for every $s$; this is a distinct mathematical model, not a missing
-input convention.
+Likewise, $\Sub(s)$ is the species subtree rooted at $s$, including $s$.
+The valid recipients for a transfer whose donor is $s$ are
+\begin{equation}
+  \mathcal V(s)=\mathcal S\setminus\Anc(s).
+  \label{eq:valid-recipients}
+\end{equation}
+Thus neither the donor itself nor one of its ancestors can receive the
+transfer.
+
+In the weighted-receiver model, let $\omega_r\in\R$ be the unconstrained
+receiver logit.  Its normalized base-2 log-probability is
+\begin{equation}
+  \rho_r=\log_2\!\left(
+    \frac{\exp(\omega_r)}{\sum_{t\in\mathcal S}\exp(\omega_t)}
+  \right).
+  \label{eq:receiver-log-softmax}
+\end{equation}
+Adding a common constant to every $\omega_r$ therefore leaves the model
+unchanged.  The kernels receive $\rho$ after this normalization and use the
+effective receiver log-measure
+\begin{equation}
+  \alpha_r=
+  \begin{cases}
+    \rho_r,&\text{weighted-receiver branch},\\
+    0,&\text{uniform-receiver branch}.
+  \end{cases}
+  \label{eq:receiver-measure}
+\end{equation}
+The uniform branch therefore sums one unit of mass per valid recipient.  It
+does not load or differentiate a receiver-weight vector, which is why retaining
+the compile-time branch avoids work.
 
 For gene family $g$ and species state $s$, write
 $\ell^S_{g,s}$, $\ell^D_{g,s}$, and $\ell^L_{g,s}$ for log-probabilities of
 speciation, duplication, and loss.  A parameter can be shared or vary along
 the family and species axes; this changes storage only, not the equations.
-The maximum-transfer term is $m_{g,s}$.
+Write $\ell^T_{g,s}$ for the transfer log-probability.  The donor-specific
+transfer base term is
+\begin{equation}
+  m_g(s)=\ell^T_g(s)
+  -\log_2\!\left(\sum_{r\in\mathcal V(s)}2^{\alpha_r}\right).
+  \label{eq:max-transfer}
+\end{equation}
+It is named \texttt{max\_transfer} in kernel interfaces.  In particular,
+$m_g(s)=\ell^T_g(s)-\log_2|\mathcal V(s)|$ in the uniform branch.  Parameter
+extraction constructs $m$ and $\rho$ together according to
+Equation~\eqref{eq:max-transfer}; kernel boundaries accept them independently,
+so their JVPs and VJPs are also exposed independently before the outer chain
+rule couples them again.
 
 $E_g(s)$ is the log extinction probability.  For gene-clade row $i$,
 $\Pi_i(s)$ is its reconciliation log-likelihood and $\bar\Pi_i(s)$ is the
@@ -65,43 +106,66 @@ scalar gauge:
   \label{eq:gauge}
 \end{equation}
 All probabilities and derivatives below refer to the represented absolute
-quantity.  Gauge choices are not differentiated.
+quantity.  A tangent of a stored residual is the tangent of that absolute
+quantity with the chosen gauge held fixed; selecting a different gauge does
+not change the mathematical derivative.
 
 \section{Reusable log-sum-exp and transfer complement}
 
-For any log-vector $x(s)$, define stabilized receiver masses
+For any log-vector $x(s)$, the transfer-complement operator is
+\begin{equation}
+  \mathcal B[x](s)
+  =m(s)+\log_2\!\left(
+    \sum_{r\in\mathcal V(s)}2^{\alpha_r+x(r)}
+  \right).
+  \label{eq:transfer-complement-direct}
+\end{equation}
+Equation~\eqref{eq:max-transfer} makes
+$\mathcal B[0](s)=\ell^T(s)$: the receiver measure redistributes a fixed
+transfer probability among the valid recipients.
+
+For stable evaluation, define
 \begin{align}
-  M_x &= \max_{r\in\mathcal S}\{\rho_r+x(r)\}, \\
-  R_x &= \sum_{r\in\mathcal S}2^{\rho_r+x(r)-M_x}, \\
-  A_x(s) &= \sum_{r\in\Anc(s)}2^{\rho_r+x(r)-M_x}.
+  M_x &= \max_{r\in\mathcal S}\{\alpha_r+x(r)\}, \\
+  q_x(r)&=2^{\alpha_r+x(r)-M_x},\\
+  R_x &= \sum_{r\in\mathcal S}q_x(r), \\
+  A_x(s) &= \sum_{r\in\Anc(s)}q_x(r),\\
+  D_x(s)&=R_x-A_x(s)
+         =\sum_{r\in\mathcal V(s)}q_x(r).
 \end{align}
 The mass outside the donor's ancestral lineage is
 \begin{equation}
   \mathcal B[x](s)
-  = m(s)+M_x+\log_2\bigl(R_x-A_x(s)\bigr).
+  = m(s)+M_x+\log_2 D_x(s).
   \label{eq:transfer-complement}
 \end{equation}
 It is $-\infty$ when the complementary mass is zero.  Kernel helpers
-\kernel{_row_logsumexp} and \kernel{_pibar_tile} evaluate these quantities.
+\kernelref{pi_forward.py}{_compute_total_receiver_mass} and
+\kernelref{pi_forward.py}{_compute_transfer_complement} evaluate these quantities.
 The same operator produces $\bar E$ from $E$ and $\bar\Pi$ from $\Pi$.
 
-The row maximum $M_x$ is a numerical gauge.  It may be held fixed when
-differentiating Equation~\eqref{eq:transfer-complement}, because a common
-change of normalization cancels from numerator and denominator.
+The row maximum $M_x$ is only a numerical gauge.  Equation
+\eqref{eq:transfer-complement-direct} contains no $M_x$, so it is exact to hold
+$M_x$ fixed in every JVP and VJP.  Equivalently, differentiating $M_x$ would
+add $\dd M_x$ explicitly and subtract the same quantity through
+$\dd\log_2 D_x(s)$.
 
 \section{Extinction fixed point}
 
 For each family and species state, define
 \begin{align}
-  e_0(s) &= \ell^S(s)+E(c_1(s))+E(c_2(s)), \\
-  e_1(s) &= \ell^D(s)+2E(s), \\
-  e_2(s) &= E(s)+\bar E(s), \\
-  e_3(s) &= \ell^L(s), \\
+  e^{\mathrm{spec}}(s) &= \ell^S(s)+E(c_1(s))+E(c_2(s)), \\
+  e^{\mathrm{dup}}(s) &= \ell^D(s)+2E(s), \\
+  e^{\mathrm{trans}}(s) &= E(s)+\bar E(s), \\
+  e^{\mathrm{loss}}(s) &= \ell^L(s), \\
   \bar E(s) &= \mathcal B[E](s).
 \end{align}
 One E-step is
 \begin{equation}
-  F_E(E)(s)=\LSE(e_0(s),e_1(s),e_2(s),e_3(s)).
+  F_E(E)(s)=\LSE\!\left(
+    e^{\mathrm{spec}}(s),e^{\mathrm{dup}}(s),
+    e^{\mathrm{trans}}(s),e^{\mathrm{loss}}(s)
+  \right).
   \label{eq:e-step}
 \end{equation}
 The fixed point satisfies $E^*=F_E(E^*)$.
@@ -118,24 +182,28 @@ Its directional derivative is
   \dd z=\sum_k w_k\,\dd a_k.
   \label{eq:lse-jvp}
 \end{equation}
-For the transfer complement, with
-$r_j=2^{\rho_j+E(j)-M_E}$ and
-$D_s=R_E-A_E(s)$,
+For the transfer complement, let $q_E(r)$ and $D_E(s)$ be the masses defined
+above.  With the stabilizing maximum frozen,
 \begin{equation}
   \dd\bar E(s)
   =\dd m(s)
-   +\frac{\sum_j r_j(\dd\rho_j+\dd E(j))
-   -\sum_{j\in\Anc(s)}r_j(\dd\rho_j+\dd E(j))}{D_s}.
+   +\frac{
+     \sum_{r\in\mathcal V(s)}q_E(r)
+       (\dd\alpha_r+\dd E(r))
+   }{D_E(s)}.
   \label{eq:ebar-jvp}
 \end{equation}
+Here $\dd\alpha=\dd\rho$ in the weighted branch and $\dd\alpha=0$ in the
+uniform branch.
 The tangent fixed point solves
 \begin{equation}
   (I-J_E)\,\dd E^*=J_p\,\dd p,
   \label{eq:e-tangent-fixed-point}
 \end{equation}
 where $J_E=\partial F_E/\partial E$ and $J_p$ contains parameter
-derivatives.  \kernel{_e_step_tangent_2d_kernel} evaluates one application of
-the right-hand side of this linearized recurrence.
+derivatives.  The extinction JVP kernel evaluates one application of the
+right-hand side of this linearized recurrence; Section~\ref{sec:kernel-index}
+links it to its source file.
 
 \subsection{E-step adjoint and curvature}
 
@@ -144,17 +212,39 @@ For an output cotangent $g(s)$, the log-sum-exp event cotangent is
   q_k(s)=g(s)2^{e_k(s)-F_E(E)(s)}.
   \label{eq:e-adjoint-event}
 \end{equation}
-The transfer-complement adjoint can be expressed using
+Let $g_{\bar E}(s)$ be any additional cotangent arriving at the materialized
+$\bar E$ output.  The total cotangent of $\mathcal B[E](s)$ is
+$b(s)=q_{\mathrm{trans}}(s)+g_{\bar E}(s)$.  Define
 \begin{equation}
-  u_s=\frac{q_2(s)+g_{\bar E}(s)}{D_s}.
+  u(s)=\frac{b(s)}{D_E(s)}.
 \end{equation}
-Each receiver state $j$ receives
+Then $m(s)$ receives $b(s)$, while each receiver state $r$ contributes the
+following amount to the cotangent of $E(r)$:
 \begin{equation}
-  r_j\left(\sum_su_s-\sum_{s:\,j\in\Anc(s)}u_s\right).
+  q_E(r)\left(
+    \sum_{s\in\mathcal S}u(s)-\sum_{s\in\Sub(r)}u(s)
+  \right).
   \label{eq:complement-vjp}
 \end{equation}
+The same quantity is the cotangent of $\rho_r$ in the weighted branch.  There
+is no receiver-weight cotangent in the uniform branch.  The identity follows
+because $r\notin\mathcal V(s)$ exactly when $s\in\Sub(r)$.
 The prepare and finalize backward kernels split this formula before and after
 the ancestral exclusion accumulation.
+
+For an objective cotangent $b_E$ arriving at the converged extinction state,
+the fixed-point adjoint is the solution of
+\begin{equation}
+  (I-J_E^T)w_E=b_E.
+  \label{eq:e-adjoint-fixed-point}
+\end{equation}
+One E-step VJP supplies applications of $J_E^T$ inside this solve.  After the
+solve, applying the same VJP with $w_E$ yields $J_p^T w_E$, which is combined
+with any explicit parameter cotangents.  Receiver-log-probability and
+\texttt{max\_transfer} cotangents remain separate at the kernel boundary; the
+outer differentiation through Equations~\eqref{eq:receiver-log-softmax} and
+\eqref{eq:max-transfer} maps both contributions back to the raw receiver
+logits.
 
 At fixed $g$, the second-order contraction needed by an exact
 Hessian-vector product is
@@ -162,14 +252,28 @@ Hessian-vector product is
   D_x[J_{F_E}(x)^Tg][\dd x].
   \label{eq:e-so}
 \end{equation}
-The normalized event weights obey
+More generally, if $z=\LSE(a_1,\ldots,a_n)$, $w_k=2^{a_k-z}$, and
+$q_k=g w_k$ is an event VJP with $g$ held fixed, then
 \begin{equation}
-  \dd q_k=\ln(2)q_k(\dd e_k-\dd E_{\mathrm{new}}).
+  \dd q_k=\ln(2)q_k(\dd a_k-\dd z).
   \label{eq:event-weight-derivative}
 \end{equation}
-For $u=w/D$, the quotient rule is
+For the complement part, put
+\begin{align}
+  D_E(s)&=\sum_{r\in\mathcal V(s)}q_E(r), &
+  b(s)&=q_{\mathrm{trans}}(s)+g_{\bar E}(s), &
+  u(s)&=\frac{b(s)}{D_E(s)}.
+\end{align}
+At fixed $g_{\bar E}$,
+\begin{align}
+  \dd D_E(s)
+    &=\ln(2)\sum_{r\in\mathcal V(s)}q_E(r)
+      (\dd\alpha_r+\dd E(r)), \\
+  \dd b(s)&=\dd q_{\mathrm{trans}}(s).
+\end{align}
+The quotient rule gives
 \begin{equation}
-  \dd u=\frac{\dd w-u\,\dd D}{D}.
+  \dd u(s)=\frac{\dd b(s)-u(s)\,\dd D_E(s)}{D_E(s)}.
   \label{eq:quotient-tangent}
 \end{equation}
 Equations~\eqref{eq:event-weight-derivative} and
@@ -179,61 +283,226 @@ Equation~\eqref{eq:complement-vjp}, define the E-step second-order kernels.
 \section{Within-wave reconciliation recurrence}
 
 For gene-clade row $i$ and species state $s$, the local event terms are
+formed from
 \begin{align}
-  p_0(s)&=\ell^{DL}(s)+\Pi_i(s), \\
-  p_1(s)&=\Pi_i(s)+\bar E(s), \\
-  p_2(s)&=\bar\Pi_i(s)+E(s), \\
-  p_3(s)&=\ell^{SL_1}(s)+\Pi_i(c_1(s)), \\
-  p_4(s)&=\ell^{SL_2}(s)+\Pi_i(c_2(s)), \\
-  p_5(s)&=\text{leaf observation at }s.
+  \ell^{DL}(s)&=1+\ell^D(s)+E(s), \\
+  \ell^{SL_1}(s)&=\ell^S(s)+E(c_2(s)), \\
+  \ell^{SL_2}(s)&=\ell^S(s)+E(c_1(s)).
 \end{align}
-If a gene clade has split contributions $D_i(s)$, its update is
+The $1=\log_2 2$ in $\ell^{DL}$ accounts for the two choices of which
+duplicate lineage is lost.  The extinction factor paired with one reconciled
+species child is the extinction probability of the other species child.  Let
+$\lambda(i)$ be the observed species of a leaf gene clade.  The six named
+local terms are
+\begin{align}
+  p^{\mathrm{dup\text{-}loss}}(s)
+    &=\ell^{DL}(s)+\Pi_i(s), \\
+  p^{\mathrm{trans\text{-}loss}}(s)
+    &=\Pi_i(s)+\bar E(s), \\
+  p^{\mathrm{trans}}(s)
+    &=\bar\Pi_i(s)+E(s), \\
+  p^{\mathrm{spec},c_1}(s)
+    &=\ell^{SL_1}(s)+\Pi_i(c_1(s)), \\
+  p^{\mathrm{spec},c_2}(s)
+    &=\ell^{SL_2}(s)+\Pi_i(c_2(s)), \\
+  p^{\mathrm{leaf}}(s)
+    &=
+    \begin{cases}
+      \ell^S(s),&s=\lambda(i),\\
+      -\infty,&s\ne\lambda(i).
+    \end{cases}
+\end{align}
+The \texttt{leaf\_logp} passed by the reconciliation solver is therefore the
+same speciation log-probability $\ell^S$; the separate name describes its role
+as the leaf source.
+
+Collect the six within-wave terms in the local event aggregate
+\begin{equation}
+  L_i(s)=\LSE\bigl(
+    p^{\mathrm{dup\text{-}loss}},
+    p^{\mathrm{trans\text{-}loss}},
+    p^{\mathrm{trans}},
+    p^{\mathrm{spec},c_1},
+    p^{\mathrm{spec},c_2},
+    p^{\mathrm{leaf}}
+  \bigr)(s).
+  \label{eq:local-event-aggregate}
+\end{equation}
+If a gene clade has the split aggregate $D_i(s)$, its update is
 \begin{equation}
   F_\Pi(\Pi_i)(s)
-  =\LSE\bigl(p_0(s),\ldots,p_5(s),D_i(s)\bigr),
+  =\LSE\bigl(L_i(s),D_i(s)\bigr),
   \label{eq:pi-wave}
 \end{equation}
-with absent terms set to $-\infty$.  The transfer complement is
+with an absent split or leaf term set to $-\infty$.  The transfer complement is
 \begin{equation}
   \bar\Pi_i(s)=\mathcal B[\Pi_i](s).
   \label{eq:pibar}
 \end{equation}
 
-\kernel{_leaf_initial_wave_step_kernel} evaluates Equation~\eqref{eq:pi-wave}
-for leaf rows from their observation source.  \kernel{_wave_step_kernel}
+It is useful to factor a local event's probability into
+\begin{align}
+  \beta_{i,e}(s)&=2^{p^e_i(s)-L_i(s)},
+    &\sum_e\beta_{i,e}(s)&=1,\\
+  \gamma_i(s)&=2^{L_i(s)-F_\Pi(\Pi_i)(s)}.
+  \label{eq:within-wave-probability}
+\end{align}
+Thus the probability of local event $e$ in the complete recurrence is
+\begin{equation}
+  a_{i,e}(s)=\gamma_i(s)\beta_{i,e}(s)
+  =2^{p^e_i(s)-F_\Pi(\Pi_i)(s)}.
+  \label{eq:complete-local-event-probability}
+\end{equation}
+Backward and second-order kernels use this factorization; the tangent kernel
+may form the same complete probability directly.
+
+\subsection{Equation-aligned implementation vocabulary}
+
+The implementation spells out the event role rather than using numeric
+buckets.  For each event name \texttt{event}, the identifiers have a uniform
+meaning:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Identifier suffix & Mathematical quantity \\
+\midrule
+\texttt{\_log\_term} & the corresponding $p^{\mathrm{event}}(s)$ \\
+\texttt{\_mass} & $2^{p^{\mathrm{event}}(s)-a(s)}$ for the local numerical maximum $a(s)$ \\
+\texttt{\_probability} & either $\beta_{i,e}$ or the explicitly named complete recurrence probability \\
+\texttt{\_event\_vjp} & $v(s)\gamma_i(s)\beta_{i,e}(s)$ \\
+\texttt{d\_} prefix & directional derivative of the named quantity \\
+\bottomrule
+\end{tabular}
+\end{center}
+Here \texttt{event} is one of the following equation-aligned prefixes:
+\begin{center}
+\begin{tabular}{lll}
+\texttt{duplication\_loss} & \texttt{transfer\_loss} & \texttt{transfer} \\
+\texttt{speciation\_child1} & \texttt{speciation\_child2} & \texttt{leaf\_observation}
+\end{tabular}
+\end{center}
+The combined
+\texttt{speciation\_leaf\_event\_vjp} is the sum of the last three VJPs
+because all three depend on the speciation parameter.  This vocabulary is
+used unchanged by the primal, JVP, VJP, and VJP directional-derivative
+kernels.
+
+\kernelref{pi_forward.py}{_initialize_leaf_reconciliation_likelihood_kernel} evaluates
+Equation~\eqref{eq:pi-wave} for leaf rows from their observation source.
+\kernelref{pi_forward.py}{_update_reconciliation_likelihood_kernel}
 evaluates the general recurrence and publishes the final row gauges.
 
 The wave tangent applies Equations~\eqref{eq:lse-jvp} and
-\eqref{eq:ebar-jvp} to Equations~\eqref{eq:pi-wave}--\eqref{eq:pibar}.
-The self-loop variant iterates or exposes the linear map induced by the
-dependence of the new row on the old row.
+\eqref{eq:ebar-jvp} to Equations~\eqref{eq:local-event-aggregate}--
+\eqref{eq:pibar}.  The self-loop variant iterates or exposes the linear map
+induced by the dependence of the new row on the old row.
+
+For one clade row, let
+$J_{i,\mathrm{self}}=\partial F_\Pi(\Pi_i)/\partial\Pi_i$ while holding child
+clade rows, $D_i$, extinction quantities, and parameters fixed.  Define the
+receiver probability conditional on donor $s$ by
+\begin{equation}
+  r_s(t)=
+  \begin{cases}
+    q_{\Pi_i}(t)/D_{\Pi_i}(s),&t\in\mathcal V(s),\\
+    0,&t\notin\mathcal V(s).
+  \end{cases}
+  \label{eq:conditional-receiver-probability}
+\end{equation}
+For a row tangent $h$, the within-row Jacobian is therefore
+\begin{align}
+  (J_{i,\mathrm{self}}h)(s)
+  ={}&\bigl(a_{i,\mathrm{dup\text{-}loss}}(s)
+           +a_{i,\mathrm{trans\text{-}loss}}(s)\bigr)h(s) \notag\\
+    &+a_{i,\mathrm{trans}}(s)
+      \sum_t r_s(t)h(t) \notag\\
+    &+a_{i,\mathrm{spec},c_1}(s)h(c_1(s))
+     +a_{i,\mathrm{spec},c_2}(s)h(c_2(s)).
+  \label{eq:wave-self-jacobian}
+\end{align}
+The leaf and gene-split terms have no within-row derivative.  Parameter and
+receiver-weight tangents enter the full wave JVP as additional source terms;
+they are not part of $J_{i,\mathrm{self}}h$.
 
 The wave adjoint solves
 \begin{equation}
-  (I-J_\Pi^T)v=b,
+  (I-J_{i,\mathrm{self}}^T)v_i=b_i,
   \label{eq:wave-adjoint-solve}
 \end{equation}
-then contracts $v$ with event probabilities to obtain child-state and
-parameter cotangents.  The wave second-order kernel computes
+where one application of the transpose is
+\begin{align}
+  (J_{i,\mathrm{self}}^Tv)(t)
+  ={}&v(t)\bigl(a_{i,\mathrm{dup\text{-}loss}}(t)
+                    +a_{i,\mathrm{trans\text{-}loss}}(t)\bigr) \notag\\
+    &+\sum_{s:c_1(s)=t}v(s)a_{i,\mathrm{spec},c_1}(s)
+     +\sum_{s:c_2(s)=t}v(s)a_{i,\mathrm{spec},c_2}(s) \notag\\
+    &+q_{\Pi_i}(t)\left(
+       \sum_s u_i(s)-\sum_{s\in\Sub(t)}u_i(s)
+      \right),
+  \label{eq:wave-self-transpose}
+\end{align}
+with
 \begin{equation}
-  D_x[J_{F_\Pi}(x)^Tv][\dd x]
+  u_i(s)=\frac{v(s)a_{i,\mathrm{trans}}(s)}{D_{\Pi_i}(s)}.
+\end{equation}
+This is exactly the diagonal, child-edge, and transfer-subtree decomposition
+materialized by the self-loop VJP preparation kernel and consumed by the
+transpose kernel.
+
+After solving, the VJP of a local event log-term is simply
+\begin{equation}
+  h_{i,e}(s)=v(s)a_{i,e}(s).
+  \label{eq:wave-event-vjp}
+\end{equation}
+Consequently, the rate-term VJPs are
+\begin{align}
+  \ell^D &: h_{\mathrm{dup\text{-}loss}},\\
+  m &: h_{\mathrm{trans}},\\
+  \ell^S &: h_{\mathrm{spec},c_1}
+    +h_{\mathrm{spec},c_2}+h_{\mathrm{leaf}}.
+\end{align}
+The extinction quantities receive
+\begin{align}
+  E(s)&:\ h_{\mathrm{dup\text{-}loss}}(s)+h_{\mathrm{trans}}(s),\\
+  \bar E(s)&:\ h_{\mathrm{trans\text{-}loss}}(s),\\
+  E(c_2(s))&:\ h_{\mathrm{spec},c_1}(s),\\
+  E(c_1(s))&:\ h_{\mathrm{spec},c_2}(s).
+\end{align}
+The $m$ VJP is named \texttt{max\_transfer} in the interfaces.  In the
+weighted branch, the same transfer-subtree term in
+Equation~\eqref{eq:wave-self-transpose} is also the VJP of $\rho_t$.
+Cross-clade derivatives through $D_i$ are not part of this self-loop solve;
+the gene-split VJP kernels scatter them afterward.
+
+At fixed $v$, differentiating Equation~\eqref{eq:wave-event-vjp} gives
+\begin{equation}
+  \dd h_{i,e}(s)
+  =v(s)\ln(2)a_{i,e}(s)
+    \bigl(\dd p_i^e(s)-\dd F_\Pi(\Pi_i)(s)\bigr).
+  \label{eq:wave-event-so}
+\end{equation}
+The wave second-order kernel computes all such event-VJP derivatives together
+with
+\begin{equation}
+  D_x[J_{i,\mathrm{self}}(x)^Tv_i][\dd x],
   \label{eq:wave-so}
 \end{equation}
-at fixed $v$.  It differentiates normalized event weights with
-Equation~\eqref{eq:event-weight-derivative} and differentiates the transfer
-tree contribution with the complementary-subtree formula below.
+using the product rule for the transfer tree.  Here $x$ includes the primal
+row, extinction quantities, rate terms, split aggregate, and---in the weighted
+branch---receiver log-probabilities.  The supplied $v_i$ is held fixed; the
+separate tangent-adjoint solve accounts for $\dd v_i$.
 
 \section{Duplication-transfer-speciation split reduction}
 
 Consider a gene split $n$ with left child row $L_n$, right child row $R_n$,
 parent row $P_n$, and split log-prior $\sigma_n$.  For species state $s$, let
 \begin{align}
-  d_0^{(n)}(s)&=\sigma_n+\ell^D(s)+\Pi_{L_n}(s)+\Pi_{R_n}(s), \\
-  d_1^{(n)}(s)&=\sigma_n+\Pi_{L_n}(s)+\bar\Pi_{R_n}(s), \\
-  d_2^{(n)}(s)&=\sigma_n+\Pi_{R_n}(s)+\bar\Pi_{L_n}(s), \\
-  d_3^{(n)}(s)&=\sigma_n+\ell^S(s)
+  d_{\mathrm{dup}}^{(n)}(s)&=\sigma_n+\ell^D(s)+\Pi_{L_n}(s)+\Pi_{R_n}(s), \\
+  d_{\mathrm{trans},L}^{(n)}(s)&=\sigma_n+\Pi_{L_n}(s)+\bar\Pi_{R_n}(s), \\
+  d_{\mathrm{trans},R}^{(n)}(s)&=\sigma_n+\Pi_{R_n}(s)+\bar\Pi_{L_n}(s), \\
+  d_{\mathrm{spec},LR}^{(n)}(s)&=\sigma_n+\ell^S(s)
     +\Pi_{L_n}(c_1(s))+\Pi_{R_n}(c_2(s)), \\
-  d_4^{(n)}(s)&=\sigma_n+\ell^S(s)
+  d_{\mathrm{spec},RL}^{(n)}(s)&=\sigma_n+\ell^S(s)
     +\Pi_{R_n}(c_1(s))+\Pi_{L_n}(c_2(s)).
 \end{align}
 These are respectively duplication, transfer with the left child retained,
@@ -241,15 +510,32 @@ transfer with the right child retained, and the two speciation assignments.
 The parent split contribution is
 \begin{equation}
   D_P(s)=\underset{n:\,P_n=P}{\operatorname{LSE}_2}
-  \bigl(d_0^{(n)}(s),\ldots,d_4^{(n)}(s)\bigr).
+  \bigl(
+    d_{\mathrm{dup}}^{(n)},d_{\mathrm{trans},L}^{(n)},
+    d_{\mathrm{trans},R}^{(n)},d_{\mathrm{spec},LR}^{(n)},
+    d_{\mathrm{spec},RL}^{(n)}
+  \bigr)(s).
   \label{eq:dts}
 \end{equation}
+The corresponding code prefixes are
+\begin{center}
+\begin{tabular}{lll}
+\texttt{duplication} & \texttt{transfer\_left\_retained} & \texttt{transfer\_right\_retained} \\
+\texttt{speciation\_lr} & \texttt{speciation\_rl} &
+\end{tabular}
+\end{center}
+The suffixes \texttt{log\_term},
+\texttt{probability}, and \texttt{event\_vjp} have the same meanings as in
+the within-wave vocabulary above.
 Gauge-frame shifts from Equation~\eqref{eq:gauge} are added before forming
-event probabilities but do not alter Equation~\eqref{eq:dts}.
+event probabilities in residual storage.  Equations~\eqref{eq:dts} and all
+probabilities below are equations for the represented absolute values; the
+frame shifts only recover those values without materializing them.
 
-Parents with one split are evaluated directly by \kernel{_dts_eq1_kernel}.
-For parents with multiple splits, \kernel{_dts_ge2_stage1_kernel} forms
-partial stabilized sums and \kernel{_dts_ge2_stage2_kernel} merges them.
+The single-split kernel evaluates Equation~\eqref{eq:dts} directly.  For a
+parent with multiple splits, a staging kernel forms partial stabilized sums
+and a finalization kernel merges them.  All three are linked in
+Section~\ref{sec:kernel-index}.
 
 \subsection{DTS tangent and adjoint}
 
@@ -257,56 +543,114 @@ With
 \begin{equation}
   w_k^{(n)}(s)=2^{d_k^{(n)}(s)-D_P(s)},
 \end{equation}
+the five event tangents are
+\begin{align}
+  \dd d_{\mathrm{dup}}^{(n)}
+    &=\dd\ell^D+\dd\Pi_{L_n}+\dd\Pi_{R_n},\\
+  \dd d_{\mathrm{trans},L}^{(n)}
+    &=\dd\Pi_{L_n}+\dd\bar\Pi_{R_n},\\
+  \dd d_{\mathrm{trans},R}^{(n)}
+    &=\dd\Pi_{R_n}+\dd\bar\Pi_{L_n},\\
+  \dd d_{\mathrm{spec},LR}^{(n)}
+    &=\dd\ell^S+\dd\Pi_{L_n}(c_1)+\dd\Pi_{R_n}(c_2),\\
+  \dd d_{\mathrm{spec},RL}^{(n)}
+    &=\dd\ell^S+\dd\Pi_{R_n}(c_1)+\dd\Pi_{L_n}(c_2).
+  \label{eq:dts-event-jvps}
+\end{align}
+The split prior is static metadata and therefore has no tangent.  Then
 the DTS tangent is
 \begin{equation}
   \dd D_P(s)=
   \sum_{n:\,P_n=P}\sum_{k=0}^4w_k^{(n)}(s)\,\dd d_k^{(n)}(s).
   \label{eq:dts-jvp}
 \end{equation}
-The DTS adjoint multiplies these probabilities by the parent cotangent and
-scatters them to $L_n$, $R_n$, and the event parameters.
+Equation~\eqref{eq:dts-jvp} describes the standalone split-reduction JVP.  Its
+normalizer is $D_P$ because its output is exactly $D_P$.
+
+The split VJP used by the complete reconciliation recurrence has a different
+normalizer.  A raw split event $d_k^{(n)}$ is one term of
+$\Pi_P=F_\Pi(\Pi_P)$, so define
+\begin{equation}
+  \eta_k^{(n)}(s)=2^{d_k^{(n)}(s)-\Pi_P(s)}.
+  \label{eq:dts-full-probability}
+\end{equation}
+For a solved parent cotangent $v_P(s)$, the event VJP is
+$h_k^{(n)}(s)=v_P(s)\eta_k^{(n)}(s)$.  The gene-split VJP kernel scatters
+these quantities to $L_n$, $R_n$, and the event parameters: duplication
+contributes to both child rows and $\ell^D$; each transfer event contributes
+to its retained $\Pi$ row and the other child's $\bar\Pi$ row; and the two
+speciation assignments scatter to their selected species children and
+$\ell^S$.  Both transfer events also contribute to $m$ through their
+$\bar\Pi$ operand.  In general the $\eta$ values sum to the probability
+assigned to the split aggregate inside
+Equation~\eqref{eq:pi-wave}, not to one.  This distinction between $D_P$ in
+Equation~\eqref{eq:dts-jvp} and $\Pi_P$ in
+Equation~\eqref{eq:dts-full-probability} is essential.
 
 Transfer terms contain $\bar\Pi$, whose adjoint has a convenient tree form.
-For one split side, let $u(j)$ be the staged receiver adjoint and
+For one child-side complement $\bar\Pi_X$, let $b_X(s)$ be the transfer-event
+VJP arriving at donor $s$, and define
 \begin{equation}
-  A=\sum_j u(j), \qquad
-  U_s=\sum_{j\in\Sub(s)}u(j), \qquad
-  p_s=2^{\rho_s+\Pi(s)-M_\Pi}.
+  u_X(s)=\frac{b_X(s)}{D_{\Pi_X}(s)},\qquad
+  A_X=\sum_j u_X(j), \qquad
+  U_{X,r}=\sum_{s\in\Sub(r)}u_X(s), \qquad
+  p_{X,r}=2^{\alpha_r+\Pi_X(r)-M_{\Pi_X}}.
 \end{equation}
-The contribution to state $s$ is
+The contribution to receiver state $r$ is
 \begin{equation}
-  C_s=p_s(A-U_s).
+  C_{X,r}=p_{X,r}(A_X-U_{X,r}).
   \label{eq:tree-complement}
 \end{equation}
+This is Equation~\eqref{eq:complement-vjp} written as a bottom-up subtree
+reduction.  In the weighted branch $C_{X,r}$ also contributes to the cotangent of
+$\rho_r$; in the uniform branch no such parameter exists.
 Compact level tables contain internal species-tree nodes in bottom-up order,
-so every $U_s$ is formed after its child sums.
+so every $U_{X,r}$ is formed after its child sums.
 
 \subsection{DTS second-order contraction}
 
-At fixed parent cotangent $v$, differentiating a DTS event adjoint gives
+At fixed parent cotangent $v_P$, differentiating the complete-recurrence split
+event VJP gives
 \begin{equation}
-  \dd(vw_k)=v\ln(2)w_k(\dd d_k-\dd D_P).
+  \dd h_k^{(n)}=v_P\ln(2)\eta_k^{(n)}
+  (\dd d_k-\dd\Pi_P).
   \label{eq:dts-event-so}
 \end{equation}
-Differentiating Equation~\eqref{eq:tree-complement} gives
+The subtraction is $\dd\Pi_P$, not $\dd D_P$, for the same reason as in
+Equation~\eqref{eq:dts-full-probability}.
+For a transfer side, the donor coefficient also changes:
+\begin{align}
+  \dd D_{\Pi_X}(s)
+    &=\ln(2)\sum_{r\in\mathcal V(s)}p_{X,r}
+      (\dd\alpha_r+\dd\Pi_X(r)),\\
+  \dd u_X(s)
+    &=\frac{\dd b_X(s)-u_X(s)\dd D_{\Pi_X}(s)}{D_{\Pi_X}(s)}.
+  \label{eq:dts-donor-so}
+\end{align}
+The split-event second-order kernel stages $u_X$ and $\dd u_X$.
+Differentiating Equation~\eqref{eq:tree-complement} then gives
 \begin{equation}
-  \dd C_s=(\dd p_s)(A-U_s)+p_s(\dd A-\dd U_s),
+  \dd C_{X,r}=(\dd p_{X,r})(A_X-U_{X,r})
+    +p_{X,r}(\dd A_X-\dd U_{X,r}),
   \label{eq:tree-complement-so}
 \end{equation}
 where
 \begin{equation}
-  \dd p_s=\ln(2)p_s(\dd\rho_s+\dd\Pi(s))
+  \dd p_{X,r}=\ln(2)p_{X,r}
+    (\dd\alpha_r+\dd\Pi_X(r))
 \end{equation}
 with the stabilizing row maximum frozen.  The split second-order kernel
 implements Equation~\eqref{eq:dts-event-so}; the tree second-order kernel
 implements Equation~\eqref{eq:tree-complement-so}.
 
 \section{Kernel index}
+\label{sec:kernel-index}
 
-The following table accounts for every \texttt{@triton.jit} kernel in
-\texttt{gpurec/core/kernels}.  ``Staging'' and ``reduction'' entries implement
-parts of the cited mathematical map; they do not define additional model
-equations.
+The following table accounts for every \texttt{@triton.jit} device function in
+\texttt{gpurec/core/kernels}.  The first three entries are inline helpers used
+inside launch kernels; the remaining entries are independently launched
+kernels.  ``Staging'' and ``reduction'' entries implement parts of the cited
+mathematical map; they do not define additional model equations.
 
 \small
 \begin{longtable}{>{\raggedright\arraybackslash}p{0.43\textwidth}
@@ -315,35 +659,35 @@ equations.
 Kernel & Mathematical role \\
 \midrule
 \endhead
-\kernel{_load_rate} & Selects one of the four family/species parameter layouts; mathematically returns $\ell_{g,s}$. \\
-\kernel{_row_logsumexp} & Computes $M_x$ and $R_x$ for Equation~\eqref{eq:transfer-complement}. \\
-\kernel{_pibar_tile} & Computes $\mathcal B[x](s)$ in Equation~\eqref{eq:transfer-complement}. \\
-\kernel{_leaf_initial_wave_step_kernel} & Leaf specialization of Equation~\eqref{eq:pi-wave}. \\
-\kernel{_wave_step_kernel} & General primal recurrence, Equations~\eqref{eq:pi-wave} and \eqref{eq:pibar}. \\
-\kernel{_dts_eq1_kernel} & Equation~\eqref{eq:dts} for one split per parent. \\
-\kernel{_dts_ge2_stage1_kernel} & Partial stabilized sums for Equation~\eqref{eq:dts} with multiple splits. \\
-\kernel{_dts_ge2_stage2_kernel} & Final merge of the partial sums for Equation~\eqref{eq:dts}. \\
-\kernel{_e_step_forward_2d_kernel} & Extinction update in Equation~\eqref{eq:e-step}. \\
-\kernel{_e_step_backward_prepare_2d_kernel} & Event adjoints from Equation~\eqref{eq:e-adjoint-event} and stages Equation~\eqref{eq:complement-vjp}. \\
-\kernel{_e_step_backward_finalize_2d_kernel} & Completes Equation~\eqref{eq:complement-vjp}. \\
-\kernel{_e_step_tangent_2d_kernel} & Equations~\eqref{eq:lse-jvp} and \eqref{eq:ebar-jvp}. \\
-\kernel{_e_step_so_prepare_kernel} & Directional derivative in Equation~\eqref{eq:e-so}, including Equation~\eqref{eq:quotient-tangent}. \\
-\kernel{_e_step_so_finalize_kernel} & Product-rule completion of the differentiated complementary-mass adjoint. \\
-\kernel{_wave_step_tangent_kernel} & JVP of Equations~\eqref{eq:pi-wave}--\eqref{eq:pibar}. \\
-\kernel{_wave_step_tangent_selfloop_kernel} & Same JVP while exposing the within-row self-loop linear map. \\
-\kernel{_wave_so_kernel} & Wave second-order contraction in Equation~\eqref{eq:wave-so}. \\
-\kernel{_dts_tangent_kernel} & DTS JVP in Equation~\eqref{eq:dts-jvp}. \\
-\kernel{_dts_split_so_kernel} & Event part of the DTS second-order contraction, Equation~\eqref{eq:dts-event-so}. \\
-\kernel{_dts_tree_so_kernel} & Tree part of the DTS second-order contraction, Equation~\eqref{eq:tree-complement-so}. \\
-\kernel{_active_mask_from_rhs_absmax_kernel} & Selects rows whose adjoint right-hand side is nonzero above the pruning threshold; no model approximation when pruning is disabled. \\
-\kernel{_wave_backward_uniform_2d_precompute_kernel} & Forms event probabilities and coefficients of $J_\Pi^T$ for Equation~\eqref{eq:wave-adjoint-solve}. \\
-\kernel{_wave_backward_uniform_2d_jt_kernel} & Applies $J_\Pi^T$ during the solve in Equation~\eqref{eq:wave-adjoint-solve}. \\
-\kernel{_receiver_grad_from_pibar_self_loop_kernel} & Receiver-weight component of the transfer-complement VJP, Equation~\eqref{eq:complement-vjp}. \\
-\kernel{_wave_backward_uniform_param_store_kernel} & Contracts the solved adjoint with local event probabilities to obtain parameter cotangents. \\
-\kernel{_dts_cross_backward_accum_kernel} & DTS VJP: scatters $v w_k$ and stages transfer receiver adjoints. \\
-\kernel{_dts_grad_mt_two_stage_reduce_kernel} & Reduces transfer-parameter cotangent partials over split tiles. \\
-\kernel{_pibar_ud_side_active_kernel} & Selects nonzero staged split sides before evaluating Equation~\eqref{eq:tree-complement}. \\
-\kernel{_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel} & Computes subtree sums and Equation~\eqref{eq:tree-complement}. \\
+\kernelref{pi_forward.py}{_load_event_log_probability} & Selects a family/species parameter layout and returns $\ell_{g,s}$. \\
+\kernelref{pi_forward.py}{_compute_total_receiver_mass} & Computes $M_x$ and $R_x$ for Equation~\eqref{eq:transfer-complement}. \\
+\kernelref{pi_forward.py}{_compute_transfer_complement} & Computes $\mathcal B[x](s)$ in Equation~\eqref{eq:transfer-complement}. \\
+\kernelref{pi_forward.py}{_initialize_leaf_reconciliation_likelihood_kernel} & Leaf specialization of Equation~\eqref{eq:pi-wave}. \\
+\kernelref{pi_forward.py}{_update_reconciliation_likelihood_kernel} & General primal recurrence, Equations~\eqref{eq:pi-wave} and \eqref{eq:pibar}. \\
+\kernelref{pi_forward.py}{_reduce_single_gene_split_events_kernel} & Equation~\eqref{eq:dts} for one split per parent. \\
+\kernelref{pi_forward.py}{_stage_multiple_gene_split_event_reduction_kernel} & Partial stabilized sums for Equation~\eqref{eq:dts} with multiple splits. \\
+\kernelref{pi_forward.py}{_finalize_multiple_gene_split_event_reduction_kernel} & Final merge of the partial sums for Equation~\eqref{eq:dts}. \\
+\kernelref{e_step.py}{_update_extinction_log_probabilities_kernel} & Extinction update in Equation~\eqref{eq:e-step}. \\
+\kernelref{e_step.py}{_stage_extinction_and_transfer_complement_vjp_kernel} & Event adjoints from Equation~\eqref{eq:e-adjoint-event} and stages Equation~\eqref{eq:complement-vjp}. \\
+\kernelref{e_step.py}{_finalize_extinction_transfer_complement_vjp_kernel} & Completes Equation~\eqref{eq:complement-vjp}. \\
+\kernelref{e_step_tangent.py}{_update_extinction_log_probabilities_jvp_kernel} & Equations~\eqref{eq:lse-jvp} and \eqref{eq:ebar-jvp}. \\
+\kernelref{e_step_so.py}{_stage_extinction_vjp_directional_derivative_kernel} & Directional derivative in Equation~\eqref{eq:e-so}, including Equation~\eqref{eq:quotient-tangent}. \\
+\kernelref{e_step_so.py}{_finalize_extinction_vjp_directional_derivative_kernel} & Product-rule completion of the differentiated complementary-mass adjoint. \\
+\kernelref{wave_tangent.py}{_update_reconciliation_likelihood_jvp_kernel} & JVP of Equations~\eqref{eq:pi-wave}--\eqref{eq:pibar}. \\
+\kernelref{wave_tangent.py}{_apply_reconciliation_self_loop_jvp_iterations_kernel} & Repeated JVP of the within-row self-loop map. \\
+\kernelref{wave_so.py}{_reconciliation_vjp_directional_derivative_kernel} & Wave second-order contraction in Equation~\eqref{eq:wave-so}. \\
+\kernelref{dts_tangent.py}{_gene_split_reduction_jvp_kernel} & Gene-split JVP in Equation~\eqref{eq:dts-jvp}. \\
+\kernelref{dts_so.py}{_gene_split_event_vjp_directional_derivative_kernel} & Directional derivative of the full-recurrence gene-split VJP, Equations~\eqref{eq:dts-full-probability} and \eqref{eq:dts-event-so}. \\
+\kernelref{dts_so.py}{_transfer_subtree_vjp_directional_derivative_kernel} & Tree part of the transfer-complement second-order contraction, Equation~\eqref{eq:tree-complement-so}. \\
+\kernelref{wave_backward_kernels.py}{_select_active_adjoint_rows_kernel} & Selects rows whose adjoint right-hand side exceeds the pruning threshold. \\
+\kernelref{wave_backward_kernels.py}{_prepare_reconciliation_self_loop_vjp_kernel} & Forms event probabilities and coefficients of $J_{i,\mathrm{self}}^T$ for Equation~\eqref{eq:wave-adjoint-solve}. \\
+\kernelref{wave_backward_kernels.py}{_apply_reconciliation_self_loop_transpose_kernel} & Applies $J_{i,\mathrm{self}}^T$ during the solve in Equation~\eqref{eq:wave-adjoint-solve}. \\
+\kernelref{wave_backward_kernels.py}{_accumulate_transfer_receiver_log_probability_vjp_kernel} & Receiver-log-probability component of Equation~\eqref{eq:complement-vjp}. \\
+\kernelref{wave_backward_kernels.py}{_accumulate_reconciliation_event_vjp_kernel} & Contracts the solved adjoint with the six named local-event probabilities. \\
+\kernelref{wave_backward_kernels.py}{_accumulate_gene_split_event_vjp_kernel} & Full-recurrence gene-split VJP from Equation~\eqref{eq:dts-full-probability}: scatters event VJPs and stages transfer donor adjoints. \\
+\kernelref{wave_backward_kernels.py}{_reduce_max_transfer_vjp_kernel} & Reduces cotangent partials of $m$ (\texttt{max\_transfer}) over split tiles. \\
+\kernelref{wave_backward_kernels.py}{_select_active_transfer_donor_sides_kernel} & Selects nonzero staged donor-adjoint sides before Equation~\eqref{eq:tree-complement}. \\
+\kernelref{wave_backward_kernels.py}{_accumulate_transfer_subtree_vjp_kernel} & Computes subtree sums and Equation~\eqref{eq:tree-complement}. \\
 \bottomrule
 \end{longtable}
 \normalsize

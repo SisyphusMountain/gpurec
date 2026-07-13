@@ -21,13 +21,13 @@ Hardware: RTX 4090 (sm_89). Path: full archaea dataset (5379 families, S=119, 25
 
 | kernel | % total GPU time | ms/iter | role | atomics? |
 |---|---:|---:|---|---|
-| `_wave_backward_uniform_2d_jt_kernel` | **57%** | 1577 | self-loop Neumann backward (J^T apply) | **no** — in-block tree reduction |
-| `_wave_step_kernel` | 28% | 769 | forward Pi wave | no |
-| `_dts_cross_backward_accum_kernel` | **4.0%** | 111 | clade-adjoint scatter + D/S/T rate grad | **yes** |
-| `_uniform_cross_pibar_vjp_tree…` | 3.0% | 107 | pibar VJP backward | no |
-| `_dts_ge2_stage1_kernel` | 1.6% | 45 | DTS gather | no |
-| `_receiver_grad_from_pibar_self_loop_kernel` | 1.4% | 39 | receiver-weight grad | no |
-| `_wave_backward_uniform_param_store_kernel` | **0.3%** | 8 | rate-grad store | **yes** |
+| `_apply_reconciliation_self_loop_transpose_kernel` | **57%** | 1577 | self-loop Neumann backward (J^T apply) | **no** — in-block tree reduction |
+| `_update_reconciliation_likelihood_kernel` | 28% | 769 | forward Pi wave | no |
+| `_accumulate_gene_split_event_vjp_kernel` | **4.0%** | 111 | clade-adjoint scatter + D/S/T rate grad | **yes** |
+| `_accumulate_transfer_subtree_vjp_kernel` | 3.0% | 107 | pibar VJP backward | no |
+| `_stage_multiple_gene_split_event_reduction_kernel` | 1.6% | 45 | DTS gather | no |
+| `_accumulate_transfer_receiver_log_probability_vjp_kernel` | 1.4% | 39 | receiver-log-probability VJP | no |
+| `_accumulate_reconciliation_event_vjp_kernel` | **0.3%** | 8 | rate-grad store | **yes** |
 | (everything else) | <3% | — | torch elementwise, reductions, e-step | — |
 
 Total ≈ 2.77 s/iter. **The two atomic kernels together are ~4.3% of total** (4.0% + 0.3%).
@@ -36,7 +36,7 @@ float64 race (see `docs/full_dataset_convergence.md`), and it contains no atomic
 
 ## 2. Inside the atomic kernel (ncu)
 
-`ncu` on `_dts_cross_backward_accum_kernel` (10 instances, grids of 9k–11.7k blocks × 256):
+`ncu` on `_accumulate_gene_split_event_vjp_kernel` (10 instances, grids of 9k–11.7k blocks × 256):
 
 | metric | value | reading |
 |---|---|---|
@@ -94,7 +94,7 @@ python scripts/profile_backward_atomics.py            # sanity-run the harness
 nsys profile --capture-range=cudaProfilerApi --capture-range-end=stop --trace=cuda,nvtx \
     -o /tmp/bwd_prof -f true python scripts/profile_backward_atomics.py
 nsys stats --report cuda_gpu_kern_sum /tmp/bwd_prof.nsys-rep
-ncu --kernel-name regex:"_dts_cross_backward_accum_kernel" --launch-skip 250 -c 6 \
+ncu --kernel-name regex:"_accumulate_gene_split_event_vjp_kernel" --launch-skip 250 -c 6 \
     --metrics gpu__time_duration.sum,l1tex__t_sectors_pipe_lsu_mem_global_op_red.sum,\
 l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum,l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum \
     --csv python scripts/profile_backward_atomics.py

@@ -145,11 +145,15 @@ def test_centered_dts_tangent_matches_absolute_fp64(
     layout = {}
     if fanout > 1:
         layout = {
-            "n_eq1": 0,
-            "eq1_reduce_idx": reduce_idx[:0],
-            "ge2_ptr": torch.tensor([0, fanout], device=device, dtype=torch.long),
-            "ge2_parent_ids": torch.tensor([0], device=device, dtype=torch.long),
-            "ge2_max_fanout": fanout,
+            "n_single_split_parents": 0,
+            "single_split_parent_rows": reduce_idx[:0],
+            "multiple_split_group_ptr": torch.tensor(
+                [0, fanout], device=device, dtype=torch.long
+            ),
+            "multiple_split_parent_rows": torch.tensor(
+                [0], device=device, dtype=torch.long
+            ),
+            "max_splits_per_multiple_parent": fanout,
         }
 
     dts, dts_offset = compute_dts_forward(
@@ -189,7 +193,7 @@ def test_centered_dts_tangent_matches_absolute_fp64(
         log_split_probs=log_split_probs,
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
-        dts_offset=dts_offset,
+        gene_split_offset=dts_offset,
     )
 
     dts_reference, dts_reference_offset = compute_dts_forward(
@@ -229,7 +233,7 @@ def test_centered_dts_tangent_matches_absolute_fp64(
         log_split_probs=log_split_probs,
         pi_offset=pi_offset.double(),
         pibar_offset=pibar_offset.double(),
-        dts_offset=dts_reference_offset,
+        gene_split_offset=dts_reference_offset,
     )
     torch.testing.assert_close(got.double(), reference, rtol=2e-6, atol=3e-7)
 

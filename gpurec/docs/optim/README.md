@@ -31,7 +31,7 @@ Second-order Triton kernels live in `gpurec/core/kernels/`: `e_step_so`, `e_step
 `solve_e_pi↔solve_resident_e_pi`, `extract_parameters_weighted_cols↔..._weighted_receivers`,
 `as_item_param↔as_family_param`, `as_item_state↔as_family_species`, `rate_item_idx↔rate_family_idx`,
 `max_coupling↔max_transfer`, `col_log_probs↔receiver_log_probs`, `statewise↔specieswise`,
-`itemwise↔genewise`. The 6 SO/tangent kernels are kept verbatim (kbench-internal names) and bound
+`itemwise↔genewise`. The six SO/tangent kernels retain their numerical operations and are bound
 to gpurec's renamed forward/backward kernels at the call sites.
 
 ## Verification (all reproducible)

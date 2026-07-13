@@ -6,7 +6,7 @@ __all__ = [
     "compute_dts_forward",
     "compute_leaf_initial_wave_step",
     "compute_wave_step",
-    "_load_rate",
+    "_load_event_log_probability",
     "_prepare_wave_launch",
     "_tl_float_dtype",
     "_validate_offset_tensor",
@@ -48,7 +48,7 @@ def _prepare_wave_launch(S: int, const_tensor) -> tuple[int, int]:
 
 
 @triton.jit
-def _load_rate(
+def _load_event_log_probability(
     param,
     family,
     s_offs,
@@ -68,10 +68,10 @@ def _load_rate(
 
 
 @triton.jit
-def _row_logsumexp(
+def _compute_total_receiver_mass(
     Pi_ptr,
     receiver_log_probs_ptr,
-    base,
+    row_base,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
@@ -80,43 +80,43 @@ def _row_logsumexp(
 ):
     NEG_INF: tl.constexpr = -float("inf")
     row_max = tl.full([1], value=NEG_INF, dtype=DTYPE)
-    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
-    raw_row_max = tl.full([1], value=NEG_INF, dtype=DTYPE)
+    total_receiver_mass = tl.full([1], value=0.0, dtype=DTYPE)
+    reconciliation_row_max = tl.full([1], value=NEG_INF, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
-        pi_val = tl.load(Pi_ptr + base + s_offs, mask=mask, other=NEG_INF)
+        pi_val = tl.load(Pi_ptr + row_base + s_offs, mask=mask, other=NEG_INF)
         if TRACK_RAW_MAX:
-            raw_row_max = tl.maximum(raw_row_max, tl.max(pi_val, axis=0))
+            reconciliation_row_max = tl.maximum(reconciliation_row_max, tl.max(pi_val, axis=0))
         if USE_RECEIVER_WEIGHTS:
-            receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=mask, other=NEG_INF)
-            weighted_pi = receiver_logp + pi_val
+            receiver_log_probability = tl.load(receiver_log_probs_ptr + s_offs, mask=mask, other=NEG_INF)
+            receiver_weighted_reconciliation_log_likelihood = receiver_log_probability + pi_val
         else:
-            weighted_pi = pi_val
-        new_max = tl.maximum(row_max, tl.max(weighted_pi, axis=0))
+            receiver_weighted_reconciliation_log_likelihood = pi_val
+        new_max = tl.maximum(row_max, tl.max(receiver_weighted_reconciliation_log_likelihood, axis=0))
         new_max_safe = tl.where(new_max != NEG_INF, new_max, tl.zeros_like(new_max))
         previous = tl.where(
             row_max != NEG_INF,
-            row_sum * tl.exp2(row_max - new_max_safe),
-            tl.zeros_like(row_sum),
+            total_receiver_mass * tl.exp2(row_max - new_max_safe),
+            tl.zeros_like(total_receiver_mass),
         )
-        current = tl.sum(tl.exp2(weighted_pi - new_max_safe), axis=0)
-        row_sum = previous + current
+        current = tl.sum(tl.exp2(receiver_weighted_reconciliation_log_likelihood - new_max_safe), axis=0)
+        total_receiver_mass = previous + current
         row_max = new_max
-    return row_max, row_sum, raw_row_max
+    return row_max, total_receiver_mass, reconciliation_row_max
 
 
 @triton.jit
-def _pibar_tile(
+def _compute_transfer_complement(
     Pi_ptr,
     receiver_log_probs_ptr,
-    base,
+    row_base,
     s_offs,
     mask,
     row_max,
-    row_sum,
+    total_receiver_mass,
     max_transfer,
-    sp_parent_ptr,
+    species_parent_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
@@ -124,46 +124,52 @@ def _pibar_tile(
     DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
-    ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+    excluded_ancestor_mass = tl.zeros([BLOCK_S], dtype=DTYPE)
     row_max_safe = tl.where(row_max != NEG_INF, row_max, tl.zeros_like(row_max))
-    cur = s_offs.to(tl.int64)
+    ancestor_species = s_offs.to(tl.int64)
     for _ in range(0, MAX_ANCESTOR_DEPTH):
-        cur_valid = mask & (cur >= 0) & (cur < S)
-        pi_anc = tl.load(Pi_ptr + base + cur, mask=cur_valid, other=NEG_INF)
+        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
+        ancestor_reconciliation_log_likelihood = tl.load(
+            Pi_ptr + row_base + ancestor_species, mask=ancestor_valid, other=NEG_INF
+        )
         if USE_RECEIVER_WEIGHTS:
-            receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=cur_valid, other=NEG_INF)
-            ancestor_sum += tl.where(
-                cur_valid,
-                tl.exp2(receiver_logp_anc + pi_anc - row_max_safe),
+            ancestor_receiver_log_probability = tl.load(receiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=NEG_INF)
+            excluded_ancestor_mass += tl.where(
+                ancestor_valid,
+                tl.exp2(
+                    ancestor_receiver_log_probability
+                    + ancestor_reconciliation_log_likelihood
+                    - row_max_safe
+                ),
                 tl.zeros([BLOCK_S], dtype=DTYPE),
             )
         else:
-            ancestor_sum += tl.where(
-                cur_valid,
-                tl.exp2(pi_anc - row_max_safe),
+            excluded_ancestor_mass += tl.where(
+                ancestor_valid,
+                tl.exp2(ancestor_reconciliation_log_likelihood - row_max_safe),
                 tl.zeros([BLOCK_S], dtype=DTYPE),
             )
-        cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int64)
-    denom = row_sum - ancestor_sum
-    return tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer, NEG_INF)
+        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int64)
+    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    return tl.where(valid_receiver_mass > 0.0, tl.log2(valid_receiver_mass) + row_max + max_transfer, NEG_INF)
 
 
 @triton.jit
-def _leaf_initial_wave_step_kernel(
+def _initialize_leaf_reconciliation_likelihood_kernel(
     Pi_new_ptr,
     Pi_new_offset_ptr,
     ws,
     max_transfer_ptr,
-    DL_const_ptr,
+    duplication_loss_const_ptr,
     Ebar_ptr,
     E_ptr,
-    SL1_const_ptr,
-    SL2_const_ptr,
+    speciation_child1_const_ptr,
+    speciation_child2_const_ptr,
     receiver_log_probs_ptr,
-    sp_child1_ptr,
-    sp_child2_ptr,
-    sp_subtree_start_ptr,
-    sp_subtree_end_ptr,
+    species_child1_ptr,
+    species_child2_ptr,
+    species_subtree_start_ptr,
+    species_subtree_end_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
     family_idx_ptr,
@@ -182,63 +188,79 @@ def _leaf_initial_wave_step_kernel(
     family = tl.load(family_idx_ptr + global_row)
     const_base = family * CONST_ROW_STRIDE
     leaf_species = tl.load(leaf_species_ptr + global_row)
-    leaf_start = tl.load(sp_subtree_start_ptr + leaf_species)
-    leaf_end = tl.load(sp_subtree_end_ptr + leaf_species)
+    leaf_start = tl.load(species_subtree_start_ptr + leaf_species)
+    leaf_end = tl.load(species_subtree_end_ptr + leaf_species)
     if USE_RECEIVER_WEIGHTS:
-        leaf_receiver_logp = tl.load(receiver_log_probs_ptr + leaf_species).to(DTYPE)
+        leaf_receiver_log_probability = tl.load(receiver_log_probs_ptr + leaf_species).to(DTYPE)
     else:
-        leaf_receiver_logp = tl.zeros((), dtype=DTYPE)
-    leaf_obs_logp = tl.load(leaf_logp_ptr + family * S + leaf_species).to(DTYPE)
+        leaf_receiver_log_probability = tl.zeros((), dtype=DTYPE)
+    leaf_observation_log_probability = tl.load(leaf_logp_ptr + family * S + leaf_species).to(DTYPE)
 
     row_max = tl.full((), value=NEG_LARGE, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
-        species_start = tl.load(sp_subtree_start_ptr + s_offs, mask=mask, other=-1)
+        species_start = tl.load(species_subtree_start_ptr + s_offs, mask=mask, other=-1)
         descendant = (species_start >= leaf_start) & (species_start < leaf_end)
         leaf_hit = mask & (s_offs == leaf_species)
         const_offsets = const_base + s_offs
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-        dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        extinction_complement_log_probability = tl.load(
+            Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE
+        )
+        extinction_log_probability = tl.load(
+            E_ptr + const_offsets, mask=mask, other=NEG_LARGE
+        )
+        speciation_child1_const = tl.load(speciation_child1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
-        pi_w = tl.where(leaf_hit, leaf_obs_logp, NEG_LARGE)
-        pibar_w = tl.where(
+        reconciliation_log_likelihood = tl.where(leaf_hit, leaf_observation_log_probability, NEG_LARGE)
+        transfer_complement_log_likelihood = tl.where(
             ~descendant,
-            max_transfer + leaf_receiver_logp + leaf_obs_logp,
+            max_transfer + leaf_receiver_log_probability + leaf_observation_log_probability,
             NEG_LARGE,
         )
-        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
-        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
-        pi_s1 = tl.where(mask & (c1 == leaf_species), leaf_obs_logp, NEG_LARGE)
-        pi_s2 = tl.where(mask & (c2 == leaf_species), leaf_obs_logp, NEG_LARGE)
+        c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
+        c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
+        reconciliation_child1_log_likelihood = tl.where(mask & (c1 == leaf_species), leaf_observation_log_probability, NEG_LARGE)
+        reconciliation_child2_log_likelihood = tl.where(mask & (c2 == leaf_species), leaf_observation_log_probability, NEG_LARGE)
 
-        t0 = dl_const + pi_w
-        t1 = pi_w + ebar
-        t2 = pibar_w + e_val
-        t3 = sl1_const + pi_s1
-        t4 = sl2_const + pi_s2
-        leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG_LARGE)
-        t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-        m = tl.maximum(t0, t1)
-        m = tl.maximum(m, t2)
-        m = tl.maximum(m, t3)
-        m = tl.maximum(m, t4)
-        m = tl.maximum(m, t5)
-        m_safe = tl.where(m != NEG_LARGE, m, tl.zeros_like(m))
-        total = (
-            tl.exp2(t0 - m_safe)
-            + tl.exp2(t1 - m_safe)
-            + tl.exp2(t2 - m_safe)
-            + tl.exp2(t3 - m_safe)
-            + tl.exp2(t4 - m_safe)
-            + tl.exp2(t5 - m_safe)
+        duplication_loss_log_term = duplication_loss_const + reconciliation_log_likelihood
+        transfer_loss_log_term = (
+            reconciliation_log_likelihood + extinction_complement_log_probability
         )
-        result = tl.log2(total) + m
-        row_max = tl.maximum(row_max, tl.max(tl.where(mask, result, NEG_LARGE), axis=0))
+        transfer_log_term = (
+            transfer_complement_log_likelihood + extinction_log_probability
+        )
+        speciation_child1_log_term = speciation_child1_const + reconciliation_child1_log_likelihood
+        speciation_child2_log_term = speciation_child2_const + reconciliation_child2_log_likelihood
+        leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG_LARGE)
+        leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+        logsumexp_max = tl.maximum(duplication_loss_log_term, transfer_loss_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, transfer_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, speciation_child1_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, speciation_child2_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, leaf_observation_log_term)
+        logsumexp_max_safe = tl.where(logsumexp_max != NEG_LARGE, logsumexp_max, tl.zeros_like(logsumexp_max))
+        local_event_scaled_mass = (
+            tl.exp2(duplication_loss_log_term - logsumexp_max_safe)
+            + tl.exp2(transfer_loss_log_term - logsumexp_max_safe)
+            + tl.exp2(transfer_log_term - logsumexp_max_safe)
+            + tl.exp2(speciation_child1_log_term - logsumexp_max_safe)
+            + tl.exp2(speciation_child2_log_term - logsumexp_max_safe)
+            + tl.exp2(leaf_observation_log_term - logsumexp_max_safe)
+        )
+        reconciliation_log_likelihood = (
+            tl.log2(local_event_scaled_mass) + logsumexp_max
+        )
+        row_max = tl.maximum(
+            row_max,
+            tl.max(
+                tl.where(mask, reconciliation_log_likelihood, NEG_LARGE),
+                axis=0,
+            ),
+        )
 
     row_max_safe = tl.where(row_max != NEG_LARGE, row_max, 0.0)
     tl.store(Pi_new_offset_ptr + global_row, row_max_safe.to(ACC_DTYPE))
@@ -246,75 +268,89 @@ def _leaf_initial_wave_step_kernel(
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
-        species_start = tl.load(sp_subtree_start_ptr + s_offs, mask=mask, other=-1)
+        species_start = tl.load(species_subtree_start_ptr + s_offs, mask=mask, other=-1)
         descendant = (species_start >= leaf_start) & (species_start < leaf_end)
         leaf_hit = mask & (s_offs == leaf_species)
         const_offsets = const_base + s_offs
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-        dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        pi_w = tl.where(leaf_hit, leaf_obs_logp, NEG_LARGE)
-        pibar_w = tl.where(
+        duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        extinction_complement_log_probability = tl.load(
+            Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE
+        )
+        extinction_log_probability = tl.load(
+            E_ptr + const_offsets, mask=mask, other=NEG_LARGE
+        )
+        speciation_child1_const = tl.load(speciation_child1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        reconciliation_log_likelihood = tl.where(leaf_hit, leaf_observation_log_probability, NEG_LARGE)
+        transfer_complement_log_likelihood = tl.where(
             ~descendant,
-            max_transfer + leaf_receiver_logp + leaf_obs_logp,
+            max_transfer + leaf_receiver_log_probability + leaf_observation_log_probability,
             NEG_LARGE,
         )
-        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
-        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
-        pi_s1 = tl.where(mask & (c1 == leaf_species), leaf_obs_logp, NEG_LARGE)
-        pi_s2 = tl.where(mask & (c2 == leaf_species), leaf_obs_logp, NEG_LARGE)
-        t0 = dl_const + pi_w
-        t1 = pi_w + ebar
-        t2 = pibar_w + e_val
-        t3 = sl1_const + pi_s1
-        t4 = sl2_const + pi_s2
-        leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG_LARGE)
-        t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-        m = tl.maximum(t0, t1)
-        m = tl.maximum(m, t2)
-        m = tl.maximum(m, t3)
-        m = tl.maximum(m, t4)
-        m = tl.maximum(m, t5)
-        m_safe = tl.where(m != NEG_LARGE, m, tl.zeros_like(m))
-        total = (
-            tl.exp2(t0 - m_safe)
-            + tl.exp2(t1 - m_safe)
-            + tl.exp2(t2 - m_safe)
-            + tl.exp2(t3 - m_safe)
-            + tl.exp2(t4 - m_safe)
-            + tl.exp2(t5 - m_safe)
+        c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
+        c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
+        reconciliation_child1_log_likelihood = tl.where(mask & (c1 == leaf_species), leaf_observation_log_probability, NEG_LARGE)
+        reconciliation_child2_log_likelihood = tl.where(mask & (c2 == leaf_species), leaf_observation_log_probability, NEG_LARGE)
+        duplication_loss_log_term = duplication_loss_const + reconciliation_log_likelihood
+        transfer_loss_log_term = (
+            reconciliation_log_likelihood + extinction_complement_log_probability
         )
-        result = tl.log2(total) + m - row_max_safe
-        tl.store(Pi_new_ptr + out_global_base + s_offs, result, mask=mask)
+        transfer_log_term = (
+            transfer_complement_log_likelihood + extinction_log_probability
+        )
+        speciation_child1_log_term = speciation_child1_const + reconciliation_child1_log_likelihood
+        speciation_child2_log_term = speciation_child2_const + reconciliation_child2_log_likelihood
+        leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG_LARGE)
+        leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+        logsumexp_max = tl.maximum(duplication_loss_log_term, transfer_loss_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, transfer_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, speciation_child1_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, speciation_child2_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, leaf_observation_log_term)
+        logsumexp_max_safe = tl.where(logsumexp_max != NEG_LARGE, logsumexp_max, tl.zeros_like(logsumexp_max))
+        local_event_scaled_mass = (
+            tl.exp2(duplication_loss_log_term - logsumexp_max_safe)
+            + tl.exp2(transfer_loss_log_term - logsumexp_max_safe)
+            + tl.exp2(transfer_log_term - logsumexp_max_safe)
+            + tl.exp2(speciation_child1_log_term - logsumexp_max_safe)
+            + tl.exp2(speciation_child2_log_term - logsumexp_max_safe)
+            + tl.exp2(leaf_observation_log_term - logsumexp_max_safe)
+        )
+        reconciliation_log_likelihood = (
+            tl.log2(local_event_scaled_mass) + logsumexp_max - row_max_safe
+        )
+        tl.store(
+            Pi_new_ptr + out_global_base + s_offs,
+            reconciliation_log_likelihood,
+            mask=mask,
+        )
 
 
 @triton.jit
-def _wave_step_kernel(
+def _update_reconciliation_likelihood_kernel(
     Pi_ptr,
     Pi_offset_ptr,
     ws,
     pi_ws,
     max_transfer_ptr,
-    DL_const_ptr,
+    duplication_loss_const_ptr,
     Ebar_ptr,
     E_ptr,
-    SL1_const_ptr,
-    SL2_const_ptr,
+    speciation_child1_const_ptr,
+    speciation_child2_const_ptr,
     receiver_log_probs_ptr,
-    sp_child1_ptr,
-    sp_child2_ptr,
-    sp_parent_ptr,
+    species_child1_ptr,
+    species_child2_ptr,
+    species_parent_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
     family_idx_ptr,
-    DTS_reduced_ptr,
-    DTS_offset_ptr,
-    DTS_center_offset_ptr,
+    gene_split_log_likelihood_ptr,
+    gene_split_offset_ptr,
+    gene_split_center_offset_ptr,
     has_splits: tl.constexpr,
-    INPUT_IS_DTS: tl.constexpr,
+    INPUT_IS_GENE_SPLIT: tl.constexpr,
     Pi_new_ptr,
     Pi_new_offset_ptr,
     Pibar_out_ptr,
@@ -340,32 +376,32 @@ def _wave_step_kernel(
     global_row = ws + w
     pi_base = pi_row * stride
     global_base = global_row * stride
-    dts_base = w * stride
+    gene_split_base = w * stride
     family_const = tl.load(family_idx_ptr + global_row)
     const_base = family_const * CONST_ROW_STRIDE
     pi_offset = tl.load(Pi_offset_ptr + pi_row)
 
-    row_max, row_sum, raw_row_max = _row_logsumexp(
+    row_max, total_receiver_mass, reconciliation_row_max = _compute_total_receiver_mass(
         Pi_ptr,
         receiver_log_probs_ptr,
         pi_base,
         S,
         BLOCK_S,
         USE_RECEIVER_WEIGHTS,
-        INPUT_IS_DTS and USE_RECEIVER_WEIGHTS,
+        INPUT_IS_GENE_SPLIT and USE_RECEIVER_WEIGHTS,
         DTYPE,
     )
     # ``row_max`` is already required for Pibar. Absorb it lazily into the
     # accumulator-dtype row frame so the recurrence consumes near-zero residuals without an
     # exact recenter/store pass over the input row.
-    if INPUT_IS_DTS:
+    if INPUT_IS_GENE_SPLIT:
         if USE_RECEIVER_WEIGHTS:
-            shift_source = raw_row_max
+            shift_source = reconciliation_row_max
         else:
             # Without receiver weights ``row_max`` is already the raw maximum;
-            # compile out the second tile reduction entirely.
+            # Compile out the second tile reduction entirely.
             shift_source = row_max
-        row_shift = tl.max(
+        reconciliation_residual_shift = tl.max(
             tl.where(
                 shift_source != NEG_LARGE,
                 shift_source,
@@ -377,34 +413,34 @@ def _wave_step_kernel(
         # Leaf initialization and the first virtually gauged DTS iteration already
         # put ordinary Pi iterates in their local frame. Avoid repeating four
         # vector shifts on every later fixed-point iteration.
-        row_shift = tl.zeros((), dtype=DTYPE)
-    effective_pi_offset = pi_offset + row_shift.to(ACC_DTYPE)
+        reconciliation_residual_shift = tl.zeros((), dtype=DTYPE)
+    effective_pi_offset = pi_offset + reconciliation_residual_shift.to(ACC_DTYPE)
 
-    term_base = effective_pi_offset
+    output_frame_offset = effective_pi_offset
     if has_splits:
-        dts_offset = tl.load(DTS_offset_ptr + w)
-        if INPUT_IS_DTS:
-            dts_center_offset = dts_offset + row_shift.to(ACC_DTYPE)
+        gene_split_row_offset = tl.load(gene_split_offset_ptr + w)
+        if INPUT_IS_GENE_SPLIT:
+            gene_split_center_offset = gene_split_row_offset + reconciliation_residual_shift.to(ACC_DTYPE)
         else:
-            dts_center_offset = tl.load(DTS_center_offset_ptr + w)
-        term_base = tl.maximum(term_base, dts_center_offset)
+            gene_split_center_offset = tl.load(gene_split_center_offset_ptr + w)
+        output_frame_offset = tl.maximum(output_frame_offset, gene_split_center_offset)
     else:
-        dts_offset = term_base
+        gene_split_row_offset = output_frame_offset
     if USE_LEAF_INDEX:
         leaf_species = tl.load(leaf_species_ptr + global_row)
-        leaf_obs_logp = tl.load(
+        leaf_observation_log_probability = tl.load(
             leaf_logp_ptr + family_const * S + leaf_species
         ).to(DTYPE)
-        # The leaf source represents ``leaf_obs_logp``, not a zero-frame
+        # The leaf source represents ``leaf_observation_log_probability``, not a zero-frame
         # value. Using 0 here forced every negative HOGENOM row back into the
         # absolute frame after the exactly gauged leaf initializer.
-        term_base = tl.maximum(term_base, leaf_obs_logp.to(ACC_DTYPE))
-    pi_corr = (effective_pi_offset - term_base).to(DTYPE)
+        output_frame_offset = tl.maximum(output_frame_offset, leaf_observation_log_probability.to(ACC_DTYPE))
+    reconciliation_frame_shift = (effective_pi_offset - output_frame_offset).to(DTYPE)
     # DTS storage remains in its original gauge. The virtual row offset
     # participates only in base selection; one accumulator subtraction folds its
     # shift into the same correction the recurrence already applies.
-    dts_corr = (dts_offset - term_base).to(DTYPE)
-    leaf_corr = (0.0 - term_base).to(DTYPE)
+    gene_split_frame_shift = (gene_split_row_offset - output_frame_offset).to(DTYPE)
+    leaf_frame_shift = (0.0 - output_frame_offset).to(DTYPE)
     if STORE_FINAL_PIBAR:
         pi_has_finite = tl.full((), value=0, dtype=tl.int32)
 
@@ -414,85 +450,127 @@ def _wave_step_kernel(
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
-        pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        pi_w = pi_w - row_shift
+        reconciliation_log_likelihood = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        reconciliation_log_likelihood = reconciliation_log_likelihood - reconciliation_residual_shift
         const_offsets = const_base + s_offs
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-        pibar_w = _pibar_tile(
+        transfer_complement_log_likelihood = _compute_transfer_complement(
             Pi_ptr,
             receiver_log_probs_ptr,
             pi_base,
             s_offs,
             mask,
             row_max,
-            row_sum,
+            total_receiver_mass,
             max_transfer,
-            sp_parent_ptr,
+            species_parent_ptr,
             S,
             BLOCK_S,
             MAX_ANCESTOR_DEPTH,
             USE_RECEIVER_WEIGHTS,
             DTYPE,
         )
-        pibar_w = pibar_w - row_shift
-        dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        transfer_complement_log_likelihood = transfer_complement_log_likelihood - reconciliation_residual_shift
+        duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        extinction_complement_log_probability = tl.load(
+            Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE
+        )
+        extinction_log_probability = tl.load(
+            E_ptr + const_offsets, mask=mask, other=NEG_LARGE
+        )
+        speciation_child1_const = tl.load(speciation_child1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
-        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
-        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+        c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
+        c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=0)
         c1_valid = c1 < S
         c2_valid = c2 < S
-        pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
-        pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
-        pi_s1 = pi_s1 - row_shift
-        pi_s2 = pi_s2 - row_shift
+        reconciliation_child1_log_likelihood = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
+        reconciliation_child2_log_likelihood = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
+        reconciliation_child1_log_likelihood = reconciliation_child1_log_likelihood - reconciliation_residual_shift
+        reconciliation_child2_log_likelihood = reconciliation_child2_log_likelihood - reconciliation_residual_shift
 
-        t0 = dl_const + pi_w + pi_corr
-        t1 = pi_w + ebar + pi_corr
-        t2 = pibar_w + e_val + pi_corr
-        t3 = sl1_const + pi_s1 + pi_corr
-        t4 = sl2_const + pi_s2 + pi_corr
+        duplication_loss_log_term = duplication_loss_const + reconciliation_log_likelihood + reconciliation_frame_shift
+        transfer_loss_log_term = (
+            reconciliation_log_likelihood
+            + extinction_complement_log_probability
+            + reconciliation_frame_shift
+        )
+        transfer_log_term = (
+            transfer_complement_log_likelihood
+            + extinction_log_probability
+            + reconciliation_frame_shift
+        )
+        speciation_child1_log_term = speciation_child1_const + reconciliation_child1_log_likelihood + reconciliation_frame_shift
+        speciation_child2_log_term = speciation_child2_const + reconciliation_child2_log_likelihood + reconciliation_frame_shift
         if USE_LEAF_INDEX:
             leaf_hit = mask & (leaf_species == s_offs)
-            t5 = tl.where(leaf_hit, leaf_obs_logp + leaf_corr, NEG_LARGE)
+            leaf_observation_log_term = tl.where(
+                leaf_hit, leaf_observation_log_probability + leaf_frame_shift, NEG_LARGE
+            )
         else:
-            t5 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
+            leaf_observation_log_term = tl.full(
+                [BLOCK_S], value=NEG_LARGE, dtype=DTYPE
+            )
 
-        m = tl.maximum(t0, t1)
-        m = tl.maximum(m, t2)
-        m = tl.maximum(m, t3)
-        m = tl.maximum(m, t4)
-        m = tl.maximum(m, t5)
+        logsumexp_max = tl.maximum(duplication_loss_log_term, transfer_loss_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, transfer_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, speciation_child1_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, speciation_child2_log_term)
+        logsumexp_max = tl.maximum(logsumexp_max, leaf_observation_log_term)
         if has_splits:
-            dts_r = tl.load(DTS_reduced_ptr + dts_base + s_offs, mask=mask, other=NEG_LARGE)
-            dts_r = dts_r + dts_corr
-            m = tl.maximum(m, dts_r)
-        m_safe = tl.where(m != NEG_LARGE, m, tl.zeros_like(m))
-        total = tl.exp2(t0 - m_safe) + tl.exp2(t1 - m_safe) + tl.exp2(t2 - m_safe)
-        total += tl.exp2(t3 - m_safe) + tl.exp2(t4 - m_safe) + tl.exp2(t5 - m_safe)
+            gene_split_log_likelihood = tl.load(gene_split_log_likelihood_ptr + gene_split_base + s_offs, mask=mask, other=NEG_LARGE)
+            gene_split_log_likelihood = gene_split_log_likelihood + gene_split_frame_shift
+            logsumexp_max = tl.maximum(logsumexp_max, gene_split_log_likelihood)
+        logsumexp_max_safe = tl.where(logsumexp_max != NEG_LARGE, logsumexp_max, tl.zeros_like(logsumexp_max))
+        local_event_scaled_mass = (
+            tl.exp2(duplication_loss_log_term - logsumexp_max_safe)
+            + tl.exp2(transfer_loss_log_term - logsumexp_max_safe)
+            + tl.exp2(transfer_log_term - logsumexp_max_safe)
+        )
+        local_event_scaled_mass += (
+            tl.exp2(speciation_child1_log_term - logsumexp_max_safe)
+            + tl.exp2(speciation_child2_log_term - logsumexp_max_safe)
+            + tl.exp2(leaf_observation_log_term - logsumexp_max_safe)
+        )
         if has_splits:
-            total += tl.exp2(dts_r - m_safe)
-        result = tl.log2(total) + m
-        tl.store(Pi_new_ptr + global_base + s_offs, result, mask=mask)
+            local_event_scaled_mass += tl.exp2(gene_split_log_likelihood - logsumexp_max_safe)
+        updated_reconciliation_log_likelihood = (
+            tl.log2(local_event_scaled_mass) + logsumexp_max
+        )
+        tl.store(
+            Pi_new_ptr + global_base + s_offs,
+            updated_reconciliation_log_likelihood,
+            mask=mask,
+        )
         if STORE_FINAL_PIBAR:
             pi_has_finite = tl.maximum(
                 pi_has_finite,
-                tl.max(tl.where(mask & (result != NEG_LARGE), 1, 0), axis=0),
+                tl.max(
+                    tl.where(
+                        mask
+                        & (updated_reconciliation_log_likelihood != NEG_LARGE),
+                        1,
+                        0,
+                    ),
+                    axis=0,
+                ),
             )
 
         if COMPUTE_DIFF:
             # Compare represented absolute values in the accumulator dtype
             # without materializing either large absolute row.
-            finite = mask & (result != NEG_LARGE) & (pi_w != NEG_LARGE)
+            finite = (
+                mask
+                & (updated_reconciliation_log_likelihood != NEG_LARGE)
+                & (reconciliation_log_likelihood != NEG_LARGE)
+            )
             diff = tl.where(
                 finite,
                 tl.abs(
-                    result.to(ACC_DTYPE)
-                    - pi_w.to(ACC_DTYPE)
-                    + term_base
+                    updated_reconciliation_log_likelihood.to(ACC_DTYPE)
+                    - reconciliation_log_likelihood.to(ACC_DTYPE)
+                    + output_frame_offset
                     - effective_pi_offset
                 ),
                 tl.zeros([BLOCK_S], dtype=ACC_DTYPE),
@@ -503,19 +581,19 @@ def _wave_step_kernel(
     # are internal gauge-equivalent scratch. Canonicalize the published row in
     # its existing traversal without charging every fixed-point iteration.
     if STORE_FINAL_PIBAR:
-        pi_new_offset = tl.where(pi_has_finite != 0, term_base, 0.0)
+        pi_new_offset = tl.where(pi_has_finite != 0, output_frame_offset, 0.0)
     else:
-        pi_new_offset = term_base
+        pi_new_offset = output_frame_offset
     tl.store(Pi_new_offset_ptr + global_row, pi_new_offset)
 
     if COMPUTE_DIFF:
         tl.store(pi_residual_out_ptr + global_row, tl.max(row_max_diff, axis=0))
 
-    if has_splits and INPUT_IS_DTS:
-        tl.store(DTS_center_offset_ptr + w, dts_center_offset)
+    if has_splits and INPUT_IS_GENE_SPLIT:
+        tl.store(gene_split_center_offset_ptr + w, gene_split_center_offset)
 
     if STORE_FINAL_PIBAR:
-        final_row_max, final_row_sum, _ = _row_logsumexp(
+        final_row_max, final_row_sum, _ = _compute_total_receiver_mass(
             Pi_new_ptr,
             receiver_log_probs_ptr,
             global_base,
@@ -526,7 +604,7 @@ def _wave_step_kernel(
             DTYPE,
         )
         tl.store(pibar_row_max_ptr + global_row, tl.max(final_row_max, axis=0))
-        # ``Pi_new`` is stored in ``term_base``'s frame, so the Pibar values
+        # ``Pi_new`` is stored in ``output_frame_offset``'s frame, so the Pibar values
         # produced from it are already in that same frame. Keep that cheap
         # gauge instead of traversing the species row once to find an exact
         # Pibar maximum and again to store the recentered values.
@@ -536,7 +614,7 @@ def _wave_step_kernel(
             mask = s_offs < S
             const_offsets = const_base + s_offs
             max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-            pibar_w = _pibar_tile(
+            transfer_complement_log_likelihood = _compute_transfer_complement(
                 Pi_new_ptr,
                 receiver_log_probs_ptr,
                 global_base,
@@ -545,7 +623,7 @@ def _wave_step_kernel(
                 final_row_max,
                 final_row_sum,
                 max_transfer,
-                sp_parent_ptr,
+                species_parent_ptr,
                 S,
                 BLOCK_S,
                 MAX_ANCESTOR_DEPTH,
@@ -554,32 +632,32 @@ def _wave_step_kernel(
             )
             pibar_has_finite = tl.maximum(
                 pibar_has_finite,
-                tl.max(tl.where(mask & (pibar_w != NEG_LARGE), 1, 0), axis=0),
+                tl.max(tl.where(mask & (transfer_complement_log_likelihood != NEG_LARGE), 1, 0), axis=0),
             )
-            tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
+            tl.store(Pibar_out_ptr + global_base + s_offs, transfer_complement_log_likelihood, mask=mask)
         # An all-impossible Pibar row must remain the canonical ``(-inf, 0)``
         # pair even when its Pi row used a nonzero heuristic gauge.
-        pibar_offset = tl.where(pibar_has_finite != 0, term_base, 0.0)
+        pibar_offset = tl.where(pibar_has_finite != 0, output_frame_offset, 0.0)
         tl.store(Pibar_offset_ptr + global_row, pibar_offset)
 
 
 @triton.jit
-def _dts_eq1_kernel(
+def _reduce_single_gene_split_events_kernel(
     Pi,
     Pi_offset,
     Pibar,
     Pibar_offset,
-    lefts,
-    rights,
-    sp_child1,
-    sp_child2,
+    split_left_rows,
+    split_right_rows,
+    species_child1,
+    species_child2,
     log_pD,
     log_pS,
     log_split_probs,
-    eq1_reduce_idx,
+    single_split_parent_rows,
     active_rows,
-    out,
-    out_offset,
+    gene_split_log_likelihood,
+    gene_split_offset,
     family_idx,
     family_offset,
     S: tl.constexpr,
@@ -595,97 +673,132 @@ def _dts_eq1_kernel(
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
-    parent_w = tl.load(eq1_reduce_idx + n).to(tl.int64)
+    parent_wave_row = tl.load(single_split_parent_rows + n).to(tl.int64)
     if USE_ACTIVE:
-        if tl.load(active_rows + parent_w) == 0:
-            tl.store(out + parent_w * S + s_offs, tl.full([BLOCK_S], NEG_INF, dtype=DTYPE), mask=mask)
+        if tl.load(active_rows + parent_wave_row) == 0:
+            tl.store(gene_split_log_likelihood + parent_wave_row * S + s_offs, tl.full([BLOCK_S], NEG_INF, dtype=DTYPE), mask=mask)
             if s_block == 0:
-                tl.store(out_offset + parent_w, 0.0)
+                tl.store(gene_split_offset + parent_wave_row, 0.0)
             return
 
-    family = tl.load(family_idx + family_offset + parent_w).to(tl.int64)
-    left = tl.load(lefts + n).to(tl.int64)
-    right = tl.load(rights + n).to(tl.int64)
-    base_l = left * S
-    base_r = right * S
-    pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG_INF)
-    pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG_INF)
-    pibar_l = tl.load(Pibar + base_l + s_offs, mask=mask, other=NEG_INF)
-    pibar_r = tl.load(Pibar + base_r + s_offs, mask=mask, other=NEG_INF)
-    log_d = _load_rate(log_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
-    log_s = _load_rate(log_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
-    c1 = tl.load(sp_child1 + s_offs, mask=mask, other=S)
-    c2 = tl.load(sp_child2 + s_offs, mask=mask, other=S)
+    family = tl.load(family_idx + family_offset + parent_wave_row).to(tl.int64)
+    left_clade_row = tl.load(split_left_rows + n).to(tl.int64)
+    right_clade_row = tl.load(split_right_rows + n).to(tl.int64)
+    left_base = left_clade_row * S
+    right_base = right_clade_row * S
+    left_pi = tl.load(Pi + left_base + s_offs, mask=mask, other=NEG_INF)
+    right_pi = tl.load(Pi + right_base + s_offs, mask=mask, other=NEG_INF)
+    left_pibar = tl.load(Pibar + left_base + s_offs, mask=mask, other=NEG_INF)
+    right_pibar = tl.load(Pibar + right_base + s_offs, mask=mask, other=NEG_INF)
+    duplication_log_probability = _load_event_log_probability(log_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
+    speciation_log_probability = _load_event_log_probability(log_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
+    c1 = tl.load(species_child1 + s_offs, mask=mask, other=S)
+    c2 = tl.load(species_child2 + s_offs, mask=mask, other=S)
     c1_valid = c1 < S
     c2_valid = c2 < S
-    lsp = tl.load(log_split_probs + n)
+    split_log_prior = tl.load(log_split_probs + n)
 
-    pi_off_l = tl.load(Pi_offset + left)
-    pi_off_r = tl.load(Pi_offset + right)
-    pibar_off_l = tl.load(Pibar_offset + left)
-    pibar_off_r = tl.load(Pibar_offset + right)
-    base = tl.maximum(pi_off_l + pi_off_r, pi_off_l + pibar_off_r)
-    base = tl.maximum(base, pi_off_r + pibar_off_l)
-    base = base.to(ACC_DTYPE)
-    corr0 = (pi_off_l + pi_off_r - base).to(DTYPE)
-    corr1 = (pi_off_l + pibar_off_r - base).to(DTYPE)
-    corr2 = (pi_off_r + pibar_off_l - base).to(DTYPE)
+    left_pi_offset = tl.load(Pi_offset + left_clade_row)
+    right_pi_offset = tl.load(Pi_offset + right_clade_row)
+    left_pibar_offset = tl.load(Pibar_offset + left_clade_row)
+    right_pibar_offset = tl.load(Pibar_offset + right_clade_row)
+    split_frame_offset = tl.maximum(
+        left_pi_offset + right_pi_offset,
+        left_pi_offset + right_pibar_offset,
+    )
+    split_frame_offset = tl.maximum(
+        split_frame_offset, right_pi_offset + left_pibar_offset
+    ).to(ACC_DTYPE)
+    child_pair_frame_shift = (
+        left_pi_offset + right_pi_offset - split_frame_offset
+    ).to(DTYPE)
+    left_transfer_frame_shift = (
+        left_pi_offset + right_pibar_offset - split_frame_offset
+    ).to(DTYPE)
+    right_transfer_frame_shift = (
+        right_pi_offset + left_pibar_offset - split_frame_offset
+    ).to(DTYPE)
 
-    t0 = lsp + log_d + pi_l + pi_r + corr0
-    t1 = lsp + pi_l + pibar_r + corr1
-    t2 = lsp + pi_r + pibar_l + corr2
-    t3 = (
-        lsp
-        + log_s
-        + tl.load(Pi + base_l + c1, mask=mask & c1_valid, other=NEG_INF)
-        + tl.load(Pi + base_r + c2, mask=mask & c2_valid, other=NEG_INF)
-        + corr0
+    duplication_log_term = split_log_prior + duplication_log_probability + left_pi + right_pi + child_pair_frame_shift
+    transfer_left_retained_log_term = split_log_prior + left_pi + right_pibar + left_transfer_frame_shift
+    transfer_right_retained_log_term = split_log_prior + right_pi + left_pibar + right_transfer_frame_shift
+    speciation_lr_log_term = (
+        split_log_prior
+        + speciation_log_probability
+        + tl.load(Pi + left_base + c1, mask=mask & c1_valid, other=NEG_INF)
+        + tl.load(Pi + right_base + c2, mask=mask & c2_valid, other=NEG_INF)
+        + child_pair_frame_shift
     )
-    t4 = (
-        lsp
-        + log_s
-        + tl.load(Pi + base_r + c1, mask=mask & c1_valid, other=NEG_INF)
-        + tl.load(Pi + base_l + c2, mask=mask & c2_valid, other=NEG_INF)
-        + corr0
+    speciation_rl_log_term = (
+        split_log_prior
+        + speciation_log_probability
+        + tl.load(Pi + right_base + c1, mask=mask & c1_valid, other=NEG_INF)
+        + tl.load(Pi + left_base + c2, mask=mask & c2_valid, other=NEG_INF)
+        + child_pair_frame_shift
     )
-    m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), t4)
-    m_safe = tl.where(m != NEG_INF, m, tl.zeros_like(m))
-    acc = (
-        tl.exp2(t0 - m_safe)
-        + tl.exp2(t1 - m_safe)
-        + tl.exp2(t2 - m_safe)
-        + tl.exp2(t3 - m_safe)
-        + tl.exp2(t4 - m_safe)
+    logsumexp_max = tl.maximum(
+        tl.maximum(
+            tl.maximum(duplication_log_term, transfer_left_retained_log_term),
+            tl.maximum(transfer_right_retained_log_term, speciation_lr_log_term),
+        ),
+        speciation_rl_log_term,
     )
-    result = tl.log2(acc) + m
-    tl.store(out + parent_w * S + s_offs, result, mask=mask)
-    # ``out_offset`` starts at zero. Every species tile for this eq1 row has
+    logsumexp_max_safe = tl.where(logsumexp_max != NEG_INF, logsumexp_max, tl.zeros_like(logsumexp_max))
+    gene_split_scaled_mass = (
+        tl.exp2(duplication_log_term - logsumexp_max_safe)
+        + tl.exp2(transfer_left_retained_log_term - logsumexp_max_safe)
+        + tl.exp2(transfer_right_retained_log_term - logsumexp_max_safe)
+        + tl.exp2(speciation_lr_log_term - logsumexp_max_safe)
+        + tl.exp2(speciation_rl_log_term - logsumexp_max_safe)
+    )
+    reduced_gene_split_log_likelihood = (
+        tl.log2(gene_split_scaled_mass) + logsumexp_max
+    )
+    tl.store(
+        gene_split_log_likelihood + parent_wave_row * S + s_offs,
+        reduced_gene_split_log_likelihood,
+        mask=mask,
+    )
+    # ``gene_split_offset`` starts at zero. Every species tile for this
+    # single-split parent row has
     # the same candidate base, so any tile containing a finite lane may publish
     # it safely. If every lane is impossible, no tile writes and the canonical
     # all--inf row keeps offset zero without an extra row pass.
-    tile_has_finite = tl.max(tl.where(mask & (result != NEG_INF), 1, 0), axis=0) != 0
-    tl.store(out_offset + parent_w, base, mask=tile_has_finite)
+    tile_has_finite = (
+        tl.max(
+            tl.where(
+                mask & (reduced_gene_split_log_likelihood != NEG_INF), 1, 0
+            ),
+            axis=0,
+        )
+        != 0
+    )
+    tl.store(
+        gene_split_offset + parent_wave_row,
+        split_frame_offset,
+        mask=tile_has_finite,
+    )
 
 
 @triton.jit
-def _dts_ge2_stage1_kernel(
+def _stage_multiple_gene_split_event_reduction_kernel(
     Pi,
     Pi_offset,
     Pibar,
     Pibar_offset,
-    lefts,
-    rights,
-    sp_child1,
-    sp_child2,
+    split_left_rows,
+    split_right_rows,
+    species_child1,
+    species_child2,
     log_pD,
     log_pS,
     log_split_probs,
-    ge2_ptr,
-    ge2_parent_ids,
+    multiple_split_group_ptr,
+    multiple_split_parent_rows,
     active_rows,
-    partial_max,
-    partial_sum,
-    partial_offset,
+    partial_event_max_ptr,
+    partial_event_scaled_mass_ptr,
+    partial_frame_offset_ptr,
     family_idx,
     family_offset,
     split_offset,
@@ -705,20 +818,20 @@ def _dts_ge2_stage1_kernel(
     s_block = tl.program_id(2)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
-    parent_w = tl.load(ge2_parent_ids + group).to(tl.int64)
+    parent_wave_row = tl.load(multiple_split_parent_rows + group).to(tl.int64)
     if USE_ACTIVE:
-        if tl.load(active_rows + parent_w) == 0:
+        if tl.load(active_rows + parent_wave_row) == 0:
             return
 
-    family = tl.load(family_idx + family_offset + parent_w).to(tl.int64)
-    start = tl.load(ge2_ptr + group)
-    end = tl.load(ge2_ptr + group + 1)
-    tile_start = start + tile_id * TILE_SPLITS
-    if tile_start >= end:
+    family = tl.load(family_idx + family_offset + parent_wave_row).to(tl.int64)
+    group_start = tl.load(multiple_split_group_ptr + group)
+    group_end = tl.load(multiple_split_group_ptr + group + 1)
+    tile_start = group_start + tile_id * TILE_SPLITS
+    if tile_start >= group_end:
         return
-    tile_end = tl.minimum(tile_start + TILE_SPLITS, end)
-    m = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
-    acc = tl.zeros([BLOCK_S], dtype=DTYPE)
+    tile_end = tl.minimum(tile_start + TILE_SPLITS, group_end)
+    logsumexp_max = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
+    gene_split_scaled_mass = tl.zeros([BLOCK_S], dtype=DTYPE)
     # Use a tile-local accumulator frame and advance it as split offsets increase.
     # This folds the old group-wide offset prepass into work stage 1 already
     # performs, without rescanning every split once per species block.
@@ -726,93 +839,107 @@ def _dts_ge2_stage1_kernel(
     split_rel = tile_start
     while split_rel < tile_end:
         split_i = split_offset + split_rel
-        left = tl.load(lefts + split_i).to(tl.int64)
-        right = tl.load(rights + split_i).to(tl.int64)
-        base_l = left * S
-        base_r = right * S
-        pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG_INF)
-        pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG_INF)
-        pibar_l = tl.load(Pibar + base_l + s_offs, mask=mask, other=NEG_INF)
-        pibar_r = tl.load(Pibar + base_r + s_offs, mask=mask, other=NEG_INF)
-        log_d = _load_rate(log_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
-        log_s = _load_rate(log_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
-        c1 = tl.load(sp_child1 + s_offs, mask=mask, other=S)
-        c2 = tl.load(sp_child2 + s_offs, mask=mask, other=S)
+        left_clade_row = tl.load(split_left_rows + split_i).to(tl.int64)
+        right_clade_row = tl.load(split_right_rows + split_i).to(tl.int64)
+        left_base = left_clade_row * S
+        right_base = right_clade_row * S
+        left_pi = tl.load(Pi + left_base + s_offs, mask=mask, other=NEG_INF)
+        right_pi = tl.load(Pi + right_base + s_offs, mask=mask, other=NEG_INF)
+        left_pibar = tl.load(Pibar + left_base + s_offs, mask=mask, other=NEG_INF)
+        right_pibar = tl.load(Pibar + right_base + s_offs, mask=mask, other=NEG_INF)
+        duplication_log_probability = _load_event_log_probability(log_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
+        speciation_log_probability = _load_event_log_probability(log_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE)
+        c1 = tl.load(species_child1 + s_offs, mask=mask, other=S)
+        c2 = tl.load(species_child2 + s_offs, mask=mask, other=S)
         c1_valid = c1 < S
         c2_valid = c2 < S
-        lsp = tl.load(log_split_probs + split_i)
+        split_log_prior = tl.load(log_split_probs + split_i)
 
-        pi_off_l = tl.load(Pi_offset + left)
-        pi_off_r = tl.load(Pi_offset + right)
-        pibar_off_l = tl.load(Pibar_offset + left)
-        pibar_off_r = tl.load(Pibar_offset + right)
-        split_base_offset = tl.maximum(pi_off_l + pi_off_r, pi_off_l + pibar_off_r)
-        split_base_offset = tl.maximum(split_base_offset, pi_off_r + pibar_off_l)
+        left_pi_offset = tl.load(Pi_offset + left_clade_row)
+        right_pi_offset = tl.load(Pi_offset + right_clade_row)
+        left_pibar_offset = tl.load(Pibar_offset + left_clade_row)
+        right_pibar_offset = tl.load(Pibar_offset + right_clade_row)
+        split_base_offset = tl.maximum(left_pi_offset + right_pi_offset, left_pi_offset + right_pibar_offset)
+        split_base_offset = tl.maximum(split_base_offset, right_pi_offset + left_pibar_offset)
         new_base_offset = tl.maximum(tile_base_offset, split_base_offset)
         frame_shift = tl.where(
             tile_base_offset != NEG_INF,
             tile_base_offset - new_base_offset,
             0.0,
         ).to(DTYPE)
-        m = tl.where(m != NEG_INF, m + frame_shift, m)
-        corr0 = (pi_off_l + pi_off_r - new_base_offset).to(DTYPE)
-        corr1 = (pi_off_l + pibar_off_r - new_base_offset).to(DTYPE)
-        corr2 = (pi_off_r + pibar_off_l - new_base_offset).to(DTYPE)
+        logsumexp_max = tl.where(logsumexp_max != NEG_INF, logsumexp_max + frame_shift, logsumexp_max)
+        child_pair_frame_shift = (left_pi_offset + right_pi_offset - new_base_offset).to(DTYPE)
+        left_transfer_frame_shift = (left_pi_offset + right_pibar_offset - new_base_offset).to(DTYPE)
+        right_transfer_frame_shift = (right_pi_offset + left_pibar_offset - new_base_offset).to(DTYPE)
 
-        v0 = lsp + log_d + pi_l + pi_r + corr0
-        v1 = lsp + pi_l + pibar_r + corr1
-        v2 = lsp + pi_r + pibar_l + corr2
-        v3 = (
-            lsp
-            + log_s
-            + tl.load(Pi + base_l + c1, mask=mask & c1_valid, other=NEG_INF)
-            + tl.load(Pi + base_r + c2, mask=mask & c2_valid, other=NEG_INF)
-            + corr0
+        duplication_log_term = split_log_prior + duplication_log_probability + left_pi + right_pi + child_pair_frame_shift
+        transfer_left_retained_log_term = split_log_prior + left_pi + right_pibar + left_transfer_frame_shift
+        transfer_right_retained_log_term = split_log_prior + right_pi + left_pibar + right_transfer_frame_shift
+        speciation_lr_log_term = (
+            split_log_prior
+            + speciation_log_probability
+            + tl.load(Pi + left_base + c1, mask=mask & c1_valid, other=NEG_INF)
+            + tl.load(Pi + right_base + c2, mask=mask & c2_valid, other=NEG_INF)
+            + child_pair_frame_shift
         )
-        v4 = (
-            lsp
-            + log_s
-            + tl.load(Pi + base_r + c1, mask=mask & c1_valid, other=NEG_INF)
-            + tl.load(Pi + base_l + c2, mask=mask & c2_valid, other=NEG_INF)
-            + corr0
+        speciation_rl_log_term = (
+            split_log_prior
+            + speciation_log_probability
+            + tl.load(Pi + right_base + c1, mask=mask & c1_valid, other=NEG_INF)
+            + tl.load(Pi + left_base + c2, mask=mask & c2_valid, other=NEG_INF)
+            + child_pair_frame_shift
         )
-        split_m = tl.maximum(tl.maximum(tl.maximum(v0, v1), tl.maximum(v2, v3)), v4)
-        split_m_safe = tl.where(split_m != NEG_INF, split_m, tl.zeros_like(split_m))
-        split_sum = (
-            tl.exp2(v0 - split_m_safe)
-            + tl.exp2(v1 - split_m_safe)
-            + tl.exp2(v2 - split_m_safe)
-            + tl.exp2(v3 - split_m_safe)
-            + tl.exp2(v4 - split_m_safe)
+        split_event_max = tl.maximum(
+            tl.maximum(
+                tl.maximum(duplication_log_term, transfer_left_retained_log_term),
+                tl.maximum(transfer_right_retained_log_term, speciation_lr_log_term),
+            ),
+            speciation_rl_log_term,
+        )
+        split_event_max_safe = tl.where(split_event_max != NEG_INF, split_event_max, tl.zeros_like(split_event_max))
+        split_event_scaled_mass = (
+            tl.exp2(duplication_log_term - split_event_max_safe)
+            + tl.exp2(transfer_left_retained_log_term - split_event_max_safe)
+            + tl.exp2(transfer_right_retained_log_term - split_event_max_safe)
+            + tl.exp2(speciation_lr_log_term - split_event_max_safe)
+            + tl.exp2(speciation_rl_log_term - split_event_max_safe)
         )
 
-        new_m = tl.maximum(m, split_m)
-        new_m_safe = tl.where(new_m != NEG_INF, new_m, tl.zeros_like(new_m))
-        acc = (
-            tl.where(m != NEG_INF, acc * tl.exp2(m - new_m_safe), tl.zeros_like(acc))
-            + split_sum * tl.exp2(split_m_safe - new_m_safe)
+        merged_event_max = tl.maximum(logsumexp_max, split_event_max)
+        merged_event_max_safe = tl.where(merged_event_max != NEG_INF, merged_event_max, tl.zeros_like(merged_event_max))
+        gene_split_scaled_mass = (
+            tl.where(logsumexp_max != NEG_INF, gene_split_scaled_mass * tl.exp2(logsumexp_max - merged_event_max_safe), tl.zeros_like(gene_split_scaled_mass))
+            + split_event_scaled_mass * tl.exp2(split_event_max_safe - merged_event_max_safe)
         )
-        m = new_m
+        logsumexp_max = merged_event_max
         tile_base_offset = new_base_offset
         split_rel += 1
 
     partial_row = group * MAX_TILES + tile_id
-    tl.store(partial_max + partial_row * S + s_offs, m, mask=mask)
-    tl.store(partial_sum + partial_row * S + s_offs, acc, mask=mask)
+    tl.store(
+        partial_event_max_ptr + partial_row * S + s_offs,
+        logsumexp_max,
+        mask=mask,
+    )
+    tl.store(
+        partial_event_scaled_mass_ptr + partial_row * S + s_offs,
+        gene_split_scaled_mass,
+        mask=mask,
+    )
     # Species blocks race only to publish the same scalar tile frame.
-    tl.store(partial_offset + partial_row, tile_base_offset)
+    tl.store(partial_frame_offset_ptr + partial_row, tile_base_offset)
 
 
 @triton.jit
-def _dts_ge2_stage2_kernel(
-    ge2_ptr,
-    ge2_parent_ids,
+def _finalize_multiple_gene_split_event_reduction_kernel(
+    multiple_split_group_ptr,
+    multiple_split_parent_rows,
     active_rows,
-    partial_max,
-    partial_sum,
-    partial_offset,
-    out,
-    out_offset,
+    partial_event_max_ptr,
+    partial_event_scaled_mass_ptr,
+    partial_frame_offset_ptr,
+    gene_split_log_likelihood,
+    gene_split_offset,
     MAX_TILES: tl.constexpr,
     S: tl.constexpr,
     TILE_SPLITS: tl.constexpr,
@@ -826,48 +953,70 @@ def _dts_ge2_stage2_kernel(
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
-    parent_w = tl.load(ge2_parent_ids + group).to(tl.int64)
+    parent_wave_row = tl.load(multiple_split_parent_rows + group).to(tl.int64)
     if USE_ACTIVE:
-        if tl.load(active_rows + parent_w) == 0:
-            tl.store(out + parent_w * S + s_offs, tl.full([BLOCK_S], NEG_INF, dtype=DTYPE), mask=mask)
+        if tl.load(active_rows + parent_wave_row) == 0:
+            tl.store(gene_split_log_likelihood + parent_wave_row * S + s_offs, tl.full([BLOCK_S], NEG_INF, dtype=DTYPE), mask=mask)
             return
 
-    start = tl.load(ge2_ptr + group)
-    end = tl.load(ge2_ptr + group + 1)
-    n_tiles = tl.cdiv(end - start, TILE_SPLITS)
-    m = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
-    acc = tl.zeros([BLOCK_S], dtype=DTYPE)
+    group_start = tl.load(multiple_split_group_ptr + group)
+    group_end = tl.load(multiple_split_group_ptr + group + 1)
+    n_tiles = tl.cdiv(group_end - group_start, TILE_SPLITS)
+    logsumexp_max = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
+    gene_split_scaled_mass = tl.zeros([BLOCK_S], dtype=DTYPE)
     row_base_offset = tl.full((), value=NEG_INF, dtype=ACC_DTYPE)
     tile_id = 0
     while tile_id < n_tiles:
         partial_row = group * MAX_TILES + tile_id
-        pm = tl.load(partial_max + partial_row * S + s_offs, mask=mask, other=NEG_INF)
-        ps = tl.load(partial_sum + partial_row * S + s_offs, mask=mask, other=0.0)
-        tile_base_offset = tl.load(partial_offset + partial_row)
+        partial_event_max = tl.load(
+            partial_event_max_ptr + partial_row * S + s_offs,
+            mask=mask,
+            other=NEG_INF,
+        )
+        partial_event_scaled_mass = tl.load(
+            partial_event_scaled_mass_ptr + partial_row * S + s_offs,
+            mask=mask,
+            other=0.0,
+        )
+        tile_base_offset = tl.load(partial_frame_offset_ptr + partial_row)
         new_base_offset = tl.maximum(row_base_offset, tile_base_offset)
-        m = tl.where(
-            m != NEG_INF,
-            m + (row_base_offset - new_base_offset).to(DTYPE),
-            m,
+        logsumexp_max = tl.where(
+            logsumexp_max != NEG_INF,
+            logsumexp_max + (row_base_offset - new_base_offset).to(DTYPE),
+            logsumexp_max,
         )
-        pm = tl.where(
-            pm != NEG_INF,
-            pm + (tile_base_offset - new_base_offset).to(DTYPE),
-            pm,
+        partial_event_max = tl.where(
+            partial_event_max != NEG_INF,
+            partial_event_max + (tile_base_offset - new_base_offset).to(DTYPE),
+            partial_event_max,
         )
-        new_m = tl.maximum(m, pm)
-        new_m_safe = tl.where(new_m != NEG_INF, new_m, tl.zeros_like(new_m))
-        acc = tl.where(m != NEG_INF, acc * tl.exp2(m - new_m_safe), tl.zeros_like(acc)) + tl.where(
-            pm != NEG_INF, ps * tl.exp2(pm - new_m_safe), tl.zeros_like(acc)
+        merged_event_max = tl.maximum(logsumexp_max, partial_event_max)
+        merged_event_max_safe = tl.where(merged_event_max != NEG_INF, merged_event_max, tl.zeros_like(merged_event_max))
+        gene_split_scaled_mass = tl.where(logsumexp_max != NEG_INF, gene_split_scaled_mass * tl.exp2(logsumexp_max - merged_event_max_safe), tl.zeros_like(gene_split_scaled_mass)) + tl.where(
+            partial_event_max != NEG_INF, partial_event_scaled_mass * tl.exp2(partial_event_max - merged_event_max_safe), tl.zeros_like(gene_split_scaled_mass)
         )
-        m = new_m
+        logsumexp_max = merged_event_max
         row_base_offset = new_base_offset
         tile_id += 1
 
-    result = tl.log2(acc) + m
-    tl.store(out + parent_w * S + s_offs, result, mask=mask)
-    tile_has_finite = tl.max(tl.where(mask & (result != NEG_INF), 1, 0), axis=0) != 0
-    tl.store(out_offset + parent_w, row_base_offset, mask=tile_has_finite)
+    reduced_gene_split_log_likelihood = (
+        tl.log2(gene_split_scaled_mass) + logsumexp_max
+    )
+    tl.store(
+        gene_split_log_likelihood + parent_wave_row * S + s_offs,
+        reduced_gene_split_log_likelihood,
+        mask=mask,
+    )
+    tile_has_finite = (
+        tl.max(
+            tl.where(
+                mask & (reduced_gene_split_log_likelihood != NEG_INF), 1, 0
+            ),
+            axis=0,
+        )
+        != 0
+    )
+    tl.store(gene_split_offset + parent_wave_row, row_base_offset, mask=tile_has_finite)
 
 
 def compute_leaf_initial_wave_step(
@@ -877,16 +1026,16 @@ def compute_leaf_initial_wave_step(
     W,
     S,
     max_transfer_mat,
-    DL_const,
+    duplication_loss_const,
     Ebar,
     E,
-    SL1_const,
-    SL2_const,
+    speciation_child1_const,
+    speciation_child2_const,
     receiver_log_probs,
-    sp_child1,
-    sp_child2,
-    sp_subtree_start,
-    sp_subtree_end,
+    species_child1,
+    species_child2,
+    species_subtree_start,
+    species_subtree_end,
     leaf_species_idx,
     leaf_logp,
     family_idx,
@@ -899,22 +1048,22 @@ def compute_leaf_initial_wave_step(
         device=Pi_out.device,
         residual_dtype=Pi_out.dtype,
     )
-    block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
-    _leaf_initial_wave_step_kernel[(W,)](
+    block_s, const_row_stride = _prepare_wave_launch(S, duplication_loss_const)
+    _initialize_leaf_reconciliation_likelihood_kernel[(W,)](
         Pi_out,
         Pi_out_offset,
         ws,
         max_transfer_mat,
-        DL_const,
+        duplication_loss_const,
         Ebar,
         E,
-        SL1_const,
-        SL2_const,
+        speciation_child1_const,
+        speciation_child2_const,
         receiver_log_probs,
-        sp_child1,
-        sp_child2,
-        sp_subtree_start,
-        sp_subtree_end,
+        species_child1,
+        species_child2,
+        species_subtree_start,
+        species_subtree_end,
         leaf_species_idx,
         leaf_logp,
         family_idx,
@@ -940,19 +1089,19 @@ def compute_wave_step(
     W,
     S,
     max_transfer_mat,
-    DL_const,
+    duplication_loss_const,
     Ebar,
     E,
-    SL1_const,
-    SL2_const,
+    speciation_child1_const,
+    speciation_child2_const,
     receiver_log_probs,
-    sp_child1,
-    sp_child2,
-    sp_parent,
+    species_child1,
+    species_child2,
+    species_parent,
     max_ancestor_depth,
-    DTS_reduced=None,
-    DTS_offset=None,
-    DTS_center_offset=None,
+    gene_split_log_likelihood=None,
+    gene_split_offset=None,
+    gene_split_center_offset=None,
     *,
     leaf_species_idx,
     leaf_logp,
@@ -986,31 +1135,31 @@ def compute_wave_step(
         device=Pi_in.device,
         dtype=accumulator_dtype,
     )
-    has_splits = DTS_reduced is not None
-    if has_splits and DTS_offset is None:
-        raise ValueError("DTS_offset is required with row-gauged split DTS input")
-    if has_splits and DTS_center_offset is None:
+    has_splits = gene_split_log_likelihood is not None
+    if has_splits and gene_split_offset is None:
+        raise ValueError("gene_split_offset is required with row-gauged split DTS input")
+    if has_splits and gene_split_center_offset is None:
         # Direct callers that are not the first DTS-input launch have no
         # virtual shift to publish; their storage offset is the correct base.
         # The first input launch writes every freshly allocated sidecar lane.
-        DTS_center_offset = (
-            torch.empty_like(DTS_offset) if input_ws is not None else DTS_offset
+        gene_split_center_offset = (
+            torch.empty_like(gene_split_offset) if input_ws is not None else gene_split_offset
         )
     if not has_splits:
-        DTS_reduced = Pi_in
-        DTS_offset = Pi_in_offset
-        DTS_center_offset = Pi_in_offset
+        gene_split_log_likelihood = Pi_in
+        gene_split_offset = Pi_in_offset
+        gene_split_center_offset = Pi_in_offset
     else:
-        DTS_offset = _validate_offset_tensor(
-            "DTS_offset",
-            DTS_offset,
+        gene_split_offset = _validate_offset_tensor(
+            "gene_split_offset",
+            gene_split_offset,
             rows=W,
             device=Pi_in.device,
             dtype=accumulator_dtype,
         )
-        DTS_center_offset = _validate_offset_tensor(
-            "DTS_center_offset",
-            DTS_center_offset,
+        gene_split_center_offset = _validate_offset_tensor(
+            "gene_split_center_offset",
+            gene_split_center_offset,
             rows=W,
             device=Pi_in.device,
             dtype=accumulator_dtype,
@@ -1018,40 +1167,40 @@ def compute_wave_step(
     if input_ws is not None and (
         not has_splits
         or int(input_ws) != 0
-        or Pi_in.data_ptr() != DTS_reduced.data_ptr()
-        or Pi_in_offset.data_ptr() != DTS_offset.data_ptr()
-        or Pi_out.data_ptr() == DTS_reduced.data_ptr()
-        or DTS_center_offset.data_ptr() == DTS_offset.data_ptr()
-        or DTS_center_offset.data_ptr() == Pi_out_offset.data_ptr()
-        or DTS_center_offset.data_ptr() == Pibar_offset.data_ptr()
+        or Pi_in.data_ptr() != gene_split_log_likelihood.data_ptr()
+        or Pi_in_offset.data_ptr() != gene_split_offset.data_ptr()
+        or Pi_out.data_ptr() == gene_split_log_likelihood.data_ptr()
+        or gene_split_center_offset.data_ptr() == gene_split_offset.data_ptr()
+        or gene_split_center_offset.data_ptr() == Pi_out_offset.data_ptr()
+        or gene_split_center_offset.data_ptr() == Pibar_offset.data_ptr()
     ):
         raise ValueError(
             "split virtual framing requires wave-local aliased Pi/DTS inputs "
             "and a distinct output buffer"
         )
     compute_diff = pi_residual_out is not None
-    block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
-    _wave_step_kernel[(W,)](
+    block_s, const_row_stride = _prepare_wave_launch(S, duplication_loss_const)
+    _update_reconciliation_likelihood_kernel[(W,)](
         Pi_in,
         Pi_in_offset,
         ws,
         ws if input_ws is None else int(input_ws),
         max_transfer_mat,
-        DL_const,
+        duplication_loss_const,
         Ebar,
         E,
-        SL1_const,
-        SL2_const,
+        speciation_child1_const,
+        speciation_child2_const,
         receiver_log_probs,
-        sp_child1,
-        sp_child2,
-        sp_parent,
+        species_child1,
+        species_child2,
+        species_parent,
         leaf_species_idx,
         leaf_logp,
         family_idx,
-        DTS_reduced,
-        DTS_offset,
-        DTS_center_offset,
+        gene_split_log_likelihood,
+        gene_split_offset,
+        gene_split_center_offset,
         has_splits,
         bool(input_ws is not None),
         Pi_out,
@@ -1080,10 +1229,10 @@ def compute_dts_forward(
     Pi_offset,
     Pibar,
     Pibar_offset,
-    lefts,
-    rights,
-    sp_child1,
-    sp_child2,
+    split_left_rows,
+    split_right_rows,
+    species_child1,
+    species_child2,
     W,
     reduce_idx,
     log_pD_vec,
@@ -1091,15 +1240,15 @@ def compute_dts_forward(
     family_idx,
     *,
     log_split_probs=None,
-    n_eq1=None,
-    eq1_reduce_idx=None,
-    ge2_ptr=None,
-    ge2_parent_ids=None,
-    ge2_max_fanout=None,
+    n_single_split_parents=None,
+    single_split_parent_rows=None,
+    multiple_split_group_ptr=None,
+    multiple_split_parent_rows=None,
+    max_splits_per_multiple_parent=None,
     active_parent_rows=None,
     family_offset=0,
 ):
-    N = int(lefts.shape[0])
+    N = int(split_left_rows.shape[0])
     S = int(Pi.shape[1])
     Pi_offset = _validate_offset_tensor(
         "Pi_offset",
@@ -1116,45 +1265,45 @@ def compute_dts_forward(
         device=Pi.device,
         dtype=accumulator_dtype,
     )
-    out = torch.full((W, S), float("-inf"), device=Pi.device, dtype=Pi.dtype)
-    out_offset = torch.zeros((W,), device=Pi.device, dtype=accumulator_dtype)
+    gene_split_log_likelihood = torch.full((W, S), float("-inf"), device=Pi.device, dtype=Pi.dtype)
+    gene_split_offset = torch.zeros((W,), device=Pi.device, dtype=accumulator_dtype)
     if N == 0:
-        return out, out_offset
+        return gene_split_log_likelihood, gene_split_offset
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
         # Preprocessing owns split statics. Match the residual compute dtype at
         # the DTS boundary so they do not change the loop-carried arithmetic.
         log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
-    if n_eq1 is None:
-        n_eq1 = N
-        eq1_reduce_idx = reduce_idx
-        ge2_parent_ids = reduce_idx[:0]
-        ge2_ptr = reduce_idx.new_zeros((1,), dtype=torch.long)
-        ge2_max_fanout = 0
+    if n_single_split_parents is None:
+        n_single_split_parents = N
+        single_split_parent_rows = reduce_idx
+        multiple_split_parent_rows = reduce_idx[:0]
+        multiple_split_group_ptr = reduce_idx.new_zeros((1,), dtype=torch.long)
+        max_splits_per_multiple_parent = 0
 
     by_species = log_pD_vec.ndim == 2 and int(log_pD_vec.shape[1]) != 1
     row_stride = 0 if int(log_pD_vec.shape[0]) == 1 else int(log_pD_vec.stride(0))
     block_s = min(512, triton.next_power_of_2(S))
     active = active_parent_rows if active_parent_rows is not None else reduce_idx
 
-    if int(n_eq1) > 0:
-        _dts_eq1_kernel[(int(n_eq1), triton.cdiv(S, block_s))](
+    if int(n_single_split_parents) > 0:
+        _reduce_single_gene_split_events_kernel[(int(n_single_split_parents), triton.cdiv(S, block_s))](
             Pi,
             Pi_offset,
             Pibar,
             Pibar_offset,
-            lefts,
-            rights,
-            sp_child1,
-            sp_child2,
+            split_left_rows,
+            split_right_rows,
+            species_child1,
+            species_child2,
             log_pD_vec,
             log_pS_vec,
             log_split_probs,
-            eq1_reduce_idx,
+            single_split_parent_rows,
             active,
-            out,
-            out_offset,
+            gene_split_log_likelihood,
+            gene_split_offset,
             family_idx,
             int(family_offset),
             S,
@@ -1166,40 +1315,40 @@ def compute_dts_forward(
             ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
         )
 
-    if ge2_parent_ids is None or int(ge2_parent_ids.numel()) == 0:
-        return out, out_offset
+    if multiple_split_parent_rows is None or int(multiple_split_parent_rows.numel()) == 0:
+        return gene_split_log_likelihood, gene_split_offset
     tile_splits = 64
-    if ge2_max_fanout is None:
-        ge2_max_fanout = int((ge2_ptr[1:] - ge2_ptr[:-1]).max().item())
-    max_tiles = max(1, triton.cdiv(int(ge2_max_fanout), tile_splits))
-    n_groups = int(ge2_parent_ids.numel())
+    if max_splits_per_multiple_parent is None:
+        max_splits_per_multiple_parent = int((multiple_split_group_ptr[1:] - multiple_split_group_ptr[:-1]).max().item())
+    max_tiles = max(1, triton.cdiv(int(max_splits_per_multiple_parent), tile_splits))
+    n_groups = int(multiple_split_parent_rows.numel())
     partial_shape = (n_groups * max_tiles, S)
-    partial_max = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
-    partial_sum = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
-    partial_offset = torch.empty(
+    partial_event_max = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
+    partial_event_scaled_mass = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
+    partial_frame_offset = torch.empty(
         (n_groups * max_tiles,), device=Pi.device, dtype=accumulator_dtype
     )
-    _dts_ge2_stage1_kernel[(n_groups, max_tiles, triton.cdiv(S, block_s))](
+    _stage_multiple_gene_split_event_reduction_kernel[(n_groups, max_tiles, triton.cdiv(S, block_s))](
         Pi,
         Pi_offset,
         Pibar,
         Pibar_offset,
-        lefts,
-        rights,
-        sp_child1,
-        sp_child2,
+        split_left_rows,
+        split_right_rows,
+        species_child1,
+        species_child2,
         log_pD_vec,
         log_pS_vec,
         log_split_probs,
-        ge2_ptr,
-        ge2_parent_ids,
+        multiple_split_group_ptr,
+        multiple_split_parent_rows,
         active,
-        partial_max,
-        partial_sum,
-        partial_offset,
+        partial_event_max,
+        partial_event_scaled_mass,
+        partial_frame_offset,
         family_idx,
         int(family_offset),
-        split_offset=int(n_eq1),
+        split_offset=int(n_single_split_parents),
         MAX_TILES=max_tiles,
         S=S,
         TILE_SPLITS=tile_splits,
@@ -1210,15 +1359,15 @@ def compute_dts_forward(
         DTYPE=_tl_float_dtype(Pi.dtype),
         ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
     )
-    _dts_ge2_stage2_kernel[(n_groups, triton.cdiv(S, block_s))](
-        ge2_ptr,
-        ge2_parent_ids,
+    _finalize_multiple_gene_split_event_reduction_kernel[(n_groups, triton.cdiv(S, block_s))](
+        multiple_split_group_ptr,
+        multiple_split_parent_rows,
         active,
-        partial_max,
-        partial_sum,
-        partial_offset,
-        out,
-        out_offset,
+        partial_event_max,
+        partial_event_scaled_mass,
+        partial_frame_offset,
+        gene_split_log_likelihood,
+        gene_split_offset,
         MAX_TILES=max_tiles,
         S=S,
         TILE_SPLITS=tile_splits,
@@ -1227,4 +1376,4 @@ def compute_dts_forward(
         DTYPE=_tl_float_dtype(Pi.dtype),
         ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
     )
-    return out, out_offset
+    return gene_split_log_likelihood, gene_split_offset

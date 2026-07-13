@@ -1,9 +1,7 @@
-"""Fused Triton kernels for the retained wave-backward fast path.
+"""Reconciliation-wave adjoint kernels and launch wrappers.
 
-This module also contains private standalone diagnostics/helpers used by that
-path.  In particular, ``active_mask_from_rhs_absmax_fused()`` accepts bf16
-inputs for standalone row-mask experiments, but the retained public
-``Pi_wave_backward`` path rejects bf16 before this helper is reached.
+See ``docs/latex/kernel_mathematics.tex`` for the self-loop transpose, event
+VJPs, and transfer-subtree equations implemented here.
 """
 
 import torch
@@ -15,15 +13,15 @@ from gpurec.core.kernels.pi_forward import _validate_offset_tensor
 from gpurec.core.memory_policy import proposal0_memory_gate
 
 from gpurec.core.kernels.wave_backward_kernels import (
-    _active_mask_from_rhs_absmax_kernel,
-    _wave_backward_uniform_2d_precompute_kernel,
-    _wave_backward_uniform_2d_jt_kernel,
-    _receiver_grad_from_pibar_self_loop_kernel,
-    _wave_backward_uniform_param_store_kernel,
-    _dts_cross_backward_accum_kernel,
-    _dts_grad_mt_two_stage_reduce_kernel,
-    _pibar_ud_side_active_kernel,
-    _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel,
+    _select_active_adjoint_rows_kernel,
+    _prepare_reconciliation_self_loop_vjp_kernel,
+    _apply_reconciliation_self_loop_transpose_kernel,
+    _accumulate_transfer_receiver_log_probability_vjp_kernel,
+    _accumulate_reconciliation_event_vjp_kernel,
+    _accumulate_gene_split_event_vjp_kernel,
+    _reduce_max_transfer_vjp_kernel,
+    _select_active_transfer_donor_sides_kernel,
+    _accumulate_transfer_subtree_vjp_kernel,
 )
 
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
@@ -45,7 +43,7 @@ def _device_scalar_param(param, *, device, dtype):
     """Return a one-element device tensor without extracting CUDA scalars."""
     if torch.is_tensor(param):
         if param.numel() != 1:
-            raise ValueError("fused DTS backward scalar parameters must have one element")
+            raise ValueError("DTS backward scalar parameters must have one element")
         if param.device != device or param.dtype != dtype:
             param = param.to(device=device, dtype=dtype)
         return param.reshape(1).contiguous()
@@ -82,7 +80,7 @@ def _dts_layout_param_args(log_pD, log_pS, *, family_idx, S, device, dtype):
         except ValueError as exc:
             raise ValueError(
                 "DTS parameters must be scalar, [S], [G], [G, 1], or [G, S] "
-                "for the fused DTS backward path"
+                "for the DTS backward path"
             ) from exc
         layout_code = int(layout.code)
         if layout_code == 0:
@@ -118,7 +116,7 @@ def _dts_grad_layout(grad, *, family_idx, S):
         raise ValueError("unsupported DTS gradient layout") from exc
 
 
-def _uniform_backward_const_layout(const_tensor, family_idx, family_indexed):
+def _self_loop_constant_layout(const_tensor, family_idx, family_indexed):
     """Return addressing mode for self-loop constants.
 
     Modes:
@@ -137,7 +135,9 @@ def _uniform_backward_const_layout(const_tensor, family_idx, family_indexed):
     return 0
 
 
-def _uniform_backward_leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, family_indexed):
+def _self_loop_leaf_log_probability_layout(
+    use_leaf_index, leaf_logp, family_idx, family_indexed
+):
     """Return addressing mode for leaf log-probabilities in the self-loop."""
     if not use_leaf_index:
         return 0
@@ -156,7 +156,7 @@ def _uniform_backward_leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, fami
     return 0
 
 
-def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
+def compute_active_adjoint_row_mask(rhs, threshold, *, use_pruning=True):
     """Build the row activity mask for backward pruning in one Triton launch.
 
     This is a private retained-kernel helper, not a public dtype policy.  The
@@ -167,10 +167,10 @@ def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
     if rhs.ndim != 2:
         raise ValueError("rhs must be a 2D tensor")
     if rhs.device.type != "cuda":
-        raise ValueError("active_mask_from_rhs_absmax_fused requires a CUDA tensor")
+        raise ValueError("compute_active_adjoint_row_mask requires a CUDA tensor")
     if rhs.dtype not in _SUPPORTED_FLOAT_DTYPES:
         raise ValueError(
-            "active_mask_from_rhs_absmax_fused supports fp32/fp64/bf16 tensors"
+            "compute_active_adjoint_row_mask supports fp32/fp64/bf16 tensors"
         )
 
     W, S = rhs.shape
@@ -179,7 +179,7 @@ def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
         return active_mask
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
-    _active_mask_from_rhs_absmax_kernel[(W,)](
+    _select_active_adjoint_rows_kernel[(W,)](
         rhs,
         active_mask,
         float(threshold),
@@ -236,8 +236,8 @@ def _gmres_solve_wave_self_loop_fixed_cgs2(
         dtype=rhs.dtype,
         device=rhs.device,
     )
-    e1 = torch.zeros((max_iter + 1,), dtype=rhs.dtype, device=rhs.device)
-    e1[0] = b_norm_t
+    least_squares_rhs = torch.zeros((max_iter + 1,), dtype=rhs.dtype, device=rhs.device)
+    least_squares_rhs[0] = b_norm_t
     coeff_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     coeff2_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
     work = torch.empty_like(rhs).reshape(-1)
@@ -275,27 +275,27 @@ def _gmres_solve_wave_self_loop_fixed_cgs2(
             torch.div(work2, next_norm_t, out=basis_2d[j + 1])
 
     h_sub = hessenberg[: effective_iter + 1, :effective_iter]
-    rhs_sub = e1[: effective_iter + 1]
+    rhs_sub = least_squares_rhs[: effective_iter + 1]
     y = torch.linalg.lstsq(h_sub, rhs_sub).solution
     out = torch.empty_like(rhs)
     torch.mv(basis_2d[:effective_iter].t(), y, out=out.reshape(-1))
     return out
 
 
-def _wave_backward_uniform_2d(
+def _solve_reconciliation_wave_vjp_2d(
     Pi_star, Pibar_star, ws, W, S,
-    dts_r,
+    gene_split_log_likelihood,
     rhs,
-    mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+    max_transfer, duplication_loss_const, Ebar, E, speciation_child1_const, speciation_child2_const,
     receiver_log_probs,
-    sp_child1, sp_child2, leaf_term_wt,
+    species_child1, species_child2, leaf_term_wt,
     *,
     neumann_terms,
     leaf_species_idx,
     leaf_logp,
     has_leaf_term,
     active_mask,
-    sp_parent,
+    species_parent,
     max_ancestor_depth,
     pibar_row_max,
     family_idx,
@@ -315,7 +315,7 @@ def _wave_backward_uniform_2d(
     reserved_scratch_bytes=None,
     pi_offset,
     pibar_offset,
-    dts_offset=None,
+    gene_split_offset=None,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -324,14 +324,14 @@ def _wave_backward_uniform_2d(
         raise RuntimeError(
             "2D self-loop fast path currently supports fp32/fp64 only",
         )
-    ok, required_bytes, budget_bytes = proposal0_memory_gate(
+    fits_memory_budget, required_bytes, budget_bytes = proposal0_memory_gate(
         W,
         S,
         Pi_star.dtype,
         device=Pi_star.device,
         reserved_scratch_bytes=reserved_scratch_bytes,
     )
-    if not ok:
+    if not fits_memory_budget:
         raise RuntimeError(
             "2D self-loop fast path estimated scratch "
             f"{required_bytes / (1024 ** 3):.2f} GiB above memory budget "
@@ -360,22 +360,22 @@ def _wave_backward_uniform_2d(
         device=device,
         dtype=accumulator_dtype,
     )
-    if dts_r is not None:
-        if dts_offset is None:
-            raise ValueError("dts_offset is required for split-wave backward")
-        dts_offset = _validate_offset_tensor(
-            "dts_offset",
-            dts_offset,
+    if gene_split_log_likelihood is not None:
+        if gene_split_offset is None:
+            raise ValueError("gene_split_offset is required for split-wave backward")
+        gene_split_offset = _validate_offset_tensor(
+            "gene_split_offset",
+            gene_split_offset,
             rows=W,
             device=device,
             dtype=accumulator_dtype,
         )
-    elif dts_offset is not None:
-        raise ValueError("dts_offset is only valid for a split wave")
+    elif gene_split_offset is not None:
+        raise ValueError("gene_split_offset is only valid for a split wave")
     receiver_log_probs = receiver_log_probs.to(device=device, dtype=dtype).contiguous()
-    if sp_parent is None:
-        raise ValueError("sp_parent is required for the retained 2D self-loop path")
-    sp_parent = sp_parent.to(device=device, dtype=torch.int32).contiguous()
+    if species_parent is None:
+        raise ValueError("species_parent is required for the retained 2D self-loop path")
+    species_parent = species_parent.to(device=device, dtype=torch.int32).contiguous()
     if max_ancestor_depth is None:
         raise ValueError("max_ancestor_depth is required for the retained 2D self-loop path")
     max_ancestor_depth = max(1, int(max_ancestor_depth))
@@ -399,16 +399,18 @@ def _wave_backward_uniform_2d(
     scratch_shape = (W, S)
 
     v_k = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw0 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw2 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    self_loop_diagonal = torch.empty(scratch_shape, device=device, dtype=dtype)
+    donor_adjoint_coefficient = torch.empty(scratch_shape, device=device, dtype=dtype)
+    receiver_mass = torch.empty(scratch_shape, device=device, dtype=dtype)
     accum_self_loop_grads = self_loop_grad_targets is not None
-    aw345 = None if accum_self_loop_grads else torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw3 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw4 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    speciation_leaf_event_vjp = (
+        None if accum_self_loop_grads else torch.empty(scratch_shape, device=device, dtype=dtype)
+    )
+    speciation_child1_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
+    speciation_child2_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
     spec_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
     term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
-    pibar_corr = torch.empty(scratch_shape, device=device, dtype=dtype)
+    subtree_donor_adjoint = torch.empty(scratch_shape, device=device, dtype=dtype)
 
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained 2D self-loop path")
@@ -417,7 +419,7 @@ def _wave_backward_uniform_2d(
     if family_idx is not None:
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
     else:
-        family_idx = sp_parent
+        family_idx = species_parent
     requested_has_leaf_term = bool(has_leaf_term)
     use_leaf_index = bool(use_leaf_index and requested_has_leaf_term)
     has_materialized_leaf_term = leaf_term_wt is not None
@@ -427,43 +429,43 @@ def _wave_backward_uniform_2d(
         requested_has_leaf_term
         and (use_leaf_index or has_materialized_leaf_term)
     )
-    leaf_species_arg = leaf_species_idx if use_leaf_index else sp_child1
+    leaf_species_arg = leaf_species_idx if use_leaf_index else species_child1
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
     use_child_edge_self_loop = True
 
     launch_options = {"num_warps": 8}
 
-    _wave_backward_uniform_2d_precompute_kernel[(n_row_blocks,)](
+    _prepare_reconciliation_self_loop_vjp_kernel[(n_row_blocks,)](
         Pi_star,
         Pibar_star,
         pi_offset,
         pibar_offset,
         pibar_row_max,
-        dts_r if dts_r is not None else Pi_star,
-        dts_offset if dts_offset is not None else Pi_star,
-        dts_r is not None,
+        gene_split_log_likelihood if gene_split_log_likelihood is not None else Pi_star,
+        gene_split_offset if gene_split_offset is not None else Pi_star,
+        gene_split_log_likelihood is not None,
         rhs,
         active_mask if active_mask is not None else rhs,
-        mt_squeezed,
-        DL_const,
+        max_transfer,
+        duplication_loss_const,
         Ebar,
         E,
-        SL1_const,
-        SL2_const,
+        speciation_child1_const,
+        speciation_child2_const,
         receiver_log_probs,
-        sp_child1,
-        sp_child2,
-        sp_parent,
+        species_child1,
+        species_child2,
+        species_parent,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
         family_idx,
         v_k,
-        aw0,
-        aw1,
-        aw2,
-        aw3,
-        aw4,
+        self_loop_diagonal,
+        donor_adjoint_coefficient,
+        receiver_mass,
+        speciation_child1_probability,
+        speciation_child2_probability,
         ws,
         W,
         S,
@@ -496,24 +498,24 @@ def _wave_backward_uniform_2d(
             gmres_rhs = rhs * gmres_active_mask[:, None].to(dtype=dtype)
 
         def _apply_a(term_in: torch.Tensor) -> torch.Tensor:
-            _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
+            _apply_reconciliation_self_loop_transpose_kernel[(n_row_blocks,)](
                 term_in,
                 gmres_a_buf,
                 rhs,
                 gmres_active_mask if gmres_active_mask is not None else rhs,
-                aw0,
-                aw1,
-                aw2,
-                aw3,
-                aw4,
-                sp_child1,
-                sp_child2,
-                sp_parent,
+                self_loop_diagonal,
+                donor_adjoint_coefficient,
+                receiver_mass,
+                speciation_child1_probability,
+                speciation_child2_probability,
+                species_child1,
+                species_child2,
+                species_parent,
                 compact_level_ptr,
                 compact_level_parents,
                 compact_level_child1,
                 compact_level_child2,
-                pibar_corr,
+                subtree_donor_adjoint,
                 v_k,
                 W,
                 S,
@@ -547,24 +549,24 @@ def _wave_backward_uniform_2d(
             )
         v_k.copy_(initial_v.to(device=device, dtype=dtype).contiguous())
         for _n in range(int(neumann_terms)):
-            _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
+            _apply_reconciliation_self_loop_transpose_kernel[(n_row_blocks,)](
                 v_k,
                 spec_buf,
                 rhs,
                 active_mask if active_mask is not None else rhs,
-                aw0,
-                aw1,
-                aw2,
-                aw3,
-                aw4,
-                sp_child1,
-                sp_child2,
-                sp_parent,
+                self_loop_diagonal,
+                donor_adjoint_coefficient,
+                receiver_mass,
+                speciation_child1_probability,
+                speciation_child2_probability,
+                species_child1,
+                species_child2,
+                species_parent,
                 compact_level_ptr,
                 compact_level_parents,
                 compact_level_child1,
                 compact_level_child2,
-                pibar_corr,
+                subtree_donor_adjoint,
                 v_k,
                 W,
                 S,
@@ -585,24 +587,24 @@ def _wave_backward_uniform_2d(
         for n in range(int(neumann_terms)):
             term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
             term_out = spec_buf if n % 2 == 0 else term_buf
-            _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
+            _apply_reconciliation_self_loop_transpose_kernel[(n_row_blocks,)](
                 term_in,
                 term_out,
                 rhs,
                 active_mask if active_mask is not None else rhs,
-                aw0,
-                aw1,
-                aw2,
-                aw3,
-                aw4,
-                sp_child1,
-                sp_child2,
-                sp_parent,
+                self_loop_diagonal,
+                donor_adjoint_coefficient,
+                receiver_mass,
+                speciation_child1_probability,
+                speciation_child2_probability,
+                species_child1,
+                species_child2,
+                species_parent,
                 compact_level_ptr,
                 compact_level_parents,
                 compact_level_child1,
                 compact_level_child2,
-                pibar_corr,
+                subtree_donor_adjoint,
                 v_k,
                 W,
                 S,
@@ -632,10 +634,10 @@ def _wave_backward_uniform_2d(
         and int(neumann_terms) > 0
     ):
         last_buf = spec_buf if (int(neumann_terms) - 1) % 2 == 0 else term_buf
-        eps = torch.finfo(torch.float32).tiny
-        num = last_buf.float().norm(dim=1)
-        den = v_k.float().norm(dim=1).clamp_min(eps)
-        relres = num / den
+        positive_floor = torch.finfo(torch.float32).tiny
+        last_increment_norm = last_buf.float().norm(dim=1)
+        adjoint_norm = v_k.float().norm(dim=1).clamp_min(positive_floor)
+        relres = last_increment_norm / adjoint_norm
         # Inactive (pruned) rows hold uninitialized scratch — their adjoint is negligible,
         # so treat them as converged (0) rather than letting garbage pollute the per-family max.
         if active_mask is not None:
@@ -654,29 +656,29 @@ def _wave_backward_uniform_2d(
             grad_mt_ptr,
             param_grad_vector,
         ) = self_loop_grad_targets
-        aw345_ptr = aw0
+        speciation_leaf_event_vjp_ptr = self_loop_diagonal
     else:
-        grad_log_pD_ptr = aw0
-        grad_log_pS_ptr = aw0
-        grad_E_ptr = aw0
-        grad_Ebar_ptr = aw0
-        grad_E_s1_ptr = aw0
-        grad_E_s2_ptr = aw0
-        grad_mt_ptr = aw0
+        grad_log_pD_ptr = self_loop_diagonal
+        grad_log_pS_ptr = self_loop_diagonal
+        grad_E_ptr = self_loop_diagonal
+        grad_Ebar_ptr = self_loop_diagonal
+        grad_E_s1_ptr = self_loop_diagonal
+        grad_E_s2_ptr = self_loop_diagonal
+        grad_mt_ptr = self_loop_diagonal
         param_grad_vector = False
-        aw345_ptr = aw345
+        speciation_leaf_event_vjp_ptr = speciation_leaf_event_vjp
 
     if grad_receiver_log_probs is not None:
-        _receiver_grad_from_pibar_self_loop_kernel[(n_row_blocks,)](
+        _accumulate_transfer_receiver_log_probability_vjp_kernel[(n_row_blocks,)](
             v_k,
             active_mask if active_mask is not None else rhs,
-            aw1,
-            aw2,
+            donor_adjoint_coefficient,
+            receiver_mass,
             compact_level_ptr,
             compact_level_parents,
             compact_level_child1,
             compact_level_child2,
-            pibar_corr,
+            subtree_donor_adjoint,
             grad_receiver_log_probs,
             W,
             S,
@@ -689,24 +691,24 @@ def _wave_backward_uniform_2d(
             **jt_options,
         )
 
-    _wave_backward_uniform_param_store_kernel[(n_row_blocks,)](
+    _accumulate_reconciliation_event_vjp_kernel[(n_row_blocks,)](
         Pi_star,
         Pibar_star,
         pi_offset,
         pibar_offset,
-        dts_r if dts_r is not None else Pi_star,
-        dts_offset if dts_offset is not None else Pi_star,
-        dts_r is not None,
+        gene_split_log_likelihood if gene_split_log_likelihood is not None else Pi_star,
+        gene_split_offset if gene_split_offset is not None else Pi_star,
+        gene_split_log_likelihood is not None,
         v_k,
         active_mask if active_mask is not None else rhs,
-        mt_squeezed,
-        DL_const,
+        max_transfer,
+        duplication_loss_const,
         Ebar,
         E,
-        SL1_const,
-        SL2_const,
-        sp_child1,
-        sp_child2,
+        speciation_child1_const,
+        speciation_child2_const,
+        species_child1,
+        species_child2,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
@@ -718,12 +720,12 @@ def _wave_backward_uniform_2d(
         grad_E_s1_ptr,
         grad_E_s2_ptr,
         grad_mt_ptr,
-        aw0,
-        aw1,
-        aw2,
-        aw345_ptr,
-        aw3,
-        aw4,
+        self_loop_diagonal,
+        donor_adjoint_coefficient,
+        receiver_mass,
+        speciation_leaf_event_vjp_ptr,
+        speciation_child1_probability,
+        speciation_child2_probability,
         ws,
         W,
         S,
@@ -744,25 +746,38 @@ def _wave_backward_uniform_2d(
     if accum_self_loop_grads:
         base = (v_k, None, None, None, None, None, None)
     else:
-        base = (v_k, aw0, aw1, aw2, aw345, aw3, aw4)
+        duplication_loss_event_vjp = self_loop_diagonal
+        transfer_loss_event_vjp = donor_adjoint_coefficient
+        transfer_event_vjp = receiver_mass
+        speciation_child1_event_vjp = speciation_child1_probability
+        speciation_child2_event_vjp = speciation_child2_probability
+        base = (
+            v_k,
+            duplication_loss_event_vjp,
+            transfer_loss_event_vjp,
+            transfer_event_vjp,
+            speciation_leaf_event_vjp,
+            speciation_child1_event_vjp,
+            speciation_child2_event_vjp,
+        )
     if return_last_increment:
         return (*base, last_increment_relres)
     return base
 
 
-def wave_backward_uniform_fused(
+def solve_reconciliation_wave_vjp(
     Pi_star, Pibar_star, ws, W, S,
-    dts_r,
+    gene_split_log_likelihood,
     rhs,
-    mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+    max_transfer, duplication_loss_const, Ebar, E, speciation_child1_const, speciation_child2_const,
     receiver_log_probs,
-    sp_child1, sp_child2, leaf_term_wt,
+    species_child1, species_child2, leaf_term_wt,
     neumann_terms=3,
     leaf_species_idx=None,
     leaf_logp=None,
     has_leaf_term=True,
     active_mask=None,
-    sp_parent=None,
+    species_parent=None,
     max_ancestor_depth=None,
     pibar_row_max=None,
     family_idx=None,
@@ -781,7 +796,7 @@ def wave_backward_uniform_fused(
     *,
     pi_offset,
     pibar_offset,
-    dts_offset=None,
+    gene_split_offset=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -791,11 +806,11 @@ def wave_backward_uniform_fused(
         ws: wave start offset
         W: wave size
         S: number of species
-        dts_r: [W, S] or None
+        gene_split_log_likelihood: [W, S] or None
         rhs: [W, S] incoming adjoint
-        mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const:
+        max_transfer, duplication_loss_const, Ebar, E, speciation_child1_const, speciation_child2_const:
             [S], [W, S], or [G, S] when family_indexed_consts=True
-        sp_child1, sp_child2: [S] long
+        species_child1, species_child2: [S] long
         leaf_term_wt: [W, S]
         neumann_terms: int
         leaf_species_idx: optional [C] row -> species leaf index, -1 for non-leaves
@@ -804,7 +819,8 @@ def wave_backward_uniform_fused(
 
     Returns:
         v_k: [W, S] Neumann-solved adjoint
-        aw0, aw1, aw2, aw345, aw3, aw4: [W, S] per-element param grad contributions
+        Per-event VJP tensors for duplication-loss, transfer-loss, transfer,
+        combined speciation/leaf, and the two speciation child assignments.
     """
     requested_has_leaf_term = bool(has_leaf_term)
     use_leaf_index = (
@@ -812,8 +828,8 @@ def wave_backward_uniform_fused(
         and leaf_species_idx is not None
         and leaf_logp is not None
     )
-    const_layout = _uniform_backward_const_layout(
-        DL_const, family_idx, bool(family_indexed_consts)
+    const_layout = _self_loop_constant_layout(
+        duplication_loss_const, family_idx, bool(family_indexed_consts)
     )
     if bool(family_indexed_consts) and use_leaf_index:
         if leaf_logp.ndim == 1:
@@ -822,16 +838,16 @@ def wave_backward_uniform_fused(
             leaf_logp = leaf_logp.expand(-1, S).contiguous()
         else:
             leaf_logp = leaf_logp.contiguous()
-    leaf_logp_mode = _uniform_backward_leaf_logp_mode(
+    leaf_logp_mode = _self_loop_leaf_log_probability_layout(
         use_leaf_index, leaf_logp, family_idx, bool(family_indexed_consts)
     )
     if family_idx is not None:
         family_idx = family_idx.to(device=Pi_star.device, dtype=torch.long).contiguous()
-    if sp_parent is None:
-        raise ValueError("sp_parent is required for the retained backward fast path")
-    sp_parent = sp_parent.to(device=Pi_star.device).contiguous()
-    if Pi_star.device.type == "cuda" and sp_parent.dtype != torch.int32:
-        sp_parent = sp_parent.to(dtype=torch.int32)
+    if species_parent is None:
+        raise ValueError("species_parent is required for the retained backward fast path")
+    species_parent = species_parent.to(device=Pi_star.device).contiguous()
+    if Pi_star.device.type == "cuda" and species_parent.dtype != torch.int32:
+        species_parent = species_parent.to(dtype=torch.int32)
     if max_ancestor_depth is None:
         raise ValueError("max_ancestor_depth is required for the retained backward fast path")
     max_ancestor_depth = max(1, int(max_ancestor_depth))
@@ -839,30 +855,30 @@ def wave_backward_uniform_fused(
         raise ValueError("pibar_row_max is required for the retained backward fast path")
     pibar_row_max = pibar_row_max.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
 
-    return _wave_backward_uniform_2d(
+    return _solve_reconciliation_wave_vjp_2d(
         Pi_star,
         Pibar_star,
         ws,
         W,
         S,
-        dts_r,
+        gene_split_log_likelihood,
         rhs,
-        mt_squeezed,
-        DL_const,
+        max_transfer,
+        duplication_loss_const,
         Ebar,
         E,
-        SL1_const,
-        SL2_const,
+        speciation_child1_const,
+        speciation_child2_const,
         receiver_log_probs,
-        sp_child1,
-        sp_child2,
+        species_child1,
+        species_child2,
         leaf_term_wt,
         neumann_terms=neumann_terms,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
         has_leaf_term=requested_has_leaf_term,
         active_mask=active_mask,
-        sp_parent=sp_parent,
+        species_parent=species_parent,
         max_ancestor_depth=max_ancestor_depth,
         pibar_row_max=pibar_row_max,
         family_idx=family_idx,
@@ -882,7 +898,7 @@ def wave_backward_uniform_fused(
         reserved_scratch_bytes=reserved_scratch_bytes,
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
-        dts_offset=dts_offset,
+        gene_split_offset=gene_split_offset,
     )
 
 
@@ -891,11 +907,11 @@ def wave_backward_uniform_fused(
 # =========================================================================
 
 
-def dts_cross_backward_accum_fused(
+def accumulate_gene_split_event_vjp(
     Pi_star, Pibar_star, v_k, ws,
-    sl, sr, reduce_idx, wlsp,
+    split_left_rows, split_right_rows, reduce_idx, log_split_probs,
     log_pD, log_pS,
-    sp_child1, sp_child2,
+    species_child1, species_child2,
     accumulated_rhs,
     S,
     active_mask=None,
@@ -903,16 +919,16 @@ def dts_cross_backward_accum_fused(
     merge_s_term=False,
     grad_log_pD=None,
     grad_log_pS=None,
-    grad_mt=None,
+    grad_max_transfer=None,
     accum_param_reductions=False,
-    accum_mt_reduction=False,
-    output_pibar_ud=False,
-    output_pibar_side_active=False,
+    accum_max_transfer_reduction=False,
+    output_donor_adjoint=False,
+    output_active_donor_sides=False,
     pibar_side_threshold=0.0,
-    mt_squeezed=None,
+    max_transfer=None,
     pibar_row_max=None,
-    grad_mt_two_stage=False,
-    grad_mt_two_stage_tile_splits=128,
+    grad_max_transfer_two_stage=False,
+    grad_max_transfer_two_stage_tile_splits=128,
     skip_inactive_pibar_output_zero=False,
     family_idx=None,
     *,
@@ -920,7 +936,7 @@ def dts_cross_backward_accum_fused(
     pibar_offset,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
-    n_ws = sl.shape[0]
+    n_splits = split_left_rows.shape[0]
     device = Pi_star.device
     dtype = Pi_star.dtype
     expected_rows = int(Pi_star.shape[0])
@@ -939,7 +955,7 @@ def dts_cross_backward_accum_fused(
         dtype=pi_offset.dtype,
     )
 
-    wlsp_flat = wlsp.squeeze(-1) if wlsp.ndim > 1 else wlsp
+    split_log_priors = log_split_probs.squeeze(-1) if log_split_probs.ndim > 1 else log_split_probs
     family_idx_arg = None
     if family_idx is not None:
         family_idx_arg = family_idx.to(device=device, dtype=torch.long).contiguous()
@@ -958,36 +974,44 @@ def dts_cross_backward_accum_fused(
             raise ValueError("grad_log_pD/grad_log_pS must use the same DTS gradient layout")
     else:
         param_grad_layout = 0
-    if accum_mt_reduction and grad_mt is None:
-        raise ValueError("grad_mt is required when accumulating DTS mt reductions")
-    if accum_mt_reduction:
-        if grad_mt.numel() == 1 or (grad_mt.ndim == 1 and int(grad_mt.shape[0]) == int(S)):
-            grad_mt_layout = 0
-        elif family_idx_arg is not None and grad_mt.ndim == 2 and int(grad_mt.shape[1]) == int(S):
-            grad_mt_layout = 1
+    if accum_max_transfer_reduction and grad_max_transfer is None:
+        raise ValueError(
+            "grad_max_transfer is required when accumulating gene-split transfer reductions"
+        )
+    if accum_max_transfer_reduction:
+        if grad_max_transfer.numel() == 1 or (grad_max_transfer.ndim == 1 and int(grad_max_transfer.shape[0]) == int(S)):
+            grad_max_transfer_layout = 0
+        elif family_idx_arg is not None and grad_max_transfer.ndim == 2 and int(grad_max_transfer.shape[1]) == int(S):
+            grad_max_transfer_layout = 1
         else:
-            raise ValueError("DTS mt reduction target must be scalar, [S], or [G, S]")
+            raise ValueError(
+                "gene-split max_transfer reduction target must be scalar, [S], or [G, S]"
+            )
     else:
-        grad_mt_layout = 0
-    if output_pibar_ud and (mt_squeezed is None or pibar_row_max is None):
-        raise ValueError("mt_squeezed and pibar_row_max are required when outputting Pibar u_d")
-    if output_pibar_ud:
-        if mt_squeezed.ndim == 1 and int(mt_squeezed.shape[0]) == int(S):
-            mt_layout = 0
-        elif family_idx_arg is not None and mt_squeezed.ndim == 2 and int(mt_squeezed.shape[1]) == int(S):
-            mt_layout = 1
+        grad_max_transfer_layout = 0
+    if output_donor_adjoint and (max_transfer is None or pibar_row_max is None):
+        raise ValueError(
+            "max_transfer and pibar_row_max are required when outputting donor adjoints"
+        )
+    if output_donor_adjoint:
+        if max_transfer.ndim == 1 and int(max_transfer.shape[0]) == int(S):
+            max_transfer_layout = 0
+        elif family_idx_arg is not None and max_transfer.ndim == 2 and int(max_transfer.shape[1]) == int(S):
+            max_transfer_layout = 1
         else:
-            raise ValueError("mt_squeezed must have shape [S] or [G, S] when outputting Pibar u_d")
+            raise ValueError(
+                "max_transfer must have shape [S] or [G, S] when outputting donor adjoints"
+            )
     else:
-        mt_layout = 0
-    if output_pibar_ud and pibar_row_max.numel() < Pi_star.shape[0]:
+        max_transfer_layout = 0
+    if output_donor_adjoint and pibar_row_max.numel() < Pi_star.shape[0]:
         raise ValueError("pibar_row_max must contain one row-max value per Pi row")
-    if output_pibar_side_active and not output_pibar_ud:
-        raise ValueError("output_pibar_side_active requires output_pibar_ud")
+    if output_active_donor_sides and not output_donor_adjoint:
+        raise ValueError("output_active_donor_sides requires output_donor_adjoint")
     if torch.is_tensor(pibar_side_threshold):
         if pibar_side_threshold.numel() != 1:
             raise ValueError("pibar_side_threshold tensor must contain one value")
-        side_threshold_enabled = bool(output_pibar_side_active)
+        side_threshold_enabled = bool(output_active_donor_sides)
         side_active_threshold_arg = _device_scalar_param(
             pibar_side_threshold, device=device, dtype=dtype
         )
@@ -995,91 +1019,91 @@ def dts_cross_backward_accum_fused(
         pibar_side_threshold = float(pibar_side_threshold)
         if pibar_side_threshold < 0.0:
             raise ValueError("pibar_side_threshold must be non-negative")
-        side_threshold_enabled = bool(output_pibar_side_active and pibar_side_threshold > 0.0)
+        side_threshold_enabled = bool(output_active_donor_sides and pibar_side_threshold > 0.0)
         side_active_threshold_arg = (
             torch.tensor([pibar_side_threshold], device=device, dtype=dtype)
             if side_threshold_enabled
             else None
         )
 
-    if output_pibar_ud:
-        grad_Pibar_l = None
-        grad_Pibar_r = None
+    if output_donor_adjoint:
+        left_transfer_complement_vjp = None
+        right_transfer_complement_vjp = None
     else:
-        grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
-        grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
-    if output_pibar_ud:
-        pibar_ud = torch.empty((2 * n_ws, S), device=device, dtype=dtype)
-        pibar_A = torch.empty((2 * n_ws,), device=device, dtype=dtype)
+        left_transfer_complement_vjp = torch.empty((n_splits, S), device=device, dtype=dtype)
+        right_transfer_complement_vjp = torch.empty((n_splits, S), device=device, dtype=dtype)
+    if output_donor_adjoint:
+        donor_adjoint = torch.empty((2 * n_splits, S), device=device, dtype=dtype)
+        total_donor_adjoint = torch.empty((2 * n_splits,), device=device, dtype=dtype)
     else:
-        pibar_ud = None
-        pibar_A = None
-    pibar_side_active = (
-        torch.empty((2 * n_ws,), device=device, dtype=torch.bool)
-        if output_pibar_side_active
+        donor_adjoint = None
+        total_donor_adjoint = None
+    active_donor_side = (
+        torch.empty((2 * n_splits,), device=device, dtype=torch.bool)
+        if output_active_donor_sides
         else None
     )
     if accum_param_reductions:
-        param_pD = None
-        param_pS = None
+        duplication_parameter_vjp = None
+        speciation_parameter_vjp = None
     else:
-        param_pD = torch.empty(n_ws, device=device, dtype=dtype)
-        param_pS = torch.empty(n_ws, device=device, dtype=dtype)
-    param_pD_arg = grad_log_pD if accum_param_reductions else param_pD
-    param_pS_arg = grad_log_pS if accum_param_reductions else param_pS
-    dummy = pibar_ud if output_pibar_ud else grad_Pibar_l
+        duplication_parameter_vjp = torch.empty(n_splits, device=device, dtype=dtype)
+        speciation_parameter_vjp = torch.empty(n_splits, device=device, dtype=dtype)
+    duplication_parameter_vjp_arg = grad_log_pD if accum_param_reductions else duplication_parameter_vjp
+    speciation_parameter_vjp_arg = grad_log_pS if accum_param_reductions else speciation_parameter_vjp
+    dummy = donor_adjoint if output_donor_adjoint else left_transfer_complement_vjp
     grad_log_pD_arg = grad_log_pD if accum_param_reductions else dummy
     grad_log_pS_arg = grad_log_pS if accum_param_reductions else dummy
-    grad_mt_arg = grad_mt if accum_mt_reduction else dummy
-    pibar_ud_arg = pibar_ud if output_pibar_ud else dummy
-    pibar_A_arg = pibar_A if output_pibar_ud else dummy
-    pibar_side_active_arg = pibar_side_active if output_pibar_side_active else dummy
-    mt_arg = mt_squeezed.contiguous() if output_pibar_ud and not mt_squeezed.is_contiguous() else mt_squeezed
+    grad_max_transfer_arg = grad_max_transfer if accum_max_transfer_reduction else dummy
+    donor_adjoint_arg = donor_adjoint if output_donor_adjoint else dummy
+    total_donor_adjoint_arg = total_donor_adjoint if output_donor_adjoint else dummy
+    active_donor_side_arg = active_donor_side if output_active_donor_sides else dummy
+    max_transfer_arg = max_transfer.contiguous() if output_donor_adjoint and not max_transfer.is_contiguous() else max_transfer
     pibar_row_max_arg = (
         pibar_row_max.contiguous()
-        if output_pibar_ud and not pibar_row_max.is_contiguous()
+        if output_donor_adjoint and not pibar_row_max.is_contiguous()
         else pibar_row_max
     )
-    mt_arg = mt_arg if output_pibar_ud else dummy
-    pibar_row_max_arg = pibar_row_max_arg if output_pibar_ud else dummy
+    max_transfer_arg = max_transfer_arg if output_donor_adjoint else dummy
+    pibar_row_max_arg = pibar_row_max_arg if output_donor_adjoint else dummy
     side_active_threshold_arg = side_active_threshold_arg if side_threshold_enabled else dummy
-    family_idx_kernel_arg = family_idx_arg if family_idx_arg is not None else sl
-    grad_mt_scalar = bool(accum_mt_reduction and grad_mt.numel() == 1)
-    use_grad_mt_two_stage = bool(
-        grad_mt_two_stage
-        and accum_mt_reduction
-        and grad_mt_layout == 0
-        and not grad_mt_scalar
-        and grad_mt.numel() == S
+    family_idx_kernel_arg = family_idx_arg if family_idx_arg is not None else split_left_rows
+    grad_max_transfer_scalar = bool(accum_max_transfer_reduction and grad_max_transfer.numel() == 1)
+    use_grad_max_transfer_two_stage = bool(
+        grad_max_transfer_two_stage
+        and accum_max_transfer_reduction
+        and grad_max_transfer_layout == 0
+        and not grad_max_transfer_scalar
+        and grad_max_transfer.numel() == S
     )
-    grad_mt_two_stage_tile_splits = max(1, int(grad_mt_two_stage_tile_splits))
-    n_grad_mt_tiles = triton.cdiv(n_ws, grad_mt_two_stage_tile_splits)
-    if use_grad_mt_two_stage:
-        grad_mt_partial = torch.empty((n_grad_mt_tiles, S), device=device, dtype=dtype)
-        grad_mt_partial.zero_()
+    grad_max_transfer_two_stage_tile_splits = max(1, int(grad_max_transfer_two_stage_tile_splits))
+    n_grad_max_transfer_tiles = triton.cdiv(n_splits, grad_max_transfer_two_stage_tile_splits)
+    if use_grad_max_transfer_two_stage:
+        grad_max_transfer_partial = torch.empty((n_grad_max_transfer_tiles, S), device=device, dtype=dtype)
+        grad_max_transfer_partial.zero_()
     else:
-        grad_mt_partial = dummy
+        grad_max_transfer_partial = dummy
 
     stride_C = Pi_star.stride(0)
     BLOCK_S = min(256, triton.next_power_of_2(S))
     launch_options = {"num_warps": 8}
 
-    _dts_cross_backward_accum_kernel[(n_ws,)](
+    _accumulate_gene_split_event_vjp_kernel[(n_splits,)](
         Pi_star, Pibar_star,
         pi_offset,
         pibar_offset,
         v_k,
         active_mask if active_mask is not None else v_k,
-        sl, sr, reduce_idx, wlsp_flat,
+        split_left_rows, split_right_rows, reduce_idx, split_log_priors,
         log_pD_arg, log_pS_arg, family_idx_kernel_arg,
-        sp_child1, sp_child2,
+        species_child1, species_child2,
         accumulated_rhs,
-        grad_Pibar_l if grad_Pibar_l is not None else pibar_ud,
-        grad_Pibar_r if grad_Pibar_r is not None else pibar_ud,
-        param_pD_arg, param_pS_arg,
-        grad_log_pD_arg, grad_log_pS_arg, grad_mt_arg,
-        grad_mt_partial,
-        pibar_ud_arg, pibar_A_arg, pibar_side_active_arg, mt_arg, pibar_row_max_arg,
+        left_transfer_complement_vjp if left_transfer_complement_vjp is not None else donor_adjoint,
+        right_transfer_complement_vjp if right_transfer_complement_vjp is not None else donor_adjoint,
+        duplication_parameter_vjp_arg, speciation_parameter_vjp_arg,
+        grad_log_pD_arg, grad_log_pS_arg, grad_max_transfer_arg,
+        grad_max_transfer_partial,
+        donor_adjoint_arg, total_donor_adjoint_arg, active_donor_side_arg, max_transfer_arg, pibar_row_max_arg,
         side_active_threshold_arg,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
@@ -1088,61 +1112,61 @@ def dts_cross_backward_accum_fused(
         DEVICE_SCALAR_PARAMS=bool(device_scalar_params),
         PARAM_LAYOUT=int(param_layout),
         PARAM_GRAD_LAYOUT=int(param_grad_layout),
-        MT_LAYOUT=int(mt_layout),
-        GRAD_MT_LAYOUT=int(grad_mt_layout),
+        MAX_TRANSFER_LAYOUT=int(max_transfer_layout),
+        GRAD_MAX_TRANSFER_LAYOUT=int(grad_max_transfer_layout),
         ACCUM_PARAM_REDUCTIONS=bool(accum_param_reductions),
-        ACCUM_MT_REDUCTION=bool(accum_mt_reduction),
-        GRAD_MT_SCALAR=bool(grad_mt_scalar),
-        GRAD_MT_TWO_STAGE=bool(use_grad_mt_two_stage),
-        GRAD_MT_TILE_SPLITS=grad_mt_two_stage_tile_splits,
-        OUTPUT_PIBAR_UD=bool(output_pibar_ud),
-        OUTPUT_SIDE_ACTIVE=bool(output_pibar_side_active),
+        ACCUM_MAX_TRANSFER_REDUCTION=bool(accum_max_transfer_reduction),
+        GRAD_MAX_TRANSFER_SCALAR=bool(grad_max_transfer_scalar),
+        GRAD_MAX_TRANSFER_TWO_STAGE=bool(use_grad_max_transfer_two_stage),
+        GRAD_MAX_TRANSFER_TILE_SPLITS=grad_max_transfer_two_stage_tile_splits,
+        OUTPUT_DONOR_ADJOINT=bool(output_donor_adjoint),
+        OUTPUT_SIDE_ACTIVE=bool(output_active_donor_sides),
         SIDE_ACTIVE_THRESHOLD_ENABLED=side_threshold_enabled,
         SKIP_INACTIVE_PIBAR_OUTPUT_ZERO=bool(skip_inactive_pibar_output_zero),
         DTYPE=_tl_float_dtype(dtype),
         **launch_options,
     )
 
-    if use_grad_mt_two_stage:
-        mt_block_s = min(64, triton.next_power_of_2(S))
-        mt_block_tiles = 16
-        _dts_grad_mt_two_stage_reduce_kernel[(triton.cdiv(S, mt_block_s),)](
-            grad_mt_partial,
-            grad_mt,
-            n_grad_mt_tiles,
+    if use_grad_max_transfer_two_stage:
+        max_transfer_block_s = min(64, triton.next_power_of_2(S))
+        max_transfer_block_tiles = 16
+        _reduce_max_transfer_vjp_kernel[(triton.cdiv(S, max_transfer_block_s),)](
+            grad_max_transfer_partial,
+            grad_max_transfer,
+            n_grad_max_transfer_tiles,
             S,
-            mt_block_tiles,
-            mt_block_s,
+            max_transfer_block_tiles,
+            max_transfer_block_s,
             DTYPE=_tl_float_dtype(dtype),
             num_warps=4,
         )
 
-    if output_pibar_ud:
-        if output_pibar_side_active:
-            return pibar_ud, pibar_A, pibar_side_active, param_pD, param_pS
-        return pibar_ud, pibar_A, param_pD, param_pS
-    return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
+    if output_donor_adjoint:
+        if output_active_donor_sides:
+            return donor_adjoint, total_donor_adjoint, active_donor_side, duplication_parameter_vjp, speciation_parameter_vjp
+        return donor_adjoint, total_donor_adjoint, duplication_parameter_vjp, speciation_parameter_vjp
+    return left_transfer_complement_vjp, right_transfer_complement_vjp, duplication_parameter_vjp, speciation_parameter_vjp
 
 
 # =========================================================================
-# Uniform Pibar VJP for cross-clade gradients
+# Transfer-complement VJP for cross-clade gradients
 # =========================================================================
 
 
-def uniform_cross_pibar_vjp_tree_from_ud_fused(
+def accumulate_transfer_complement_vjp_from_donor_adjoint(
     Pi_star,
     receiver_log_probs,
-    pibar_ud,
-    pibar_A,
-    sl,
-    sr,
+    donor_adjoint,
+    total_donor_adjoint,
+    split_left_rows,
+    split_right_rows,
     accumulated_rhs,
     S,
     active_mask=None,
     reduce_idx=None,
     pibar_row_max=None,
-    skip_zero_sides=False,
-    side_active=None,
+    skip_zero_donor_sides=False,
+    active_donor_side=None,
     compact_level_ptr=None,
     compact_level_parents=None,
     compact_level_child1=None,
@@ -1151,9 +1175,9 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     use_receiver_weights=True,
     side_active_threshold=0.0,
 ):
-    """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
-    n_ws = sl.shape[0]
-    if n_ws == 0:
+    """Accumulate the transfer-complement VJP from staged donor adjoints."""
+    n_splits = split_left_rows.shape[0]
+    if n_splits == 0:
         return
     if active_mask is not None and reduce_idx is None:
         raise ValueError("reduce_idx is required when active_mask is provided")
@@ -1180,16 +1204,16 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     BLOCK_S = min(256, triton.next_power_of_2(S))
     launch_options = {"num_warps": 4}
     stride_C = Pi_star.stride(0)
-    if side_active is not None:
-        if side_active.numel() != 2 * n_ws:
-            raise ValueError("side_active must have one entry per split side")
-        side_active = side_active.contiguous()
-    elif skip_zero_sides:
-        side_active = torch.empty((2 * n_ws,), device=Pi_star.device, dtype=torch.bool)
-        _pibar_ud_side_active_kernel[(2 * n_ws,)](
-            pibar_ud,
-            side_active,
-            side_active_threshold_arg if side_active_threshold_enabled else pibar_ud,
+    if active_donor_side is not None:
+        if active_donor_side.numel() != 2 * n_splits:
+            raise ValueError("active_donor_side must have one entry per split side")
+        active_donor_side = active_donor_side.contiguous()
+    elif skip_zero_donor_sides:
+        active_donor_side = torch.empty((2 * n_splits,), device=Pi_star.device, dtype=torch.bool)
+        _select_active_transfer_donor_sides_kernel[(2 * n_splits,)](
+            donor_adjoint,
+            active_donor_side,
+            side_active_threshold_arg if side_active_threshold_enabled else donor_adjoint,
             S,
             BLOCK_S,
             SIDE_ACTIVE_THRESHOLD_ENABLED=bool(side_active_threshold_enabled),
@@ -1214,18 +1238,18 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     receiver_grad_arg = (
         grad_receiver_log_probs
         if grad_receiver_log_probs is not None
-        else pibar_A
+        else total_donor_adjoint
     )
-    _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel[(2 * n_ws,)](
+    _accumulate_transfer_subtree_vjp_kernel[(2 * n_splits,)](
         Pi_star,
         receiver_log_probs,
-        pibar_ud,
-        pibar_A,
-        side_active if side_active is not None else pibar_A,
-        sl,
-        sr,
-        reduce_idx if reduce_idx is not None else sl,
-        active_mask if active_mask is not None else pibar_ud,
+        donor_adjoint,
+        total_donor_adjoint,
+        active_donor_side if active_donor_side is not None else total_donor_adjoint,
+        split_left_rows,
+        split_right_rows,
+        reduce_idx if reduce_idx is not None else split_left_rows,
+        active_mask if active_mask is not None else donor_adjoint,
         pibar_row_max,
         compact_level_ptr,
         compact_level_parents,
@@ -1233,16 +1257,16 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         compact_level_child2,
         accumulated_rhs,
         receiver_grad_arg,
-        n_ws,
+        n_splits,
         S,
         stride_C,
         BLOCK_S,
         N_LEVELS=compact_level_ptr.numel() - 1,
         USE_ACTIVE_MASK=bool(active_mask is not None),
-        USE_SIDE_ACTIVE=bool(side_active is not None),
+        USE_SIDE_ACTIVE=bool(active_donor_side is not None),
         ACCUM_RECEIVER_GRAD=bool(grad_receiver_log_probs is not None),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         **launch_options,
     )
-    return side_active
+    return active_donor_side

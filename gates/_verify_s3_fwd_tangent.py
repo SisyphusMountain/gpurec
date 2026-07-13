@@ -1,10 +1,10 @@
 """S3 gate: the WEIGHTED forward tangent (jvp of the root scores) at a NON-UNIFORM base alpha.
 
 S3 (``docs/optim/receiver_weights_hvp_plan.md``) replaces the uniform forward tangent with the
-JVP of ``extract_parameters_weighted_receivers`` so the parameter tangent ``dMC`` carries the
+JVP of ``extract_parameters_weighted_receivers`` so the parameter tangent ``dmax_transfer`` carries the
 ``alpha -> receiver_log_probs -> receiver_valid_log_normalizer (receiver_norm) -> max_transfer``
-coupling, and the softmax-Jacobian seed ``dcol = dreceiver_log_probs`` is threaded IDENTICALLY into
-the E-step tangent fixed point AND the wave-step tangent (use_col_weights=True). This is the
+coupling, and the softmax-Jacobian seed ``dreceiver_log_probs = dreceiver_log_probs`` is threaded IDENTICALLY into
+the E-step tangent fixed point AND the wave-step tangent (use_receiver_weights=True). This is the
 prerequisite that makes a pure-theta tangent FINITE at a non-uniform base (the legacy uniform
 tangent NaNs there) and adds the real alpha->rate forward sensitivity.
 
@@ -13,7 +13,7 @@ fp64, converged solver (pi>=128, neumann>=64, tangent_self>=128):
 
   (A) SEED unit-check (no solve): ``torch.func.jvp`` on
       ``extract_parameters_weighted_receivers`` must give
-        * ``dcol == (I - 1 w^T) u_alpha / ln2``  (the log_softmax Jacobian in log2-space; w =
+        * ``dreceiver_log_probs == (I - 1 w^T) u_alpha / ln2``  (the log_softmax Jacobian in log2-space; w =
           softmax(alpha) -- NOT diag(w)-ww^T, which is d(softmax) not d(log_softmax)), and
         * ``dmax_transfer`` NONZERO (the receiver_norm coupling the uniform extractor dropped).
 
@@ -92,7 +92,7 @@ def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128, eps=1e-6, n
                                (torch.zeros_like(u_theta_seed), u_alpha_seed))
     dmt_alpha_only = float(tang_a[3].norm())
     seed_ok = seed_rel <= 1e-10 and dmt_alpha_only > 1e-6
-    print(f"  (A) seed: dcol vs (I-1w^T)u/ln2 rel={seed_rel:.3e}  "
+    print(f"  (A) seed: dreceiver_log_probs vs (I-1w^T)u/ln2 rel={seed_rel:.3e}  "
           f"|dmax_transfer|(mixed)={dmt_norm:.3e}  |dmax_transfer|(alpha-only)={dmt_alpha_only:.3e} "
           f"[{'PASS' if seed_ok else 'FAIL'}]")
 

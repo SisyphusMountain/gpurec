@@ -87,7 +87,7 @@ def test_triton_apply_a_zeroes_inactive_rows_cuda():
     compact_level_ptr = torch.tensor([0], device=device, dtype=torch.long)
     compact_empty = torch.empty((0,), device=device, dtype=torch.int32)
 
-    wave_backward._wave_backward_uniform_2d_jt_kernel[(W,)](
+    wave_backward._apply_reconciliation_self_loop_transpose_kernel[(W,)](
         term_in,
         term_out,
         rhs,

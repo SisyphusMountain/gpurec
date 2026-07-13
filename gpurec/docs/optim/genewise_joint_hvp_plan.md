@@ -88,7 +88,7 @@ same operator.
 |-------|--------------------|-----------------------------------------|--------|
 | `θ[G,3]` | yes | 3 broadcast θ-tangent sweeps (forward-over-reverse) | ✅ P0 done |
 | `ω[G,S]` | **no** (head only) | autograd double-backward over `head(root_rows, E, ω)` | ⚠️ head exists but ω is global `[S]` |
-| `α[S]` | yes | α-tangent sweep (already emits `out_col`) | ✅ exists, validated **with specieswise θ** |
+| `α[S]` | yes | α-tangent sweep (already emits `out_receiver_weights`) | ✅ exists, validated **with specieswise θ** |
 
 - **ω is head-only.** It touches only `NLL = head(root_rows(θ,α), E(θ,α), ω)`
   (`nll_vector_from_root_rows`). `_head_seed_tangents` already forms `⟨∇NLL, [t_root; dE; u_ω]⟩` and

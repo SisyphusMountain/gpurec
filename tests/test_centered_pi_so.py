@@ -96,28 +96,27 @@ def test_centered_wave_so_matches_reconstructed_absolute(
     )
     v = torch.tensor([[0.7, -0.25, 0.4]], device=device, dtype=dtype)
     col = torch.tensor([-1.8, -1.2, -2.1], device=device, dtype=dtype)
-    dcol = torch.tensor([0.12, -0.08, 0.03], device=device, dtype=dtype)
+    dreceiver_log_probs = torch.tensor([0.12, -0.08, 0.03], device=device, dtype=dtype)
     row_max_residual = (pi + col if weighted else pi).amax(dim=1)
     row_max_absolute = row_max_residual + pi_offset.to(dtype)
 
-    mc = torch.tensor([[0.2, 0.1, 0.3]], device=device, dtype=dtype)
     dl = torch.tensor([[-0.8, -1.0, -0.6]], device=device, dtype=dtype)
     ebar = torch.tensor([[-1.2, -0.7, -1.1]], device=device, dtype=dtype)
     e = torch.tensor([[-0.5, -0.9, -0.4]], device=device, dtype=dtype)
     sl1 = torch.tensor([[-1.4, -1.1, -0.8]], device=device, dtype=dtype)
     sl2 = torch.tensor([[-1.3, -0.75, -1.05]], device=device, dtype=dtype)
-    dDL = torch.tensor([[0.03, -0.07, 0.11]], device=device, dtype=dtype)
+    d_duplication_loss_const = torch.tensor([[0.03, -0.07, 0.11]], device=device, dtype=dtype)
     dEbar = torch.tensor([[-0.02, 0.08, -0.04]], device=device, dtype=dtype)
     dE = torch.tensor([[0.05, -0.03, 0.09]], device=device, dtype=dtype)
-    dSL1 = torch.tensor([[0.06, 0.02, -0.05]], device=device, dtype=dtype)
-    dSL2 = torch.tensor([[-0.01, 0.04, 0.07]], device=device, dtype=dtype)
+    d_speciation_child1_const = torch.tensor([[0.06, 0.02, -0.05]], device=device, dtype=dtype)
+    d_speciation_child2_const = torch.tensor([[-0.01, 0.04, 0.07]], device=device, dtype=dtype)
     child1 = torch.tensor([1, S, S], device=device, dtype=torch.long)
     child2 = torch.tensor([2, S, S], device=device, dtype=torch.long)
     parent = torch.tensor([-1, 0, 0], device=device, dtype=torch.long)
-    leaf_state = torch.tensor([1, 2], device=device, dtype=torch.long)
+    leaf_species = torch.tensor([1, 2], device=device, dtype=torch.long)
     leaf_logp = torch.tensor([[-1.5, -0.9, -1.25]], device=device, dtype=dtype)
     dleaf = torch.tensor([[0.02, -0.06, 0.04]], device=device, dtype=dtype)
-    item_idx = torch.zeros((C,), device=device, dtype=torch.long)
+    family_idx = torch.zeros((C,), device=device, dtype=torch.long)
     d_rhs = torch.tensor(
         [[0.0, 0.0, 0.0], [0.04, -0.02, 0.01]], device=device, dtype=dtype
     )
@@ -132,32 +131,31 @@ def test_centered_wave_so_matches_reconstructed_absolute(
         ws=ws,
         W=W,
         S=S,
-        mc=mc,
-        DL=dl,
-        dDL=dDL,
+        duplication_loss_const=dl,
+        d_duplication_loss_const=d_duplication_loss_const,
         Ebar=ebar,
         dEbar=dEbar,
         E=e,
         dE=dE,
-        SL1=sl1,
-        dSL1=dSL1,
-        SL2=sl2,
-        dSL2=dSL2,
-        col_log_probs=col,
-        node_child1=child1,
-        node_child2=child2,
-        node_parent=parent,
+        speciation_child1_const=sl1,
+        d_speciation_child1_const=d_speciation_child1_const,
+        speciation_child2_const=sl2,
+        d_speciation_child2_const=d_speciation_child2_const,
+        receiver_log_probs=col,
+        species_child1=child1,
+        species_child2=child2,
+        species_parent=parent,
         max_ancestor_depth=2,
-        dts_r=dts_absolute if has_splits else None,
-        d_dts=d_dts if has_splits else None,
-        leaf_state_idx=leaf_state,
+        gene_split_log_likelihood=dts_absolute if has_splits else None,
+        d_gene_split_log_likelihood=d_dts if has_splits else None,
+        leaf_species_idx=leaf_species,
         leaf_logp=leaf_logp,
-        dleaf_logp=dleaf,
-        item_idx=item_idx,
+        d_leaf_logp=dleaf,
+        family_idx=family_idx,
         has_leaf_term=not has_splits,
-        use_col_weights=weighted,
+        use_receiver_weights=weighted,
         d_rhs=d_rhs,
-        dcol=dcol,
+        dreceiver_log_probs=dreceiver_log_probs,
     )
     absolute = wave_backward_so(
         pi_absolute,
@@ -167,10 +165,10 @@ def test_centered_wave_so_matches_reconstructed_absolute(
         pibar_row_max=row_max_absolute,
         pi_offset=torch.zeros_like(pi_offset),
         pibar_offset=torch.zeros_like(pibar_offset),
-        dts_offset=(torch.zeros_like(dts_offset) if has_splits else None),
+        gene_split_offset=(torch.zeros_like(dts_offset) if has_splits else None),
         **common,
     )
-    common["dts_r"] = dts if has_splits else None
+    common["gene_split_log_likelihood"] = dts if has_splits else None
     centered = wave_backward_so(
         pi,
         dPi,
@@ -179,12 +177,47 @@ def test_centered_wave_so_matches_reconstructed_absolute(
         pibar_row_max=row_max_residual,
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
-        dts_offset=dts_offset if has_splits else None,
+        gene_split_offset=dts_offset if has_splits else None,
         **common,
     )
 
     for centered_value, absolute_value in zip(centered, absolute):
         torch.testing.assert_close(centered_value, absolute_value, rtol=2e-5, atol=2e-5)
+
+    if weighted:
+        # Omitting a receiver direction means a zero tangent. It must never
+        # reuse the primal receiver log-probabilities as a direction.
+        common["dreceiver_log_probs"] = torch.zeros_like(dreceiver_log_probs)
+        explicit_zero = wave_backward_so(
+            pi,
+            dPi,
+            pibar,
+            dPibar,
+            pibar_row_max=row_max_residual,
+            pi_offset=pi_offset,
+            pibar_offset=pibar_offset,
+            gene_split_offset=None,
+            **common,
+        )
+        common["dreceiver_log_probs"] = None
+        omitted = wave_backward_so(
+            pi,
+            dPi,
+            pibar,
+            dPibar,
+            pibar_row_max=row_max_residual,
+            pi_offset=pi_offset,
+            pibar_offset=pibar_offset,
+            gene_split_offset=None,
+            **common,
+        )
+        for omitted_value, explicit_value in zip(omitted, explicit_zero):
+            torch.testing.assert_close(omitted_value, explicit_value)
+    else:
+        # The uniform branch has no receiver-weight variable.
+        torch.testing.assert_close(
+            centered[-1], torch.zeros_like(centered[-1]), rtol=0.0, atol=0.0
+        )
 
 
 @pytest.mark.gpu
@@ -251,7 +284,7 @@ def test_centered_dts_so_matches_reconstructed_absolute(
     child1 = torch.tensor([1, S, S], device=device, dtype=torch.long)
     child2 = torch.tensor([2, S, S], device=device, dtype=torch.long)
     parent = torch.tensor([-1, 0, 0], device=device, dtype=torch.long)
-    item_idx = torch.zeros((C,), device=device, dtype=torch.long)
+    family_idx = torch.zeros((C,), device=device, dtype=torch.long)
     log_pD = torch.tensor([[-1.7, -1.9, -2.1]], device=device, dtype=dtype)
     log_pS = torch.tensor([[-1.1, -1.3, -1.5]], device=device, dtype=dtype)
     dlog_pD = torch.tensor([[0.03, -0.06, 0.08]], device=device, dtype=dtype)
@@ -259,7 +292,7 @@ def test_centered_dts_so_matches_reconstructed_absolute(
     mc = torch.tensor([[0.2, 0.1, 0.3]], device=device, dtype=dtype)
     dmc = torch.tensor([[0.05, -0.04, 0.02]], device=device, dtype=dtype)
     col = torch.tensor([-1.4, -1.7, -1.2], device=device, dtype=dtype)
-    dcol = torch.tensor([0.04, -0.03, 0.01], device=device, dtype=dtype)
+    dreceiver_log_probs = torch.tensor([0.04, -0.03, 0.01], device=device, dtype=dtype)
     levels = dict(
         compact_level_ptr=torch.tensor([0, 1], device=device, dtype=torch.long),
         compact_level_parents=torch.tensor([0], device=device, dtype=torch.long),
@@ -267,12 +300,19 @@ def test_centered_dts_so_matches_reconstructed_absolute(
         compact_level_child2=torch.tensor([2], device=device, dtype=torch.long),
     )
 
-    def run(Pi, Pibar, row_max, pi_gauge, pibar_gauge):
+    def run(
+        Pi,
+        Pibar,
+        row_max,
+        pi_gauge,
+        pibar_gauge,
+        receiver_tangent=dreceiver_log_probs,
+    ):
         d_rhs = torch.zeros((C, S), device=device, dtype=dtype)
         d_grad_pD = torch.zeros((1, S), device=device, dtype=dtype)
         d_grad_pS = torch.zeros((1, S), device=device, dtype=dtype)
         d_grad_mt = torch.zeros((1, S), device=device, dtype=dtype)
-        d_grad_col = torch.zeros((S,), device=device, dtype=dtype)
+        d_grad_receiver_log_probs = torch.zeros((S,), device=device, dtype=dtype)
         dts_backward_so(
             Pi,
             dPi,
@@ -292,19 +332,19 @@ def test_centered_dts_so_matches_reconstructed_absolute(
             child1,
             child2,
             row_max,
-            item_idx,
+            family_idx,
             d_rhs,
             d_grad_pD,
             d_grad_pS,
             d_grad_mt,
-            d_grad_col,
-            use_col_weights=True,
-            dcol=dcol,
+            d_grad_receiver_log_probs,
+            use_receiver_weights=True,
+            dreceiver_log_probs=receiver_tangent,
             pi_offset=pi_gauge,
             pibar_offset=pibar_gauge,
             **levels,
         )
-        return d_rhs, d_grad_pD, d_grad_pS, d_grad_mt, d_grad_col
+        return d_rhs, d_grad_pD, d_grad_pS, d_grad_mt, d_grad_receiver_log_probs
 
     absolute = run(
         pi_absolute,
@@ -316,6 +356,20 @@ def test_centered_dts_so_matches_reconstructed_absolute(
     centered = run(pi, pibar, row_max_residual, pi_offset, pibar_offset)
     for centered_value, absolute_value in zip(centered, absolute):
         torch.testing.assert_close(centered_value, absolute_value, rtol=3e-5, atol=3e-5)
+
+    omitted = run(
+        pi, pibar, row_max_residual, pi_offset, pibar_offset, receiver_tangent=None
+    )
+    explicit_zero = run(
+        pi,
+        pibar,
+        row_max_residual,
+        pi_offset,
+        pibar_offset,
+        receiver_tangent=torch.zeros_like(dreceiver_log_probs),
+    )
+    for omitted_value, explicit_value in zip(omitted, explicit_zero):
+        torch.testing.assert_close(omitted_value, explicit_value)
 
 
 @pytest.mark.gpu

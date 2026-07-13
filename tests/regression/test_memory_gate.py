@@ -132,7 +132,7 @@ def test_hvp_path_threads_reserved_scratch_bytes_when_warm_active(monkeypatch, t
     """Task C follow-up: the memory-gate fix (97f00559) threaded ``reserved_scratch_bytes``
     through the GRADIENT path (``_execution.py`` -> ``implicit_grad_loglik_vjp_wave``) but
     missed the HVP path -- ``build_point_cache`` (via ``vjp_root_to_theta``) and the
-    tangent-adjoint solve in ``make_exact_hvp_single`` both called ``wave_backward_uniform_fused``
+    tangent-adjoint solve in ``make_exact_hvp_single`` both called ``solve_reconciliation_wave_vjp``
     without it, so a resident warm-adjoint cache could still trip the false ``budget 0.00 GiB``
     rejection there. Regression guard: spy on both call sites and assert the reservation is
     threaded exactly like the gradient path -- ``static.warm_scratch_reserved_bytes`` when
@@ -167,8 +167,8 @@ def test_hvp_path_threads_reserved_scratch_bytes_when_warm_active(monkeypatch, t
     theta = model.theta.detach().clone()
     rw = model.receiver_weights.detach().clone()
 
-    real_impl_fn = _implicit_grad_mod.wave_backward_uniform_fused
-    real_hvp_fn = _hvp_mod.wave_backward_uniform_fused
+    real_impl_fn = _implicit_grad_mod.solve_reconciliation_wave_vjp
+    real_hvp_fn = _hvp_mod.solve_reconciliation_wave_vjp
     captured = {"implicit_grad": [], "hvp_exact": []}
 
     def spy_impl(*a, **kw):
@@ -179,8 +179,8 @@ def test_hvp_path_threads_reserved_scratch_bytes_when_warm_active(monkeypatch, t
         captured["hvp_exact"].append(kw.get("reserved_scratch_bytes"))
         return real_hvp_fn(*a, **kw)
 
-    monkeypatch.setattr(_implicit_grad_mod, "wave_backward_uniform_fused", spy_impl)
-    monkeypatch.setattr(_hvp_mod, "wave_backward_uniform_fused", spy_hvp)
+    monkeypatch.setattr(_implicit_grad_mod, "solve_reconciliation_wave_vjp", spy_impl)
+    monkeypatch.setattr(_hvp_mod, "solve_reconciliation_wave_vjp", spy_hvp)
 
     _loss, sv = forward_solve([st], theta, rw)
 

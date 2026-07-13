@@ -1,0 +1,418 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=25mm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,longtable,array}
+\usepackage[hidelinks]{hyperref}
+\usepackage[T1]{fontenc}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\C}{\mathcal{C}}
+\newcommand{\Sset}{\mathcal{S}}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1\right\rvert}
+\newcommand{\kernel}[1]{\nolinkurl{#1}}
+\newcommand{\code}[1]{\nolinkurl{#1}}
+
+\title{Active-Row Subclade Pruning in the \texttt{gpurec} Adjoint}
+\author{gpurec developers}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\section{Scope and conclusion}
+
+The flags \code{USE_ACTIVE} and \code{USE_ACTIVE_MASK} specialize kernels to
+skip gene-clade rows whose incoming adjoint is zero or sufficiently small.
+Despite their short names, they do \emph{not} mask species-tree states.  There
+is one Boolean per gene-clade row in the current wave, and that Boolean applies
+to all species states of the row.
+
+The mathematical reason the optimization works is row separability.  After
+the forward reconciliation has been fixed, every clade row has its own
+within-row adjoint system
+\begin{equation}
+  (I-J_i^T)v_i=b_i.
+  \label{eq:local-adjoint}
+\end{equation}
+If the accumulated right-hand side $b_i$ is exactly zero and the system has a
+unique solution, then $v_i=0$.  Consequently the row contributes neither
+parameter cotangents nor cotangents to its child clades.  It is therefore exact
+to omit that row and to stop reverse propagation through that route.  Applied
+in reverse topological order, this can remove a whole descendant subclade.
+
+There is an important qualification.  A positive pruning threshold also drops
+\emph{small nonzero} $b_i$.  That is a deliberate numerical approximation, not
+an algebraic identity.  Exact-zero pruning is exact; threshold pruning is
+correct as an implementation of the explicitly truncated adjoint and is close
+to the full gradient only when the discarded cotangents are not strongly
+amplified by Equation~\eqref{eq:local-adjoint}.  Section~\ref{sec:error}
+states the corresponding bound and assumptions.
+
+\section{Clade waves and index domains}
+
+Let $\C$ be the gene-clade directed acyclic graph.  A recorded split of parent
+clade $i$ has child clades $\ell$ and $r$, so the forward dependency edges are
+\begin{equation}
+  (i,\ell),\ (i,r):\qquad
+  \Pi_i \text{ depends on } \Pi_\ell \text{ and } \Pi_r.
+\end{equation}
+Preprocessing orders clades from leaves toward roots and groups equal-level
+rows into waves.  For a wave beginning at global row \code{ws} and containing
+$W$ rows, the three relevant domains are
+\begin{align}
+  w &\in \{0,\ldots,W-1\}, &&\text{wave-local clade row},\\
+  i &= \mathtt{ws}+w, &&\text{global clade row},\\
+  s &\in \{0,\ldots,S-1\}, &&\text{species-tree state}.
+\end{align}
+For split $n$, \code{reduce\_idx[n]} is its wave-local parent $w_n$; the child
+arrays \code{sl[n]} and \code{sr[n]} contain global clade rows.  Thus the
+activity array has shape $[W]$ and is read as
+\begin{equation}
+  a_{w_n}=\mathtt{active\_mask[reduce\_idx[n]]}.
+  \label{eq:index-contract}
+\end{equation}
+It is never indexed by $s$, and it must not be confused with the separate
+split-side mask of shape $[2N_{\rm split}]$ discussed in
+Section~\ref{sec:side-mask}.
+
+Rows in one wave have no cross-row fixed-point dependence: their children are
+in earlier waves, while their self-loop is entirely along the species axis of
+the same row.  This makes the within-wave Jacobian block diagonal,
+\begin{equation}
+  J_{\rm wave}=\operatorname{diag}(J_0,\ldots,J_{W-1}),
+  \label{eq:block-diagonal}
+\end{equation}
+which is the structural fact that permits a single Boolean to remove a whole
+row from every stage of its local solve.
+
+\section{How the active mask is constructed}
+
+At the start of the reverse pass, root rows receive the likelihood cotangent.
+All other entries of the dense array \code{accumulated\_rhs} are initialized to
+zero.  Processing waves from roots toward leaves atomically scatters child
+cotangents into that array.  Immediately before wave $k$ is processed, its
+slice
+\begin{equation}
+  b_{w,s}=\mathtt{accumulated\_rhs[ws+w,s]}
+  \label{eq:rhs}
+\end{equation}
+therefore contains the \emph{sum of all reverse paths already reaching that
+clade}.  Activity is based on the row infinity norm
+\begin{equation}
+  r_w=\norm{b_w}_\infty=\max_s\abs{b_{w,s}}.
+  \label{eq:row-max}
+\end{equation}
+The kernel \kernel{_select_active_adjoint_rows_kernel} scans all $S$ entries
+and writes one Boolean.  The current host helper selects one of two boundary
+conventions:
+\begin{equation}
+  a_w =
+  \begin{cases}
+    [r_w\ge \tau], & \mathtt{use\_pruning=True},\\
+    [r_w>\tau], & \mathtt{use\_pruning=False},
+  \end{cases}
+  \label{eq:actual-mask}
+\end{equation}
+where $[\cdot]$ is an indicator and $\tau$ is
+\code{adjoint\_pruning\_threshold}.  The distinction is only equality at the
+threshold.  In particular, the current \code{use\_adjoint\_pruning=False}
+path does not make every row active and does not remove the mask; at positive
+$\tau$ it still drops rows with $r_w\le\tau$.  To request the exact-zero
+criterion with the current interface, use $\tau=0$ and the strict $>$ branch.
+To force all rows active through this helper, use $\tau=0$ and the $\ge$
+branch.  This detail is an interface fact, not part of the mathematical
+justification for pruning.
+
+Because Equation~\eqref{eq:row-max} uses the accumulated \emph{net}
+cotangent, exact cancellation between reverse paths may make a row inactive.
+That is valid: reverse-mode differentiation is linear in cotangents, so a zero
+net cotangent has a zero downstream VJP even when its individual summands were
+nonzero.
+
+\section{The reverse recurrence and subclade pruning}
+
+For each row $i$, write the converged within-row recurrence abstractly as
+\begin{equation}
+  x_i=F_i(x_i,\{x_j:j\in\operatorname{ch}(i)\},p),
+  \label{eq:row-map}
+\end{equation}
+where $x_i\in\R^S$ is the row of $\Pi$ values, $p$ denotes model parameters,
+and $\operatorname{ch}(i)$ contains the clades appearing as children in the
+DTS split terms.  At the fixed primal point define
+\begin{align}
+  J_i &= \frac{\partial F_i}{\partial x_i}, &
+  C_{ij} &= \frac{\partial F_i}{\partial x_j}, &
+  B_i &= \frac{\partial F_i}{\partial p}.
+\end{align}
+If $b_i$ is the cotangent accumulated from the objective and all already
+processed parents, implicit reverse differentiation gives
+\begin{align}
+  v_i &= (I-J_i^T)^{-1}b_i, \label{eq:solve}\\
+  b_j &\mathrel{+}= C_{ij}^T v_i
+    && (j\in\operatorname{ch}(i)), \label{eq:child-scatter}\\
+  \nabla_p L &\mathrel{+}= B_i^T v_i. \label{eq:param-scatter}
+\end{align}
+The actual kernels decompose $C_{ij}^Tv_i$ and $B_i^Tv_i$ into duplication,
+transfer, speciation, extinction, receiver-weight, and leaf terms, but all are
+linear in the solved cotangent $v_i$.
+
+If $b_i=0$, Equation~\eqref{eq:solve} gives $v_i=0$.  Equations
+\eqref{eq:child-scatter}--\eqref{eq:param-scatter} then give zero.  Skipping
+row $i$ is consequently equivalent to evaluating all three equations.  Now
+process the waves in reverse topological order.  A child reached only through
+inactive parents receives no cotangent, is itself classified inactive, and
+the argument repeats.  This is the precise sense in which the optimization
+prunes a subclade.
+
+The reconciliation structure is a clade DAG, not necessarily a tree.  A child
+may receive cotangents from several parent splits.  Inactivating one parent
+only removes that route.  If another active route supplies a sufficiently
+large cotangent, the child row remains active.  Thus ``pruned subclade'' means
+the portion of the reverse dependency DAG no longer reachable through active
+cotangent edges, not blindly every descendant of one inactive split.
+
+\section{What each masked stage does}
+
+\subsection{Backward-only DTS recomputation: \texttt{USE\_ACTIVE}}
+
+The ordinary primal forward pass calls \code{compute\_dts\_forward} without an
+activity array.  During the adjoint, DTS values are recomputed for the current
+wave with \code{active\_parent\_rows=active\_mask}.  This makes
+\code{USE\_ACTIVE} a compile-time true specialization in three kernels:
+\begin{itemize}
+  \item \kernel{_reduce_single_gene_split_events_kernel} returns for an inactive parent after writing
+        its output row to $-\infty$ and its gauge offset to zero;
+  \item \kernel{_stage_multiple_gene_split_event_reduction_kernel} does not form partial log-sum-exp
+        tiles for an inactive parent;
+  \item \kernel{_finalize_multiple_gene_split_event_reduction_kernel} writes the inactive output row to
+        $-\infty$ without reading the uninitialized stage-1 partials.
+\end{itemize}
+The output tensor was initialized to $-\infty$ and its offset tensor to zero.
+More importantly, every later backward load for that row is also guarded by
+the same activity bit.  The sentinel values therefore establish a valid
+inactive representation; they are not interpreted as a new model value.
+
+\subsection{Within-row adjoint: \texttt{USE\_ACTIVE\_MASK}}
+
+The retained wave backward path solves Equation~\eqref{eq:local-adjoint} by a
+Neumann series or GMRES.  The mask is applied consistently to every component:
+\begin{enumerate}
+  \item \kernel{_prepare_reconciliation_self_loop_vjp_kernel} forms event
+        probabilities and the coefficients of $J_i^T$ only for active rows;
+  \item \kernel{_apply_reconciliation_self_loop_transpose_kernel} applies $J_i^T$ only on
+        active rows during every Neumann or GMRES iteration;
+  \item the transfer receiver-log-weight VJP kernel omits inactive
+        receiver-log-weight cotangents;
+  \item \kernel{_accumulate_reconciliation_event_vjp_kernel} contracts $v_i$
+        with event probabilities only for active rows and writes zero to its
+        per-row gradient outputs for inactive rows.
+\end{enumerate}
+For GMRES, the host also explicitly forms
+\begin{equation}
+  b^{\rm GMRES}_{w,s}=a_w b_{w,s}.
+\end{equation}
+The matrix application writes zeros to inactive output rows, so the Krylov
+problem is exactly the active-row restriction of the block-diagonal system in
+Equation~\eqref{eq:block-diagonal}.  In the Neumann path, inactive scratch may
+be deliberately left unwritten to save bandwidth; no mathematical consumer
+is allowed to read it.
+
+\subsection{DTS VJP and child-clade propagation}
+
+The kernel \kernel{_accumulate_gene_split_event_vjp_kernel} maps each split $n$ to
+its parent activity using Equation~\eqref{eq:index-contract}.  If the parent is
+inactive, it performs no atomics into child rows and no atomics into shared
+parameter gradients.  Its scalar split-gradient outputs are zeroed when they
+are requested.  In the staged transfer path it writes both split-side activity
+bits false; when the bandwidth-saving option is enabled, this permits the
+large per-species side buffers to remain uninitialized safely.
+
+For active parents, the kernel multiplies the solved $v_i$ by normalized DTS
+event probabilities and scatters those cotangents to the left and right child
+rows in \code{accumulated\_rhs}.  Those atomics are precisely
+Equation~\eqref{eq:child-scatter}.  Since the next earlier wave constructs its
+mask only after all later-wave parents have been processed, its decision sees
+the complete accumulated child cotangent.
+
+The companion
+\kernel{_accumulate_transfer_subtree_vjp_kernel} checks the same
+parent-row mask before running the species-tree transfer-complement VJP and
+before adding receiver-weight or child-row cotangents.  The parent activity
+test and the split-side activity test are cumulative guards: either may skip
+the work, and neither changes an active, nonzero contribution.
+
+\subsection{Uninitialized scratch and persistent caches}
+
+Some masked kernels set \code{SKIP\_INACTIVE\_SCRATCH\_ZERO=True}.  Inactive
+entries of $v_i$, Neumann work arrays, or staged transfer arrays can therefore
+contain arbitrary bits, including NaNs.  Correctness relies on a strict
+non-read invariant:
+\begin{equation}
+  a_i=0 \quad\Longrightarrow\quad
+  \text{every device read of row }i\text{ is masked, or the row is sanitized first}.
+  \label{eq:no-read}
+\end{equation}
+The host uses \code{torch.where}, rather than multiplication by zero, to
+sanitize $v_i$ before storing a warm start or a Hessian--vector-product cache.
+This matters because $0\cdot\mathrm{NaN}=\mathrm{NaN}$.  Diagnostic residuals
+are similarly replaced by zero on inactive rows.  The GMRES matrix-output path
+and per-row parameter-output path explicitly zero inactive rows when their
+outputs are consumed without a later mask.
+
+\section{The separate split-side mask}
+\label{sec:side-mask}
+
+Transfer-complement VJPs stage two species vectors per gene split, one for
+each child side.  Let $u_{n,q}(s)$ be the staged vector for split $n$ and side
+$q\in\{L,R\}$.  The optional side mask has shape $[2N_{\rm split}]$ and is
+\begin{equation}
+  z_{n,q}=
+  \begin{cases}
+    [\max_s\abs{u_{n,q}(s)}\ne0], & \eta=0,\\
+    [\sum_s\abs{u_{n,q}(s)}>\eta], & \eta>0,
+  \end{cases}
+  \label{eq:side-mask}
+\end{equation}
+where $\eta$ is \code{pibar\_side\_threshold}.  It can be produced directly
+by \kernel{_accumulate_gene_split_event_vjp_kernel} or by
+\kernel{_select_active_transfer_donor_sides_kernel}.  At $\eta=0$ it skips only an exactly
+zero linear input, so the species-subtree correction is exactly zero.  At a
+positive $\eta$ it is another threshold approximation.  This mask prunes
+species-tree work for one transfer side; it does not classify a gene-clade
+row and is conceptually separate from \code{USE\_ACTIVE\_MASK}.
+
+\section{Correctness theorem and proof}
+
+\paragraph{Proposition (exact-zero active-row pruning).}
+Assume (i) clade waves are in forward topological order; (ii) rows in one wave
+have no cross-row self-dependence; (iii) every $I-J_i^T$ is nonsingular; (iv)
+the mask declares inactive exactly those rows with $b_i=0$; and (v) the
+no-read invariant in Equation~\eqref{eq:no-read} holds.  Then the masked
+reverse traversal returns exactly the same child cotangents and parameter
+gradient as the unmasked traversal, up to the usual floating-point reduction
+ordering.
+
+\paragraph{Proof.}
+Proceed by induction over waves in reverse topological order.  Before the root
+wave, masked and unmasked traversals have the same likelihood seed.  Suppose
+they have the same accumulated RHS on the current wave.  For every active row
+they run the same local adjoint map and therefore produce the same $v_i$,
+child scatters, and parameter contractions.  For every inactive row,
+$b_i=0$; nonsingularity of $I-J_i^T$ gives the unique solution $v_i=0$, so the
+unmasked child and parameter contributions are also zero.  Thus both
+traversals leave identical accumulated RHS values for all earlier waves and
+identical accumulated parameter gradients.  The induction reaches the leaf
+waves and proves the claim. \hfill$\square$
+
+The same argument covers exact-zero split-side pruning because its subsequent
+tree transformation is linear in $u_{n,q}$.  It also explains why shared
+parameters pose no problem: removing a zero summand leaves their global sum
+unchanged.
+
+\section{Positive thresholds, error, and Hessian--vector products}
+\label{sec:error}
+
+Let $P$ retain active row blocks and let $e=(I-P)b$ be the discarded RHS.  For
+one row, if $\norm{J_i}\le q_i<1$ in a compatible operator norm, then
+\begin{equation}
+  \norm{v_i-v_i^{\rm pruned}}
+  =\norm{(I-J_i^T)^{-1}e_i}
+  \le \frac{\norm{e_i}}{1-q_i}.
+  \label{eq:adjoint-error}
+\end{equation}
+If $G_i$ maps $v_i$ to the row's parameter and child cotangents, their local
+error is bounded by
+\begin{equation}
+  \norm{G_i(v_i-v_i^{\rm pruned})}
+  \le \frac{\norm{G_i}\,\norm{e_i}}{1-q_i}.
+  \label{eq:gradient-error}
+\end{equation}
+The infinity-norm test guarantees only $\norm{e_i}_\infty<\tau$ (or
+$\le\tau$, according to Equation~\eqref{eq:actual-mask}).  It does not by
+itself control $1/(1-q_i)$, downstream fanout, or the total number of pruned
+rows.  Threshold accuracy therefore depends on contractive, well-conditioned
+local fixed points and on choosing $\tau$ relative to the desired gradient
+accuracy.  The default positive threshold is a performance--accuracy policy,
+not a proof of bitwise equality with the unpruned gradient.
+
+The exact-HVP path caches the first-order $v_i$ and the same row mask, after
+sanitizing inactive $v_i$ to zero.  Its tangent-adjoint solve and DTS VJP reuse
+that mask.  Consequently it differentiates the algebraic adjoint with the
+discrete active set held fixed.  This is the derivative of the selected
+piecewise-smooth pruned computation away from a threshold crossing.  At
+$r_i=\tau$ the active set can change discontinuously, and a threshold-pruned
+HVP should not be interpreted as the Hessian of the smooth, fully unpruned
+likelihood.  With exact-zero pruning, this distinction is normally confined
+to structurally zero routes; with positive thresholds it is an explicit
+approximation.
+
+\section{Assumptions and edge cases}
+
+\begin{itemize}
+  \item A row mask is meaningful only for the wave whose local indexing it
+        uses.  Passing a global-clade mask or a species mask violates
+        Equation~\eqref{eq:index-contract}.
+  \item $W=0$ returns an empty mask.  An all-zero root seed makes every
+        downstream row exactly inactive under the strict zero criterion.
+  \item NaN RHS entries are dangerous: comparisons with NaN are false, so a
+        contaminated row can be classified inactive.  Finite primal and
+        adjoint states are therefore a precondition, not something masking
+        repairs.
+  \item For $\tau=0$, the $\ge$ convention marks zero rows active, while the
+        $>$ convention performs exact-zero pruning.  For $\tau>0$ the two
+        conventions differ only at exact equality.
+  \item The local solve is unique when $I-J_i^T$ is nonsingular.  Neumann
+        convergence additionally needs a contractive self-loop; GMRES needs
+        the linear system to be solvable.  Pruning does not improve a singular
+        active-row system.
+  \item A clade with several incoming reverse routes is tested only after
+        those contributions have been summed.  It is not pruned merely
+        because one parent was inactive.
+  \item Floating-point atomics can change last-bit summation order.  The exact
+        argument is mathematical; numerical equality is subject to ordinary
+        floating-point effects and the configured finite iterative solve.
+\end{itemize}
+
+\section{Equation-to-kernel reference}
+
+\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.39\textwidth}
+                  >{\raggedright\arraybackslash}p{0.55\textwidth}}
+\toprule
+Kernel or host routine & Activity invariant and mathematical role \\
+\midrule
+\endhead
+\kernel{compute_active_adjoint_row_mask} & Allocates the wave-local $[W]$ Boolean mask and selects the boundary convention in Equation~\eqref{eq:actual-mask}. \\
+\kernel{_select_active_adjoint_rows_kernel} & Computes $r_w=\norm{b_w}_\infty$ from Equation~\eqref{eq:row-max}. \\
+\kernel{compute_dts_forward} & Accepts the optional wave-local \code{active\_parent\_rows}; the ordinary primal leaves it absent, while backward recomputation supplies it. \\
+\kernel{_reduce_single_gene_split_events_kernel} & \code{USE\_ACTIVE}: skips the one-split DTS value of an inactive parent and publishes the inactive $(-\infty,0)$ residual/offset pair. \\
+\kernel{_stage_multiple_gene_split_event_reduction_kernel} & \code{USE\_ACTIVE}: skips all partial split tiles of an inactive multi-split parent. \\
+\kernel{_finalize_multiple_gene_split_event_reduction_kernel} & \code{USE\_ACTIVE}: avoids reading skipped partials and leaves the inactive DTS row at $-\infty$. \\
+\kernel{_prepare_reconciliation_self_loop_vjp_kernel} & \code{USE\_ACTIVE\_MASK}: forms $J_i^T$ coefficients and the initial local solve state only for active rows. \\
+\kernel{_apply_reconciliation_self_loop_transpose_kernel} & \code{USE\_ACTIVE\_MASK}: applies the block of $J_i^T$ in Equation~\eqref{eq:local-adjoint}; can explicitly zero inactive outputs when a consumer requires initialized storage. \\
+\kernel{_accumulate_transfer_receiver_log_probability_vjp_kernel} & \code{USE\_ACTIVE\_MASK}: accumulates the transfer-complement receiver VJP only from active $v_i$. \\
+\kernel{_accumulate_reconciliation_event_vjp_kernel} & \code{USE\_ACTIVE\_MASK}: evaluates Equation~\eqref{eq:param-scatter} and writes zero per-row outputs for inactive rows. \\
+\kernel{_accumulate_gene_split_event_vjp_kernel} & \code{USE\_ACTIVE\_MASK}: reads $a_{w_n}$ using \code{reduce\_idx}, implements Equation~\eqref{eq:child-scatter}, and suppresses every split and parameter scatter from an inactive parent. \\
+\kernel{_select_active_transfer_donor_sides_kernel} & Builds the distinct $[2N_{\rm split}]$ mask in Equation~\eqref{eq:side-mask}. \\
+\kernel{_accumulate_transfer_subtree_vjp_kernel} & Checks both parent-row and split-side activity before the linear transfer-complement subtree VJP. \\
+\kernel{implicit_grad_loglik_vjp_wave} & Seeds roots, traverses waves in reverse, constructs each mask after RHS accumulation, sanitizes persistent caches, and thereby realizes the induction proof. \\
+\bottomrule
+\end{longtable}
+\normalsize
+
+\section{Practical interpretation}
+
+The compile-time flags themselves do not decide which biology is relevant;
+they merely remove a runtime branch and its guarded arithmetic from a Triton
+specialization when no mask was supplied.  The mathematical decision is the
+wave-local projection in Equation~\eqref{eq:actual-mask}.  Exact-zero rows can
+be removed because the adjoint solve and every outgoing VJP are linear in the
+incoming cotangent.  Positive-threshold rows can be removed because the user
+has elected to approximate those small cotangents as zero.  Reverse wave order,
+consistent guarding of every consumer, and sanitation of any persistent
+scratch are what turn that row decision into safe subclade pruning.
+
+\end{document}

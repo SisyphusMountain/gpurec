@@ -1,12 +1,15 @@
 # Receiver-weight (alpha) exact (theta, alpha) HVP — implementation-grade plan
 
-Status: PLAN ONLY. Multi-day effort. SEPARATE from the gradient-wiring run (S0–S2 in
-`value_and_grad.py`, which is the only thing being touched in the current run). This document
-covers the SECOND-ORDER work: extending the analytic exact-Hessian HVP from theta-only to the
-joint variable `z = [theta.reshape(-1); alpha]` (length `3S + S = 4S`), where `alpha = receiver
-logits in R^S`.
+Status: IMPLEMENTED. This historical plan is retained for the design rationale and the
+step-by-step validation strategy. It describes the second-order extension of the analytic
+exact-Hessian HVP from theta-only to the joint variable
+`z = [theta.reshape(-1); alpha]` (length `3S + S = 4S`), where `alpha` is the vector of
+receiver logits in `R^S`.
 
-All file:line anchors are against the `receiver-weights-hvp` worktree as read on 2026-06-21.
+All file:line anchors refer to the pre-implementation `receiver-weights-hvp` worktree as read on
+2026-06-21. Live interface names use the current equation-aligned vocabulary; some illustrative
+local names and all line numbers remain historical and are not expected to match the current
+sources.
 
 ---
 
@@ -64,16 +67,15 @@ The theta-only exact HVP is forward-over-reverse:
    `hvp_exact.py:228-334`) through the SO kernels (`wave_backward_so`, `dts_backward_so`,
    `e_step_backward_so`) + a smooth-head autograd term (`hvp_exact.py:387-394`).
 
-Today EVERY one of these paths runs with `use_receiver_weights=False` / `use_col_weights=False`
-and seeds NO alpha tangent. The col-cotangent ACCUMULATORS exist (`d_gcol`,
-`hvp_exact.py:224`; `grad_col` from `wave_backward_uniform_fused`; `e_step_backward_so`'s
-6th output `d_grad_col`, `e_step_so.py:220`) but the col paths inside the SO/tangent kernels are
-DEAD because the `USE_COL_WEIGHTS`/`use_col_weights` flags are False and there is no `dcol` input.
+Before this plan was implemented, every one of these paths ran with
+`use_receiver_weights=False` and seeded no alpha tangent. Receiver-log-probability cotangent
+accumulators existed, but the receiver paths inside the SO and tangent kernels were inactive and
+there was no `d_receiver_log_probs` input.
 
-So the alpha-block work is: (a) make the SO and tangent kernels carry the alpha (`col`) tangent
-and emit the alpha col-cotangent, (b) seed the forward tangent with the softmax-Jacobian-times-
-`u_alpha`, (c) collect the alpha row of `H u` from the head autograd (theta AND col), and (d)
-gate every step under `P_z`.
+The alpha-block work was therefore to: (a) make the SO and tangent kernels carry the
+receiver-log-probability tangent and emit its cotangent, (b) seed the forward tangent with the
+softmax Jacobian applied to `u_alpha`, (c) collect the alpha row of `H u` from the head autograd,
+and (d) gate every step under `P_z`.
 
 ---
 
@@ -141,27 +143,28 @@ DOMINANT alpha coupling is `alpha -> receiver_log_probs -> receiver_valid_log_no
   keeps the `- log2(S)` shift (`extract_parameters.py:91-92`) so it matches the primal
   forward's `max_transfer`; the JVP differentiates through `receiver_norm`, which is the
   coupling that was missing.
-- The new tangent output `dcol := dreceiver_log_probs` (the softmax-Jacobian applied to
-  `u_alpha`, i.e. `dcol = (diag(w) - w w^T) u_alpha / ln2` in log2-space — autograd computes it,
+- The new tangent output `dreceiver_log_probs` (the softmax-Jacobian applied to
+  `u_alpha`, i.e. `dreceiver_log_probs = (diag(w) - w w^T) u_alpha / ln2` in log2-space — autograd computes it,
   do NOT hand-roll) is the **alpha tangent SEED**. Thread it IDENTICALLY into the three tangent
-  consumers, ALL of which currently force `use_col_weights=False`:
+  consumers, ALL of which currently force `use_receiver_weights=False`:
   - `e_tangent_fixed_point` (`e_step_tangent.py:174`, called at `forward_tangent.py:72`): pass
-    `use_col_weights=True` and add a `dcol` argument (new tangent input to the E-step tangent
-    fixed point; the E-step depends on `col` via `receiver_log_probs` in the e-step kernel).
+    `use_receiver_weights=True` and add a `dreceiver_log_probs` argument (new tangent input to the E-step tangent
+    fixed point; the E-step depends on `receiver_log_probs`).
   - `compute_wave_step_tangent` / `compute_wave_step_tangent_selfloop`
     (`wave_tangent.py:392` / `:346`, called at `forward_tangent.py:138` / `:180`): pass
-    `use_col_weights=True`, pass the LIVE `col = sv["receiver_log_probs"]` (already passed) AND
-    the new `dcol`; the wave-step tangent's `p_prime`/`anc` terms gain a `+ ln2 * p' * dcol`
+    `use_receiver_weights=True`, pass the live
+    `receiver_log_probs = sv["receiver_log_probs"]` (already passed) and
+    the new `dreceiver_log_probs`; the wave-step tangent's `p_prime`/`anc` terms gain a `+ ln2 * p' * dreceiver_log_probs`
     contribution (mirrors the SO-kernel change in S5).
   - `compute_dts_tangent` (`dts_tangent.py:96`, called at `forward_tangent.py:161`): pass
-    `use_col_weights=True` and `dcol`; the dts cross-wave tangent's `p_prime_c` terms gain the
-    same `+ ln2 * p' * dcol`.
+    `use_receiver_weights=True` and `dreceiver_log_probs`; the dts cross-wave tangent's `p_prime_c` terms gain the
+    same `+ ln2 * p' * dreceiver_log_probs`.
 - `_wave_tangent_constants` (`forward_tangent.py:68-96`) and `jvp_root_scores`
   (`forward_tangent.py:99`) grow an `alpha`/`u_alpha` argument; `jvp_root_scores`'s `full` dict
-  gains `dreceiver_log_probs` (= `dcol`) so the adjoint sweep (S4/S5) can consume it.
+  gains `dreceiver_log_probs` (= `dreceiver_log_probs`) so the adjoint sweep (S4/S5) can consume it.
 
-HARDEST PART of S3: getting the `dcol` seed to enter the e-step tangent FIXED POINT consistently
-with the wave tangent. The e-step and wave-step share `receiver_log_probs`; a `dcol` that is
+HARDEST PART of S3: getting the `dreceiver_log_probs` seed to enter the e-step tangent FIXED POINT consistently
+with the wave tangent. The e-step and wave-step share `receiver_log_probs`; a `dreceiver_log_probs` that is
 threaded into the wave but not the e-step (or vice versa) produces a tangent that is internally
 inconsistent and the FD gate will fail by O(1), not O(eps). Thread it into BOTH or NEITHER.
 
@@ -172,7 +175,7 @@ central FD of `forward_solve(...)`'s `root_rows` (the `pi_wave` at `root_ids`) a
 `u_alpha = 0` (must reproduce the OLD theta-only tangent bit-for-bit — a regression guard).
 Pass: `rel <= 5e-4` on the projected difference. ASSERT non-uniform + `valid_mass > 1e-3` first.
 
-### S4 — Adjoint-sweep plumbing: thread `dcol` and collect the alpha col-cotangent
+### S4 — Adjoint-sweep plumbing: thread `dreceiver_log_probs` and collect the alpha receiver-log-probability cotangent
 
 Deps: S3 (needs `full["dreceiver_log_probs"]`).
 
@@ -181,91 +184,92 @@ In `make_exact_hvp` (`hvp_exact.py:200-335`):
   (the function currently does `u = u_vec.reshape(S,3)`, `hvp_exact.py:201` — generalize to the
   joint split; keep theta_shape explicit, do NOT assume `[S,3]`).
 - Pass `alpha`/`u_alpha` into `jvp_root_scores` (S3 signature) and pull
-  `dcol = full["dreceiver_log_probs"]` out alongside `dpS_m`/`dpD_m`/... (`hvp_exact.py:207-210`).
-- `d_gcol` already exists (`hvp_exact.py:224`) as the col-cotangent accumulator and is already
-  passed to `wave_backward_uniform_fused` (`:274`) and `uniform_cross_pibar_vjp_tree_from_ud_fused`
+  `dreceiver_log_probs = full["dreceiver_log_probs"]` out alongside `dpS_m`/`dpD_m`/... (`hvp_exact.py:207-210`).
+- `d_grad_receiver_log_probs` already exists (`hvp_exact.py:224`) as the receiver-log-probability cotangent accumulator and is already
+  passed to `solve_reconciliation_wave_vjp` (`:274`) and `accumulate_transfer_complement_vjp_from_donor_adjoint`
   (`:320`) as `grad_receiver_log_probs` — but with `use_receiver_weights=False`, so those kernels
   do NOT scatter into it. Flip those two to `use_receiver_weights=True` (derived; see S7) so the
-  col-cotangent is collected.
-- Thread `dcol` into the THREE SO kernels (S4/S5 wiring): `wave_backward_so` (`:253`),
+  receiver-log-probability cotangent is collected.
+- Thread `dreceiver_log_probs` into the THREE SO kernels (S4/S5 wiring): `wave_backward_so` (`:253`),
   `dts_backward_so` (`:324`), and the E-side `e_step_backward_so` calls (`:347`, `:354`, `:377`).
 
 **S4 FD gate.** None standalone — S4 is pure plumbing; its correctness is exercised by the S5/S6
 kernel gates and the S8 end-to-end gate. (Do a smoke run that the loop executes with the new
-args and `d_gcol.abs().max() > 0`.)
+args and `d_grad_receiver_log_probs.abs().max() > 0`.)
 
-### S5 — `wave_backward_so`: add the alpha col-cotangent OUTPUT (HARDEST KERNEL)
+### S5 — `wave_backward_so`: add the alpha receiver-log-probability cotangent OUTPUT (HARDEST KERNEL)
 
-Deps: S4 (caller passes `dcol`, expects a `d_grad_col` back).
+Deps: S4 (caller passes `dreceiver_log_probs`, expects a `d_grad_receiver_log_probs` back).
 
-This is THE hardest part of the whole effort. **CORRECTION (5):** `_wave_so_kernel`
-(`wave_so.py:36-243`) has NO `d_grad_col` output slot at all — it only writes `d_aw*`, `d_out`,
-and scatters into `d_rhs`/`d_out` (child rows). The alpha block needs a brand-new col-cotangent
+This is THE hardest part of the whole effort. **CORRECTION (5):** `_reconciliation_vjp_directional_derivative_kernel`
+(`wave_so.py:36-243`) has NO `d_grad_receiver_log_probs` output slot at all — it only writes event-VJP derivatives, `d_out`,
+and scatters into `d_rhs`/`d_out` (child rows). The alpha block needs a brand-new receiver-log-probability cotangent
 scatter, PLUS the two missing tangent terms where `col` enters as a variable:
 
-1. **Add the missing `+ LN2 * p_prime * dcol` at the row `p_prime` (`wave_so.py:85`).** Today
+1. **Add the missing `+ LN2 * p_prime * dreceiver_log_probs` at the row `p_prime` (`wave_so.py:85`).** Today
    `dp_prime = LN2 * p_prime * dpi_w` (`wave_so.py:85`) treats `col` as frozen. When alpha is a
-   variable, `p_prime = exp2(colw + pi_w - rm)` (`wave_so.py:82`, the `USE_COL_WEIGHTS` branch)
-   has an extra dependence: `dp_prime = LN2 * p_prime * (dpi_w + dcol_w)`. Load `dcol` for the
+   variable, `p_prime = exp2(colw + pi_w - rm)` (`wave_so.py:82`, the `USE_RECEIVER_WEIGHTS` branch)
+   has an extra dependence: `dp_prime = LN2 * p_prime * (dpi_w + dcol_w)`. Load `dreceiver_log_probs` for the
    row states and add the `+ LN2 * p_prime * dcol_w` term.
 2. **Add the missing `+ LN2 * pa * dcol_a` in the ancestor walk (`wave_so.py:103`).** Today
    `danc += LN2 * pa * dpi_a` (`wave_so.py:103`) — when alpha is a variable, the ancestor
    `pa = exp2(col_a + pi_a - rm)` (`wave_so.py:99`) gains `danc += LN2 * pa * (dpi_a + dcol_a)`;
-   load `dcol` at the ancestor index `cur` (mirror the `Pi` ancestor load at `:95`).
-3. **Add a NEW col-cotangent scatter.** The transpose of the `col` dependence: every place
+   load `dreceiver_log_probs` at the ancestor index `cur` (mirror the `Pi` ancestor load at `:95`).
+3. **Add a NEW receiver-log-probability cotangent scatter.** The transpose of the `col` dependence: every place
    `p_prime`/`pa` enters a contraction with `v`, the `col` partial scatters
-   `LN2 * p_prime * (that-contraction)` into `d_grad_col[s]` (and the ancestor analogue into
-   `d_grad_col[cur]`). Specifically the self block `d_self` (`wave_so.py:230`) and the pibar
+   `LN2 * p_prime * (that-contraction)` into `d_grad_receiver_log_probs[s]` (and the ancestor analogue into
+   `d_grad_receiver_log_probs[cur]`). Specifically the self block `d_self` (`wave_so.py:230`) and the pibar
    routing (`u_d`/`sub`, `:209-227`) each carry a `col` partial; add a new `d_grad_col_ptr`
    kernel argument and `tl.atomic_add(d_grad_col_ptr + row-or-ancestor-index, contrib)` for the
-   col-derivative of each `p_prime`/`pa`-weighted term. Add `d_grad_col` to the
-   `wave_backward_so` Python wrapper outputs (`wave_so.py:246-293`) and to the `(d_out, *d_aws)`
-   return (`:293`), and accept the new `dcol` input.
+   col-derivative of each `p_prime`/`pa`-weighted term. Add `d_grad_receiver_log_probs` to the
+   `wave_backward_so` Python wrapper outputs (`wave_so.py:246-293`) and to its named event-VJP outputs
+   return (`:293`), and accept the new `dreceiver_log_probs` input.
 
 HARDEST-PART WARNINGS for S5:
 - The pibar tree routing (`pibar_u_coeff`, `sub`/`dsub`, `wave_so.py:209-227`) ALSO depends on
   `col` through `p_prime` in `inv_denom = 1/(row_sum - anc)` (`:106-108`). The col tangent of
   `row_sum`/`anc` (`drow_sum`/`danc`) feeds `ddenom` (`:109`) and hence `d_pibar_u_coeff`
-  (`:210`). So adding `dcol` to `dp_prime`/`danc` AUTOMATICALLY propagates into the pibar block —
+  (`:210`). So adding `dreceiver_log_probs` to `dp_prime`/`danc` AUTOMATICALLY propagates into the pibar block —
   do NOT double-count by adding a separate pibar col term; just make sure `dp_prime`/`danc`
-  carry `dcol` (items 1–2) and verify the pibar tangent picks it up via `drow_sum`/`danc`.
-- The col-cotangent scatter (item 3) and the existing `d_out` child scatters (`:242-243`) write
+  carry `dreceiver_log_probs` (items 1–2) and verify the pibar tangent picks it up via `drow_sum`/`danc`.
+- The receiver-log-probability cotangent scatter (item 3) and the existing `d_out` child scatters (`:242-243`) write
   to DIFFERENT buffers but share the ancestor/child index math — keep the `tl.debug_barrier()`
   ordering (`:218`, `:225`, `:238`) so the subtree sums are complete before the scatter reads
   them.
 
 **S5 FD gate (PER-KERNEL).** Use `_fd_hessian_hvp` at `4S` but isolate the wave-SO contribution:
 run a SINGLE-WAVE harness (one wave with splits + one leaf wave) and compare the analytic
-`(d_Av, d_aw*, d_grad_col)` against `torch.autograd.functional`-style central FD of the
-first-order `wave_backward_uniform_fused` outputs w.r.t. `(theta, alpha)` along a seeded
+`(d_Av, d_event_vjps, d_grad_receiver_log_probs)` against `torch.autograd.functional`-style central FD of the
+first-order `solve_reconciliation_wave_vjp` outputs w.r.t. `(theta, alpha)` along a seeded
 `u`, fp64. Project the alpha part of every compared quantity with `P` (the `1_S` null mode of
-`d_grad_col`). Pass `rel <= 5e-4`. Regression guard: `u_alpha = 0` must reproduce the current
+`d_grad_receiver_log_probs`). Pass `rel <= 5e-4`. Regression guard: `u_alpha = 0` must reproduce the current
 `wave_backward_so` outputs bit-for-bit (the existing wave-SO gate must still PASS).
 
-### S6 — `dts_backward_so`: add `dcol` input + col tangent terms
+### S6 — `dts_backward_so`: add `dreceiver_log_probs` input + col tangent terms
 
-Deps: S4 (caller threads `dcol`), S5 done first (same `+ ln2 p' dcol` pattern, simpler here).
+Deps: S4 (caller threads `dreceiver_log_probs`), S5 done first (same `+ ln2 p' dreceiver_log_probs` pattern, simpler here).
 
-**CORRECTION (4): `dts_backward_so` has NO `dcol` input today (`dts_so.py:233-303`).** Add a
-`dcol` argument and thread it so `+ LN2 * p_prime * dcol` lands in BOTH the `d_rhs` scatter AND
-the `d_grad_col` scatter at the tree kernel's `:229`/`:230`:
-- `_dts_tree_so_kernel` (`dts_so.py:144-230`): today `dp_prime = LN2 * p_prime * dpi_val`
-  (`dts_so.py:225`) with `col` frozen. Add the `USE_COL_WEIGHTS` branch's col tangent:
-  `dp_prime = LN2 * p_prime * (dpi_val + dcol_val)` where `dcol_val` is `dcol` at `s_offs`.
-  The two scatters at `:229` (`d_rhs`) and `:230` (`d_grad_col`) then both correctly carry the
+**CORRECTION (4): `dts_backward_so` has NO `dreceiver_log_probs` input today (`dts_so.py:233-303`).** Add a
+`dreceiver_log_probs` argument and thread it so `+ LN2 * p_prime * dreceiver_log_probs` lands in BOTH the `d_rhs` scatter AND
+the `d_grad_receiver_log_probs` scatter at the tree kernel's `:229`/`:230`:
+- `_transfer_subtree_vjp_directional_derivative_kernel` (`dts_so.py:144-230`): today `dp_prime = LN2 * p_prime * dpi_val`
+  (`dts_so.py:225`) with `col` frozen. Add the `USE_RECEIVER_WEIGHTS` branch's col tangent:
+  `dp_prime = LN2 * p_prime * (dpi_val + dcol_val)` where `dcol_val` is `dreceiver_log_probs` at `s_offs`.
+  The two scatters at `:229` (`d_rhs`) and `:230` (`d_grad_receiver_log_probs`) then both correctly carry the
   col-derivative — the contrib `dp_prime*(A - sub) + p'*(dA - dsub)` (`:228`) automatically
   includes it once `dp_prime` does.
-- Pass `dcol` from the wrapper (`dts_backward_so`, `dts_so.py:233`) down to the tree-kernel
-  launch (`:288-303`) and flip `USE_COL_WEIGHTS` per S7. The split kernel
-  (`_dts_split_so_kernel`, `:28-141`) does NOT touch `col` (its weights `w0..w4` are
+- Pass `dreceiver_log_probs` from the wrapper (`dts_backward_so`, `dts_so.py:233`) down to the tree-kernel
+  launch (`:288-303`) and flip `USE_RECEIVER_WEIGHTS` per S7. The split kernel
+  (`_gene_split_event_vjp_directional_derivative_kernel`, `:28-141`) does NOT touch `col` (its event weights are
   `exp2(d_k - pi_p)` with no col term), so NO change there.
 
-HARDEST PART of S6: `dcol` is a per-STATE `[S]` tangent, but the tree kernel indexes it at
-`s_offs` (child rows) — confirm the indexing matches the `col_log_probs` load at `dts_so.py:220`
-(`col_logp = tl.load(col_log_probs_ptr + s_offs)`), so `dcol` loads at the SAME `s_offs`.
+HARDEST PART of S6: `dreceiver_log_probs` is a per-STATE `[S]` tangent, but the tree kernel indexes it at
+`s_offs` (child rows) — confirm the indexing matches the `receiver_log_probs` load at `dts_so.py:220`
+(`receiver_log_probability = tl.load(receiver_log_probs_ptr + s_offs)`), so
+`dreceiver_log_probs` loads at the same `s_offs`.
 
 **S6 FD gate (PER-KERNEL).** Same single-wave harness as S5 but exercise a wave WITH splits;
-FD of `dts_cross_backward_accum_fused` + the tree VJP w.r.t. `(theta, alpha)`. Project alpha
+FD of `accumulate_gene_split_event_vjp` + the tree VJP w.r.t. `(theta, alpha)`. Project alpha
 with `P`. Pass `rel <= 5e-4`. Regression: `u_alpha = 0` reproduces current `dts_backward_so`.
 
 ### S7 — `use_receiver_weights` derivation (kill the False hardcodes)
@@ -273,7 +277,7 @@ with `P`. Pass `rel <= 5e-4`. Regression: `u_alpha = 0` reproduces current `dts_
 Deps: none structurally, but must be flipped before S5/S6/S8 gates pass.
 
 **CORRECTION (7): `ggn.py:58` hardcodes `use_receiver_weights = False`** (and the HVP loop
-mirrors it with `use_receiver_weights=False` / `use_col_weights=False` at `hvp_exact.py:259`,
+mirrors it with `use_receiver_weights=False` / `use_receiver_weights=False` at `hvp_exact.py:259`,
 `:274`, `:320`, `:333`, `:348`, `:355`, `:378`). Derive it from the base alpha's non-uniformity,
 exactly as production does (`solver.py:27`, `_execution.py:48`):
 ```
@@ -291,42 +295,43 @@ constant.
 
 **S7 FD gate.** A first-order regression: with the non-uniform base, the production gradient
 `grad_receiver` from `stream_batches` (already wired in S0–S2) must equal the central FD of the
-loss w.r.t. alpha, projected with `P`, AND the cached-backward `grad_col` from
+loss w.r.t. alpha, projected with `P`, and the cached-backward
+`grad_receiver_log_probs` from
 `vjp_root_to_theta` must match it. This is the `_verify_recv_grad.py`-style gate; it certifies
-the col paths are live before any HVP gate runs.
+the receiver paths are live before any HVP gate runs.
 
-### S8 — Head autograd: grad the head scalar w.r.t. (theta_req, col_req) + assemble `H u`
+### S8 — Head autograd: grad the head scalar w.r.t. (theta_req, receiver_weights_req) + assemble `H u`
 
-Deps: S3–S7 (needs `d_cot_col` correct out of the adjoint sweep and `dcol` correct out of the
+Deps: S3–S7 (needs `d_cot_receiver_log_probs` correct out of the adjoint sweep and `dreceiver_log_probs` correct out of the
 forward tangent).
 
-**CORRECTION (8): grad the head scalar w.r.t. BOTH `theta_req` AND `col_req`, not `theta_req`
+**CORRECTION (8): grad the head scalar w.r.t. BOTH `theta_req` AND `receiver_weights_req`, not `theta_req`
 only.** Today:
-- `col_req` is built (`hvp_exact.py:184`) but NEVER used as a grad target.
+- `receiver_weights_req` is built (`hvp_exact.py:184`) but NEVER used as a grad target.
 - `phi1`'s grad `g1` is taken w.r.t. `theta_req` only (`hvp_exact.py:197`).
 - the final `out` grad is w.r.t. `theta_req` only (`hvp_exact.py:393`).
 
-Change BOTH `torch.autograd.grad` calls to differentiate w.r.t. `(theta_req, col_req)`:
-- `phi1` (`:195-197`) already includes the `(col_h * cot_col).sum()` term (`:196`), so adding
-  `col_req` as a grad target yields `g1_theta, g1_col`. (`cot_col` = the primal col-cotangent,
+Change BOTH `torch.autograd.grad` calls to differentiate w.r.t. `(theta_req, receiver_weights_req)`:
+- `phi1` (`:195-197`) already includes the `(receiver_log_probs_h * cot_receiver_log_probs).sum()` term (`:196`), so adding
+  `receiver_weights_req` as a grad target yields `g1_theta, g1_receiver_weights`. (`cot_receiver_log_probs` = the primal receiver-log-probability cotangent,
   `:181`.)
-- `phi2` (`:389-390`) already includes `(col_h * d_cot_col).sum()` (`:390`), so the final grad
-  w.r.t. `(theta_req, col_req)` of `(g1_theta * u_theta).sum() + (g1_col * u_alpha).sum() + phi2`
-  gives `(out_theta, out_col)`. Assemble `H u = cat([out_theta.reshape(-1), out_col])`.
+- `phi2` (`:389-390`) already includes `(receiver_log_probs_h * d_cot_receiver_log_probs).sum()` (`:390`), so the final grad
+  w.r.t. `(theta_req, receiver_weights_req)` of `(g1_theta * u_theta).sum() + (g1_receiver_weights * u_alpha).sum() + phi2`
+  gives `(out_theta, out_receiver_weights)`. Assemble `H u = cat([out_theta.reshape(-1), out_receiver_weights])`.
 
 **CORRECTION (8, second half — DO NOT DOUBLE-COUNT THE SOFTMAX HESSIAN.** The alpha–alpha
 softmax-curvature (`d^2 receiver_log_probs / d alpha^2`, i.e. the curvature of
 `log_softmax(alpha)`) belongs in the HEAD autograd EXACTLY ONCE — it is produced by
-differentiating `col_h = receiver_log_probs(col_req)` (a function of `col_req` via
+differentiating `receiver_log_probs_h = receiver_log_probs(receiver_weights_req)` (a function of `receiver_weights_req` via
 `receiver_log_probs_from_weights`, `extract_parameters.py:81`) in the `phi1`/`phi2` head grads
-above. The KERNELS carry ONLY the col-cotangent LINEAR in `dcol` (the `+ ln2 p' dcol` terms of
+above. The KERNELS carry ONLY the receiver-log-probability cotangent LINEAR in `dreceiver_log_probs` (the `+ ln2 p' dreceiver_log_probs` terms of
 S4–S6) — they must NOT also apply a softmax-Jacobian/Hessian, or `H_aa` double-counts the
-softmax curvature. Concretely: the SO kernels receive `dcol` (already the softmax-Jacobian times
-`u_alpha`, computed once in S3) and emit `d_cot_col` in `receiver_log_probs`-space; the head's
-backward through `col_h(col_req)` maps that back to alpha-space and adds the second-order
+softmax curvature. Concretely: the SO kernels receive `dreceiver_log_probs` (already the softmax-Jacobian times
+`u_alpha`, computed once in S3) and emit `d_cot_receiver_log_probs` in `receiver_log_probs`-space; the head's
+backward through `receiver_log_probs_h(receiver_weights_req)` maps that back to alpha-space and adds the second-order
 softmax term ONCE. Keep `receiver_valid_log_normalizer`'s alpha dependence
-(`extract_parameters.py:82-86`) inside the head graph (it is, via `col_req`), so the
-`receiver_norm -> max_transfer` curvature is captured by `mt_h(col_req)` here, not in kernels.
+(`extract_parameters.py:82-86`) inside the head graph (it is, via `receiver_weights_req`), so the
+`receiver_norm -> max_transfer` curvature is captured by `max_transfer_h(receiver_weights_req)` here, not in kernels.
 
 **S8 FD gate (END-TO-END, the real PD-relevant gate).** Mirror `_verify_hvp.run` but:
 1. Base alpha NON-UNIFORM (S2 / correction 2) with the `valid_mass` asserts.
@@ -357,12 +362,12 @@ S8 being green; it is a separate sub-effort.
 ## Dependency graph (topo order)
 
 ```
-S3 (forward tangent: dcol seed via jvp of weighted-receivers; thread into e/wave/dts tangents)
- └─> S4 (adjoint plumbing: pass dcol into SO kernels; collect d_gcol)
-      ├─> S5 (wave_backward_so: NEW d_grad_col output + missing +ln2 p' dcol @ :85/:103)  [HARDEST]
-      ├─> S6 (dts_backward_so: NEW dcol input + +ln2 p' dcol @ :229/:230)
+S3 (forward tangent: dreceiver_log_probs seed via jvp of weighted-receivers; thread into e/wave/dts tangents)
+ └─> S4 (adjoint plumbing: pass dreceiver_log_probs into SO kernels; collect d_grad_receiver_log_probs)
+      ├─> S5 (wave_backward_so: NEW d_grad_receiver_log_probs output + missing +ln2 p' dreceiver_log_probs @ :85/:103)  [HARDEST]
+      ├─> S6 (dts_backward_so: NEW dreceiver_log_probs input + +ln2 p' dreceiver_log_probs @ :229/:230)
       └─> S7 (use_receiver_weights derived; kill ggn.py:58 + uniform_fast hardcode @ hvp_exact:189)
-           └─> S8 (head grad wrt (theta_req,col_req); softmax-Hessian ONCE in head; assemble Hu)
+           └─> S8 (head grad wrt (theta_req,receiver_weights_req); softmax-Hessian ONCE in head; assemble Hu)
                 └─> S9 (P_z H P_z for CG/Lanczos PD cert — out of scope here)
 ```
 S2 (re-point `_verify_hvp.py` to non-uniform base + valid_mass asserts) is a PREREQUISITE for the

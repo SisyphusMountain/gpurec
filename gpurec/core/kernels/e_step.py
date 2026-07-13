@@ -16,7 +16,7 @@ def _tl_float_dtype(dtype):
 
 
 @triton.jit
-def _e_step_forward_2d_kernel(
+def _update_extinction_log_probabilities_kernel(
     E_ptr,
     E_new_ptr,
     E_s1_out_ptr,
@@ -28,9 +28,9 @@ def _e_step_forward_2d_kernel(
     log_pL_ptr,
     max_transfer_ptr,
     receiver_log_probs_ptr,
-    sp_parent_ptr,
-    sp_child1_ptr,
-    sp_child2_ptr,
+    species_parent_ptr,
+    species_child1_ptr,
+    species_child2_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
@@ -47,54 +47,57 @@ def _e_step_forward_2d_kernel(
 
     E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
     if USE_RECEIVER_WEIGHTS:
-        receiver_logp = tl.load(receiver_log_probs_ptr + offs, mask=mask, other=neg_inf)
-        weighted_E = receiver_logp + E
+        receiver_log_probability = tl.load(receiver_log_probs_ptr + offs, mask=mask, other=neg_inf)
+        receiver_weighted_extinction_log_probability = receiver_log_probability + E
     else:
-        weighted_E = E
-    row_max = tl.max(weighted_E, axis=0)
+        receiver_weighted_extinction_log_probability = E
+    row_max = tl.max(receiver_weighted_extinction_log_probability, axis=0)
     row_max_safe = tl.where(row_max != neg_inf, row_max, tl.zeros([1], dtype=DTYPE))
-    row_sum = tl.sum(tl.exp2(weighted_E - row_max_safe), axis=0)
+    total_receiver_mass = tl.sum(tl.exp2(receiver_weighted_extinction_log_probability - row_max_safe), axis=0)
 
-    cur = offs
-    ancestor_sum = zero
+    ancestor_species = offs
+    excluded_ancestor_mass = zero
     for _ in range(0, MAX_ANCESTOR_DEPTH):
-        cur_valid = mask & (cur >= 0) & (cur < S)
-        E_anc = tl.load(E_ptr + base + cur, mask=cur_valid, other=neg_inf)
+        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
+        ancestor_extinction_log_probability = tl.load(E_ptr + base + ancestor_species, mask=ancestor_valid, other=neg_inf)
         if USE_RECEIVER_WEIGHTS:
-            receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=cur_valid, other=neg_inf)
-            ancestor_sum += tl.where(cur_valid, tl.exp2(receiver_logp_anc + E_anc - row_max_safe), zero)
+            ancestor_receiver_log_probability = tl.load(receiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=neg_inf)
+            excluded_ancestor_mass += tl.where(ancestor_valid, tl.exp2(ancestor_receiver_log_probability + ancestor_extinction_log_probability - row_max_safe), zero)
         else:
-            ancestor_sum += tl.where(cur_valid, tl.exp2(E_anc - row_max_safe), zero)
-        cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int32)
+            excluded_ancestor_mass += tl.where(ancestor_valid, tl.exp2(ancestor_extinction_log_probability - row_max_safe), zero)
+        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
 
-    c1 = tl.load(sp_child1_ptr + offs, mask=mask, other=-1)
-    c2 = tl.load(sp_child2_ptr + offs, mask=mask, other=-1)
+    c1 = tl.load(species_child1_ptr + offs, mask=mask, other=-1)
+    c2 = tl.load(species_child2_ptr + offs, mask=mask, other=-1)
     c1_valid = mask & (c1 >= 0) & (c1 < S)
     c2_valid = mask & (c2 >= 0) & (c2 < S)
     E_s1 = tl.load(E_ptr + base + c1, mask=c1_valid, other=neg_inf)
     E_s2 = tl.load(E_ptr + base + c2, mask=c2_valid, other=neg_inf)
 
-    max_transfer_val = tl.load(max_transfer_ptr + base + offs, mask=mask, other=0.0)
-    denom = row_sum - ancestor_sum
-    Ebar = tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer_val, neg_inf)
+    max_transfer = tl.load(max_transfer_ptr + base + offs, mask=mask, other=0.0)
+    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    Ebar = tl.where(valid_receiver_mass > 0.0, tl.log2(valid_receiver_mass) + row_max + max_transfer, neg_inf)
 
-    pS = tl.load(log_pS_ptr + base + offs, mask=mask, other=neg_inf)
-    pD = tl.load(log_pD_ptr + base + offs, mask=mask, other=neg_inf)
-    pL = tl.load(log_pL_ptr + base + offs, mask=mask, other=neg_inf)
+    speciation_log_probability = tl.load(log_pS_ptr + base + offs, mask=mask, other=neg_inf)
+    duplication_log_probability = tl.load(log_pD_ptr + base + offs, mask=mask, other=neg_inf)
+    loss_log_probability = tl.load(log_pL_ptr + base + offs, mask=mask, other=neg_inf)
 
-    t0 = pS + E_s1 + E_s2
-    t1 = pD + 2.0 * E
-    t2 = E + Ebar
-    t3 = pL
-    m = tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3))
-    m_safe = tl.where(m == neg_inf, zero, m)
-    total = (
-        tl.exp2(t0 - m_safe)
-        + tl.exp2(t1 - m_safe)
-        + tl.exp2(t2 - m_safe)
-        + tl.exp2(t3 - m_safe)
+    speciation_log_term = speciation_log_probability + E_s1 + E_s2
+    duplication_log_term = duplication_log_probability + 2.0 * E
+    transfer_log_term = E + Ebar
+    loss_log_term = loss_log_probability
+    logsumexp_max = tl.maximum(
+        tl.maximum(speciation_log_term, duplication_log_term),
+        tl.maximum(transfer_log_term, loss_log_term),
     )
-    E_new = tl.log2(total) + m
+    logsumexp_max_safe = tl.where(logsumexp_max == neg_inf, zero, logsumexp_max)
+    extinction_event_scaled_mass = (
+        tl.exp2(speciation_log_term - logsumexp_max_safe)
+        + tl.exp2(duplication_log_term - logsumexp_max_safe)
+        + tl.exp2(transfer_log_term - logsumexp_max_safe)
+        + tl.exp2(loss_log_term - logsumexp_max_safe)
+    )
+    E_new = tl.log2(extinction_event_scaled_mass) + logsumexp_max
 
     tl.store(E_new_ptr + base + offs, E_new, mask=mask)
     tl.store(E_s1_out_ptr + base + offs, E_s1, mask=mask)
@@ -106,7 +109,7 @@ def _e_step_forward_2d_kernel(
 
 
 @triton.jit
-def _e_step_backward_prepare_2d_kernel(
+def _stage_extinction_and_transfer_complement_vjp_kernel(
     E_ptr,
     E_new_ptr,
     E_s1_ptr,
@@ -116,9 +119,9 @@ def _e_step_backward_prepare_2d_kernel(
     log_pD_ptr,
     log_pL_ptr,
     receiver_log_probs_ptr,
-    sp_parent_ptr,
-    sp_child1_ptr,
-    sp_child2_ptr,
+    species_parent_ptr,
+    species_child1_ptr,
+    species_child2_ptr,
     grad_E_new_ptr,
     grad_E_s1_out_ptr,
     grad_E_s2_out_ptr,
@@ -129,9 +132,9 @@ def _e_step_backward_prepare_2d_kernel(
     grad_log_pL_ptr,
     grad_max_transfer_ptr,
     grad_receiver_log_probs_ptr,
-    r_ptr,
-    excluded_u_ptr,
-    total_u_ptr,
+    receiver_mass_ptr,
+    excluded_donor_adjoint_ptr,
+    total_donor_adjoint_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
@@ -147,106 +150,158 @@ def _e_step_backward_prepare_2d_kernel(
 
     E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
     if USE_RECEIVER_WEIGHTS:
-        receiver_logp = tl.load(receiver_log_probs_ptr + offs, mask=mask, other=neg_inf)
-        weighted_E = receiver_logp + E
+        receiver_log_probability = tl.load(receiver_log_probs_ptr + offs, mask=mask, other=neg_inf)
+        receiver_weighted_extinction_log_probability = receiver_log_probability + E
     else:
-        weighted_E = E
+        receiver_weighted_extinction_log_probability = E
     E_new = tl.load(E_new_ptr + base + offs, mask=mask, other=neg_inf)
     E_s1 = tl.load(E_s1_ptr + base + offs, mask=mask, other=neg_inf)
     E_s2 = tl.load(E_s2_ptr + base + offs, mask=mask, other=neg_inf)
     Ebar = tl.load(Ebar_ptr + base + offs, mask=mask, other=neg_inf)
-    pS = tl.load(log_pS_ptr + base + offs, mask=mask, other=neg_inf)
-    pD = tl.load(log_pD_ptr + base + offs, mask=mask, other=neg_inf)
-    pL = tl.load(log_pL_ptr + base + offs, mask=mask, other=neg_inf)
+    speciation_log_probability = tl.load(log_pS_ptr + base + offs, mask=mask, other=neg_inf)
+    duplication_log_probability = tl.load(log_pD_ptr + base + offs, mask=mask, other=neg_inf)
+    loss_log_probability = tl.load(log_pL_ptr + base + offs, mask=mask, other=neg_inf)
 
-    row_max = tl.max(weighted_E, axis=0)
+    row_max = tl.max(receiver_weighted_extinction_log_probability, axis=0)
     row_max_safe = tl.where(row_max != neg_inf, row_max, tl.zeros([1], dtype=DTYPE))
-    r = tl.exp2(weighted_E - row_max_safe)
-    r = tl.where(mask, r, zero)
-    row_sum = tl.sum(r, axis=0)
-    tl.store(r_ptr + base + offs, r, mask=mask)
-    tl.store(excluded_u_ptr + base + offs, zero, mask=mask)
+    receiver_mass = tl.exp2(
+        receiver_weighted_extinction_log_probability - row_max_safe
+    )
+    receiver_mass = tl.where(mask, receiver_mass, zero)
+    total_receiver_mass = tl.sum(receiver_mass, axis=0)
+    tl.store(receiver_mass_ptr + base + offs, receiver_mass, mask=mask)
+    tl.store(excluded_donor_adjoint_ptr + base + offs, zero, mask=mask)
 
-    g_new = tl.load(grad_E_new_ptr + base + offs, mask=mask, other=0.0)
-    g_s1_out = tl.load(grad_E_s1_out_ptr + base + offs, mask=mask, other=0.0)
-    g_s2_out = tl.load(grad_E_s2_out_ptr + base + offs, mask=mask, other=0.0)
-    g_ebar_out = tl.load(grad_Ebar_out_ptr + base + offs, mask=mask, other=0.0)
+    extinction_update_adjoint = tl.load(grad_E_new_ptr + base + offs, mask=mask, other=0.0)
+    child1_extinction_output_adjoint = tl.load(grad_E_s1_out_ptr + base + offs, mask=mask, other=0.0)
+    child2_extinction_output_adjoint = tl.load(grad_E_s2_out_ptr + base + offs, mask=mask, other=0.0)
+    transfer_complement_output_adjoint = tl.load(grad_Ebar_out_ptr + base + offs, mask=mask, other=0.0)
 
-    t0 = pS + E_s1 + E_s2
-    t1 = pD + 2.0 * E
-    t2 = E + Ebar
-    t3 = pL
-    q0 = tl.where(mask, g_new * tl.exp2(t0 - E_new), zero)
-    q1 = tl.where(mask, g_new * tl.exp2(t1 - E_new), zero)
-    q2 = tl.where(mask, g_new * tl.exp2(t2 - E_new), zero)
-    q3 = tl.where(mask, g_new * tl.exp2(t3 - E_new), zero)
+    speciation_log_term = speciation_log_probability + E_s1 + E_s2
+    duplication_log_term = duplication_log_probability + 2.0 * E
+    transfer_log_term = E + Ebar
+    loss_log_term = loss_log_probability
+    speciation_event_vjp = tl.where(
+        mask, extinction_update_adjoint * tl.exp2(speciation_log_term - E_new), zero
+    )
+    duplication_event_vjp = tl.where(
+        mask, extinction_update_adjoint * tl.exp2(duplication_log_term - E_new), zero
+    )
+    transfer_event_vjp = tl.where(
+        mask, extinction_update_adjoint * tl.exp2(transfer_log_term - E_new), zero
+    )
+    loss_event_vjp = tl.where(mask, extinction_update_adjoint * tl.exp2(loss_log_term - E_new), zero)
 
-    wbar = q2 + g_ebar_out
-    tl.store(grad_log_pS_ptr + base + offs, q0, mask=mask)
-    tl.store(grad_log_pD_ptr + base + offs, q1, mask=mask)
-    tl.store(grad_log_pL_ptr + base + offs, q3, mask=mask)
-    tl.store(grad_max_transfer_ptr + base + offs, wbar, mask=mask)
+    transfer_complement_vjp = transfer_event_vjp + transfer_complement_output_adjoint
+    tl.store(grad_log_pS_ptr + base + offs, speciation_event_vjp, mask=mask)
+    tl.store(grad_log_pD_ptr + base + offs, duplication_event_vjp, mask=mask)
+    tl.store(grad_log_pL_ptr + base + offs, loss_event_vjp, mask=mask)
+    tl.store(grad_max_transfer_ptr + base + offs, transfer_complement_vjp, mask=mask)
 
-    tl.store(grad_E_ptr + base + offs, 2.0 * q1 + q2, mask=mask)
+    tl.store(
+        grad_E_ptr + base + offs,
+        2.0 * duplication_event_vjp + transfer_event_vjp,
+        mask=mask,
+    )
 
-    # Cross-warp lost-update fix: the plain stores above (grad_E here, excluded_u earlier)
+    # Cross-warp lost-update fix: the plain stores above (grad_E here, excluded_donor_adjoint earlier)
     # and the atomic_adds below target overlapping row addresses (a state's children/
     # ancestors are other states handled by other warps of the same CTA). Without a barrier
     # a warp's atomic_add can land before another warp's initializing store, which then
     # overwrites it -> dropped gradient contribution. Order stores-then-atomics.
     tl.debug_barrier()
 
-    c1 = tl.load(sp_child1_ptr + offs, mask=mask, other=-1)
-    c2 = tl.load(sp_child2_ptr + offs, mask=mask, other=-1)
+    c1 = tl.load(species_child1_ptr + offs, mask=mask, other=-1)
+    c2 = tl.load(species_child2_ptr + offs, mask=mask, other=-1)
     c1_valid = mask & (c1 >= 0) & (c1 < S)
     c2_valid = mask & (c2 >= 0) & (c2 < S)
-    tl.atomic_add(grad_E_ptr + base + c1, q0 + g_s1_out, sem="relaxed", mask=c1_valid)
-    tl.atomic_add(grad_E_ptr + base + c2, q0 + g_s2_out, sem="relaxed", mask=c2_valid)
+    tl.atomic_add(
+        grad_E_ptr + base + c1,
+        speciation_event_vjp + child1_extinction_output_adjoint,
+        sem="relaxed",
+        mask=c1_valid,
+    )
+    tl.atomic_add(
+        grad_E_ptr + base + c2,
+        speciation_event_vjp + child2_extinction_output_adjoint,
+        sem="relaxed",
+        mask=c2_valid,
+    )
 
-    cur = offs
-    ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+    ancestor_species = offs
+    excluded_ancestor_mass = tl.zeros([BLOCK_S], dtype=DTYPE)
     for _ in range(0, MAX_ANCESTOR_DEPTH):
-        valid = mask & (cur >= 0) & (cur < S)
-        E_anc = tl.load(E_ptr + base + cur, mask=valid, other=neg_inf)
+        valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
+        ancestor_extinction_log_probability = tl.load(E_ptr + base + ancestor_species, mask=valid, other=neg_inf)
         if USE_RECEIVER_WEIGHTS:
-            receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=valid, other=neg_inf)
-            ancestor_sum += tl.where(valid, tl.exp2(receiver_logp_anc + E_anc - row_max_safe), zero)
+            ancestor_receiver_log_probability = tl.load(receiver_log_probs_ptr + ancestor_species, mask=valid, other=neg_inf)
+            excluded_ancestor_mass += tl.where(valid, tl.exp2(ancestor_receiver_log_probability + ancestor_extinction_log_probability - row_max_safe), zero)
         else:
-            ancestor_sum += tl.where(valid, tl.exp2(E_anc - row_max_safe), zero)
-        cur = tl.load(sp_parent_ptr + cur, mask=valid, other=-1).to(tl.int32)
+            excluded_ancestor_mass += tl.where(valid, tl.exp2(ancestor_extinction_log_probability - row_max_safe), zero)
+        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=valid, other=-1).to(tl.int32)
 
-    denom = row_sum - ancestor_sum
-    u = tl.where(mask & (denom > 0.0), wbar / denom, zero)
-    tl.store(total_u_ptr + g, tl.sum(u, axis=0))
+    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    donor_adjoint = tl.where(
+        mask & (valid_receiver_mass > 0.0),
+        transfer_complement_vjp / valid_receiver_mass,
+        zero,
+    )
+    tl.store(
+        total_donor_adjoint_ptr + g, tl.sum(donor_adjoint, axis=0)
+    )
 
-    cur = offs
+    ancestor_species = offs
     for _ in range(0, MAX_ANCESTOR_DEPTH):
-        valid = mask & (cur >= 0) & (cur < S)
-        tl.atomic_add(excluded_u_ptr + base + cur, u, sem="relaxed", mask=valid)
-        cur = tl.load(sp_parent_ptr + cur, mask=valid, other=-1).to(tl.int32)
+        valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
+        tl.atomic_add(
+            excluded_donor_adjoint_ptr + base + ancestor_species,
+            donor_adjoint,
+            sem="relaxed",
+            mask=valid,
+        )
+        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=valid, other=-1).to(tl.int32)
 
 
 @triton.jit
-def _e_step_backward_finalize_2d_kernel(
+def _finalize_extinction_transfer_complement_vjp_kernel(
     grad_E_ptr,
     grad_receiver_log_probs_ptr,
-    r_ptr,
-    excluded_u_ptr,
-    total_u_ptr,
+    receiver_mass_ptr,
+    excluded_donor_adjoint_ptr,
+    total_donor_adjoint_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
 ):
     g = tl.program_id(0)
     base = g * S
     offs = tl.arange(0, BLOCK_S)
     mask = offs < S
-    r = tl.load(r_ptr + base + offs, mask=mask, other=0.0)
-    excluded = tl.load(excluded_u_ptr + base + offs, mask=mask, other=0.0)
-    total = tl.load(total_u_ptr + g)
-    current = tl.load(grad_E_ptr + base + offs, mask=mask, other=0.0)
-    pibar_vjp = r * (total - excluded)
-    tl.store(grad_E_ptr + base + offs, current + pibar_vjp, mask=mask)
-    tl.atomic_add(grad_receiver_log_probs_ptr + offs, pibar_vjp, sem="relaxed", mask=mask)
+    receiver_mass = tl.load(
+        receiver_mass_ptr + base + offs, mask=mask, other=0.0
+    )
+    excluded_donor_adjoint = tl.load(
+        excluded_donor_adjoint_ptr + base + offs, mask=mask, other=0.0
+    )
+    total_donor_adjoint = tl.load(total_donor_adjoint_ptr + g)
+    current_extinction_vjp = tl.load(
+        grad_E_ptr + base + offs, mask=mask, other=0.0
+    )
+    transfer_complement_vjp = receiver_mass * (
+        total_donor_adjoint - excluded_donor_adjoint
+    )
+    tl.store(
+        grad_E_ptr + base + offs,
+        current_extinction_vjp + transfer_complement_vjp,
+        mask=mask,
+    )
+    if USE_RECEIVER_WEIGHTS:
+        tl.atomic_add(
+            grad_receiver_log_probs_ptr + offs,
+            transfer_complement_vjp,
+            sem="relaxed",
+            mask=mask,
+        )
 
 
 def _launch_e_step_forward_2d(
@@ -256,9 +311,9 @@ def _launch_e_step_forward_2d(
     log_pL_mat: torch.Tensor,
     max_transfer_mat: torch.Tensor,
     receiver_log_probs: torch.Tensor,
-    sp_parent: torch.Tensor,
-    sp_child1: torch.Tensor,
-    sp_child2: torch.Tensor,
+    species_parent: torch.Tensor,
+    species_child1: torch.Tensor,
+    species_child2: torch.Tensor,
     max_ancestor_depth: int,
     *,
     max_diff_out: torch.Tensor | None = None,
@@ -269,7 +324,7 @@ def _launch_e_step_forward_2d(
     S = int(E.shape[1])
     block_s = int(triton.next_power_of_2(S))
     E_new, E_s1, E_s2, Ebar = (torch.empty_like(E) for _ in range(4)) if out is None else out
-    _e_step_forward_2d_kernel[(G,)](
+    _update_extinction_log_probabilities_kernel[(G,)](
         E,
         E_new,
         E_s1,
@@ -281,9 +336,9 @@ def _launch_e_step_forward_2d(
         log_pL_mat,
         max_transfer_mat,
         receiver_log_probs,
-        sp_parent,
-        sp_child1,
-        sp_child2,
+        species_parent,
+        species_child1,
+        species_child2,
         S,
         BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
@@ -304,9 +359,9 @@ class _TritonEStep2D(torch.autograd.Function):
         log_pL_mat,
         max_transfer_mat,
         receiver_log_probs,
-        sp_parent,
-        sp_child1,
-        sp_child2,
+        species_parent,
+        species_child1,
+        species_child2,
         max_ancestor_depth: int,
         use_receiver_weights: bool,
     ):
@@ -317,9 +372,9 @@ class _TritonEStep2D(torch.autograd.Function):
             log_pL_mat,
             max_transfer_mat,
             receiver_log_probs,
-            sp_parent,
-            sp_child1,
-            sp_child2,
+            species_parent,
+            species_child1,
+            species_child2,
             int(max_ancestor_depth),
             use_receiver_weights=bool(use_receiver_weights),
         )
@@ -342,9 +397,9 @@ class _TritonEStep2D(torch.autograd.Function):
             log_pD_mat,
             log_pL_mat,
             receiver_log_probs,
-            sp_parent,
-            sp_child1,
-            sp_child2,
+            species_parent,
+            species_child1,
+            species_child2,
         ) = ctx.saved_tensors
         G = int(E.shape[0])
         S = int(E.shape[1])
@@ -353,13 +408,21 @@ class _TritonEStep2D(torch.autograd.Function):
             torch.zeros_like(E) if grad is None else grad.contiguous()
             for grad in (grad_E_new, grad_E_s1_out, grad_E_s2_out, grad_Ebar_out)
         )
-        grad_E, grad_log_pS, grad_log_pD, grad_log_pL, grad_max_transfer, r, excluded_u = (
+        (
+            grad_E,
+            grad_log_pS,
+            grad_log_pD,
+            grad_log_pL,
+            grad_max_transfer,
+            receiver_mass,
+            excluded_donor_adjoint,
+        ) = (
             torch.empty_like(E) for _ in range(7)
         )
         grad_receiver_log_probs = torch.zeros_like(receiver_log_probs)
-        total_u = torch.empty((G,), dtype=E.dtype, device=E.device)
+        total_donor_adjoint = torch.empty((G,), dtype=E.dtype, device=E.device)
 
-        _e_step_backward_prepare_2d_kernel[(G,)](
+        _stage_extinction_and_transfer_complement_vjp_kernel[(G,)](
             E,
             E_new,
             E_s1,
@@ -369,9 +432,9 @@ class _TritonEStep2D(torch.autograd.Function):
             log_pD_mat,
             log_pL_mat,
             receiver_log_probs,
-            sp_parent,
-            sp_child1,
-            sp_child2,
+            species_parent,
+            species_child1,
+            species_child2,
             grad_E_new,
             grad_E_s1_out,
             grad_E_s2_out,
@@ -382,9 +445,9 @@ class _TritonEStep2D(torch.autograd.Function):
             grad_log_pL,
             grad_max_transfer,
             grad_receiver_log_probs,
-            r,
-            excluded_u,
-            total_u,
+            receiver_mass,
+            excluded_donor_adjoint,
+            total_donor_adjoint,
             S,
             BLOCK_S=block_s,
             MAX_ANCESTOR_DEPTH=int(ctx.max_ancestor_depth),
@@ -392,14 +455,15 @@ class _TritonEStep2D(torch.autograd.Function):
             DTYPE=_tl_float_dtype(E.dtype),
             num_warps=8,
         )
-        _e_step_backward_finalize_2d_kernel[(G,)](
+        _finalize_extinction_transfer_complement_vjp_kernel[(G,)](
             grad_E,
             grad_receiver_log_probs,
-            r,
-            excluded_u,
-            total_u,
+            receiver_mass,
+            excluded_donor_adjoint,
+            total_donor_adjoint,
             S,
             BLOCK_S=block_s,
+            USE_RECEIVER_WEIGHTS=bool(ctx.use_receiver_weights),
             num_warps=8,
         )
         return (
@@ -424,9 +488,9 @@ def e_step_triton_autograd(
     log_pL: torch.Tensor,
     max_transfer: torch.Tensor,
     receiver_log_probs: torch.Tensor,
-    sp_parent: torch.Tensor,
-    sp_child1: torch.Tensor,
-    sp_child2: torch.Tensor,
+    species_parent: torch.Tensor,
+    species_child1: torch.Tensor,
+    species_child2: torch.Tensor,
     max_ancestor_depth: int,
     use_receiver_weights: bool = True,
 ):
@@ -435,9 +499,9 @@ def e_step_triton_autograd(
         E_arg,
         *(as_family_species(param, int(E_arg.shape[1]), int(E_arg.shape[0])) for param in (log_pS, log_pD, log_pL, max_transfer)),
         receiver_log_probs.contiguous(),
-        sp_parent,
-        sp_child1,
-        sp_child2,
+        species_parent,
+        species_child1,
+        species_child2,
         int(max_ancestor_depth),
         bool(use_receiver_weights),
     )
@@ -450,9 +514,9 @@ def e_fixed_point_triton(
     log_pL: torch.Tensor,
     max_transfer: torch.Tensor,
     receiver_log_probs: torch.Tensor,
-    sp_parent: torch.Tensor,
-    sp_child1: torch.Tensor,
-    sp_child2: torch.Tensor,
+    species_parent: torch.Tensor,
+    species_child1: torch.Tensor,
+    species_child2: torch.Tensor,
     max_ancestor_depth: int,
     *,
     max_iter: int | None = None,
@@ -482,9 +546,9 @@ def e_fixed_point_triton(
         log_pL_mat,
         max_transfer_mat,
         receiver_log_probs.contiguous(),
-        sp_parent,
-        sp_child1,
-        sp_child2,
+        species_parent,
+        species_child1,
+        species_child2,
         int(max_ancestor_depth),
     )
 
