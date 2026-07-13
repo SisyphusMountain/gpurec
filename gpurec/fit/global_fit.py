@@ -35,6 +35,20 @@ _LN2 = 0.6931471805599453
 _GLOBAL_RATE_BOUNDS = RateBounds.genewise()
 
 
+def _tier_solver_options(solver_options, *, pi_iters: int, neumann_terms: int) -> SolverOptions:
+    """Keep representation selection while applying this recipe's fixed tiers."""
+    if isinstance(solver_options, dict):
+        pi_representation = solver_options.get("pi_representation", "absolute")
+    else:
+        pi_representation = getattr(solver_options, "pi_representation", "absolute")
+    return SolverOptions(
+        pi_iters=pi_iters,
+        pi_representation=pi_representation,
+        neumann_terms=neumann_terms,
+        e_adjoint_solver="neumann",
+    )
+
+
 def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
                adam_steps=5, adam_lr=1.0, grad_clip=10.0, tol=1e-3, max_iter=120,
                trust=2.0, fd_eps=1e-2, mu=1e-2, hess_every=5, ftol=1e-6, patience=3,
@@ -43,9 +57,10 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
     """Fit the shared 3-vector theta via the accumulated genewise recipe. Returns
     ``{mode, theta[cpu,3], rates[cpu,3], nll_bits, nll_nats, gnorm, n_families, wall_s, n_steps}``.
 
-    ``solver_options`` is accepted for API compatibility but not used: this recipe fixes its own
-    forward tiers (``fit_pi``/``fit_neu`` for the fit, ``eval_pi``/``eval_neu`` for the final NLL),
-    always with the Neumann E-adjoint.
+    This recipe fixes its own forward tiers (``fit_pi``/``fit_neu`` for the fit,
+    ``eval_pi``/``eval_neu`` for the final NLL), always with the Neumann
+    E-adjoint. It preserves ``solver_options.pi_representation`` across those
+    internally constructed tiers.
     """
     bounds = _GLOBAL_RATE_BOUNDS
     lo, hi = log2_rate_bounds(bounds=bounds)          # hi finite (2.0), so bound-active logic is well defined
@@ -56,7 +71,9 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
 
     # genewise-mode model at the cheap fit tier: per-family loss+grad that we ACCUMULATE (sum over
     # families) into the shared 3x3. sum_f NLL_f(theta) with theta shared -> grad = sum_f grad_f.
-    so_fit = SolverOptions(pi_iters=fit_pi, neumann_terms=fit_neu, e_adjoint_solver="neumann")
+    so_fit = _tier_solver_options(
+        solver_options, pi_iters=fit_pi, neumann_terms=fit_neu
+    )
     model = GeneReconModel(species_tree, genes, mode="genewise", device=device, dtype=dtype,
                            solver_options=so_fit)
     G = model.theta.shape[0]
@@ -131,7 +148,9 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
     if (eval_pi, eval_neu) != (fit_pi, fit_neu):
         del model
         torch.cuda.empty_cache()
-        so_eval = SolverOptions(pi_iters=eval_pi, neumann_terms=eval_neu, e_adjoint_solver="neumann")
+        so_eval = _tier_solver_options(
+            solver_options, pi_iters=eval_pi, neumann_terms=eval_neu
+        )
         eval_model = GeneReconModel(species_tree, genes, mode="genewise", device=device, dtype=dtype,
                                     solver_options=so_eval)
     else:

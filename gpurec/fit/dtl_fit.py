@@ -54,7 +54,7 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda", dtype=torch.float3
     if mode == "genewise":
         # fit_genewise resolves its own gene-tree spec and rebuilds tiered models internally.
         res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype,
-                           certify=True, verbose=verbose)
+                           certify=True, solver_options=solver_options, verbose=verbose)
         wall_s = time.perf_counter() - t0
         nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)
         return {"mode": mode, "theta": res["theta"].detach().cpu(),

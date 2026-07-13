@@ -38,15 +38,19 @@ def _row_logsumexp(
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
+    TRACK_RAW_MAX: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
     row_max = tl.full([1], value=NEG_INF, dtype=DTYPE)
     row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+    raw_row_max = tl.full([1], value=NEG_INF, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
         pi_val = tl.load(Pi_ptr + base + s_offs, mask=mask, other=NEG_INF)
+        if TRACK_RAW_MAX:
+            raw_row_max = tl.maximum(raw_row_max, tl.max(pi_val, axis=0))
         if USE_RECEIVER_WEIGHTS:
             receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=mask, other=NEG_INF)
             weighted_pi = receiver_logp + pi_val
@@ -62,7 +66,7 @@ def _row_logsumexp(
         current = tl.sum(tl.exp2(weighted_pi - new_max_safe), axis=0)
         row_sum = previous + current
         row_max = new_max
-    return row_max, row_sum
+    return row_max, row_sum, raw_row_max
 
 
 @triton.jit
@@ -146,6 +150,7 @@ def _leaf_initial_wave_step_centered_kernel(
         leaf_receiver_logp = tl.load(receiver_log_probs_ptr + leaf_species).to(DTYPE)
     else:
         leaf_receiver_logp = tl.zeros((), dtype=DTYPE)
+    leaf_obs_logp = tl.load(leaf_logp_ptr + family * S + leaf_species).to(DTYPE)
 
     row_max = tl.full((), value=NEG_LARGE, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
@@ -162,12 +167,16 @@ def _leaf_initial_wave_step_centered_kernel(
         sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
         sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
-        pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=DTYPE), NEG_LARGE)
-        pibar_w = tl.where(~descendant, max_transfer + leaf_receiver_logp, NEG_LARGE)
+        pi_w = tl.where(leaf_hit, leaf_obs_logp, NEG_LARGE)
+        pibar_w = tl.where(
+            ~descendant,
+            max_transfer + leaf_receiver_logp + leaf_obs_logp,
+            NEG_LARGE,
+        )
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
-        pi_s1 = tl.where(mask & (c1 == leaf_species), 0.0, NEG_LARGE)
-        pi_s2 = tl.where(mask & (c2 == leaf_species), 0.0, NEG_LARGE)
+        pi_s1 = tl.where(mask & (c1 == leaf_species), leaf_obs_logp, NEG_LARGE)
+        pi_s2 = tl.where(mask & (c2 == leaf_species), leaf_obs_logp, NEG_LARGE)
 
         t0 = dl_const + pi_w
         t1 = pi_w + ebar
@@ -209,12 +218,16 @@ def _leaf_initial_wave_step_centered_kernel(
         e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG_LARGE)
         sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
         sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
-        pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=DTYPE), NEG_LARGE)
-        pibar_w = tl.where(~descendant, max_transfer + leaf_receiver_logp, NEG_LARGE)
+        pi_w = tl.where(leaf_hit, leaf_obs_logp, NEG_LARGE)
+        pibar_w = tl.where(
+            ~descendant,
+            max_transfer + leaf_receiver_logp + leaf_obs_logp,
+            NEG_LARGE,
+        )
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
-        pi_s1 = tl.where(mask & (c1 == leaf_species), 0.0, NEG_LARGE)
-        pi_s2 = tl.where(mask & (c2 == leaf_species), 0.0, NEG_LARGE)
+        pi_s1 = tl.where(mask & (c1 == leaf_species), leaf_obs_logp, NEG_LARGE)
+        pi_s2 = tl.where(mask & (c2 == leaf_species), leaf_obs_logp, NEG_LARGE)
         t0 = dl_const + pi_w
         t1 = pi_w + ebar
         t2 = pibar_w + e_val
@@ -261,12 +274,15 @@ def _wave_step_centered_kernel(
     family_idx_ptr,
     DTS_reduced_ptr,
     DTS_offset_ptr,
+    DTS_center_offset_ptr,
     has_splits: tl.constexpr,
+    INPUT_IS_DTS: tl.constexpr,
     Pi_new_ptr,
     Pi_new_offset_ptr,
     Pibar_out_ptr,
     Pibar_offset_ptr,
     pibar_row_max_ptr,
+    pi_residual_out_ptr,
     S: tl.constexpr,
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
@@ -274,6 +290,7 @@ def _wave_step_centered_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_FINAL_PIBAR: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
@@ -289,27 +306,77 @@ def _wave_step_centered_kernel(
     const_base = family_const * CONST_ROW_STRIDE
     pi_offset = tl.load(Pi_offset_ptr + pi_row)
 
-    row_max, row_sum = _row_logsumexp(
-        Pi_ptr, receiver_log_probs_ptr, pi_base, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE
+    row_max, row_sum, raw_row_max = _row_logsumexp(
+        Pi_ptr,
+        receiver_log_probs_ptr,
+        pi_base,
+        S,
+        BLOCK_S,
+        USE_RECEIVER_WEIGHTS,
+        INPUT_IS_DTS and USE_RECEIVER_WEIGHTS,
+        DTYPE,
     )
+    # ``row_max`` is already required for Pibar. Absorb it lazily into the
+    # fp64 row frame so the recurrence consumes near-zero residuals without an
+    # exact recenter/store pass over the input row.
+    if INPUT_IS_DTS:
+        if USE_RECEIVER_WEIGHTS:
+            shift_source = raw_row_max
+        else:
+            # Without receiver weights ``row_max`` is already the raw maximum;
+            # compile out the second tile reduction entirely.
+            shift_source = row_max
+        row_shift = tl.max(
+            tl.where(
+                shift_source != NEG_LARGE,
+                shift_source,
+                tl.zeros_like(shift_source),
+            ),
+            axis=0,
+        ).to(DTYPE)
+    else:
+        # Leaf initialization and the first virtually centered DTS iteration already
+        # put ordinary Pi iterates in their local frame. Avoid repeating four
+        # vector shifts on every later fixed-point iteration.
+        row_shift = tl.zeros((), dtype=DTYPE)
+    effective_pi_offset = pi_offset + row_shift.to(tl.float64)
 
-    term_base = pi_offset
+    term_base = effective_pi_offset
     if has_splits:
         dts_offset = tl.load(DTS_offset_ptr + w)
-        term_base = tl.maximum(term_base, dts_offset)
+        if INPUT_IS_DTS:
+            dts_center_offset = dts_offset + row_shift.to(tl.float64)
+        else:
+            dts_center_offset = tl.load(DTS_center_offset_ptr + w)
+        term_base = tl.maximum(term_base, dts_center_offset)
     else:
         dts_offset = term_base
     if USE_LEAF_INDEX:
-        term_base = tl.maximum(term_base, 0.0)
-    pi_corr = (pi_offset - term_base).to(DTYPE)
+        leaf_species = tl.load(leaf_species_ptr + global_row)
+        leaf_obs_logp = tl.load(
+            leaf_logp_ptr + family_const * S + leaf_species
+        ).to(DTYPE)
+        # The leaf source represents ``leaf_obs_logp``, not a zero-frame
+        # value. Using 0 here forced every negative HOGENOM row back into the
+        # absolute frame after the exactly centered leaf initializer.
+        term_base = tl.maximum(term_base, leaf_obs_logp.to(tl.float64))
+    pi_corr = (effective_pi_offset - term_base).to(DTYPE)
+    # DTS storage remains in its original gauge. The virtual centered offset
+    # participates only in base selection; one fp64 subtraction folds its
+    # shift into the same correction the recurrence already applies.
     dts_corr = (dts_offset - term_base).to(DTYPE)
     leaf_corr = (0.0 - term_base).to(DTYPE)
-    tl.store(Pi_new_offset_ptr + global_row, term_base)
+    if STORE_FINAL_PIBAR:
+        pi_has_finite = tl.full((), value=0, dtype=tl.int32)
+
+    if COMPUTE_DIFF:
+        row_max_diff = tl.zeros([1], dtype=tl.float32)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
         pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        pi_w = pi_w - row_shift
         const_offsets = const_base + s_offs
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
         pibar_w = _pibar_tile_centered(
@@ -328,6 +395,7 @@ def _wave_step_centered_kernel(
             USE_RECEIVER_WEIGHTS,
             DTYPE,
         )
+        pibar_w = pibar_w - row_shift
         dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
         ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
         e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG_LARGE)
@@ -340,6 +408,8 @@ def _wave_step_centered_kernel(
         c2_valid = c2 < S
         pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
         pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
+        pi_s1 = pi_s1 - row_shift
+        pi_s2 = pi_s2 - row_shift
 
         t0 = dl_const + pi_w + pi_corr
         t1 = pi_w + ebar + pi_corr
@@ -347,10 +417,8 @@ def _wave_step_centered_kernel(
         t3 = sl1_const + pi_s1 + pi_corr
         t4 = sl2_const + pi_s2 + pi_corr
         if USE_LEAF_INDEX:
-            leaf_species = tl.load(leaf_species_ptr + global_row)
             leaf_hit = mask & (leaf_species == s_offs)
-            leaf_logp = tl.load(leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE)
-            t5 = tl.where(leaf_hit, leaf_logp + leaf_corr, NEG_LARGE)
+            t5 = tl.where(leaf_hit, leaf_obs_logp + leaf_corr, NEG_LARGE)
         else:
             t5 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
 
@@ -370,13 +438,60 @@ def _wave_step_centered_kernel(
             total += tl.exp2(dts_r - m_safe)
         result = tl.log2(total) + m
         tl.store(Pi_new_ptr + global_base + s_offs, result, mask=mask)
+        if STORE_FINAL_PIBAR:
+            pi_has_finite = tl.maximum(
+                pi_has_finite,
+                tl.max(tl.where(mask & (result != NEG_LARGE), 1, 0), axis=0),
+            )
+
+        if COMPUTE_DIFF:
+            # Compare represented absolute values in fp64 without materializing
+            # either large absolute fp32 row.
+            finite = mask & (result != NEG_LARGE) & (pi_w != NEG_LARGE)
+            diff = tl.where(
+                finite,
+                tl.abs(
+                    result.to(tl.float64)
+                    - pi_w.to(tl.float64)
+                    + term_base
+                    - effective_pi_offset
+                ),
+                tl.zeros([BLOCK_S], dtype=tl.float64),
+            )
+            row_max_diff = tl.maximum(row_max_diff, tl.max(diff, axis=0).to(tl.float32))
+
+    # Only the final iterate is published as centered state; earlier iterates
+    # are internal gauge-equivalent scratch. Canonicalize the published row in
+    # its existing traversal without charging every fixed-point iteration.
+    if STORE_FINAL_PIBAR:
+        pi_new_offset = tl.where(pi_has_finite != 0, term_base, 0.0)
+    else:
+        pi_new_offset = term_base
+    tl.store(Pi_new_offset_ptr + global_row, pi_new_offset)
+
+    if COMPUTE_DIFF:
+        tl.store(pi_residual_out_ptr + global_row, tl.max(row_max_diff, axis=0))
+
+    if has_splits and INPUT_IS_DTS:
+        tl.store(DTS_center_offset_ptr + w, dts_center_offset)
 
     if STORE_FINAL_PIBAR:
-        final_row_max, final_row_sum = _row_logsumexp(
-            Pi_new_ptr, receiver_log_probs_ptr, global_base, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE
+        final_row_max, final_row_sum, _ = _row_logsumexp(
+            Pi_new_ptr,
+            receiver_log_probs_ptr,
+            global_base,
+            S,
+            BLOCK_S,
+            USE_RECEIVER_WEIGHTS,
+            False,
+            DTYPE,
         )
         tl.store(pibar_row_max_ptr + global_row, tl.max(final_row_max, axis=0))
-        pibar_local_max = tl.full((), value=NEG_LARGE, dtype=DTYPE)
+        # ``Pi_new`` is stored in ``term_base``'s frame, so the Pibar values
+        # produced from it are already in that same frame. Keep that cheap
+        # gauge instead of traversing the species row once to find an exact
+        # Pibar maximum and again to store the recentered values.
+        pibar_has_finite = tl.full((), value=0, dtype=tl.int32)
         for s_start in range(0, S, BLOCK_S):
             s_offs = s_start + tl.arange(0, BLOCK_S)
             mask = s_offs < S
@@ -398,34 +513,15 @@ def _wave_step_centered_kernel(
                 USE_RECEIVER_WEIGHTS,
                 DTYPE,
             )
-            pibar_local_max = tl.maximum(
-                pibar_local_max,
-                tl.max(tl.where(mask, pibar_w, NEG_LARGE), axis=0),
+            pibar_has_finite = tl.maximum(
+                pibar_has_finite,
+                tl.max(tl.where(mask & (pibar_w != NEG_LARGE), 1, 0), axis=0),
             )
-        pibar_local_max_safe = tl.where(pibar_local_max != NEG_LARGE, pibar_local_max, 0.0)
-        tl.store(Pibar_offset_ptr + global_row, term_base + pibar_local_max_safe.to(tl.float64))
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            mask = s_offs < S
-            const_offsets = const_base + s_offs
-            max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-            pibar_w = _pibar_tile_centered(
-                Pi_new_ptr,
-                receiver_log_probs_ptr,
-                global_base,
-                s_offs,
-                mask,
-                final_row_max,
-                final_row_sum,
-                max_transfer,
-                sp_parent_ptr,
-                S,
-                BLOCK_S,
-                MAX_ANCESTOR_DEPTH,
-                USE_RECEIVER_WEIGHTS,
-                DTYPE,
-            )
-            tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w - pibar_local_max_safe, mask=mask)
+            tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
+        # An all-impossible Pibar row must remain the canonical ``(-inf, 0)``
+        # pair even when its Pi row used a nonzero heuristic gauge.
+        pibar_offset = tl.where(pibar_has_finite != 0, term_base, 0.0)
+        tl.store(Pibar_offset_ptr + global_row, pibar_offset)
 
 
 @triton.jit
@@ -490,8 +586,6 @@ def _dts_eq1_centered_kernel(
     pibar_off_r = tl.load(Pibar_offset + right)
     base = tl.maximum(pi_off_l + pi_off_r, pi_off_l + pibar_off_r)
     base = tl.maximum(base, pi_off_r + pibar_off_l)
-    if s_block == 0:
-        tl.store(out_offset + parent_w, base)
     corr0 = (pi_off_l + pi_off_r - base).to(DTYPE)
     corr1 = (pi_off_l + pibar_off_r - base).to(DTYPE)
     corr2 = (pi_off_r + pibar_off_l - base).to(DTYPE)
@@ -522,45 +616,14 @@ def _dts_eq1_centered_kernel(
         + tl.exp2(t3 - m_safe)
         + tl.exp2(t4 - m_safe)
     )
-    tl.store(out + parent_w * S + s_offs, tl.log2(acc) + m, mask=mask)
-
-
-@triton.jit
-def _dts_ge2_centered_offset_kernel(
-    Pi_offset,
-    Pibar_offset,
-    lefts,
-    rights,
-    ge2_ptr,
-    ge2_parent_ids,
-    active_rows,
-    out_offset,
-    USE_ACTIVE: tl.constexpr,
-):
-    NEG_INF: tl.constexpr = -float("inf")
-    group = tl.program_id(0)
-    parent_w = tl.load(ge2_parent_ids + group).to(tl.int64)
-    if USE_ACTIVE:
-        if tl.load(active_rows + parent_w) == 0:
-            tl.store(out_offset + parent_w, 0.0)
-            return
-    start = tl.load(ge2_ptr + group)
-    end = tl.load(ge2_ptr + group + 1)
-    base = tl.full((), value=NEG_INF, dtype=tl.float64)
-    split_rel = start
-    while split_rel < end:
-        left = tl.load(lefts + split_rel).to(tl.int64)
-        right = tl.load(rights + split_rel).to(tl.int64)
-        pi_off_l = tl.load(Pi_offset + left)
-        pi_off_r = tl.load(Pi_offset + right)
-        pibar_off_l = tl.load(Pibar_offset + left)
-        pibar_off_r = tl.load(Pibar_offset + right)
-        base = tl.maximum(base, pi_off_l + pi_off_r)
-        base = tl.maximum(base, pi_off_l + pibar_off_r)
-        base = tl.maximum(base, pi_off_r + pibar_off_l)
-        split_rel += 1
-    base = tl.where(base != NEG_INF, base, 0.0)
-    tl.store(out_offset + parent_w, base)
+    result = tl.log2(acc) + m
+    tl.store(out + parent_w * S + s_offs, result, mask=mask)
+    # ``out_offset`` starts at zero. Every species tile for this eq1 row has
+    # the same candidate base, so any tile containing a finite lane may publish
+    # it safely. If every lane is impossible, no tile writes and the canonical
+    # all--inf row keeps offset zero without an extra row pass.
+    tile_has_finite = tl.max(tl.where(mask & (result != NEG_INF), 1, 0), axis=0) != 0
+    tl.store(out_offset + parent_w, base, mask=tile_has_finite)
 
 
 @triton.jit
@@ -579,9 +642,9 @@ def _dts_ge2_centered_stage1_kernel(
     ge2_ptr,
     ge2_parent_ids,
     active_rows,
-    out_offset,
     partial_max,
     partial_sum,
+    partial_offset,
     family_idx,
     family_offset,
     split_offset,
@@ -612,10 +675,12 @@ def _dts_ge2_centered_stage1_kernel(
     if tile_start >= end:
         return
     tile_end = tl.minimum(tile_start + TILE_SPLITS, end)
-    row_base_offset = tl.load(out_offset + parent_w)
-
     m = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
     acc = tl.zeros([BLOCK_S], dtype=DTYPE)
+    # Use a tile-local fp64 frame and advance it as split offsets increase.
+    # This folds the old group-wide offset prepass into work stage 1 already
+    # performs, without rescanning every split once per species block.
+    tile_base_offset = tl.full((), value=NEG_INF, dtype=tl.float64)
     split_rel = tile_start
     while split_rel < tile_end:
         split_i = split_offset + split_rel
@@ -639,9 +704,18 @@ def _dts_ge2_centered_stage1_kernel(
         pi_off_r = tl.load(Pi_offset + right)
         pibar_off_l = tl.load(Pibar_offset + left)
         pibar_off_r = tl.load(Pibar_offset + right)
-        corr0 = (pi_off_l + pi_off_r - row_base_offset).to(DTYPE)
-        corr1 = (pi_off_l + pibar_off_r - row_base_offset).to(DTYPE)
-        corr2 = (pi_off_r + pibar_off_l - row_base_offset).to(DTYPE)
+        split_base_offset = tl.maximum(pi_off_l + pi_off_r, pi_off_l + pibar_off_r)
+        split_base_offset = tl.maximum(split_base_offset, pi_off_r + pibar_off_l)
+        new_base_offset = tl.maximum(tile_base_offset, split_base_offset)
+        frame_shift = tl.where(
+            tile_base_offset != NEG_INF,
+            tile_base_offset - new_base_offset,
+            0.0,
+        ).to(DTYPE)
+        m = tl.where(m != NEG_INF, m + frame_shift, m)
+        corr0 = (pi_off_l + pi_off_r - new_base_offset).to(DTYPE)
+        corr1 = (pi_off_l + pibar_off_r - new_base_offset).to(DTYPE)
+        corr2 = (pi_off_r + pibar_off_l - new_base_offset).to(DTYPE)
 
         v0 = lsp + log_d + pi_l + pi_r + corr0
         v1 = lsp + pi_l + pibar_r + corr1
@@ -677,11 +751,14 @@ def _dts_ge2_centered_stage1_kernel(
             + split_sum * tl.exp2(split_m_safe - new_m_safe)
         )
         m = new_m
+        tile_base_offset = new_base_offset
         split_rel += 1
 
     partial_row = group * MAX_TILES + tile_id
     tl.store(partial_max + partial_row * S + s_offs, m, mask=mask)
     tl.store(partial_sum + partial_row * S + s_offs, acc, mask=mask)
+    # Species blocks race only to publish the same scalar tile frame.
+    tl.store(partial_offset + partial_row, tile_base_offset)
 
 
 @triton.jit
@@ -691,7 +768,9 @@ def _dts_ge2_stage2_kernel(
     active_rows,
     partial_max,
     partial_sum,
+    partial_offset,
     out,
+    out_offset,
     MAX_TILES: tl.constexpr,
     S: tl.constexpr,
     TILE_SPLITS: tl.constexpr,
@@ -715,20 +794,37 @@ def _dts_ge2_stage2_kernel(
     n_tiles = tl.cdiv(end - start, TILE_SPLITS)
     m = tl.full([BLOCK_S], NEG_INF, dtype=DTYPE)
     acc = tl.zeros([BLOCK_S], dtype=DTYPE)
+    row_base_offset = tl.full((), value=NEG_INF, dtype=tl.float64)
     tile_id = 0
     while tile_id < n_tiles:
         partial_row = group * MAX_TILES + tile_id
         pm = tl.load(partial_max + partial_row * S + s_offs, mask=mask, other=NEG_INF)
         ps = tl.load(partial_sum + partial_row * S + s_offs, mask=mask, other=0.0)
+        tile_base_offset = tl.load(partial_offset + partial_row)
+        new_base_offset = tl.maximum(row_base_offset, tile_base_offset)
+        m = tl.where(
+            m != NEG_INF,
+            m + (row_base_offset - new_base_offset).to(DTYPE),
+            m,
+        )
+        pm = tl.where(
+            pm != NEG_INF,
+            pm + (tile_base_offset - new_base_offset).to(DTYPE),
+            pm,
+        )
         new_m = tl.maximum(m, pm)
         new_m_safe = tl.where(new_m != NEG_INF, new_m, tl.zeros_like(new_m))
         acc = tl.where(m != NEG_INF, acc * tl.exp2(m - new_m_safe), tl.zeros_like(acc)) + tl.where(
             pm != NEG_INF, ps * tl.exp2(pm - new_m_safe), tl.zeros_like(acc)
         )
         m = new_m
+        row_base_offset = new_base_offset
         tile_id += 1
 
-    tl.store(out + parent_w * S + s_offs, tl.log2(acc) + m, mask=mask)
+    result = tl.log2(acc) + m
+    tl.store(out + parent_w * S + s_offs, result, mask=mask)
+    tile_has_finite = tl.max(tl.where(mask & (result != NEG_INF), 1, 0), axis=0) != 0
+    tl.store(out_offset + parent_w, row_base_offset, mask=tile_has_finite)
 
 
 def compute_leaf_initial_wave_step_centered(
@@ -805,6 +901,7 @@ def compute_wave_step_centered(
     max_ancestor_depth,
     DTS_reduced=None,
     DTS_offset=None,
+    DTS_center_offset=None,
     *,
     leaf_species_idx,
     leaf_logp,
@@ -814,13 +911,37 @@ def compute_wave_step_centered(
     has_leaf_term=True,
     input_ws=None,
     use_receiver_weights=True,
+    pi_residual_out=None,
 ):
     has_splits = DTS_reduced is not None
     if has_splits and DTS_offset is None:
         raise ValueError("DTS_offset is required with centered split DTS input")
+    if has_splits and DTS_center_offset is None:
+        # Direct callers that are not the first DTS-input launch have no
+        # virtual shift to publish; their storage offset is the correct base.
+        # The first input launch writes every freshly allocated sidecar lane.
+        DTS_center_offset = (
+            torch.empty_like(DTS_offset) if input_ws is not None else DTS_offset
+        )
     if not has_splits:
         DTS_reduced = Pi_in
         DTS_offset = Pi_in_offset
+        DTS_center_offset = Pi_in_offset
+    if input_ws is not None and (
+        not has_splits
+        or int(input_ws) != 0
+        or Pi_in.data_ptr() != DTS_reduced.data_ptr()
+        or Pi_in_offset.data_ptr() != DTS_offset.data_ptr()
+        or Pi_out.data_ptr() == DTS_reduced.data_ptr()
+        or DTS_center_offset.data_ptr() == DTS_offset.data_ptr()
+        or DTS_center_offset.data_ptr() == Pi_out_offset.data_ptr()
+        or DTS_center_offset.data_ptr() == Pibar_offset.data_ptr()
+    ):
+        raise ValueError(
+            "centered split virtual framing requires wave-local aliased Pi/DTS inputs "
+            "and a distinct output buffer"
+        )
+    compute_diff = pi_residual_out is not None
     block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
     _wave_step_centered_kernel[(W,)](
         Pi_in,
@@ -842,12 +963,15 @@ def compute_wave_step_centered(
         family_idx,
         DTS_reduced,
         DTS_offset,
+        DTS_center_offset,
         has_splits,
+        bool(input_ws is not None),
         Pi_out,
         Pi_out_offset,
         Pibar,
         Pibar_offset,
         pibar_row_max,
+        pi_residual_out if compute_diff else pibar_row_max,
         S,
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
@@ -855,6 +979,7 @@ def compute_wave_step_centered(
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_FINAL_PIBAR=bool(store_final_pibar),
+        COMPUTE_DIFF=compute_diff,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=8,
@@ -896,7 +1021,9 @@ def compute_dts_forward_centered(
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        log_split_probs = log_split_probs.reshape(N).contiguous()
+        # Preprocessing owns split statics in fp64. Match the normal DTS boundary:
+        # fp32 residual kernels must not acquire an fp64 loop-carried accumulator.
+        log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
     if n_eq1 is None:
         n_eq1 = N
         eq1_reduce_idx = reduce_idx
@@ -943,21 +1070,12 @@ def compute_dts_forward_centered(
         ge2_max_fanout = int((ge2_ptr[1:] - ge2_ptr[:-1]).max().item())
     max_tiles = max(1, triton.cdiv(int(ge2_max_fanout), tile_splits))
     n_groups = int(ge2_parent_ids.numel())
-    _dts_ge2_centered_offset_kernel[(n_groups,)](
-        Pi_offset,
-        Pibar_offset,
-        lefts[int(n_eq1) :],
-        rights[int(n_eq1) :],
-        ge2_ptr,
-        ge2_parent_ids,
-        active,
-        out_offset,
-        USE_ACTIVE=bool(active_parent_rows is not None),
-        num_warps=1,
-    )
     partial_shape = (n_groups * max_tiles, S)
     partial_max = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
     partial_sum = torch.empty(partial_shape, device=Pi.device, dtype=Pi.dtype)
+    partial_offset = torch.empty(
+        (n_groups * max_tiles,), device=Pi.device, dtype=torch.float64
+    )
     _dts_ge2_centered_stage1_kernel[(n_groups, max_tiles, triton.cdiv(S, block_s))](
         Pi,
         Pi_offset,
@@ -973,9 +1091,9 @@ def compute_dts_forward_centered(
         ge2_ptr,
         ge2_parent_ids,
         active,
-        out_offset,
         partial_max,
         partial_sum,
+        partial_offset,
         family_idx,
         int(family_offset),
         split_offset=int(n_eq1),
@@ -994,7 +1112,9 @@ def compute_dts_forward_centered(
         active,
         partial_max,
         partial_sum,
+        partial_offset,
         out,
+        out_offset,
         MAX_TILES=max_tiles,
         S=S,
         TILE_SPLITS=tile_splits,

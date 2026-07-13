@@ -66,11 +66,16 @@ def run_fit(args) -> int:
     # Mode->recipe dispatch lives in fit_dtl (the single canonical entry): genewise -> fit_genewise,
     # global -> fit_global, specieswise -> raises NotImplementedError with guidance to
     # fit_specieswise/map_cv (no well-posed one-shot fit; caught below and surfaced cleanly).
-    # Pass an explicit solver_options only when the user actually overrode one (--config /
-    # --pi-iters / --neumann-terms / --e-max-iter); otherwise leave it None so fit_dtl uses its
+    # Pass explicit solver_options only when the user actually overrode one (--config or a
+    # solver flag); otherwise leave it None so fit_dtl uses its
     # robust Neumann E-adjoint default (fp32 GMRES floors ~1e-6 mid-fit at large S).
-    user_solver = (args.config is not None or args.pi_iters is not None
-                   or args.neumann_terms is not None or args.e_max_iter is not None)
+    user_solver = (
+        args.config is not None
+        or args.pi_iters is not None
+        or getattr(args, "pi_representation", None) is not None
+        or args.neumann_terms is not None
+        or args.e_max_iter is not None
+    )
     try:
         res = fit_dtl(args.species, args.gene, args.mode, device=args.device,
                       dtype=_common.make_dtype(args.dtype), max_steps=args.steps,

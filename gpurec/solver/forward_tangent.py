@@ -26,6 +26,7 @@ from gpurec.core.parameters.extract_parameters import (
     extract_parameters_weighted_receivers,
 )
 from gpurec.core.kernels.dts_fused import compute_dts_forward
+from gpurec.core.kernels.centered_pi_forward import compute_dts_forward_centered
 from gpurec.core.kernels.dts_tangent import compute_dts_tangent
 from gpurec.core.kernels.e_step_tangent import e_tangent_fixed_point
 from gpurec.core.kernels.wave_tangent import (
@@ -203,12 +204,24 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
 
     pi = sv["pi_wave"]
     pibar = sv["pibar_wave"]
+    centered_state = sv.get("centered_pi_state")
+    centered = centered_state is not None
+    configured_centered = (
+        str(getattr(static.solver_options, "pi_representation", "absolute")).strip().lower()
+        == "centered"
+    )
+    if configured_centered and not centered:
+        raise RuntimeError(
+            "centered JVP requires saved['centered_pi_state'] from the matching forward_solve"
+        )
+    pi_offset = centered_state.pi_offset if centered else None
+    pibar_offset = centered_state.pibar_offset if centered else None
     C = int(pi.shape[0])
     dpi = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
     dpibar = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
     d_dts_by_ws = {} if return_full else None
 
-    def step(dPi_out, dts_r, d_dts, ws, W, has_leaf, store):
+    def step(dPi_out, dts_r, d_dts, dts_offset, ws, W, has_leaf, store):
         compute_wave_step_tangent(
             pi, dpi, dPi_out, ws, W, S,
             base["mc"], dcst["dMC"], base["dl"], dcst["dDL"], base["ebar"], dcst["dEbar"],
@@ -218,6 +231,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
             item_idx=item_idx, dPibar_out=(dpibar if store else None),
             has_leaf_term=has_leaf, input_ws=None, use_col_weights=use_col_weights,
             dcol_log_probs=dcol,
+            pi_offset=pi_offset, dts_offset=dts_offset,
         )
 
     for meta in wl["wave_metas"]:
@@ -225,14 +239,26 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
         has_splits = "sl" in meta
         has_leaf = not has_splits
         if has_splits:
-            dts_r = compute_dts_forward(
-                pi, pibar, meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
-                base["pd_param"], base["ps_param"], family_idx=item_idx,
-                log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
-                eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
-                ge2_parent_ids=meta.get("ge2_parent_ids"), ge2_max_fanout=meta.get("ge2_max_fanout"),
-                family_offset=ws,
-            )
+            if centered:
+                dts_r, dts_offset = compute_dts_forward_centered(
+                    pi, pi_offset, pibar, pibar_offset,
+                    meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
+                    base["pd_param"], base["ps_param"], family_idx=item_idx,
+                    log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
+                    eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
+                    ge2_parent_ids=meta.get("ge2_parent_ids"),
+                    ge2_max_fanout=meta.get("ge2_max_fanout"), family_offset=ws,
+                )
+            else:
+                dts_r = compute_dts_forward(
+                    pi, pibar, meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
+                    base["pd_param"], base["ps_param"], family_idx=item_idx,
+                    log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
+                    eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
+                    ge2_parent_ids=meta.get("ge2_parent_ids"),
+                    ge2_max_fanout=meta.get("ge2_max_fanout"), family_offset=ws,
+                )
+                dts_offset = None
             d_dts = compute_dts_tangent(
                 pi, pibar, dpi, dpibar, meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
                 base["pd_param"], base["ps_param"], dcst["dpd_param"], dcst["dps_param"], dts_r, item_idx,
@@ -240,9 +266,10 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
                 ge2_parent_ids=meta.get("ge2_parent_ids"), ge2_max_fanout=meta.get("ge2_max_fanout"),
                 item_offset=ws,
+                pi_offset=pi_offset, pibar_offset=pibar_offset, dts_offset=dts_offset,
             )
         else:
-            dts_r = d_dts = None
+            dts_r = d_dts = dts_offset = None
         if return_full and d_dts is not None and keep_d_dts:
             d_dts_by_ws[ws] = d_dts
 
@@ -260,18 +287,19 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 leaf_state_idx=leaf_state_idx, leaf_logp=base["leaf"], dleaf_logp=dcst["dleaf"],
                 item_idx=item_idx, dPibar_out=dpibar, has_leaf_term=has_leaf,
                 use_col_weights=use_col_weights, dcol_log_probs=dcol,
+                pi_offset=pi_offset, dts_offset=dts_offset,
             )
         elif self_iters is not None:
             # reference (unfused) fixed-count path: one launch per Jacobi step
             n_it = max(int(self_iters), 1)
             for _ in range(n_it - 1):
-                step(dpi, dts_r, d_dts, ws, W, has_leaf, store=False)  # in-place Jacobi
-            step(dpi, dts_r, d_dts, ws, W, has_leaf, store=True)  # last step writes dpibar
+                step(dpi, dts_r, d_dts, dts_offset, ws, W, has_leaf, store=False)  # in-place Jacobi
+            step(dpi, dts_r, d_dts, dts_offset, ws, W, has_leaf, store=True)  # last step writes dpibar
         else:
             prev = dpi.narrow(0, ws, W).clone()
             converged = False
             for _ in range(int(self_max_iter)):
-                step(dpi, dts_r, d_dts, ws, W, has_leaf, store=False)  # in-place Jacobi on dpi[ws:ws+W]
+                step(dpi, dts_r, d_dts, dts_offset, ws, W, has_leaf, store=False)  # in-place Jacobi on dpi[ws:ws+W]
                 cur = dpi.narrow(0, ws, W)
                 diff = float((cur - prev).abs().max())
                 scale = float(cur.abs().max())
@@ -289,7 +317,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                     "may be inaccurate. Raise self_max_iter (default 200) or self_tol.",
                     RuntimeWarning, stacklevel=2,
                 )
-            step(dpi, dts_r, d_dts, ws, W, has_leaf, store=True)  # write converged dpibar[ws:ws+W]
+            step(dpi, dts_r, d_dts, dts_offset, ws, W, has_leaf, store=True)  # write converged dpibar[ws:ws+W]
 
     roots = dpi.index_select(0, wl["root_clade_ids"])
     if return_full:

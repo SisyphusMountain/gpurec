@@ -34,6 +34,7 @@ _WST_NUM_WARPS = int(os.environ.get("NEWTON_WST_NUM_WARPS", "4"))
 @triton.jit
 def _wave_step_tangent_kernel(
     Pi_ptr, dPi_ptr,
+    Pi_offset_ptr,
     ws, pi_ws,
     max_coupling_ptr, dMC_ptr,
     DL_ptr, dDL_ptr,
@@ -45,7 +46,7 @@ def _wave_step_tangent_kernel(
     node_child1_ptr, node_child2_ptr, node_parent_ptr,
     leaf_state_ptr, leaf_logp_ptr, dleaf_logp_ptr,
     item_idx_ptr,
-    DTS_ptr, dDTS_ptr,
+    DTS_ptr, dDTS_ptr, DTS_offset_ptr,
     has_splits: tl.constexpr,
     dPi_new_ptr,
     dPibar_out_ptr,
@@ -57,6 +58,7 @@ def _wave_step_tangent_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
     USE_COL_WEIGHTS: tl.constexpr,
+    CENTERED: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     NEG = -float("inf")
@@ -70,6 +72,12 @@ def _wave_step_tangent_kernel(
     s_offs = tl.arange(0, BLOCK_S)
     mask = s_offs < S
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
+
+    # Offsets are gauges, not differentiable state.  Centered primal weights
+    # are formed in the input Pi row's frame; dPi/dPibar remain derivatives of
+    # the represented absolute rows and therefore need no offset tangent.
+    if CENTERED:
+        pi_offset = tl.load(Pi_offset_ptr + pi_ws + w)
 
     pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
     dpi_w = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
@@ -153,6 +161,8 @@ def _wave_step_tangent_kernel(
         leaf_hit = mask & (leaf_state == s_offs)
         leaf_logp = tl.load(leaf_logp_ptr + item_const * S + s_offs, mask=mask, other=NEG)
         dleaf = tl.load(dleaf_logp_ptr + item_const * S + s_offs, mask=mask, other=0.0)
+        if CENTERED:
+            leaf_logp = leaf_logp + (0.0 - pi_offset).to(DTYPE)
         t5 = tl.where(leaf_hit, leaf_logp, NEG)
         dt5 = tl.where(leaf_hit, dleaf, zero)
     else:
@@ -162,6 +172,9 @@ def _wave_step_tangent_kernel(
     m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), tl.maximum(t4, t5))
     if has_splits:
         dts_r = tl.load(DTS_ptr + out_base + s_offs, mask=mask, other=NEG)
+        if CENTERED:
+            dts_offset = tl.load(DTS_offset_ptr + w)
+            dts_r = dts_r + (dts_offset - pi_offset).to(DTYPE)
         ddts = tl.load(dDTS_ptr + out_base + s_offs, mask=mask, other=0.0)
         m = tl.maximum(m, dts_r)
     m_safe = tl.where(m != NEG, m, zero)
@@ -189,6 +202,7 @@ def _wave_step_tangent_kernel(
 @triton.jit
 def _wave_step_tangent_selfloop_kernel(
     Pi_ptr, dPi_ptr,
+    Pi_offset_ptr,
     ws, pi_ws,
     max_coupling_ptr, dMC_ptr,
     DL_ptr, dDL_ptr,
@@ -200,7 +214,7 @@ def _wave_step_tangent_selfloop_kernel(
     node_child1_ptr, node_child2_ptr, node_parent_ptr,
     leaf_state_ptr, leaf_logp_ptr, dleaf_logp_ptr,
     item_idx_ptr,
-    DTS_ptr, dDTS_ptr,
+    DTS_ptr, dDTS_ptr, DTS_offset_ptr,
     has_splits: tl.constexpr,
     dPi_new_ptr,
     dPibar_out_ptr,
@@ -213,6 +227,7 @@ def _wave_step_tangent_selfloop_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
     USE_COL_WEIGHTS: tl.constexpr,
+    CENTERED: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Register-resident fusion of the per-wave tangent self-loop.
@@ -236,6 +251,9 @@ def _wave_step_tangent_selfloop_kernel(
     s_offs = tl.arange(0, BLOCK_S)
     mask = s_offs < S
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
+
+    if CENTERED:
+        pi_offset = tl.load(Pi_offset_ptr + pi_ws + w)
 
     # ---- invariant setup (computed once) ----
     pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
@@ -297,6 +315,8 @@ def _wave_step_tangent_selfloop_kernel(
         leaf_hit = mask & (leaf_state == s_offs)
         leaf_logp = tl.load(leaf_logp_ptr + item_const * S + s_offs, mask=mask, other=NEG)
         dleaf = tl.load(dleaf_logp_ptr + item_const * S + s_offs, mask=mask, other=0.0)
+        if CENTERED:
+            leaf_logp = leaf_logp + (0.0 - pi_offset).to(DTYPE)
         t5 = tl.where(leaf_hit, leaf_logp, NEG)
         dt5 = tl.where(leaf_hit, dleaf, zero)
     else:
@@ -306,6 +326,9 @@ def _wave_step_tangent_selfloop_kernel(
     m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), tl.maximum(t4, t5))
     if has_splits:
         dts_r = tl.load(DTS_ptr + out_base + s_offs, mask=mask, other=NEG)
+        if CENTERED:
+            dts_offset = tl.load(DTS_offset_ptr + w)
+            dts_r = dts_r + (dts_offset - pi_offset).to(DTYPE)
         ddts = tl.load(dDTS_ptr + out_base + s_offs, mask=mask, other=0.0)
         m = tl.maximum(m, dts_r)
     m_safe = tl.where(m != NEG, m, zero)
@@ -357,6 +380,31 @@ def _wave_step_tangent_selfloop_kernel(
         tl.store(dPibar_out_ptr + global_base + s_offs, dpibar, mask=mask)
 
 
+def _prepare_centered_wave_offsets(Pi_in, pi_offset, dts_offset, has_splits, W):
+    """Validate the optional centered sidecar without touching the absolute path."""
+    centered = pi_offset is not None
+    if not centered:
+        if dts_offset is not None:
+            raise ValueError("dts_offset requires pi_offset")
+        return False, Pi_in, Pi_in
+    if pi_offset.ndim != 1 or int(pi_offset.shape[0]) != int(Pi_in.shape[0]):
+        raise ValueError(f"pi_offset must have shape [{int(Pi_in.shape[0])}]")
+    if pi_offset.dtype != torch.float64 or pi_offset.device != Pi_in.device:
+        raise TypeError("pi_offset must be fp64 on the Pi device")
+    if has_splits:
+        if dts_offset is None:
+            raise ValueError("dts_offset is required for a centered split wave")
+        if dts_offset.ndim != 1 or int(dts_offset.shape[0]) != int(W):
+            raise ValueError(f"dts_offset must have shape [{int(W)}]")
+        if dts_offset.dtype != torch.float64:
+            raise TypeError("dts_offset must use torch.float64")
+        if dts_offset.device != Pi_in.device:
+            raise ValueError("dts_offset must be on the Pi device")
+    elif dts_offset is not None:
+        raise ValueError("dts_offset is only valid for a split wave")
+    return True, pi_offset.contiguous(), (dts_offset.contiguous() if has_splits else pi_offset)
+
+
 def compute_wave_step_tangent_selfloop(
     Pi_in, dPi_io, ws, W, S, n_iters,
     max_coupling_mat, dMC, DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
@@ -364,6 +412,7 @@ def compute_wave_step_tangent_selfloop(
     DTS_reduced=None, dDTS=None,
     *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx,
     dPibar_out=None, has_leaf_term=True, use_col_weights=True, dcol_log_probs=None,
+    pi_offset=None, dts_offset=None,
 ):
     """Run the fixed-count tangent self-loop (``n_iters`` in-place Jacobi steps) for one wave in a
     SINGLE kernel launch. Overwrites ``dPi_io[ws:ws+W]`` with the final tangent and, if
@@ -373,6 +422,9 @@ def compute_wave_step_tangent_selfloop(
     ``dcol_log_probs`` ([S] tangent of receiver_log_probs) is the alpha SEED; when
     ``use_col_weights`` it enters the pibar-denom tangent alongside dPi (loop-invariant)."""
     has_splits = DTS_reduced is not None
+    centered, pi_offset_arg, dts_offset_arg = _prepare_centered_wave_offsets(
+        Pi_in, pi_offset, dts_offset, has_splits, W
+    )
     _, const_row_stride = _prepare_wave_launch(S, DL)
     block_s = int(triton.next_power_of_2(S))
     store_pibar = dPibar_out is not None
@@ -382,6 +434,7 @@ def compute_wave_step_tangent_selfloop(
             else dcol_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype).reshape(S).contiguous())
     _wave_step_tangent_selfloop_kernel[(int(W),)](
         Pi_in, dPi_io,
+        pi_offset_arg,
         ws, ws,
         max_coupling_mat, dMC,
         DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
@@ -391,6 +444,7 @@ def compute_wave_step_tangent_selfloop(
         item_idx,
         DTS_reduced if has_splits else dummy,
         dDTS if has_splits else dummy,
+        dts_offset_arg,
         has_splits,
         dPi_out_rows,
         dPibar_out if store_pibar else dummy,
@@ -403,6 +457,7 @@ def compute_wave_step_tangent_selfloop(
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
         USE_COL_WEIGHTS=bool(use_col_weights),
+        CENTERED=bool(centered),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=_WST_NUM_WARPS,
     )
@@ -415,11 +470,15 @@ def compute_wave_step_tangent(
     DTS_reduced=None, dDTS=None,
     *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx,
     dPibar_out=None, has_leaf_term=True, input_ws=None, use_col_weights=True, dcol_log_probs=None,
+    pi_offset=None, dts_offset=None,
 ):
     """One tangent application of the wave step. Writes dPi_out[ws:ws+W]; optionally dPibar_out.
 
     ``dcol_log_probs`` ([S] tangent of receiver_log_probs): the alpha SEED into the pibar denom."""
     has_splits = DTS_reduced is not None
+    centered, pi_offset_arg, dts_offset_arg = _prepare_centered_wave_offsets(
+        Pi_in, pi_offset, dts_offset, has_splits, W
+    )
     _, const_row_stride = _prepare_wave_launch(S, DL)
     block_s = int(triton.next_power_of_2(S))
     store_pibar = dPibar_out is not None
@@ -429,6 +488,7 @@ def compute_wave_step_tangent(
             else dcol_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype).reshape(S).contiguous())
     _wave_step_tangent_kernel[(int(W),)](
         Pi_in, dPi_in,
+        pi_offset_arg,
         ws, ws if input_ws is None else int(input_ws),
         max_coupling_mat, dMC,
         DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
@@ -438,6 +498,7 @@ def compute_wave_step_tangent(
         item_idx,
         DTS_reduced if has_splits else dummy,
         dDTS if has_splits else dummy,
+        dts_offset_arg,
         has_splits,
         dPi_out_rows,
         dPibar_out if store_pibar else dummy,
@@ -449,6 +510,7 @@ def compute_wave_step_tangent(
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
         USE_COL_WEIGHTS=bool(use_col_weights),
+        CENTERED=bool(centered),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=_WST_NUM_WARPS,
     )

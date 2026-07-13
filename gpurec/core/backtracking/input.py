@@ -54,6 +54,19 @@ def sample_reconciliations(model, *, family_index: int = 0, seed: int = 0):
     pi = pi_wave.index_select(0, perm)
     pibar = pibar_wave.index_select(0, perm)
     C = int(family["C"])
+    centered_state = getattr(batch_static, "centered_pi_forward_state", None)
+    if centered_state is not None:
+        # The native sampler consumes host fp64 absolute log values. Reconstruct
+        # only the selected family after restoring preprocessing order; doing
+        # this at the sampler boundary keeps residual buffers centered for the
+        # resident solve and avoids two full-batch fp64 matrices.
+        pi_offset = centered_state.pi_offset.index_select(0, perm)[offset : offset + C]
+        pibar_offset = centered_state.pibar_offset.index_select(0, perm)[offset : offset + C]
+        pi_family = pi[offset : offset + C].double() + pi_offset[:, None]
+        pibar_family = pibar[offset : offset + C].double() + pibar_offset[:, None]
+    else:
+        pi_family = pi[offset : offset + C]
+        pibar_family = pibar[offset : offset + C]
     species_helpers = model.species_helpers
     S = int(species_helpers["S"])
 
@@ -66,8 +79,8 @@ def sample_reconciliations(model, *, family_index: int = 0, seed: int = 0):
         _numpy(family.get("split_parents_sorted", [clade for clade in range(C) if int(leaf_species[clade]) < 0]), torch.int64),
         _numpy(family["split_leftrights_sorted"], torch.int64),
         _numpy(family.get("log_split_probs_sorted", torch.zeros(len(family["split_leftrights_sorted"]) // 2)), torch.float64),
-        _numpy(pi[offset : offset + C], torch.float64),
-        _numpy(pibar[offset : offset + C], torch.float64),
+        _numpy(pi_family, torch.float64),
+        _numpy(pibar_family, torch.float64),
         _numpy(_family_param(E, local_family_index), torch.float64),
         _numpy(_family_param(Ebar, local_family_index), torch.float64),
         _numpy(_species_param(log_p_s, model, local_family_index, S), torch.float64),

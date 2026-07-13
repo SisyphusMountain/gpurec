@@ -15,6 +15,14 @@ from gpurec.core.inference.solver import (
 from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
 
 
+def _centered_backward_kwargs(static: _BatchStatic) -> dict[str, torch.Tensor]:
+    """Return the offset side channel for the just-completed centered solve."""
+    state = getattr(static, "centered_pi_forward_state", None)
+    if state is None:
+        return {}
+    return {"pi_offset": state.pi_offset, "pibar_offset": state.pibar_offset}
+
+
 def theta_for_static(static: _BatchStatic, theta: torch.Tensor, *, genewise: bool) -> torch.Tensor:
     return theta.index_select(0, static.family_index_tensor) if genewise else theta
 
@@ -36,10 +44,15 @@ def origination_weights_for_static(static: _BatchStatic, origination_weights: to
 
 
 def _origination_log_probs(origination_weights: torch.Tensor, *, like: torch.Tensor):
-    """(log2-probs, probs) for non-uniform origination weights, else (None, None) for the fast path."""
+    """Fp64 head probabilities, or ``(None, None)`` for the uniform fast path."""
     if origination_weights_are_uniform(origination_weights):
         return None, None
-    o_lp = origination_log_probs_from_weights(origination_weights.to(device=like.device, dtype=like.dtype))
+    # The likelihood is an fp64 head, so promote the raw weights before the
+    # softmax. This also keeps its direct origination gradient aligned with the
+    # exact function returned by the forward pass.
+    o_lp = origination_log_probs_from_weights(
+        origination_weights.to(device=like.device, dtype=torch.float64)
+    )
     return o_lp, torch.exp2(o_lp)
 
 
@@ -119,6 +132,7 @@ def evaluate_static_loss_grad(
             reserved_scratch_bytes=(static.warm_scratch_reserved_bytes if _warm_v is not None else None),
             origination_log_probs=o_lp,
             origination_probs=o_p,
+            **_centered_backward_kwargs(static),
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
@@ -191,6 +205,7 @@ def evaluate_static_convergence(
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
             collect_backward_relres=True,
+            **_centered_backward_kwargs(static),
         )
     return forward_resid, backward_relres, backward_vk_mag
 
@@ -277,6 +292,7 @@ def evaluate_static_loss_vector_grad(
             reserved_scratch_bytes=(static.warm_scratch_reserved_bytes if _warm_v is not None else None),
             origination_log_probs=o_lp,
             origination_probs=o_p,
+            **_centered_backward_kwargs(static),
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
@@ -298,7 +314,10 @@ def stream_batches(
     need_grad: bool,
     need_origination_grad: bool = False,
 ):
-    total = torch.zeros((), dtype=theta.dtype, device=theta.device)
+    # The likelihood head and cross-batch family sum are representation-
+    # independent fp64 reductions; the dense forward state remains configured.
+    loss_dtype = torch.float64
+    total = torch.zeros((), dtype=loss_dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None
     grad_receiver_total = torch.zeros_like(receiver_weights) if need_grad else None
     grad_origination_total = (
@@ -314,7 +333,7 @@ def stream_batches(
             need_grad=need_grad,
             need_origination_grad=need_origination_grad,
         )
-        total = total + loss_i.to(device=theta.device, dtype=theta.dtype)
+        total = total + loss_i.to(device=theta.device, dtype=loss_dtype)
         if need_grad:
             if grad_i is None or grad_total is None or grad_receiver_i is None or grad_receiver_total is None:
                 raise RuntimeError("missing batch gradient")
@@ -353,7 +372,8 @@ def stream_genewise_loss_vector_grad(
 ):
     if theta.ndim < 1:
         raise ValueError("genewise theta must have a family batch dimension")
-    loss_total = torch.empty((int(theta.shape[0]),), dtype=theta.dtype, device=theta.device)
+    loss_dtype = torch.float64
+    loss_total = torch.empty((int(theta.shape[0]),), dtype=loss_dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None
     grad_receiver_total = torch.zeros_like(receiver_weights) if need_grad else None
     grad_origination_total = (
@@ -375,7 +395,7 @@ def stream_genewise_loss_vector_grad(
         loss_total.index_copy_(
             0,
             static.family_index_tensor,
-            loss_i.to(device=theta.device, dtype=theta.dtype),
+            loss_i.to(device=theta.device, dtype=loss_dtype),
         )
         if need_grad:
             if grad_i is None or grad_total is None or grad_receiver_i is None or grad_receiver_total is None:

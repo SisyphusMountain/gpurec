@@ -9,6 +9,10 @@ Public Python API for building, evaluating, and differentiating GPURec models.
 - `_execution.py`: Streams batched losses and implicit gradients while mapping full-model `theta` tensors to per-batch tensors.
 - `_autograd.py`: Defines the custom `torch.autograd.Function` bridge for single-batch and streamed full-model losses.
 - `_implicit_grad.py`: Implements the custom implicit-gradient path used by `GeneReconModel.backward`. It propagates adjoints through wave dynamic-programming kernels, solves the fixed-point adjoint system with BiCGSTAB, and maps parameter-space sensitivities back to `theta`.
-- `solver_options.py`: Defines the `SolverOptions` dataclass and validation rules for fixed-point, Pi iteration, implicit-gradient, and pruning controls.
+- `solver_options.py`: Defines the `SolverOptions` dataclass and validation rules for fixed-point, Pi iteration and representation, implicit-gradient, and pruning controls. See [`../../docs/centered_pi_mode.md`](../../docs/centered_pi_mode.md) for the current centered-mode support boundary.
 
 Generated `__pycache__` files are interpreter artifacts and are not part of the source API.
+
+The dense solve follows the model dtype. The final likelihood head and streamed
+family/batch loss reductions use fp64, including for fp32 models; parameter
+gradients are returned in their configured dtype.

@@ -1,5 +1,10 @@
 # Full-dataset convergence: why `|g|` stalls and the exact levers
 
+> **Implementation update (2026-07-13):** the final likelihood head and
+> streamed family/batch loss sums now use fp64 for fp32 models. The loss-
+> quantization barrier diagnosed below is therefore removed in current code;
+> the rest of this document records the experiment that motivated that fix.
+
 Investigation into why specieswise gradient descent on the **full archaea dataset**
 (~5379 families, `largest` order, λ=1 Sanderson penalty, S=119) does not drive the
 gradient to zero, and what the exact levers for true convergence are.

@@ -87,6 +87,7 @@ def solve_resident_e_pi(
         family_idx=static.rate_family_idx,
         pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
         pi_residual_out=pi_residual_out,
+        pi_representation=solver_options.pi_representation,
     )
     centered_pi_state = None
     if len(pi_forward_result) == 5:
@@ -160,7 +161,22 @@ def nll_vector_from_root_rows(
     supplied, each branch ``s`` instead carries weight ``origination_probs[s]`` in BOTH the
     origination prior (numerator) and the survival normalizer. The weighted form reduces exactly to
     the uniform form when the weights are equal.
+
+    The likelihood head is intentionally evaluated in fp64 even when the large
+    dynamic-programming state is fp32. Only ``[families, species]`` root rows
+    and the much smaller E/origination tensors are promoted; this removes the
+    final reduction's fp32 rounding without changing kernel storage.
     """
+    root_rows = root_rows.to(torch.float64)
+    E = E.to(device=root_rows.device, dtype=torch.float64)
+    if origination_log_probs is not None:
+        origination_log_probs = origination_log_probs.to(
+            device=root_rows.device, dtype=torch.float64
+        )
+    if origination_probs is not None:
+        origination_probs = origination_probs.to(
+            device=root_rows.device, dtype=torch.float64
+        )
     if origination_log_probs is None:
         return -(
             logsumexp2(root_rows, dim=-1)
@@ -196,7 +212,11 @@ def origination_grad_from_root_rows(
     genewise per-family origination weights ``[G,S]``, autograd preserves that shape and this returns
     ``[G,S]`` instead.
     """
-    ow = origination_weights.detach().to(device=root_rows.device, dtype=root_rows.dtype).requires_grad_(True)
+    # Match the fp64 likelihood head while returning the configured parameter
+    # dtype below. Autograd carries the small softmax/reduction in fp64 only.
+    ow = origination_weights.detach().to(
+        device=root_rows.device, dtype=torch.float64
+    ).requires_grad_(True)
     with torch.enable_grad():
         olp = origination_log_probs_from_weights(ow)
         op = torch.exp2(olp)

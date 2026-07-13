@@ -7,6 +7,16 @@ from gpurec.core.inference.logspace import safe_log2
 _LN2 = 0.6931471805599453
 
 
+def _log_softmax2(
+    logits: torch.Tensor, *, inputs_are_log2: bool = True
+) -> torch.Tensor:
+    """Base-2 log-softmax with a cheap fp64 evaluation for fp32 logits."""
+    compute = logits.double() if logits.dtype == torch.float32 else logits
+    if inputs_are_log2:
+        compute = compute * _LN2
+    return (torch.log_softmax(compute, dim=-1) / _LN2).to(logits.dtype)
+
+
 def as_family_param(t, family_rows, S=None):
     if t.ndim == 0:
         return t.reshape(1, 1).expand(int(family_rows), 1).contiguous()
@@ -31,7 +41,7 @@ def extract_parameters_uniform(theta, unnorm_row_max, *, specieswise=False, gene
     unnorm_row_max = unnorm_row_max.to(device=theta.device, dtype=theta.dtype)
     zeros = theta.new_zeros((*theta.shape[:-1], 1))
     logits = torch.cat((zeros, theta), dim=-1)
-    result = torch.log_softmax(logits * _LN2, dim=-1) / _LN2
+    result = _log_softmax2(logits)
     log_pT = result[..., 3]
     if specieswise and not genewise:
         max_transfer = log_pT + unnorm_row_max
@@ -41,7 +51,7 @@ def extract_parameters_uniform(theta, unnorm_row_max, *, specieswise=False, gene
 
 
 def receiver_log_probs_from_weights(receiver_weights: torch.Tensor) -> torch.Tensor:
-    return torch.log_softmax(receiver_weights, dim=-1) / _LN2
+    return _log_softmax2(receiver_weights, inputs_are_log2=False)
 
 
 def origination_log_probs_from_weights(origination_weights: torch.Tensor) -> torch.Tensor:
@@ -51,7 +61,7 @@ def origination_log_probs_from_weights(origination_weights: torch.Tensor) -> tor
     gauge-fixed by the softmax (invariant under a constant shift). The default all-equal weights
     give ``-log2(S)`` everywhere, i.e. the uniform origination prior the model assumes by default.
     """
-    return torch.log_softmax(origination_weights, dim=-1) / _LN2
+    return _log_softmax2(origination_weights, inputs_are_log2=False)
 
 
 def receiver_valid_log_normalizer(
@@ -98,7 +108,7 @@ def extract_parameters_weighted_receivers(
 ):
     zeros = theta.new_zeros((*theta.shape[:-1], 1))
     logits = torch.cat((zeros, theta), dim=-1)
-    result = torch.log_softmax(logits * _LN2, dim=-1) / _LN2
+    result = _log_softmax2(logits)
     log_pT = result[..., 3]
     receiver_log_probs = receiver_log_probs_from_weights(receiver_weights.to(device=theta.device, dtype=theta.dtype))
     receiver_norm = receiver_valid_log_normalizer(

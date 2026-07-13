@@ -5,6 +5,7 @@ import torch
 from gpurec.api.solver_options import SolverOptions
 from gpurec.config import dtype_rel_tol_default as _bicgstab_rel_tol_default, dtype_rel_tol_floor as _bicgstab_rel_tol_floor
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
+from gpurec.core.kernels.centered_pi_forward import compute_dts_forward_centered
 from gpurec.core.kernels.dts_fused import compute_dts_forward
 from gpurec.core.kernels.wave_backward import (
     active_mask_from_rhs_absmax_fused,
@@ -27,6 +28,31 @@ def _safe_exp2_ratio(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     a_safe = torch.where(neg_inf, torch.zeros_like(a), a)
     b_safe = torch.where(neg_inf, torch.zeros_like(b), b)
     return torch.where(neg_inf, torch.zeros_like(a), torch.exp2(a_safe - b_safe))
+
+
+def _likelihood_root_seed(
+    root_pi: torch.Tensor,
+    origination_log_probs: torch.Tensor | None,
+) -> torch.Tensor:
+    """Return the fp64-head root cotangent rounded once to state dtype."""
+    head = root_pi.to(torch.float64)
+    if origination_log_probs is not None:
+        head = head + origination_log_probs.to(device=head.device, dtype=head.dtype)
+    root_lse = _logsumexp2(head, dim=-1, keepdim=True)
+    return -_safe_exp2_ratio(head, root_lse).to(dtype=root_pi.dtype)
+
+
+def _likelihood_log2_survival(
+    extinction: torch.Tensor,
+    origination_probs: torch.Tensor | None,
+) -> torch.Tensor:
+    """Evaluate the likelihood head's survival normalizer in fp64."""
+    probabilities = (
+        None
+        if origination_probs is None
+        else origination_probs.to(device=extinction.device, dtype=torch.float64)
+    )
+    return _log2_survival(extinction.to(torch.float64), probabilities)
 
 
 # `_bicgstab_rel_tol_default` / `_bicgstab_rel_tol_floor` moved to
@@ -392,6 +418,8 @@ def implicit_grad_loglik_vjp_wave(
     cache: dict | None = None,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
+    pi_offset: torch.Tensor | None = None,
+    pibar_offset: torch.Tensor | None = None,
 ):
     if neumann_terms is None:
         neumann_terms = SolverOptions().neumann_terms
@@ -422,6 +450,19 @@ def implicit_grad_loglik_vjp_wave(
     C, S = Pi_star_wave.shape
     device = Pi_star_wave.device
     dtype = Pi_star_wave.dtype
+    centered = pi_offset is not None or pibar_offset is not None
+    if centered and (pi_offset is None or pibar_offset is None):
+        raise ValueError("pi_offset and pibar_offset must be provided together")
+    if centered:
+        for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
+            if value.ndim != 1 or int(value.shape[0]) != int(C):
+                raise ValueError(f"{name} must have shape [{int(C)}]")
+            if value.dtype != torch.float64:
+                raise TypeError(f"{name} must use torch.float64")
+            if value.device != device:
+                raise ValueError(f"{name} must be on the Pi device")
+        pi_offset = pi_offset.contiguous()
+        pibar_offset = pibar_offset.contiguous()
     family_rows = int(E_star.shape[0])
     E_family, Ebar_family, log_pS_family, log_pD_family, max_transfer_family = (
         as_family_species(x, S, family_rows)
@@ -443,11 +484,15 @@ def implicit_grad_loglik_vjp_wave(
     # Numerator seed = -softmax over the origination-weighted root rows. Uniform default
     # (origination_log_probs is None) is the plain softmax(root_Pi); a constant origination_log_probs
     # is only a shift, which softmax ignores, so this is identical at uniform.
-    root_Pi_w = root_Pi if origination_log_probs is None else root_Pi + origination_log_probs
-    root_lse = _logsumexp2(root_Pi_w, dim=-1, keepdim=True)
     # seed_root=None -> the loss seed -softmax2(root_Pi_w) (production); a caller-supplied root
     # cotangent (the GGN/J^T path) is used verbatim.
-    seed = -_safe_exp2_ratio(root_Pi_w, root_lse) if seed_root is None else seed_root.to(dtype)
+    seed = (
+        _likelihood_root_seed(root_Pi, origination_log_probs)
+        if seed_root is None
+        else seed_root.to(dtype)
+    )
+    # The dense adjoint state retains the configured dtype.
+    seed = seed.to(device=device, dtype=dtype)
     accumulated_rhs.index_copy_(0, root_ids, seed)
     def _scatter_accum(acc: torch.Tensor, family_rows_for_wave: torch.Tensor, contrib: torch.Tensor) -> None:
         if contrib.dtype != acc.dtype:
@@ -497,8 +542,32 @@ def implicit_grad_loglik_vjp_wave(
         ).contiguous()
         has_splits = bool(meta.get("has_splits", "sl" in meta))
         has_leaf_term = int(meta.get("phase", 1 if not has_splits else 2)) == 1
-        dts_r = (
-            compute_dts_forward(
+        if has_splits and centered:
+            dts_r, dts_offset = compute_dts_forward_centered(
+                Pi_star_wave.detach(),
+                pi_offset,
+                Pibar_star_wave.detach(),
+                pibar_offset,
+                meta["sl"],
+                meta["sr"],
+                sp_child1,
+                sp_child2,
+                W,
+                meta["reduce_idx"],
+                log_pD_param,
+                log_pS_param,
+                family_idx=family_idx,
+                log_split_probs=meta.get("log_split_probs"),
+                n_eq1=meta.get("n_eq1"),
+                eq1_reduce_idx=meta.get("eq1_reduce_idx"),
+                ge2_ptr=meta.get("ge2_ptr"),
+                ge2_parent_ids=meta.get("ge2_parent_ids"),
+                ge2_max_fanout=meta.get("ge2_max_fanout"),
+                active_parent_rows=active_mask,
+                family_offset=ws,
+            )
+        elif has_splits:
+            dts_r = compute_dts_forward(
                 Pi_star_wave.detach(), Pibar_star_wave.detach(), meta["sl"], meta["sr"],
                 sp_child1,
                 sp_child2,
@@ -516,9 +585,10 @@ def implicit_grad_loglik_vjp_wave(
                 active_parent_rows=active_mask,
                 family_offset=ws,
             )
-            if has_splits
-            else None
-        )
+            dts_offset = None
+        else:
+            dts_r = None
+            dts_offset = None
         backward_out = wave_backward_uniform_fused(
             Pi_star_wave,
             Pibar_star_wave,
@@ -557,6 +627,9 @@ def implicit_grad_loglik_vjp_wave(
             return_last_increment=collect_backward_relres,
             initial_v=init_v,
             reserved_scratch_bytes=reserved_scratch_bytes,
+            pi_offset=pi_offset if centered else None,
+            pibar_offset=pibar_offset if centered else None,
+            dts_offset=dts_offset,
         )
         if collect_backward_relres:
             v_k, aw0, aw1, aw2, aw345, aw3, aw4, last_relres = backward_out
@@ -599,7 +672,8 @@ def implicit_grad_loglik_vjp_wave(
             row_active = (active_mask.reshape(W, -1) != 0).any(dim=1)
             v_clean = torch.where(row_active.unsqueeze(1), v_k, torch.zeros_like(v_k))
             cache.setdefault("waves", []).append(dict(
-                ws=ws, W=W, v=v_clean, dts_r=dts_r, active_mask=active_mask,
+                ws=ws, W=W, v=v_clean, dts_r=dts_r, dts_offset=dts_offset,
+                active_mask=active_mask,
                 has_splits=has_splits, has_leaf_term=has_leaf_term, meta=meta,
             ))
         family_rows_for_wave = family_idx[ws : ws + W]
@@ -644,6 +718,8 @@ def implicit_grad_loglik_vjp_wave(
                 grad_mt_two_stage_tile_splits=128,
                 skip_inactive_pibar_output_zero=True,
                 family_idx=family_idx,
+                pi_offset=pi_offset if centered else None,
+                pibar_offset=pibar_offset if centered else None,
             )
             uniform_cross_pibar_vjp_tree_from_ud_fused(
                 Pi_star_wave,
@@ -740,7 +816,7 @@ def _e_adjoint_and_theta_vjp(
         aux_outputs = (E_s1_from_E, E_s2_from_E, Ebar_from_E)
         aux_grads = (grad_E_s1, grad_E_s2, grad_Ebar)
         if not drop_norm:
-            denom = _log2_survival(E_req, origination_probs)
+            denom = _likelihood_log2_survival(E_req, origination_probs)
             direct_obj = denom.sum() if E_req.shape[0] == n_fam else (n_fam * denom).sum()
             aux_outputs = (direct_obj, *aux_outputs)
             aux_grads = (torch.ones_like(direct_obj), *aux_grads)

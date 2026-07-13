@@ -4,7 +4,7 @@ Origination weights are a per-species softmax distribution over the candidate or
 They enter ONLY the final NLL aggregation (not the fixed-point solve or kernels), so:
   * the default (uniform) path is byte-identical to the legacy uniform-origination likelihood, and
   * their gradient is exact and cheap.
-These tests verify all of that against finite differences in fp64.
+These tests verify fp64 finite differences and fp32-to-fp64 head alignment.
 """
 from pathlib import Path
 
@@ -12,7 +12,11 @@ import pytest
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.core.inference.solver import nll_vector_from_root_rows
+from gpurec.api._execution import _origination_log_probs
+from gpurec.core.inference.solver import (
+    nll_vector_from_root_rows,
+    origination_grad_from_root_rows,
+)
 from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
 from gpurec.core.scheduling import batching
 from gpurec.fit.optimize import first_order
@@ -57,6 +61,42 @@ def test_weighted_nll_reduces_to_uniform():
     olp = origination_log_probs_from_weights(torch.zeros(s, dtype=DT))
     weighted = nll_vector_from_root_rows(rr, e, origination_log_probs=olp, origination_probs=torch.exp2(olp))
     assert float((uniform - weighted).abs().max()) < 1e-12
+
+
+def test_fp32_origination_gradient_matches_promoted_head():
+    """The direct gradient differentiates the same fp64 head used by fp32 forward."""
+    torch.manual_seed(7)
+    root = torch.randn(3, 11, dtype=torch.float32) - 20.0
+    extinction = -torch.rand(3, 11, dtype=torch.float32) * 3.0
+    weights = torch.randn(11, dtype=torch.float32)
+
+    promoted = weights.double().requires_grad_(True)
+    log_probs = origination_log_probs_from_weights(promoted)
+    loss = nll_vector_from_root_rows(
+        root,
+        extinction,
+        origination_log_probs=log_probs,
+        origination_probs=torch.exp2(log_probs),
+    ).sum()
+    (reference,) = torch.autograd.grad(loss, promoted)
+
+    actual = origination_grad_from_root_rows(root, extinction, weights)
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, reference.float(), rtol=0.0, atol=0.0)
+
+
+def test_fp32_execution_promotes_raw_origination_weights_for_head():
+    weights = torch.linspace(-2.0, 1.0, 17, dtype=torch.float32)
+    log_probs, probabilities = _origination_log_probs(
+        weights,
+        like=torch.empty((), dtype=torch.float32),
+    )
+    reference = origination_log_probs_from_weights(weights.double())
+
+    assert log_probs.dtype == torch.float64
+    assert probabilities.dtype == torch.float64
+    torch.testing.assert_close(log_probs, reference, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(probabilities, torch.exp2(reference), rtol=0.0, atol=0.0)
 
 
 def test_origination_gradients_match_finite_differences(tmp_path: Path):

@@ -1,8 +1,6 @@
-import os
-from typing import NamedTuple
-
 import torch
 
+from ..centered_state import CenteredPiForwardState, CenteredPiState
 from ..kernels.dts_fused import compute_dts_forward
 from ..kernels.centered_pi_forward import (
     compute_dts_forward_centered,
@@ -11,17 +9,6 @@ from ..kernels.centered_pi_forward import (
 )
 from ..kernels.wave_step import compute_leaf_initial_wave_step, compute_wave_step
 from ..parameters.extract_parameters import as_family_param, as_family_species
-
-
-class CenteredPiForwardState(NamedTuple):
-    pi_offset: torch.Tensor
-    pibar_offset: torch.Tensor
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    fallback = "1" if default else "0"
-    return os.environ.get(name, fallback).lower() in ("1", "true", "yes", "on")
-
 
 def pi_wave_forward(
     wave_layout,
@@ -39,8 +26,12 @@ def pi_wave_forward(
     family_idx: torch.Tensor,
     pi_iters: int = 6,
     pi_residual_out: torch.Tensor | None = None,
+    pi_representation: str = "absolute",
 ):
-    if _env_flag("GPUREC_CENTERED_PI_FORWARD", False):
+    pi_representation = str(pi_representation).strip().lower()
+    if pi_representation not in ("absolute", "centered"):
+        raise ValueError("pi_representation must be one of: absolute, centered")
+    if pi_representation == "centered":
         return pi_wave_forward_centered(
             wave_layout=wave_layout,
             species_helpers=species_helpers,
@@ -172,8 +163,6 @@ def pi_wave_forward_centered(
     pi_iters = int(pi_iters)
     if pi_iters < 2 or pi_iters % 2 != 0:
         raise ValueError("pi_iters must be an even integer at least 2")
-    if pi_residual_out is not None:
-        raise RuntimeError("centered Pi forward does not yet report Pi residual diagnostics")
     if e.device.type != "cuda":
         raise RuntimeError("centered Pi forward currently requires CUDA")
     if e.dtype != torch.float32:
@@ -238,9 +227,13 @@ def pi_wave_forward_centered(
                 ge2_max_fanout=meta.get("ge2_max_fanout"),
                 family_offset=ws,
             )
+            # Virtual gauge used only by the forward wave consumer. DTS
+            # residual/offset inputs remain immutable for deterministic reads.
+            dts_center_offset = torch.empty_like(dts_offset)
         else:
             dts_r = None
             dts_offset = None
+            dts_center_offset = None
         has_leaf_term = "sl" not in meta
         for local_iter in range(pi_iters):
             pi_in = pi if (local_iter % 2 == 0) else pibar
@@ -297,6 +290,7 @@ def pi_wave_forward_centered(
                     max_ancestor_depth,
                     dts_r,
                     dts_offset,
+                    dts_center_offset,
                     leaf_species_idx=wave_layout["leaf_species_index"],
                     leaf_logp=log_p_s_family,
                     family_idx=family_idx,
@@ -305,11 +299,22 @@ def pi_wave_forward_centered(
                     has_leaf_term=has_leaf_term,
                     input_ws=step_input_ws,
                     use_receiver_weights=use_receiver_weights,
+                    pi_residual_out=(
+                        pi_residual_out if local_iter == pi_iters - 1 else None
+                    ),
                 )
 
+    state = CenteredPiState(
+        pi_offset=pi_offset,
+        pibar_offset=pibar_offset,
+    )
+    state.validate(pi, pibar, uniform_pibar_row_max, check_values=False)
     root_ids = wave_layout["root_clade_ids"]
-    root_rows = pi.index_select(0, root_ids).double() + pi_offset.index_select(0, root_ids).reshape(-1, 1)
-    return root_rows, pi, pibar, uniform_pibar_row_max, CenteredPiForwardState(pi_offset, pibar_offset)
+    root_rows = CenteredPiState.reconstruct_rows(
+        pi.index_select(0, root_ids),
+        pi_offset.index_select(0, root_ids),
+    )
+    return root_rows, pi, pibar, uniform_pibar_row_max, state
 
 
 Pi_wave_forward = pi_wave_forward

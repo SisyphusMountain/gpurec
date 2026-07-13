@@ -36,6 +36,7 @@ from gpurec.core.kernels.wave_step import _prepare_wave_launch, _tl_float_dtype
 @triton.jit
 def _wave_so_kernel(
     Pi_ptr, dPi_ptr, Pibar_ptr, dPibar_ptr,
+    Pi_offset_ptr, Pibar_offset_ptr,
     v_ptr,
     ws, S: tl.constexpr, stride: tl.constexpr,
     pibar_row_max_ptr,
@@ -45,7 +46,7 @@ def _wave_so_kernel(
     node_child1_ptr, node_child2_ptr, node_parent_ptr,
     leaf_state_ptr, leaf_logp_ptr, dleaf_logp_ptr,
     item_idx_ptr,
-    DTS_ptr, dDTS_ptr, has_splits: tl.constexpr,
+    DTS_ptr, dDTS_ptr, DTS_offset_ptr, has_splits: tl.constexpr,
     d_out_ptr, d_rhs_ptr, d_grad_col_ptr,
     d_aw0_ptr, d_aw1_ptr, d_aw2_ptr, d_aw345_ptr, d_aw3_ptr, d_aw4_ptr,
     sub_ptr, dsub_ptr,
@@ -55,6 +56,7 @@ def _wave_so_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     USE_COL_WEIGHTS: tl.constexpr,
     FOLD_RHS: tl.constexpr,
+    CENTERED: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     LN2 = 0.6931471805599453
@@ -76,6 +78,21 @@ def _wave_so_kernel(
     v = tl.load(v_ptr + out_base + s_offs, mask=mask, other=0.0)
     rm = tl.load(pibar_row_max_ptr + ws + w).to(DTYPE)
     rm_safe = tl.where(rm != NEG, rm, tl.zeros((), dtype=DTYPE))
+
+    if CENTERED:
+        pi_offset = tl.load(Pi_offset_ptr + ws + w)
+        pibar_offset = tl.load(Pibar_offset_ptr + ws + w)
+        pibar_corr = (pibar_offset - pi_offset).to(DTYPE)
+        leaf_corr = (-pi_offset).to(DTYPE)
+        if has_splits:
+            dts_offset = tl.load(DTS_offset_ptr + w)
+            dts_corr = (dts_offset - pi_offset).to(DTYPE)
+        else:
+            dts_corr = tl.zeros((), dtype=DTYPE)
+    else:
+        pibar_corr = tl.zeros((), dtype=DTYPE)
+        leaf_corr = tl.zeros((), dtype=DTYPE)
+        dts_corr = tl.zeros((), dtype=DTYPE)
 
     if USE_COL_WEIGHTS:
         colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
@@ -138,7 +155,7 @@ def _wave_so_kernel(
 
     t0 = dl + pi_w
     t1 = pi_w + ebar
-    t2 = pibar_w + e_val
+    t2 = pibar_w + e_val + pibar_corr
     t3 = sl1 + pi_s1
     t4 = sl2 + pi_s2
     dt0 = ddl + dpi_w
@@ -151,7 +168,7 @@ def _wave_so_kernel(
         leaf_hit = mask & (leaf_state == s_offs)
         leaf_logp = tl.load(leaf_logp_ptr + item_const * S + s_offs, mask=mask, other=NEG)
         dleaf = tl.load(dleaf_logp_ptr + item_const * S + s_offs, mask=mask, other=0.0)
-        t5 = tl.where(leaf_hit, leaf_logp, NEG)
+        t5 = tl.where(leaf_hit, leaf_logp + leaf_corr, NEG)
         dt5 = tl.where(leaf_hit, dleaf, zero)
     else:
         t5 = tl.full([BLOCK_S], NEG, dtype=DTYPE)
@@ -183,7 +200,7 @@ def _wave_so_kernel(
     dw5 = LN2 * w5 * (dt5 - dlse)
 
     if has_splits:
-        dts_r = tl.load(DTS_ptr + out_base + s_offs, mask=mask, other=NEG)
+        dts_r = tl.load(DTS_ptr + out_base + s_offs, mask=mask, other=NEG) + dts_corr
         d_dts = tl.load(dDTS_ptr + out_base + s_offs, mask=mask, other=0.0)
         dts_l = tl.where(mask & (lsum > 0.0), tl.log2(tl.where(lsum > 0.0, lsum, tl.full([BLOCK_S], 1.0, DTYPE))) + m, tl.full([BLOCK_S], NEG, DTYPE))
         pm = tl.maximum(dts_l, dts_r)
@@ -268,6 +285,7 @@ def wave_backward_so(
     dts_r=None, d_dts=None,
     *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx, has_leaf_term=True,
     use_col_weights=False, d_rhs=None, dcol=None,
+    pi_offset=None, pibar_offset=None, dts_offset=None,
 ):
     """Second-order contraction at fixed adjoint v. Returns
     (d_Av [W,S], d_aw0, d_aw1, d_aw2, d_aw345, d_aw3, d_aw4, d_grad_col [S]).
@@ -286,6 +304,32 @@ def wave_backward_so(
     _, const_row_stride = _prepare_wave_launch(S, DL)
     block_s = int(triton.next_power_of_2(S))
     dev, dt = Pi_star.device, Pi_star.dtype
+    centered = pi_offset is not None or pibar_offset is not None
+    if centered and (pi_offset is None or pibar_offset is None):
+        raise ValueError("pi_offset and pibar_offset must be provided together")
+    if centered:
+        expected_rows = int(Pi_star.shape[0])
+        for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
+            if value.ndim != 1 or int(value.shape[0]) != expected_rows:
+                raise ValueError(f"{name} must have shape [{expected_rows}]")
+            if value.dtype != torch.float64:
+                raise TypeError(f"{name} must use torch.float64")
+            if value.device != dev:
+                raise ValueError(f"{name} must be on the Pi device")
+        pi_offset = pi_offset.contiguous()
+        pibar_offset = pibar_offset.contiguous()
+        if has_splits:
+            if dts_offset is None:
+                raise ValueError("dts_offset is required for centered split-wave second order")
+            if dts_offset.ndim != 1 or int(dts_offset.shape[0]) != int(W):
+                raise ValueError(f"dts_offset must have shape [{int(W)}]")
+            if dts_offset.dtype != torch.float64:
+                raise TypeError("dts_offset must use torch.float64")
+            if dts_offset.device != dev:
+                raise ValueError("dts_offset must be on the Pi device")
+            dts_offset = dts_offset.contiguous()
+    elif dts_offset is not None:
+        raise ValueError("dts_offset requires centered Pi/Pibar offsets")
     d_out = torch.empty((W, S), device=dev, dtype=dt)
     d_aws = tuple(torch.empty((W, S), device=dev, dtype=dt) for _ in range(6))
     sub = torch.empty((W, S), device=dev, dtype=dt)
@@ -295,7 +339,10 @@ def wave_backward_so(
     d_grad_col = torch.zeros((S,), device=dev, dtype=dt)
     dummy = Pi_star
     _wave_so_kernel[(int(W),)](
-        Pi_star, dPi, Pibar_star, dPibar, v,
+        Pi_star, dPi, Pibar_star, dPibar,
+        pi_offset if centered else dummy,
+        pibar_offset if centered else dummy,
+        v,
         ws, S, S,
         pibar_row_max,
         mc, DL, dDL, Ebar, dEbar, E, dE, SL1, dSL1, SL2, dSL2,
@@ -305,6 +352,7 @@ def wave_backward_so(
         item_idx,
         dts_r if has_splits else dummy,
         d_dts if has_splits else dummy,
+        dts_offset if centered and has_splits else dummy,
         has_splits,
         d_out, d_rhs if fold_rhs else dummy, d_grad_col, *d_aws, sub, dsub,
         CONST_ROW_STRIDE=const_row_stride,
@@ -313,6 +361,7 @@ def wave_backward_so(
         USE_LEAF_INDEX=bool(has_leaf_term),
         USE_COL_WEIGHTS=bool(use_col_weights),
         FOLD_RHS=fold_rhs,
+        CENTERED=bool(centered),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         num_warps=8,
     )

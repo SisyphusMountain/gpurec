@@ -304,6 +304,9 @@ def _wave_backward_uniform_2d(
     self_loop_solver="neumann",
     return_last_increment=False,
     reserved_scratch_bytes=None,
+    pi_offset=None,
+    pibar_offset=None,
+    dts_offset=None,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -332,6 +335,32 @@ def _wave_backward_uniform_2d(
 
     device = Pi_star.device
     dtype = Pi_star.dtype
+    centered = pi_offset is not None or pibar_offset is not None
+    if centered and (pi_offset is None or pibar_offset is None):
+        raise ValueError("pi_offset and pibar_offset must be provided together")
+    if centered:
+        expected_rows = int(Pi_star.shape[0])
+        for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
+            if value.ndim != 1 or int(value.shape[0]) != expected_rows:
+                raise ValueError(f"{name} must have shape [{expected_rows}]")
+            if value.dtype != torch.float64:
+                raise TypeError(f"{name} must use torch.float64")
+            if value.device != device:
+                raise ValueError(f"{name} must be on the Pi device")
+        pi_offset = pi_offset.contiguous()
+        pibar_offset = pibar_offset.contiguous()
+        if dts_r is not None:
+            if dts_offset is None:
+                raise ValueError("dts_offset is required for centered split-wave backward")
+            if dts_offset.ndim != 1 or int(dts_offset.shape[0]) != int(W):
+                raise ValueError(f"dts_offset must have shape [{int(W)}]")
+            if dts_offset.dtype != torch.float64:
+                raise TypeError("dts_offset must use torch.float64")
+            if dts_offset.device != device:
+                raise ValueError("dts_offset must be on the Pi device")
+            dts_offset = dts_offset.contiguous()
+    elif dts_offset is not None:
+        raise ValueError("dts_offset requires centered Pi/Pibar offsets")
     receiver_log_probs = receiver_log_probs.to(device=device, dtype=dtype).contiguous()
     if sp_parent is None:
         raise ValueError("sp_parent is required for the retained 2D self-loop path")
@@ -396,8 +425,11 @@ def _wave_backward_uniform_2d(
     _wave_backward_uniform_2d_precompute_kernel[(n_row_blocks,)](
         Pi_star,
         Pibar_star,
+        pi_offset if centered else Pi_star,
+        pibar_offset if centered else Pibar_star,
         pibar_row_max,
         dts_r if dts_r is not None else Pi_star,
+        dts_offset if dts_offset is not None else Pi_star,
         dts_r is not None,
         rhs,
         active_mask if active_mask is not None else rhs,
@@ -437,6 +469,7 @@ def _wave_backward_uniform_2d(
         DTYPE=_tl_float_dtype(dtype),
         USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+        CENTERED=bool(centered),
         **launch_options,
     )
 
@@ -649,7 +682,10 @@ def _wave_backward_uniform_2d(
     _wave_backward_uniform_param_store_kernel[(n_row_blocks,)](
         Pi_star,
         Pibar_star,
+        pi_offset if centered else Pi_star,
+        pibar_offset if centered else Pibar_star,
         dts_r if dts_r is not None else Pi_star,
+        dts_offset if dts_offset is not None else Pi_star,
         dts_r is not None,
         v_k,
         active_mask if active_mask is not None else rhs,
@@ -692,6 +728,7 @@ def _wave_backward_uniform_2d(
         ACCUM_GRADS=bool(accum_self_loop_grads),
         PARAM_GRAD_VECTOR=bool(param_grad_vector),
         DTYPE=_tl_float_dtype(dtype),
+        CENTERED=bool(centered),
         **launch_options,
     )
 
@@ -732,6 +769,9 @@ def wave_backward_uniform_fused(
     self_loop_solver="neumann",
     return_last_increment=False,
     reserved_scratch_bytes=None,
+    pi_offset=None,
+    pibar_offset=None,
+    dts_offset=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -830,6 +870,9 @@ def wave_backward_uniform_fused(
         self_loop_solver=self_loop_solver,
         return_last_increment=return_last_increment,
         reserved_scratch_bytes=reserved_scratch_bytes,
+        pi_offset=pi_offset,
+        pibar_offset=pibar_offset,
+        dts_offset=dts_offset,
     )
 
 
@@ -862,11 +905,27 @@ def dts_cross_backward_accum_fused(
     grad_mt_two_stage_tile_splits=128,
     skip_inactive_pibar_output_zero=False,
     family_idx=None,
+    pi_offset=None,
+    pibar_offset=None,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
     n_ws = sl.shape[0]
     device = Pi_star.device
     dtype = Pi_star.dtype
+    centered = pi_offset is not None or pibar_offset is not None
+    if centered and (pi_offset is None or pibar_offset is None):
+        raise ValueError("pi_offset and pibar_offset must be provided together")
+    if centered:
+        expected_rows = int(Pi_star.shape[0])
+        for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
+            if value.ndim != 1 or int(value.shape[0]) != expected_rows:
+                raise ValueError(f"{name} must have shape [{expected_rows}]")
+            if value.dtype != torch.float64:
+                raise TypeError(f"{name} must use torch.float64")
+            if value.device != device:
+                raise ValueError(f"{name} must be on the Pi device")
+        pi_offset = pi_offset.contiguous()
+        pibar_offset = pibar_offset.contiguous()
 
     wlsp_flat = wlsp.squeeze(-1) if wlsp.ndim > 1 else wlsp
     family_idx_arg = None
@@ -995,6 +1054,8 @@ def dts_cross_backward_accum_fused(
 
     _dts_cross_backward_accum_kernel[(n_ws,)](
         Pi_star, Pibar_star,
+        pi_offset if centered else Pi_star,
+        pibar_offset if centered else Pibar_star,
         v_k,
         active_mask if active_mask is not None else v_k,
         sl, sr, reduce_idx, wlsp_flat,
@@ -1027,6 +1088,7 @@ def dts_cross_backward_accum_fused(
         SIDE_ACTIVE_THRESHOLD_ENABLED=side_threshold_enabled,
         SKIP_INACTIVE_PIBAR_OUTPUT_ZERO=bool(skip_inactive_pibar_output_zero),
         DTYPE=_tl_float_dtype(dtype),
+        CENTERED=bool(centered),
         **launch_options,
     )
 

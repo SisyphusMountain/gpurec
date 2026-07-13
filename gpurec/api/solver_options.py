@@ -45,6 +45,12 @@ class SolverOptions:
     # JVP (`gpurec.solver.forward_tangent`). Distinct from `e_tol` (the primal
     # E-step fixed point).
     e_tangent_tol: float = 1e-9
+    # Storage representation for the Pi/Pibar forward state. Kept at the end of
+    # the dataclass so adding it does not shift historical positional arguments.
+    # ``"absolute"`` is the production default. ``"centered"`` stores fp32 row
+    # residuals plus fp64 row offsets on CUDA. Native first-order, tangent, and
+    # HVP consumers carry the offset side channel without absolute reconstruction.
+    pi_representation: str = "absolute"
 
     def validate(self) -> None:
         if int(self.e_max_iter) < 1:
@@ -53,6 +59,10 @@ class SolverOptions:
             raise ValueError("e_tol must be positive")
         if int(self.pi_iters) < 2 or int(self.pi_iters) % 2 != 0:
             raise ValueError("pi_iters must be an even integer at least 2")
+        pi_representation = str(self.pi_representation).strip().lower()
+        if pi_representation not in ("absolute", "centered"):
+            raise ValueError("pi_representation must be one of: absolute, centered")
+        self.pi_representation = pi_representation
         if int(self.neumann_terms) < 0:
             raise ValueError("neumann_terms must be non-negative")
         self_loop_solver = str(self.self_loop_solver).strip().lower()
