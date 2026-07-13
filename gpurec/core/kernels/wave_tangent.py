@@ -1,16 +1,4 @@
-"""Forward-mode tangent (Jvp) of the Pi-wave self-loop step.
-
-Linearization of one ``compute_wave_step`` application (pi_forward.py): per row ``w``, state ``s``,
-``Pi_new = logsumexp2(t0..t5[,dts])`` with
-``t0=dl+Pi[s]``, ``t1=Pi[s]+ebar``, ``t2=pibar[s]+e``, ``t3=sl1+Pi[c1]``, ``t4=sl2+Pi[c2]``,
-``t5=leaf``. The tangent is ``dPi_new = Σ_k w_k dt_k`` with ``w_k = exp2(t_k - Pi_new)`` and the
-pibar differential ``dpibar[s] = (dRS - dAS[s]) / denom[s] + dmc[s]`` (same ancestor-path structure
-as the E-step tangent). ``dt`` forcing comes from the E-step tangent (de, debar, de_s1, de_s2),
-the parameter tangents (dlog_pD, dlog_pS, dmax_coupling), and the cross-wave ``dts`` tangent.
-
-Single-tile (whole row in one ``BLOCK_S`` tile, so ``S <= BLOCK_S``); ancestor sums use the parent
-chain (``MAX_ANCESTOR_DEPTH``), matching ``_wave_step_kernel_classic``.
-"""
+"""Wave-step tangent kernels; see ``docs/latex/kernel_mathematics.tex``."""
 
 from __future__ import annotations
 
@@ -229,16 +217,7 @@ def _wave_step_tangent_selfloop_kernel(
     USE_COL_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    """Register-resident fusion of the per-wave tangent self-loop.
-
-    Mathematically identical to calling ``_wave_step_tangent_kernel`` ``n_iters`` times in-place
-    on ``dpi[ws:ws+W]`` (the fixed-count Jacobi path of ``jvp_root_scores``), but the primal
-    softmax weights (e0..e5/inv/m), ``r``/``row_max``/``row_sum``/``ancestor_sum``, the children,
-    leaf, dts and ALL tangent constants are loop-INVARIANT, so they are loaded/computed ONCE and
-    the loop carries only the tangent ``dpi_w`` in registers. The ancestor walk reads the
-    precomputed invariant ``r`` and the live ``dpi_w`` via ``tl.gather`` (no global pi/dpi
-    reloads). Collapses ``n_iters`` launches -> 1 and the invariant global traffic ~``n_iters``x.
-    """
+    """Fuse fixed-count wave-tangent self-loop iterations."""
     NEG = -float("inf")
     w = tl.program_id(0)
     pi_base = (pi_ws + w) * stride
@@ -409,13 +388,7 @@ def compute_wave_step_tangent_selfloop(
     dPibar_out=None, has_leaf_term=True, use_col_weights=True, dcol_log_probs=None,
     pi_offset, dts_offset=None,
 ):
-    """Run the fixed-count tangent self-loop (``n_iters`` in-place Jacobi steps) for one wave in a
-    SINGLE kernel launch. Overwrites ``dPi_io[ws:ws+W]`` with the final tangent and, if
-    ``dPibar_out`` is given, writes ``dPibar_out[ws:ws+W]`` from the last iteration. Numerically
-    identical to looping ``compute_wave_step_tangent`` ``n_iters`` times in-place.
-
-    ``dcol_log_probs`` ([S] tangent of receiver_log_probs) is the alpha SEED; when
-    ``use_col_weights`` it enters the pibar-denom tangent alongside dPi (loop-invariant)."""
+    """Run fixed-count wave-tangent iterations; see the LaTeX reference."""
     has_splits = DTS_reduced is not None
     pi_offset_arg, dts_offset_arg = _prepare_wave_offsets(
         Pi_in, pi_offset, dts_offset, has_splits, W
@@ -466,9 +439,7 @@ def compute_wave_step_tangent(
     dPibar_out=None, has_leaf_term=True, input_ws=None, use_col_weights=True, dcol_log_probs=None,
     pi_offset, dts_offset=None,
 ):
-    """One tangent application of the wave step. Writes dPi_out[ws:ws+W]; optionally dPibar_out.
-
-    ``dcol_log_probs`` ([S] tangent of receiver_log_probs): the alpha SEED into the pibar denom."""
+    """Apply the wave-step JVP documented in the LaTeX reference."""
     has_splits = DTS_reduced is not None
     pi_offset_arg, dts_offset_arg = _prepare_wave_offsets(
         Pi_in, pi_offset, dts_offset, has_splits, W

@@ -1,19 +1,4 @@
-"""Second-order contraction of the E-step backward (for the analytic exact-Hessian HVP).
-
-The E-step backward (``_e_step_backward_prepare_2d_kernel`` + finalize, e_step.py) maps primals
-``x = (E, E_new, E_s1, E_s2, Ebar, log_pS, log_pD, log_pL[, col])`` and cotangents
-``g = (g_new, g_s1, g_s2, g_ebar)`` to ``(grad_E, grad_pS, grad_pD, grad_pL, grad_mc, grad_col)``.
-The outputs are LINEAR in ``g`` and nonlinear in ``x``, so their full tangent splits as
-
-    d[bwd(x; g)] = bwd(x; dg)          # existing kernel, applied to tangent cotangents
-                 + SO(x; g; dx)        # THIS kernel: (d/dx bwd)(x; g) . dx  at fixed g
-
-Term tangents mirror the primal kernel exactly: ``q_k = g_new * 2^{t_k - E_new}`` gives
-``dq_k = ln2 * q_k * (dt_k - dE_new)``; the pibar-tree part (``u = wbar/denom``,
-``pibar_vjp = r * (total_u - excluded_u)``) differentiates with the row-max tangent FROZEN —
-legitimate because every output is invariant to the row normalizer (the same invariance the
-forward tangent kernels rely on, FD-verified at ~1e-10).
-"""
+"""E-step second-order kernels; see ``docs/latex/kernel_mathematics.tex``."""
 
 from __future__ import annotations
 
@@ -22,8 +7,6 @@ import triton
 import triton.language as tl
 
 from gpurec.core.kernels.e_step import _tl_float_dtype
-
-_LN2 = 0.6931471805599453
 
 
 @triton.jit
@@ -44,30 +27,31 @@ def _e_step_so_prepare_kernel(
     base = g * S
     offs = tl.arange(0, BLOCK_S)
     mask = offs < S
-    neg_inf = -float("inf")
+    NEG_INF = -float("inf")
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
 
-    E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
+    E = tl.load(E_ptr + base + offs, mask=mask, other=NEG_INF)
     dE = tl.load(dE_ptr + base + offs, mask=mask, other=0.0)
-    E_new = tl.load(E_new_ptr + base + offs, mask=mask, other=neg_inf)
+    E_new = tl.load(E_new_ptr + base + offs, mask=mask, other=NEG_INF)
     dE_new = tl.load(dE_new_ptr + base + offs, mask=mask, other=0.0)
-    E_s1 = tl.load(E_s1_ptr + base + offs, mask=mask, other=neg_inf)
+    E_s1 = tl.load(E_s1_ptr + base + offs, mask=mask, other=NEG_INF)
     dE_s1 = tl.load(dE_s1_ptr + base + offs, mask=mask, other=0.0)
-    E_s2 = tl.load(E_s2_ptr + base + offs, mask=mask, other=neg_inf)
+    E_s2 = tl.load(E_s2_ptr + base + offs, mask=mask, other=NEG_INF)
     dE_s2 = tl.load(dE_s2_ptr + base + offs, mask=mask, other=0.0)
-    Ebar = tl.load(Ebar_ptr + base + offs, mask=mask, other=neg_inf)
+    Ebar = tl.load(Ebar_ptr + base + offs, mask=mask, other=NEG_INF)
     dEbar = tl.load(dEbar_ptr + base + offs, mask=mask, other=0.0)
-    pS = tl.load(log_pS_ptr + base + offs, mask=mask, other=neg_inf)
+    pS = tl.load(log_pS_ptr + base + offs, mask=mask, other=NEG_INF)
     dpS = tl.load(dlog_pS_ptr + base + offs, mask=mask, other=0.0)
-    pD = tl.load(log_pD_ptr + base + offs, mask=mask, other=neg_inf)
+    pD = tl.load(log_pD_ptr + base + offs, mask=mask, other=NEG_INF)
     dpD = tl.load(dlog_pD_ptr + base + offs, mask=mask, other=0.0)
-    pL = tl.load(log_pL_ptr + base + offs, mask=mask, other=neg_inf)
+    pL = tl.load(log_pL_ptr + base + offs, mask=mask, other=NEG_INF)
     dpL = tl.load(dlog_pL_ptr + base + offs, mask=mask, other=0.0)
     g_new = tl.load(g_new_ptr + base + offs, mask=mask, other=0.0)
     g_ebar = tl.load(g_ebar_ptr + base + offs, mask=mask, other=0.0)
-
+    # Uniform and weighted receiver measures are distinct model semantics. The
+    # unweighted branch represents equal receiver mass, not missing data.
     if USE_COL_WEIGHTS:
-        col = tl.load(col_log_probs_ptr + offs, mask=mask, other=neg_inf)
+        col = tl.load(col_log_probs_ptr + offs, mask=mask, other=NEG_INF)
         dcol = tl.load(dcol_ptr + offs, mask=mask, other=0.0)
         wE = col + E
         dwE = dcol + dE
@@ -75,7 +59,7 @@ def _e_step_so_prepare_kernel(
         wE = E
         dwE = dE
     row_max = tl.max(wE, axis=0)
-    row_max_safe = tl.where(row_max != neg_inf, row_max, tl.zeros([1], dtype=DTYPE))
+    row_max_safe = tl.where(row_max != NEG_INF, row_max, tl.zeros([1], dtype=DTYPE))
 
     # term tangents (q_k linear in g_new, nonlinear in primals)
     t0 = pS + E_s1 + E_s2
@@ -125,10 +109,10 @@ def _e_step_so_prepare_kernel(
     danc = zero
     for _ in range(0, MAX_ANCESTOR_DEPTH):
         valid = mask & (cur >= 0) & (cur < S)
-        E_a = tl.load(E_ptr + base + cur, mask=valid, other=neg_inf)
+        E_a = tl.load(E_ptr + base + cur, mask=valid, other=NEG_INF)
         dE_a = tl.load(dE_ptr + base + cur, mask=valid, other=0.0)
         if USE_COL_WEIGHTS:
-            col_a = tl.load(col_log_probs_ptr + cur, mask=valid, other=neg_inf)
+            col_a = tl.load(col_log_probs_ptr + cur, mask=valid, other=NEG_INF)
             dcol_a = tl.load(dcol_ptr + cur, mask=valid, other=0.0)
             r_a = tl.where(valid, tl.exp2(col_a + E_a - row_max_safe), zero)
             dr_a = LN2 * r_a * (dcol_a + dE_a)
@@ -182,16 +166,11 @@ def _e_step_so_finalize_kernel(
 def e_step_backward_so(
     E, E_new, E_s1, E_s2, Ebar, log_pS, log_pD, log_pL, col_log_probs,
     node_parent, node_child1, node_child2, max_ancestor_depth,
-    g_new, g_s1, g_s2, g_ebar,
+    g_new, g_ebar,
     dE, dE_new, dE_s1, dE_s2, dEbar, dlog_pS, dlog_pD, dlog_pL, dcol,
     *, use_col_weights=False,
 ):
-    """(d/dx of the e-step backward)(x; g) . dx at fixed cotangents g.
-
-    Returns (d_grad_E, d_grad_pS, d_grad_pD, d_grad_pL, d_grad_mc, d_grad_col). Note g_s1/g_s2
-    contribute only linearly (child scatters of fixed cotangents) so they do not appear in the
-    contraction; they are accepted for interface symmetry.
-    """
+    """Return the E-step second-order contraction documented in LaTeX."""
     G, S = int(E.shape[0]), int(E.shape[1])
     block_s = int(triton.next_power_of_2(S))
     d_grad_E, d_grad_pS, d_grad_pD, d_grad_pL, d_grad_mc, r, dr, excl, dexcl = (

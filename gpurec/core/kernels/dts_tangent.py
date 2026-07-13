@@ -1,16 +1,4 @@
-"""Forward-mode tangent (Jvp) of the cross-wave dts reduction.
-
-Linearization of ``compute_dts_forward`` (pi_forward.py). For each split (left row ``l``, right row
-``r``) feeding parent wave row ``p = reduce_idx[n]``, the 5 terms are
-``t0=lsp+log_d+pi_l+pi_r``, ``t1=lsp+pi_l+pibar_r``, ``t2=lsp+pi_r+pibar_l``,
-``t3=lsp+log_s+Pi[l,c1]+Pi[r,c2]``, ``t4=lsp+log_s+Pi[r,c1]+Pi[l,c2]``, and
-``dts_r[p,s] = logsumexp2`` over *all* of p's splits. The tangent is
-``d(dts_r[p,s]) = Σ_{splits of p} Σ_k w_k dt_k`` with ``w_k = exp2(t_k - dts_r[p,s])`` (the
-precomputed ``dts_r`` is the normalizer, so no online-softmax pass is needed).
-
-Split-parallel with an atomic scatter into the parent row, so the eq1 (1 split / parent) and ge2
-(many splits / parent) cases are handled uniformly via the full ``reduce_idx`` map.
-"""
+"""DTS tangent kernels; see ``docs/latex/kernel_mathematics.tex``."""
 
 from __future__ import annotations
 
@@ -27,30 +15,34 @@ from gpurec.core.kernels.pi_forward import (
 
 @triton.jit
 def _dts_tangent_kernel(
-    Pi, Pibar, dPi, dPibar, lefts, rights, node_child1, node_child2,
+    Pi, Pibar, dPi, dPibar, split_left_rows, split_right_rows,
+    species_child1, species_child2,
     log_pD, log_pS, dlog_pD, dlog_pS, log_split_probs, reduce_idx,
     dts_r_ptr, d_out_ptr, item_idx, item_offset,
     Pi_offset, Pibar_offset, dts_offset,
     S: tl.constexpr, BLOCK_S: tl.constexpr, ROW_STRIDE: tl.constexpr,
     BY_STATE: tl.constexpr, DTYPE: tl.constexpr,
 ):
-    NEG = -float("inf")
+    """Evaluate the DTS JVP defined in the kernel mathematics reference."""
+    NEG_INF = -float("inf")
     n = tl.program_id(0)
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
+    # Split metadata is stored as int32 to reduce bandwidth. Widen only values
+    # used in flattened addresses, whose products may exceed the int32 range.
     parent_w = tl.load(reduce_idx + n).to(tl.int64)
     item = tl.load(item_idx + item_offset + parent_w).to(tl.int64)
-    left = tl.load(lefts + n).to(tl.int64)
-    right = tl.load(rights + n).to(tl.int64)
+    left = tl.load(split_left_rows + n).to(tl.int64)
+    right = tl.load(split_right_rows + n).to(tl.int64)
     base_l = left * S
     base_r = right * S
 
-    pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG)
-    pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG)
-    pibar_l = tl.load(Pibar + base_l + s_offs, mask=mask, other=NEG)
-    pibar_r = tl.load(Pibar + base_r + s_offs, mask=mask, other=NEG)
+    pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG_INF)
+    pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG_INF)
+    pibar_l = tl.load(Pibar + base_l + s_offs, mask=mask, other=NEG_INF)
+    pibar_r = tl.load(Pibar + base_r + s_offs, mask=mask, other=NEG_INF)
     dpi_l = tl.load(dPi + base_l + s_offs, mask=mask, other=0.0)
     dpi_r = tl.load(dPi + base_r + s_offs, mask=mask, other=0.0)
     dpibar_l = tl.load(dPibar + base_l + s_offs, mask=mask, other=0.0)
@@ -61,14 +53,14 @@ def _dts_tangent_kernel(
     dlog_d = _load_rate(dlog_pD, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
     dlog_s = _load_rate(dlog_pS, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
 
-    c1 = tl.load(node_child1 + s_offs, mask=mask, other=S)
-    c2 = tl.load(node_child2 + s_offs, mask=mask, other=S)
+    c1 = tl.load(species_child1 + s_offs, mask=mask, other=S)
+    c2 = tl.load(species_child2 + s_offs, mask=mask, other=S)
     c1v = mask & (c1 < S)
     c2v = mask & (c2 < S)
-    pi_l_c1 = tl.load(Pi + base_l + c1, mask=c1v, other=NEG)
-    pi_r_c2 = tl.load(Pi + base_r + c2, mask=c2v, other=NEG)
-    pi_r_c1 = tl.load(Pi + base_r + c1, mask=c1v, other=NEG)
-    pi_l_c2 = tl.load(Pi + base_l + c2, mask=c2v, other=NEG)
+    pi_l_c1 = tl.load(Pi + base_l + c1, mask=c1v, other=NEG_INF)
+    pi_r_c2 = tl.load(Pi + base_r + c2, mask=c2v, other=NEG_INF)
+    pi_r_c1 = tl.load(Pi + base_r + c1, mask=c1v, other=NEG_INF)
+    pi_l_c2 = tl.load(Pi + base_l + c2, mask=c2v, other=NEG_INF)
     dpi_l_c1 = tl.load(dPi + base_l + c1, mask=c1v, other=0.0)
     dpi_r_c2 = tl.load(dPi + base_r + c2, mask=c2v, other=0.0)
     dpi_r_c1 = tl.load(dPi + base_r + c1, mask=c1v, other=0.0)
@@ -83,45 +75,47 @@ def _dts_tangent_kernel(
     pi_off_r = tl.load(Pi_offset + right)
     pibar_off_l = tl.load(Pibar_offset + left)
     pibar_off_r = tl.load(Pibar_offset + right)
-    corr0 = (pi_off_l + pi_off_r - out_offset).to(DTYPE)
-    corr1 = (pi_off_l + pibar_off_r - out_offset).to(DTYPE)
-    corr2 = (pi_off_r + pibar_off_l - out_offset).to(DTYPE)
-    t0 = lsp + log_d + pi_l + pi_r + corr0
-    t1 = lsp + pi_l + pibar_r + corr1
-    t2 = lsp + pi_r + pibar_l + corr2
-    t3 = lsp + log_s + pi_l_c1 + pi_r_c2 + corr0
-    t4 = lsp + log_s + pi_r_c1 + pi_l_c2 + corr0
-    dt0 = dlog_d + dpi_l + dpi_r
-    dt1 = dpi_l + dpibar_r
-    dt2 = dpi_r + dpibar_l
-    dt3 = dlog_s + dpi_l_c1 + dpi_r_c2
-    dt4 = dlog_s + dpi_r_c1 + dpi_l_c2
+    child_frame_shift = (pi_off_l + pi_off_r - out_offset).to(DTYPE)
+    left_transfer_frame_shift = (pi_off_l + pibar_off_r - out_offset).to(DTYPE)
+    right_transfer_frame_shift = (pi_off_r + pibar_off_l - out_offset).to(DTYPE)
+    duplication_log_weight = lsp + log_d + pi_l + pi_r + child_frame_shift
+    left_transfer_log_weight = lsp + pi_l + pibar_r + left_transfer_frame_shift
+    right_transfer_log_weight = lsp + pi_r + pibar_l + right_transfer_frame_shift
+    speciation_lr_log_weight = lsp + log_s + pi_l_c1 + pi_r_c2 + child_frame_shift
+    speciation_rl_log_weight = lsp + log_s + pi_r_c1 + pi_l_c2 + child_frame_shift
+    d_duplication = dlog_d + dpi_l + dpi_r
+    d_left_transfer = dpi_l + dpibar_r
+    d_right_transfer = dpi_r + dpibar_l
+    d_speciation_lr = dlog_s + dpi_l_c1 + dpi_r_c2
+    d_speciation_rl = dlog_s + dpi_r_c1 + dpi_l_c2
 
-    dts_out = tl.load(dts_r_ptr + parent_w * S + s_offs, mask=mask, other=NEG)
-    active = mask & (dts_out != NEG)
-    w0 = tl.exp2(t0 - dts_out)
-    w1 = tl.exp2(t1 - dts_out)
-    w2 = tl.exp2(t2 - dts_out)
-    w3 = tl.exp2(t3 - dts_out)
-    w4 = tl.exp2(t4 - dts_out)
-    contrib = w0 * dt0 + w1 * dt1 + w2 * dt2 + w3 * dt3 + w4 * dt4
+    dts_out = tl.load(dts_r_ptr + parent_w * S + s_offs, mask=mask, other=NEG_INF)
+    active = mask & (dts_out != NEG_INF)
+    duplication_probability = tl.exp2(duplication_log_weight - dts_out)
+    left_transfer_probability = tl.exp2(left_transfer_log_weight - dts_out)
+    right_transfer_probability = tl.exp2(right_transfer_log_weight - dts_out)
+    speciation_lr_probability = tl.exp2(speciation_lr_log_weight - dts_out)
+    speciation_rl_probability = tl.exp2(speciation_rl_log_weight - dts_out)
+    contrib = (
+        duplication_probability * d_duplication
+        + left_transfer_probability * d_left_transfer
+        + right_transfer_probability * d_right_transfer
+        + speciation_lr_probability * d_speciation_lr
+        + speciation_rl_probability * d_speciation_rl
+    )
     contrib = tl.where(active, contrib, zero)
     tl.atomic_add(d_out_ptr + parent_w * S + s_offs, contrib, sem="relaxed", mask=mask)
 
 
 def compute_dts_tangent(
-    Pi, Pibar, dPi, dPibar, lefts, rights, node_child1, node_child2, W, reduce_idx,
+    Pi, Pibar, dPi, dPibar, split_left_rows, split_right_rows,
+    species_child1, species_child2, W, reduce_idx,
     log_pD_vec, log_pS_vec, dlog_pD_vec, dlog_pS_vec, dts_r, item_idx,
-    *, log_split_probs=None, n_eq1=None, eq1_reduce_idx=None,
-    ge2_ptr=None, ge2_parent_ids=None, ge2_max_fanout=None, item_offset=0,
+    *, log_split_probs=None, item_offset=0,
     pi_offset, pibar_offset, dts_offset,
 ):
-    """Tangent of gauge-carrying DTS (full ``reduce_idx`` scatter).
-
-    The returned tensor differentiates the represented absolute DTS; gauge
-    selection itself is not differentiated.
-    """
-    N = int(lefts.shape[0])
+    """Return the DTS JVP; see ``docs/latex/kernel_mathematics.tex``."""
+    N = int(split_left_rows.shape[0])
     S = int(Pi.shape[1])
     d_out = torch.zeros((W, S), device=Pi.device, dtype=Pi.dtype)
     C = int(Pi.shape[0])
@@ -158,7 +152,8 @@ def compute_dts_tangent(
     row_stride = 0 if int(log_pD_vec.shape[0]) == 1 else int(log_pD_vec.stride(0))
     block_s = min(512, triton.next_power_of_2(S))
     _dts_tangent_kernel[(N, triton.cdiv(S, block_s))](
-        Pi, Pibar, dPi, dPibar, lefts, rights, node_child1, node_child2,
+        Pi, Pibar, dPi, dPibar, split_left_rows, split_right_rows,
+        species_child1, species_child2,
         log_pD_vec, log_pS_vec, dlog_pD_vec, dlog_pS_vec, log_split_probs, reduce_idx,
         dts_r, d_out, item_idx, int(item_offset),
         pi_offset, pibar_offset, dts_offset,

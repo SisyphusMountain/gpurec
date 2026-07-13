@@ -291,8 +291,6 @@ def test_centered_dts_so_matches_reconstructed_absolute(
             col,
             child1,
             child2,
-            parent,
-            2,
             row_max,
             item_idx,
             d_rhs,

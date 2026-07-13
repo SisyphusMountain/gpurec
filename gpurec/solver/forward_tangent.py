@@ -247,10 +247,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
             d_dts = compute_dts_tangent(
                 pi, pibar, dpi, dpibar, meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
                 base["pd_param"], base["ps_param"], dcst["dpd_param"], dcst["dps_param"], dts_r, item_idx,
-                log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
-                eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
-                ge2_parent_ids=meta.get("ge2_parent_ids"), ge2_max_fanout=meta.get("ge2_max_fanout"),
-                item_offset=ws,
+                log_split_probs=meta.get("log_split_probs"), item_offset=ws,
                 pi_offset=pi_offset, pibar_offset=pibar_offset, dts_offset=dts_offset,
             )
         else:

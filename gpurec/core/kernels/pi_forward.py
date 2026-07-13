@@ -17,7 +17,12 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64)
 
 
 def _tl_float_dtype(dtype):
-    return tl.float64 if dtype == torch.float64 else tl.float32
+    """Map a supported PyTorch model dtype to its Triton scalar dtype."""
+    if dtype == torch.float32:
+        return tl.float32
+    if dtype == torch.float64:
+        return tl.float64
+    raise TypeError(f"kernel state must use torch.float32 or torch.float64, got {dtype}")
 
 
 def _validate_offset_tensor(
@@ -54,10 +59,12 @@ def _load_rate(
     BLOCK_S: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
+    """Load and broadcast one configured rate layout."""
     NEG_INF: tl.constexpr = -float("inf")
     if BY_SPECIES:
         return tl.load(param + family * ROW_STRIDE + s_offs, mask=mask, other=NEG_INF)
-    return tl.load(param + family * ROW_STRIDE) + tl.zeros([BLOCK_S], dtype=DTYPE)
+    family_rate = tl.load(param + family * ROW_STRIDE)
+    return family_rate + tl.zeros([BLOCK_S], dtype=DTYPE)
 
 
 @triton.jit

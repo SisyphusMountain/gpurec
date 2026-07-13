@@ -190,7 +190,6 @@ def test_centered_dts_tangent_matches_absolute_fp64(
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
         dts_offset=dts_offset,
-        **layout,
     )
 
     dts_reference, dts_reference_offset = compute_dts_forward(
@@ -231,7 +230,6 @@ def test_centered_dts_tangent_matches_absolute_fp64(
         pi_offset=pi_offset.double(),
         pibar_offset=pibar_offset.double(),
         dts_offset=dts_reference_offset,
-        **layout,
     )
     torch.testing.assert_close(got.double(), reference, rtol=2e-6, atol=3e-7)
 

@@ -30,7 +30,15 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 
 
 def _tl_float_dtype(dtype):
-    return tl.float64 if dtype == torch.float64 else tl.float32
+    """Map a supported backward-state dtype to its Triton compute dtype."""
+    if dtype == torch.float64:
+        return tl.float64
+    if dtype in (torch.float32, torch.bfloat16):
+        return tl.float32
+    raise TypeError(
+        "backward kernel state must use torch.bfloat16, torch.float32, or "
+        f"torch.float64, got {dtype}"
+    )
 
 
 def _device_scalar_param(param, *, device, dtype):

@@ -7,7 +7,12 @@ from gpurec.core.parameters.extract_parameters import as_family_species
 
 
 def _tl_float_dtype(dtype):
-    return tl.float64 if dtype == torch.float64 else tl.float32
+    """Map a supported PyTorch model dtype to its Triton scalar dtype."""
+    if dtype == torch.float32:
+        return tl.float32
+    if dtype == torch.float64:
+        return tl.float64
+    raise TypeError(f"kernel state must use torch.float32 or torch.float64, got {dtype}")
 
 
 @triton.jit

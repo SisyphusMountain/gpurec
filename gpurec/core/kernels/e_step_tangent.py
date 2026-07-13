@@ -1,17 +1,4 @@
-"""Forward-mode tangent (Jvp) of the E-step fixed point.
-
-Linearization of ``_e_step_forward_2d_kernel`` (e_step.py): given a base fixed point ``E*`` and a
-direction in (E, params), produce the directional derivative ``dE_new``. The per-state Jacobian of
-the ``E_new = logsumexp2(t0..t3)`` update is the softmax-weighted contraction
-``dE_new = Σ_k w_k dt_k`` with ``w_k = exp2(t_k - E_new)`` (the same weights the backward's
-``q0..q3`` use, e_step.py:173-176). The ``Ebar`` branch differentiates the stabilized
-``log2(row_sum - ancestor_sum)`` to ``(dRS - dAS[s]) / denom + dmc``, where
-``dRS = Σ_s r[s] dE[s]`` and ``dAS[s] = Σ_{a in path(s)} r[a] dE[a]`` with ``r = exp2(E - row_max)``.
-
-``e_tangent_fixed_point`` solves the tangent fixed point ``(I - J_E^{EE}) dE* = J_E^{E,p} dp`` by
-Richardson iteration (the E-step is a contraction, so its tangent converges at the same rate),
-evaluating the Jacobian at the frozen ``E*``.
-"""
+"""E-step tangent kernels; see ``docs/latex/kernel_mathematics.tex``."""
 
 from __future__ import annotations
 
@@ -188,16 +175,7 @@ def e_tangent_fixed_point(
     node_parent, node_child1, node_child2, max_ancestor_depth,
     *, max_iter=None, tol=None, use_col_weights=True, dE0=None, dcol_log_probs=None,
 ):
-    """Solve (I - J_E^EE) dE* = J_E^Ep dp at the frozen E*; return (dE*, dE_s1, dE_s2, dEbar).
-
-    ``dcol_log_probs`` ([S] tangent of receiver_log_probs) is the alpha SEED: when
-    ``use_col_weights`` it enters the Ebar-denominator tangent alongside dE (the col-row tangent
-    of the self-normalizing E update). Must be threaded consistently with the wave tangent
-    (an inconsistency there -> O(1) FD failure).
-
-    ``max_iter`` -- ``None`` -> ``SolverOptions().e_max_iter``. ``tol`` -- ``None`` ->
-    ``SolverOptions().e_tangent_tol`` (distinct from the primal E-step's ``e_tol``: this is the
-    tangent fixed point's own convergence target)."""
+    """Solve the tangent fixed point documented in the LaTeX reference."""
     if max_iter is None:
         max_iter = SolverOptions().e_max_iter
     if tol is None:

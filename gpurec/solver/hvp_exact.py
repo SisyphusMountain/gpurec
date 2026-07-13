@@ -474,10 +474,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         sv["pi_wave"], sv["pibar_wave"], dPi, dPibar, meta["sl"], meta["sr"],
                         c1, c2, W, meta["reduce_idx"], cst["pd_param"], cst["ps_param"],
                         dcst["dpd_param"], dcst["dps_param"], dts_r, item_idx,
-                        log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
-                        eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
-                        ge2_parent_ids=meta.get("ge2_parent_ids"),
-                        ge2_max_fanout=meta.get("ge2_max_fanout"), item_offset=ws,
+                        log_split_probs=meta.get("log_split_probs"), item_offset=ws,
                         pi_offset=pi_offset,
                         pibar_offset=pibar_offset,
                         dts_offset=dts_offset,
@@ -575,7 +572,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     dts_backward_so(
                         sv["pi_wave"], dPi, sv["pibar_wave"], dPibar, v_k, ws, meta, S,
                         cst["pd_param"], cst["ps_param"], dcst["dpd_param"], dcst["dps_param"],
-                        cst["mc"], dcst["dMC"], col, c1, c2, parent, mad, prm, item_idx,
+                        cst["mc"], dcst["dMC"], col, c1, c2, prm, item_idx,
                         d_rhs, d_gpD, d_gpS, d_gmc, d_gcol,
                         compact_level_ptr=sh["compact_level_ptr"],
                         compact_level_parents=sh["compact_level_parents"],
@@ -600,8 +597,10 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             zero_g = zeros_state()
             # tangent of aux_to_e: linear part + contraction + norm-term closed form
             aux_lin = aux_T(d_gEs1, d_gEs2, d_gEbar)
-            so_aux = e_step_backward_so(*x_args, zero_g, acc["grad_E_s1"], acc["grad_E_s2"],
-                                        acc["grad_Ebar"], *dx, use_col_weights=use_col_weights)
+            so_aux = e_step_backward_so(
+                *x_args, zero_g, acc["grad_Ebar"], *dx,
+                use_col_weights=use_col_weights,
+            )
             if origination_log_probs is None:
                 e2E = torch.exp2(E_star.to(dtype=accumulator_dtype))
                 dE_head = dE.to(dtype=accumulator_dtype)
@@ -615,7 +614,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 dg_norm = ds_E_surv  # weighted + omega-coupled survival tangent (autograd head)
             dq_E = d_gE + aux_lin + so_aux[0] + dg_norm
             # tangent E-adjoint solve: same operator, new rhs
-            so_w = e_step_backward_so(*x_args, wE, zero_g, zero_g, zero_g, *dx,
+            so_w = e_step_backward_so(*x_args, wE, zero_g, *dx,
                                       use_col_weights=use_col_weights)
             rhs_E = (dq_E + so_w[0]).reshape(-1)
             E_shape = E_star.shape
@@ -642,7 +641,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             # g_new=dwE) + contraction at fixed cotangents (g_new=wE, g_ebar=grad_Ebar_acc).
             # e_bwd_params and the primal cotangents/head graph are hoisted (u-independent).
             lin_p = e_bwd_params(dwE, d_gEbar)
-            so_p = e_step_backward_so(*x_args, wE, zero_g, zero_g, acc["grad_Ebar"], *dx,
+            so_p = e_step_backward_so(*x_args, wE, acc["grad_Ebar"], *dx,
                                       use_col_weights=use_col_weights)
             # so_p outputs: (d_grad_E, d_grad_pS, d_grad_pD, d_grad_pL, d_grad_mc, d_grad_col)
 

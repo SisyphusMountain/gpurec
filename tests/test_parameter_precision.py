@@ -11,6 +11,22 @@ from gpurec.core.parameters.extract_parameters import (
 )
 
 
+def test_kernel_dtype_mapping_rejects_unsupported_types():
+    from gpurec.core.kernels.e_step import _tl_float_dtype as e_step_dtype
+    from gpurec.core.kernels.pi_forward import _tl_float_dtype as forward_dtype
+    from gpurec.core.kernels.wave_backward import _tl_float_dtype as backward_dtype
+
+    for mapper in (e_step_dtype, forward_dtype, backward_dtype):
+        with pytest.raises(TypeError, match="kernel state|backward kernel state"):
+            mapper(torch.float16)
+
+    # The retained backward diagnostics deliberately accumulate bf16 state in
+    # fp32; the forward and E-step recurrences do not accept bf16 state.
+    assert backward_dtype(torch.bfloat16) is backward_dtype(torch.float32)
+    with pytest.raises(TypeError, match="kernel state"):
+        forward_dtype(torch.bfloat16)
+
+
 @pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
 def test_fp32_rate_softmax_uses_configured_accumulator(accumulator_dtype):
     generator = torch.Generator().manual_seed(17)

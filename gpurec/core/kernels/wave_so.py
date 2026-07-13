@@ -1,28 +1,4 @@
-"""Second-order contraction of the wave-step adjoint (for the analytic exact-Hessian HVP).
-
-Given a wave's primals (Pi*, Pibar*, dts_r, consts, saved pibar_row_max), the converged cached
-adjoint ``v`` and tangent states (dPi, dPibar, d_dts, dconsts), computes at FIXED v:
-
-  * ``d(A^T v)``  — tangent of the self-loop Jacobian-transpose application (seed correction for
-    the reused solve:  dv = (I-A^T)^{-1} [d_rhs + d(A^T)v]);
-  * ``d(B^T v)``  — tangents of the parameter-cotangent buckets (d_aw0..d_aw4, d_aw345).
-
-Derivation (see newton/_wave_so_notes.md): with terms t0..t5 (+ dts_r), weights
-``w~_k = 2^{t_k - lse}``, left-branch weight ``w_L = 2^{lse - Pi_new}``, and the pibar routing
-``A^T``-block ``pibar_u_coeff_s * p_prime_j`` (j not in path(s)):
-
-  dw~_k = ln2 * w~_k * (dt_k - dlse),     dlse = sum_j w~_j dt_j
-  dw_L  = ln2 * w_L * (1 - w_L) * (dlse - d_dts_r)
-  dp'   = ln2 * p' * dPi                  (pibar_row_max FROZEN: outputs normalizer-invariant)
-  ddenom_s = drow_sum - dancsum_s,        d(inv_denom) = -inv_denom^2 * ddenom
-  d(A^T v)[j] = v_j d(diag_wt_j) + dp'_j (A - sub_j) + p'_j (dA - dsub_j)
-              + sum_{s: c1[s]=j} v_s d(sl1_wt_s) + sum_{s: c2[s]=j} v_s d(sl2_wt_s)
-  d_aw_k = v * (dw_L * w~_k + w_L * dw~_k)
-
-with u_d = v * pibar_u_coeff, A = sum u_d, sub_j = subtree-or-self sum of u_d (transpose of the
-ancestor walk -> atomic path scatter), and du_d/dA/dsub their tangents. All log2-space: the lse
-derivative carries no ln2; the pibar block's ln2 factors cancel exactly (d2^x vs dlog2).
-"""
+"""Wave-step second-order kernels; see ``docs/latex/kernel_mathematics.tex``."""
 
 from __future__ import annotations
 
@@ -285,18 +261,7 @@ def wave_backward_so(
     use_col_weights=False, d_rhs=None, dcol=None,
     pi_offset, pibar_offset, dts_offset=None,
 ):
-    """Second-order contraction at fixed adjoint v. Returns
-    (d_Av [W,S], d_aw0, d_aw1, d_aw2, d_aw345, d_aw3, d_aw4, d_grad_col [S]).
-
-    If ``d_rhs`` [C,S] is given, the wave's own rhs cotangent (rows ``ws:ws+W``) is folded into
-    the returned ``d_Av`` so it can be used directly as the frozen solve seed (= d_rhs + d_Av),
-    saving a host add.
-
-    ``dcol`` [S] is the alpha (receiver_log_probs) tangent seed; with ``use_col_weights=True`` it
-    enters ``p'``/``pa`` (items S5.1-2) and the returned ``d_grad_col`` is the per-wave tangent of
-    the first-order receiver-grad (sum over this wave's rows). When ``use_col_weights=False`` the
-    col path is dead: ``dcol`` is ignored and ``d_grad_col`` is all-zero (bit-for-bit legacy).
-    """
+    """Return the wave second-order contraction documented in LaTeX."""
     has_splits = dts_r is not None
     fold_rhs = d_rhs is not None
     _, const_row_stride = _prepare_wave_launch(S, DL)

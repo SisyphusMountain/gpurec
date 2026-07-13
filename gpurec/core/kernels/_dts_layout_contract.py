@@ -9,7 +9,13 @@ from typing import Any
 
 
 class DtsBackwardLayoutCode(IntEnum):
-    """Parameter layout codes consumed by the retained DTS backward kernel."""
+    """How a biological rate varies across gene families and species.
+
+    A DTS rate may be tied globally, vary only with the species-tree state,
+    vary only between gene families, or vary along both axes.  The integer
+    values are passed as compile-time addressing modes to Triton; they do not
+    encode model parameters themselves.
+    """
 
     SHARED_SCALAR = 0
     SHARED_SPECIES = 1
@@ -19,7 +25,13 @@ class DtsBackwardLayoutCode(IntEnum):
 
 @dataclass(frozen=True)
 class DtsBackwardParamLayout:
-    """Backward parameter layout code plus documented shape intent."""
+    """Classification of the two mathematical axes of a DTS rate tensor.
+
+    ``code`` determines whether the family and species indices contribute to
+    the tensor address. ``intent`` is its readable equivalent for diagnostics.
+    ``ambiguous_1d_family_species`` records the special ``G == S`` case, where
+    a bare vector cannot reveal which axis its entries describe.
+    """
 
     code: DtsBackwardLayoutCode
     intent: str
