@@ -122,8 +122,8 @@ def test_solver_stores_required_pi_state(monkeypatch):
 
     monkeypatch.setattr(
         solver,
-        "extract_parameters_uniform",
-        lambda *_args, **_kwargs: (scalar, scalar, scalar, species),
+        "extract_parameters_weighted_receivers",
+        lambda *_args, **_kwargs: (scalar, scalar, scalar, species, species),
     )
     monkeypatch.setattr(
         solver,

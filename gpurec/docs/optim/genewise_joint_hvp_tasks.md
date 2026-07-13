@@ -277,7 +277,7 @@ Expected: `[hvp gate] ALL PASS` and `[recv-hvp S8 gate] ... OVERALL=True`.
 - Consumes: the joint `hvp` (Task 4) with a non-uniform `α`; `make_joint_value_and_grad` (Task 3/4).
 - Produces: the full joint `H·u` validated for genewise across θ, ω, α, and mixed directions + symmetry.
 
-- [ ] **Step 1: Read FIRST** the α path in `hvp()` — `use_receiver_weights`, `u_alpha`, `dcol`, `out_col`, and `d_gcol` accumulation. The α HVP is validated only with **specieswise** θ (`_verify_hvp_recv`); under genewise θ the per-family cotangent reductions (`d_cot_col`, `grad_col`) have never been exercised. Expect a P0-style per-family reduction bug and locate it before patching.
+- [ ] **Step 1: Read FIRST** the α path in `hvp()` — `u_alpha`, `dcol`, `out_col`, and `d_gcol` accumulation. The α HVP is validated only with **specieswise** θ (`_verify_hvp_recv`); under genewise θ the per-family cotangent reductions (`d_cot_col`, `grad_col`) have never been exercised. Expect a P0-style per-family reduction bug and locate it before patching.
 
 - [ ] **Step 2: Write the failing full gate** (non-uniform α; θ, ω, α, mixed directions + symmetry)
 
