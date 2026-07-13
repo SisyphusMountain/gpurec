@@ -54,19 +54,16 @@ def sample_reconciliations(model, *, family_index: int = 0, seed: int = 0):
     pi = pi_wave.index_select(0, perm)
     pibar = pibar_wave.index_select(0, perm)
     C = int(family["C"])
-    centered_state = getattr(batch_static, "centered_pi_forward_state", None)
-    if centered_state is not None:
-        # The native sampler consumes host fp64 absolute log values. Reconstruct
-        # only the selected family after restoring preprocessing order; doing
-        # this at the sampler boundary keeps residual buffers centered for the
-        # resident solve and avoids two full-batch fp64 matrices.
-        pi_offset = centered_state.pi_offset.index_select(0, perm)[offset : offset + C]
-        pibar_offset = centered_state.pibar_offset.index_select(0, perm)[offset : offset + C]
-        pi_family = pi[offset : offset + C].double() + pi_offset[:, None]
-        pibar_family = pibar[offset : offset + C].double() + pibar_offset[:, None]
-    else:
-        pi_family = pi[offset : offset + C]
-        pibar_family = pibar[offset : offset + C]
+    pi_state = getattr(batch_static, "pi_forward_state", None)
+    if pi_state is None:
+        raise RuntimeError("Pi forward did not publish its row-offset state")
+    # The native sampler consumes host fp64 absolute log values. Reconstruct
+    # only the selected family after restoring preprocessing order; doing this
+    # at the sampler boundary avoids two full-batch fp64 matrices.
+    pi_offset = pi_state.pi_offset.index_select(0, perm)[offset : offset + C]
+    pibar_offset = pi_state.pibar_offset.index_select(0, perm)[offset : offset + C]
+    pi_family = pi[offset : offset + C].double() + pi_offset[:, None]
+    pibar_family = pibar[offset : offset + C].double() + pibar_offset[:, None]
     species_helpers = model.species_helpers
     S = int(species_helpers["S"])
 

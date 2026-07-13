@@ -210,18 +210,13 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     C = int(sv["pi_wave"].shape[0])
     E_star = sv["E"]
     G = int(E_star.shape[0])
-    centered_state = sv.get("centered_pi_state")
-    centered = centered_state is not None
-    if centered:
-        centered_state.validate(
-            sv["pi_wave"], sv["pibar_wave"], sv["pibar_row_max"],
-            check_values=False,
-        )
-        pi_offset = centered_state.pi_offset
-        pibar_offset = centered_state.pibar_offset
-    else:
-        pi_offset = None
-        pibar_offset = None
+    pi_state = sv["pi_state"]
+    pi_state.validate(
+        sv["pi_wave"], sv["pibar_wave"], sv["pibar_row_max"],
+        check_values=False,
+    )
+    pi_offset = pi_state.pi_offset
+    pibar_offset = pi_state.pibar_offset
 
     # Turn ON the origination head whenever origination_weights are supplied (even UNIFORM omega=0):
     # the omega curvature at uniform omega is nonzero and is exactly what the joint gate must capture.
@@ -414,7 +409,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 meta = wave["meta"]
                 v_k = wave["v"]
                 dts_r = wave["dts_r"]
-                dts_offset = wave.get("dts_offset")
+                dts_offset = wave["dts_offset"]
                 # recompute d_dts per wave from the cached (pruned) dts_r: storing all of them
                 # would cost another Pi-sized buffer; one tangent launch per wave is cheap
                 if dts_r is not None:
@@ -427,8 +422,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
                         ge2_parent_ids=meta.get("ge2_parent_ids"),
                         ge2_max_fanout=meta.get("ge2_max_fanout"), item_offset=ws,
-                        pi_offset=pi_offset if centered else None,
-                        pibar_offset=pibar_offset if centered else None,
+                        pi_offset=pi_offset,
+                        pibar_offset=pibar_offset,
                         dts_offset=dts_offset,
                     )
                 else:
@@ -444,8 +439,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     leaf_state_idx=leaf_state_idx, leaf_logp=cst["leaf"], dleaf_logp=dcst["dleaf"],
                     item_idx=item_idx, has_leaf_term=has_leaf, use_col_weights=use_col_weights,
                     d_rhs=d_rhs, dcol=dcol,
-                    pi_offset=pi_offset if centered else None,
-                    pibar_offset=pibar_offset if centered else None,
+                    pi_offset=pi_offset,
+                    pibar_offset=pibar_offset,
                     dts_offset=dts_offset,
                 )
                 # S5: accumulate the wave-SO col-cotangent (tangent of the wave self-loop
@@ -468,8 +463,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     grad_receiver_log_probs=d_gcol, use_receiver_weights=use_receiver_weights,
                     self_loop_solver=so.self_loop_solver, return_last_increment=False,
                     reserved_scratch_bytes=reserved_scratch_bytes,
-                    pi_offset=pi_offset if centered else None,
-                    pibar_offset=pibar_offset if centered else None,
+                    pi_offset=pi_offset,
+                    pibar_offset=pibar_offset,
                     dts_offset=dts_offset,
                 )
                 aw0 = c_aw0 + l_aw0
@@ -506,8 +501,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         grad_mt_two_stage=bool(d_gmc.ndim == 2 and int(d_gmc.shape[0]) == 1),
                         grad_mt_two_stage_tile_splits=128, skip_inactive_pibar_output_zero=True,
                         family_idx=item_idx,
-                        pi_offset=pi_offset if centered else None,
-                        pibar_offset=pibar_offset if centered else None,
+                        pi_offset=pi_offset,
+                        pibar_offset=pibar_offset,
                     )
                     uniform_cross_pibar_vjp_tree_from_ud_fused(
                         sv["pi_wave"], col, gl, gr, meta["sl"], meta["sr"], d_rhs, S,
@@ -531,8 +526,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         compact_level_child1=sh["compact_level_child1"],
                         compact_level_child2=sh["compact_level_child2"],
                         use_col_weights=use_col_weights, dcol=dcol,
-                        pi_offset=pi_offset if centered else None,
-                        pibar_offset=pibar_offset if centered else None,
+                        pi_offset=pi_offset,
+                        pibar_offset=pibar_offset,
                     )
 
             # ---- E-side ---- (the big tangent buffers are no longer needed)

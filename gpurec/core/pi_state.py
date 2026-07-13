@@ -1,4 +1,4 @@
-"""Typed offset sidecar for centered log-domain Pi state.
+"""Typed offset sidecar for the canonical row-gauged log-domain Pi state.
 
 The mathematical and lifecycle contract is documented in
 ``docs/centered_state_contract.md``. Residual matrices remain in the solver
@@ -14,7 +14,7 @@ import torch
 
 
 @dataclass(frozen=True)
-class CenteredPiState:
+class PiState:
     """Offsets paired with Pi/Pibar residuals returned by one forward solve."""
 
     pi_offset: torch.Tensor
@@ -31,13 +31,15 @@ class CenteredPiState:
         pi = pi_residual
         pibar = pibar_residual
         if pi.ndim != 2 or pibar.shape != pi.shape:
-            raise ValueError("centered Pi and Pibar residuals must share shape [rows, species]")
-        if pi.dtype != torch.float32 or pibar.dtype != torch.float32:
-            raise TypeError("production centered Pi/Pibar residuals must use torch.float32")
+            raise ValueError("Pi and Pibar residuals must share shape [rows, species]")
+        if pi.dtype not in (torch.float32, torch.float64) or pibar.dtype != pi.dtype:
+            raise TypeError(
+                "Pi/Pibar residuals must share dtype torch.float32 or torch.float64"
+            )
         if pi.device.type != "cuda" or pibar.device != pi.device:
-            raise ValueError("centered Pi/Pibar residuals must share one CUDA device")
+            raise ValueError("Pi/Pibar residuals must share one CUDA device")
         if not pi.is_contiguous() or not pibar.is_contiguous():
-            raise ValueError("centered Pi/Pibar residuals must be contiguous")
+            raise ValueError("Pi/Pibar residuals must be contiguous")
         rows = int(pi.shape[0])
         for name, offset in (
             ("pi_offset", self.pi_offset),
@@ -101,7 +103,3 @@ class CenteredPiState:
 
     def reconstruct_pibar_row_max(self, pibar_row_max: torch.Tensor) -> torch.Tensor:
         return pibar_row_max.double() + self.pi_offset
-
-
-# Compatibility name used by the original prototype and external probes.
-CenteredPiForwardState = CenteredPiState

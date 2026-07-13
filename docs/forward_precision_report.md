@@ -2,15 +2,19 @@
 
 ## Scope and method
 
-`benchmark/diagnose_forward_precision.py` runs the same resident HOGENOM
-family through absolute fp64, absolute fp32, and centered fp32. It wraps the
-existing Python launch boundaries and copies outputs before ping-pong buffers
-are reused. The capture includes parameter extraction, every extinction
-iteration, every Pi wave iteration, split-DTS outputs, final Pi/Pibar state,
-root rows, and the likelihood-head decomposition. Centered residuals are
-reconstructed with their fp64 offsets before comparison.
+This historical component audit ran the same resident HOGENOM family through
+absolute fp64, absolute fp32, and centered fp32 diagnostic implementations.
+Production CUDA execution now always uses centered residuals plus fp64 row
+offsets for both fp32 and fp64 models. The diagnostic wraps Python launch
+boundaries and copies outputs before ping-pong buffers are reused. The capture
+includes parameter extraction, every extinction iteration, every Pi wave
+iteration, split-DTS outputs, final Pi/Pibar state, root rows, and the
+likelihood-head decomposition. Centered residuals are reconstructed with their
+fp64 offsets before comparison.
 
-The weighted audit command is:
+The historical weighted audit command is shown below. Its comparison driver
+was removed with the alternate absolute implementation and remains available
+from Git history at commit `f6d2ac37`.
 
 ```bash
 GPUREC_HOGENOM_ROOT=/path/to/hogenom \
@@ -21,7 +25,7 @@ GPUREC_HOGENOM_ROOT=/path/to/hogenom \
 ```
 
 This records 2,007 matched tensors for each comparison, spanning 18 extinction
-iterations and 64 iterations for every Pi wave. Centered mode records 52
+iterations and 64 iterations for every Pi wave. The centered variant records 52
 additional native residual/virtual-offset tensors around DTS centering.
 There were no missing shared capture keys, finite-mask mismatches, or
 negative-infinity-mask mismatches. Passing
@@ -105,20 +109,23 @@ centered forward overhead (absolute `2,822.64 ms`, centered `2,880.39 ms`) and
 Centered peak allocation remains approximately `+0.53%` for forward and
 `+0.30%` for loss+gradient.
 
-The full fp64 HOGENOM solve is intentionally not attempted on a 24 GiB GPU.
-The one-family fp64 run is the accuracy oracle; the full run is the memory and
-performance gate.
+The full fp64 HOGENOM solve was not attempted on the 24 GiB benchmark GPU
+because it lacked an adequate memory margin. CUDA fp64 remains supported by the
+same centered-state path; the one-family fp64 run is the accuracy oracle and
+the full fp32 run is the memory and performance gate.
 
 ## Deliberately rejected changes
 
 - Moving the extinction solve to fp64 is not justified by the substitution
   measurements and would enlarge a dense hot state.
-- Moving whole Pi wave reductions to fp64 would address the remaining error,
-  but it is not a low-cost fix on this workload.
+- Moving an fp32 model's whole Pi wave reductions to fp64 would address the
+  remaining error, but it is not a low-cost fix on this workload. A model
+  configured as fp64 instead uses fp64 centered residuals throughout.
 - Computing CCP split log-probabilities or every row maximum in fp64 offers a
   much smaller possible gain and touches derivative contracts. It is deferred
   unless a harder weighted/specieswise trace identifies it as dominant.
 
-The result is a targeted mixed-precision design: fp64 for small reductions and
-row gauges, fp32 for dense storage and hot kernels, with explicit trace data
-showing where that boundary is useful.
+For fp32 models, the result is a targeted mixed-precision design: fp64 for
+small reductions and row gauges, fp32 for dense storage and hot kernels, with
+explicit trace data showing where that boundary is useful. Fp64 models retain
+the same centered contract with fp64 dense residuals.

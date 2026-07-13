@@ -46,8 +46,8 @@ and `_so` (second-order) variant:
 | primal | JVP | 2nd-order |
 |---|---|---|
 | `e_step` | `e_step_tangent` | `e_step_so` |
-| `wave_step` (+ `wave_backward`) | `wave_tangent` | `wave_so` |
-| `dts_fused` | `dts_tangent` | `dts_so` |
+| `pi_forward` wave propagation (+ `wave_backward`) | `wave_tangent` | `wave_so` |
+| `pi_forward` split DTS reduction | `dts_tangent` | `dts_so` |
 
 That's exactly the value / gradient / Hessian-vector-product set. This structure
 is intentional and good — it is the price of exact Newton on GPU.

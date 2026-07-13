@@ -5,8 +5,7 @@ import torch
 from gpurec.api.solver_options import SolverOptions
 from gpurec.config import dtype_rel_tol_default as _bicgstab_rel_tol_default, dtype_rel_tol_floor as _bicgstab_rel_tol_floor
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
-from gpurec.core.kernels.centered_pi_forward import compute_dts_forward_centered
-from gpurec.core.kernels.dts_fused import compute_dts_forward
+from gpurec.core.kernels.pi_forward import compute_dts_forward
 from gpurec.core.kernels.wave_backward import (
     active_mask_from_rhs_absmax_fused,
     dts_cross_backward_accum_fused,
@@ -418,8 +417,8 @@ def implicit_grad_loglik_vjp_wave(
     cache: dict | None = None,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
-    pi_offset: torch.Tensor | None = None,
-    pibar_offset: torch.Tensor | None = None,
+    pi_offset: torch.Tensor,
+    pibar_offset: torch.Tensor,
 ):
     if neumann_terms is None:
         neumann_terms = SolverOptions().neumann_terms
@@ -450,19 +449,15 @@ def implicit_grad_loglik_vjp_wave(
     C, S = Pi_star_wave.shape
     device = Pi_star_wave.device
     dtype = Pi_star_wave.dtype
-    centered = pi_offset is not None or pibar_offset is not None
-    if centered and (pi_offset is None or pibar_offset is None):
-        raise ValueError("pi_offset and pibar_offset must be provided together")
-    if centered:
-        for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
-            if value.ndim != 1 or int(value.shape[0]) != int(C):
-                raise ValueError(f"{name} must have shape [{int(C)}]")
-            if value.dtype != torch.float64:
-                raise TypeError(f"{name} must use torch.float64")
-            if value.device != device:
-                raise ValueError(f"{name} must be on the Pi device")
-        pi_offset = pi_offset.contiguous()
-        pibar_offset = pibar_offset.contiguous()
+    for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
+        if value.ndim != 1 or int(value.shape[0]) != int(C):
+            raise ValueError(f"{name} must have shape [{int(C)}]")
+        if value.dtype != torch.float64:
+            raise TypeError(f"{name} must use torch.float64")
+        if value.device != device:
+            raise ValueError(f"{name} must be on the Pi device")
+    pi_offset = pi_offset.contiguous()
+    pibar_offset = pibar_offset.contiguous()
     family_rows = int(E_star.shape[0])
     E_family, Ebar_family, log_pS_family, log_pD_family, max_transfer_family = (
         as_family_species(x, S, family_rows)
@@ -542,8 +537,8 @@ def implicit_grad_loglik_vjp_wave(
         ).contiguous()
         has_splits = bool(meta.get("has_splits", "sl" in meta))
         has_leaf_term = int(meta.get("phase", 1 if not has_splits else 2)) == 1
-        if has_splits and centered:
-            dts_r, dts_offset = compute_dts_forward_centered(
+        if has_splits:
+            dts_r, dts_offset = compute_dts_forward(
                 Pi_star_wave.detach(),
                 pi_offset,
                 Pibar_star_wave.detach(),
@@ -566,26 +561,6 @@ def implicit_grad_loglik_vjp_wave(
                 active_parent_rows=active_mask,
                 family_offset=ws,
             )
-        elif has_splits:
-            dts_r = compute_dts_forward(
-                Pi_star_wave.detach(), Pibar_star_wave.detach(), meta["sl"], meta["sr"],
-                sp_child1,
-                sp_child2,
-                W,
-                meta["reduce_idx"],
-                log_pD_param,
-                log_pS_param,
-                family_idx=family_idx,
-                log_split_probs=meta.get("log_split_probs"),
-                n_eq1=meta.get("n_eq1"),
-                eq1_reduce_idx=meta.get("eq1_reduce_idx"),
-                ge2_ptr=meta.get("ge2_ptr"),
-                ge2_parent_ids=meta.get("ge2_parent_ids"),
-                ge2_max_fanout=meta.get("ge2_max_fanout"),
-                active_parent_rows=active_mask,
-                family_offset=ws,
-            )
-            dts_offset = None
         else:
             dts_r = None
             dts_offset = None
@@ -627,8 +602,8 @@ def implicit_grad_loglik_vjp_wave(
             return_last_increment=collect_backward_relres,
             initial_v=init_v,
             reserved_scratch_bytes=reserved_scratch_bytes,
-            pi_offset=pi_offset if centered else None,
-            pibar_offset=pibar_offset if centered else None,
+            pi_offset=pi_offset,
+            pibar_offset=pibar_offset,
             dts_offset=dts_offset,
         )
         if collect_backward_relres:
@@ -718,8 +693,8 @@ def implicit_grad_loglik_vjp_wave(
                 grad_mt_two_stage_tile_splits=128,
                 skip_inactive_pibar_output_zero=True,
                 family_idx=family_idx,
-                pi_offset=pi_offset if centered else None,
-                pibar_offset=pibar_offset if centered else None,
+                pi_offset=pi_offset,
+                pibar_offset=pibar_offset,
             )
             uniform_cross_pibar_vjp_tree_from_ud_fused(
                 Pi_star_wave,

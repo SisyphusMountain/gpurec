@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import inspect
 
 import pytest
 import torch
@@ -8,30 +9,36 @@ from gpurec.api.solver_options import SolverOptions
 from gpurec.cli import _common
 from gpurec.cli.main import build_parser
 from gpurec.core.backtracking import input as backtracking_input
-from gpurec.core.inference import forward, solver
+from gpurec.core.inference import solver
 from gpurec.fit import dtl_fit, global_fit
 from gpurec.solver import value_and_grad
 
 
-def _centered_static(*, genewise: bool = False):
+def _static(*, genewise: bool = False):
     return SimpleNamespace(
-        solver_options=SolverOptions(pi_representation="centered"),
+        solver_options=SolverOptions(),
         genewise=genewise,
     )
 
 
-def test_pi_representation_default_and_validation():
-    assert SolverOptions().pi_representation == "absolute"
+def test_pi_representation_option_is_removed(tmp_path):
+    assert not hasattr(SolverOptions(), "pi_representation")
+    with pytest.raises(TypeError, match="pi_representation"):
+        SolverOptions(pi_representation="centered")
 
-    centered = SolverOptions(pi_representation="  CENTERED ")
-    centered.validate()
-    assert centered.pi_representation == "centered"
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "reconcile",
+                "--species",
+                "species.nwk",
+                "--gene",
+                "gene.nwk",
+                "--pi-representation",
+                "centered",
+            ]
+        )
 
-    with pytest.raises(ValueError, match="pi_representation"):
-        SolverOptions(pi_representation="relative").validate()
-
-
-def test_cli_pi_representation_overrides_toml(tmp_path):
     config = tmp_path / "gpurec.toml"
     config.write_text('[solver]\npi_representation = "absolute"\n', encoding="utf-8")
     args = build_parser().parse_args(
@@ -43,15 +50,14 @@ def test_cli_pi_representation_overrides_toml(tmp_path):
             "gene.nwk",
             "--config",
             str(config),
-            "--pi-representation",
-            "centered",
         ]
     )
-    assert _common.make_solver_options(args).pi_representation == "centered"
+    with pytest.raises(ValueError, match="pi_representation"):
+        _common.make_solver_options(args)
 
 
-def test_fit_dtl_routes_centered_representation_to_genewise_recipe(monkeypatch):
-    options = SolverOptions(pi_representation="centered")
+def test_fit_dtl_routes_solver_options_to_genewise_recipe(monkeypatch):
+    options = SolverOptions(pi_iters=16)
     captured = {}
 
     def fake_fit_genewise(*_args, **kwargs):
@@ -74,52 +80,21 @@ def test_fit_dtl_routes_centered_representation_to_genewise_recipe(monkeypatch):
     assert captured["solver_options"] is options
 
 
-def test_global_tiers_preserve_centered_representation():
-    options = SolverOptions(pi_representation="centered")
+def test_global_tiers_have_no_representation_option():
+    fit_tier = global_fit._tier_solver_options(pi_iters=16, neumann_terms=16)
+    eval_tier = global_fit._tier_solver_options(pi_iters=64, neumann_terms=64)
 
-    fit_tier = global_fit._tier_solver_options(
-        options, pi_iters=16, neumann_terms=16
-    )
-    eval_tier = global_fit._tier_solver_options(
-        options, pi_iters=64, neumann_terms=64
-    )
-
-    assert fit_tier.pi_representation == "centered"
-    assert eval_tier.pi_representation == "centered"
+    assert not hasattr(fit_tier, "pi_representation")
+    assert not hasattr(eval_tier, "pi_representation")
     assert (fit_tier.pi_iters, eval_tier.pi_iters) == (16, 64)
 
 
-def test_pi_wave_forward_dispatches_centered_explicitly(monkeypatch):
-    sentinel = object()
-    captured = {}
-
-    def fake_centered(**kwargs):
-        captured.update(kwargs)
-        return sentinel
-
-    monkeypatch.setattr(forward, "pi_wave_forward_centered", fake_centered)
-    result = forward.pi_wave_forward(
-        wave_layout="layout",
-        species_helpers="species",
-        e="e",
-        e_bar="e_bar",
-        e_s1="e_s1",
-        e_s2="e_s2",
-        log_p_s="log_p_s",
-        log_p_d="log_p_d",
-        max_transfer_mat="max_transfer",
-        receiver_log_probs="receiver",
-        family_idx="family",
-        pi_representation="centered",
-    )
-
-    assert result is sentinel
-    assert captured["wave_layout"] == "layout"
-    assert captured["family_idx"] == "family"
+def test_pi_wave_forward_has_no_representation_parameter():
+    assert "pi_representation" not in inspect.signature(solver.pi_wave_forward).parameters
 
 
-def test_solver_routes_pi_representation(monkeypatch):
-    options = SolverOptions(pi_representation="centered")
+def test_solver_stores_required_pi_state(monkeypatch):
+    options = SolverOptions()
     static = SimpleNamespace(
         solver_options=options,
         species_helpers={
@@ -152,19 +127,25 @@ def test_solver_routes_pi_representation(monkeypatch):
     )
     captured = {}
 
+    sidecar = SimpleNamespace(
+        pi_offset=torch.zeros(1, dtype=torch.float64),
+        pibar_offset=torch.zeros(1, dtype=torch.float64),
+    )
+
     def fake_pi_wave_forward(**kwargs):
         captured.update(kwargs)
         matrix = torch.zeros((1, 2))
-        return matrix, matrix, matrix, torch.zeros(1)
+        return matrix, matrix, matrix, torch.zeros(1), sidecar
 
     monkeypatch.setattr(solver, "pi_wave_forward", fake_pi_wave_forward)
     solver.solve_resident_e_pi(static, theta, receiver_weights)
 
-    assert captured["pi_representation"] == "centered"
+    assert "pi_representation" not in captured
+    assert static.pi_forward_state is sidecar
 
 
-def test_centered_forward_solve_snapshots_matching_sidecar(monkeypatch):
-    static = _centered_static()
+def test_forward_solve_snapshots_matching_sidecar(monkeypatch):
+    static = _static()
     static.warm_E = None
     sidecar = SimpleNamespace(
         pi_offset=torch.tensor([11.0], dtype=torch.float64),
@@ -173,7 +154,7 @@ def test_centered_forward_solve_snapshots_matching_sidecar(monkeypatch):
     rows = torch.zeros((1, 2))
 
     def fake_solve(*_args, **_kwargs):
-        static.centered_pi_forward_state = sidecar
+        static.pi_forward_state = sidecar
         return (rows,) * len(value_and_grad.FORWARD_SAVED_NAMES)
 
     monkeypatch.setattr(value_and_grad, "solve_resident_e_pi", fake_solve)
@@ -187,25 +168,25 @@ def test_centered_forward_solve_snapshots_matching_sidecar(monkeypatch):
     )
 
     assert loss.item() == 3.0
-    assert saved["centered_pi_state"] is sidecar
+    assert saved["pi_state"] is sidecar
     # A later solve may replace the mutable static field; the saved forward
     # must retain the offsets that belong to its own residual matrices.
-    static.centered_pi_forward_state = SimpleNamespace(
+    static.pi_forward_state = SimpleNamespace(
         pi_offset=torch.tensor([99.0], dtype=torch.float64),
         pibar_offset=torch.tensor([100.0], dtype=torch.float64),
     )
-    assert saved["centered_pi_state"] is sidecar
+    assert saved["pi_state"] is sidecar
 
 
-def test_centered_backtracking_reconstructs_selected_family(monkeypatch):
+def test_backtracking_reconstructs_selected_family(monkeypatch):
     pi_residual = torch.tensor([[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]])
     pibar_residual = -pi_residual
     pi_offset = torch.tensor([100.0, 200.0, 300.0], dtype=torch.float64)
     pibar_offset = -pi_offset
-    static = _centered_static()
+    static = _static()
     static.family_indices = [0, 1]
     static.wave_layout = {"perm": torch.tensor([2, 0, 1])}
-    static.centered_pi_forward_state = SimpleNamespace(
+    static.pi_forward_state = SimpleNamespace(
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
     )
@@ -270,8 +251,8 @@ def test_centered_backtracking_reconstructs_selected_family(monkeypatch):
     assert native_args[6].tolist() == [[-110.0, -111.0], [-220.0, -221.0]]
 
 
-def test_streamed_centered_scalar_loss_preserves_fp64(monkeypatch):
-    statics = [_centered_static(), _centered_static()]
+def test_streamed_scalar_loss_preserves_fp64(monkeypatch):
+    statics = [_static(), _static()]
     monkeypatch.setattr(
         _execution,
         "evaluate_static_loss_grad",
@@ -291,7 +272,7 @@ def test_streamed_centered_scalar_loss_preserves_fp64(monkeypatch):
     assert loss.item() == 0.5
 
 
-def test_streamed_absolute_scalar_loss_uses_fp64_head_dtype(monkeypatch):
+def test_streamed_scalar_loss_uses_fp64_head_dtype(monkeypatch):
     static = SimpleNamespace(solver_options=SolverOptions())
     monkeypatch.setattr(
         _execution,
@@ -311,10 +292,10 @@ def test_streamed_absolute_scalar_loss_uses_fp64_head_dtype(monkeypatch):
     assert loss.dtype == torch.float64
 
 
-def test_streamed_centered_genewise_loss_preserves_fp64(monkeypatch):
+def test_streamed_genewise_loss_preserves_fp64(monkeypatch):
     statics = []
     for index in range(2):
-        static = _centered_static(genewise=True)
+        static = _static(genewise=True)
         static.family_index_tensor = torch.tensor([index])
         statics.append(static)
     monkeypatch.setattr(

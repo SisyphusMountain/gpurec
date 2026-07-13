@@ -10,39 +10,11 @@ download and archaea60 ships no AleRax reference (only ALEml `.uml_rec`).
 - `bin/70_check_fidelity.sh` — correlate gpurec per-family logL at AleRax rates vs an AleRax output dir.
 - `bench_gpurec_fit.py` / `eval_at_alerax_rates.py` — the Python drivers (share code with `gpurec.cli`/`gpurec.bench`).
 - `slurm/fidelity_saion.sbatch` — example A100 job.
-- `bench_centered_kernels.py` — live-HOGENOM absolute/centered comparison. It records the
-  exact command and software/hardware environment, raw synchronized timing samples, peak
-  allocation, loss/gradient repeatability, a fixed optimizer trajectory, and optional fp64
-  error. Point `GPUREC_HOGENOM_ROOT` at the external data checkout; generated JSON belongs
-  under the ignored `output/` directory.
-- `diagnose_forward_precision.py` — matched absolute-fp64, absolute-fp32, and
-  centered-fp32 forward capture. It records parameter, E-iteration, Pi-wave,
-  DTS, terminal-state, and likelihood-head comparisons. Use `--tensor-output`
-  only when raw tensors are needed; the summary JSON is normally enough.
-
-For a small correctness/performance probe and the full tracked 1,055-family shape:
-
-```bash
-GPUREC_HOGENOM_ROOT=/path/to/hogenom python benchmark/bench_centered_kernels.py \
-  --families 1 --reference-fp64 --head-control --paired-alternating \
-  --warmups 3 --repeats 12 \
-  --output output/centered_kernels_family1.json
-
-GPUREC_HOGENOM_ROOT=/path/to/hogenom python benchmark/bench_centered_kernels.py \
-  --families 1055 --mode specieswise --paired-alternating \
-  --warmups 3 --repeats 12 --optimizer-steps 3 \
-  --output output/centered_kernels_hogenom1055.json
-
-GPUREC_HOGENOM_ROOT=/path/to/hogenom python benchmark/diagnose_forward_precision.py \
-  --families 1 --weighted --e-max-iter 128 --e-tol 1e-8 --pi-iters 64 \
-  --output output/forward_precision_diagnostic_family1_weighted.json
-```
-
-Run baseline and candidate from the same checkout, with warmed Triton caches and no other
-GPU process. The JSON retains every sample so medians and distributions can be re-audited;
-do not regenerate numerical goldens from these machine-specific measurements.
-Use `--cuda-profiler-capture` with an Nsight Systems
-`--capture-range=cudaProfilerApi` invocation to capture one post-warmup forward evaluation.
+- The one-time absolute/centered comparison and component-capture drivers used
+  during development were removed when row-gauged storage became the sole
+  implementation. Their commands and results remain in
+  `docs/centered_kernels_report.md` and `docs/forward_precision_report.md`; Git
+  history retains the original research harnesses.
 
 ## Fidelity semantics
 The in-repo CI gate (`tests/test_fidelity_alerax.py`) proves base==AleRax at toy scale

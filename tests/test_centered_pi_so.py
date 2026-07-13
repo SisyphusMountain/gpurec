@@ -160,6 +160,9 @@ def test_centered_wave_so_matches_reconstructed_absolute(
         pibar_absolute,
         dPibar,
         pibar_row_max=row_max_absolute,
+        pi_offset=torch.zeros_like(pi_offset),
+        pibar_offset=torch.zeros_like(pibar_offset),
+        dts_offset=(torch.zeros_like(dts_offset) if has_splits else None),
         **common,
     )
     common["dts_r"] = dts if has_splits else None
@@ -251,7 +254,7 @@ def test_centered_dts_so_matches_reconstructed_absolute(fanout: int) -> None:
         compact_level_child2=torch.tensor([2], device=device, dtype=torch.long),
     )
 
-    def run(Pi, Pibar, row_max, *, offsets=False):
+    def run(Pi, Pibar, row_max, pi_gauge, pibar_gauge):
         d_rhs = torch.zeros((C, S), device=device, dtype=dtype)
         d_grad_pD = torch.zeros((1, S), device=device, dtype=dtype)
         d_grad_pS = torch.zeros((1, S), device=device, dtype=dtype)
@@ -286,60 +289,68 @@ def test_centered_dts_so_matches_reconstructed_absolute(fanout: int) -> None:
             d_grad_col,
             use_col_weights=True,
             dcol=dcol,
-            pi_offset=pi_offset if offsets else None,
-            pibar_offset=pibar_offset if offsets else None,
+            pi_offset=pi_gauge,
+            pibar_offset=pibar_gauge,
             **levels,
         )
         return d_rhs, d_grad_pD, d_grad_pS, d_grad_mt, d_grad_col
 
-    absolute = run(pi_absolute, pibar_absolute, row_max_absolute)
-    centered = run(pi, pibar, row_max_residual, offsets=True)
+    absolute = run(
+        pi_absolute,
+        pibar_absolute,
+        row_max_absolute,
+        torch.zeros_like(pi_offset),
+        torch.zeros_like(pibar_offset),
+    )
+    centered = run(pi, pibar, row_max_residual, pi_offset, pibar_offset)
     for centered_value, absolute_value in zip(centered, absolute):
         torch.testing.assert_close(centered_value, absolute_value, rtol=3e-5, atol=3e-5)
 
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("weighted", [False, True])
-def test_centered_exact_hvp_matches_absolute_and_finite_difference(
+def test_exact_hvp_matches_fp64_and_finite_difference(
     weighted: bool,
 ) -> None:
     _require_cuda()
     data = Path("tests/data/alerax/test_trees_200")
     species_tree, gene_tree = data / "sp.nwk", data / "g.nwk"
 
-    def build(representation: str) -> GeneReconModel:
+    def build(dtype: torch.dtype, e_tol: float) -> GeneReconModel:
         return GeneReconModel(
             species_tree,
             [gene_tree],
             mode="genewise",
             device="cuda",
+            dtype=dtype,
             family_chunk_size=1,
             clade_budget=None,
             batch_packing="sequential",
             max_wave_size=8,
             solver_options=SolverOptions(
                 e_max_iter=512,
-                e_tol=1e-8,
+                e_tol=e_tol,
                 pi_iters=64,
-                pi_representation=representation,
                 neumann_terms=64,
                 use_adjoint_pruning=False,
             ),
         )
 
-    absolute_model = build("absolute")
-    centered_model = build("centered")
+    centered_model = build(torch.float32, 1e-8)
+    reference_model = build(torch.float64, 1e-12)
     theta = torch.full((1, 3), -3.321928, device="cuda", dtype=torch.float32)
     receiver = torch.zeros_like(centered_model.receiver_weights)
     if weighted:
         receiver = torch.linspace(-1.0, 0.9, receiver.numel(), device=receiver.device)
     direction = torch.tensor([[0.4, -0.7, 0.2]], device="cuda", dtype=torch.float32)
 
-    absolute_static = absolute_model.batch_statics[0]
     centered_static = centered_model.batch_statics[0]
-    _, absolute_saved = forward_solve([absolute_static], theta, receiver)
+    reference_static = reference_model.batch_statics[0]
+    _, reference_saved = forward_solve(
+        [reference_static], theta.double(), receiver.double()
+    )
     _, centered_saved = forward_solve([centered_static], theta, receiver)
-    assert centered_saved["centered_pi_state"] is not None
+    assert centered_saved["pi_state"] is not None
     split_metas = [meta for meta in centered_model.wave_layout["wave_metas"] if "sl" in meta]
     assert any(int(meta["n_eq1"]) > 0 for meta in split_metas)
     assert any(
@@ -348,16 +359,20 @@ def test_centered_exact_hvp_matches_absolute_and_finite_difference(
         for meta in split_metas
     )
 
-    absolute_hvp = make_exact_hvp(
-        [absolute_static], theta, receiver, absolute_saved, tangent_self_iters=64
+    reference_hvp = make_exact_hvp(
+        [reference_static],
+        theta.double(),
+        receiver.double(),
+        reference_saved,
+        tangent_self_iters=64,
     )
     centered_hvp = make_exact_hvp(
         [centered_static], theta, receiver, centered_saved, tangent_self_iters=64
     )
-    absolute_value = absolute_hvp(direction).double()
+    reference_value = reference_hvp(direction.double())
     centered_value = centered_hvp(direction).double()
     assert torch.isfinite(centered_value).all().item()
-    torch.testing.assert_close(centered_value, absolute_value, rtol=2e-3, atol=2e-3)
+    torch.testing.assert_close(centered_value, reference_value, rtol=2e-3, atol=2e-3)
 
     origination = torch.zeros_like(centered_model.origination_weights)
 

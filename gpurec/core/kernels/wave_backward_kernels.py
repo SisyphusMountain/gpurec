@@ -80,7 +80,6 @@ def _wave_backward_uniform_2d_precompute_kernel(
     DTYPE: tl.constexpr,
     USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
-    CENTERED: tl.constexpr,
 ):
     """Precompute self-loop J^T coefficients for a block of rows and all species."""
     NEG_LARGE: tl.constexpr = -float("inf")
@@ -105,25 +104,20 @@ def _wave_backward_uniform_2d_precompute_kernel(
     pi_offsets = row_global[None, :] * stride + s_offs[:, None]
     out_offsets = rows[None, :] * S + s_offs[:, None]
 
-    if CENTERED:
-        pi_row_offset = tl.load(
-            Pi_offset_ptr + row_global, mask=row_valid, other=0.0
+    pi_row_offset = tl.load(
+        Pi_offset_ptr + row_global, mask=row_valid, other=0.0
+    )
+    pibar_row_offset = tl.load(
+        Pibar_offset_ptr + row_global, mask=row_valid, other=0.0
+    )
+    pibar_offset_corr = (pibar_row_offset - pi_row_offset).to(DTYPE)
+    leaf_offset_corr = (-pi_row_offset).to(DTYPE)
+    if has_splits:
+        dts_row_offset = tl.load(
+            dts_offset_ptr + rows, mask=row_valid, other=0.0
         )
-        pibar_row_offset = tl.load(
-            Pibar_offset_ptr + row_global, mask=row_valid, other=0.0
-        )
-        pibar_offset_corr = (pibar_row_offset - pi_row_offset).to(DTYPE)
-        leaf_offset_corr = (-pi_row_offset).to(DTYPE)
-        if has_splits:
-            dts_row_offset = tl.load(
-                dts_offset_ptr + rows, mask=row_valid, other=0.0
-            )
-            dts_offset_corr = (dts_row_offset - pi_row_offset).to(DTYPE)
-        else:
-            dts_offset_corr = tl.zeros([BLOCK_W], dtype=DTYPE)
+        dts_offset_corr = (dts_row_offset - pi_row_offset).to(DTYPE)
     else:
-        pibar_offset_corr = tl.zeros([BLOCK_W], dtype=DTYPE)
-        leaf_offset_corr = tl.zeros([BLOCK_W], dtype=DTYPE)
         dts_offset_corr = tl.zeros([BLOCK_W], dtype=DTYPE)
 
     row_max = tl.load(Pibar_row_max_ptr + row_global, mask=row_valid, other=NEG_LARGE).to(DTYPE)
@@ -201,7 +195,7 @@ def _wave_backward_uniform_2d_precompute_kernel(
         t5 = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
     else:
         t5 = tl.full([BLOCK_S, BLOCK_W], value=NEG_LARGE, dtype=DTYPE)
-    if CENTERED and (USE_LEAF_INDEX or HAS_LEAF_TERM):
+    if USE_LEAF_INDEX or HAS_LEAF_TERM:
         t5 += leaf_offset_corr[None, :]
 
     m = tl.maximum(t0, t1)
@@ -572,7 +566,6 @@ def _wave_backward_uniform_param_store_kernel(
     ACCUM_GRADS: tl.constexpr,
     PARAM_GRAD_VECTOR: tl.constexpr,
     DTYPE: tl.constexpr,
-    CENTERED: tl.constexpr,
 ):
     """Store per-element self-loop parameter VJP contributions after Neumann."""
     NEG_LARGE: tl.constexpr = -float("inf")
@@ -593,25 +586,20 @@ def _wave_backward_uniform_param_store_kernel(
     pi_offsets = row_global[None, :] * stride + s_offs[:, None]
     out_offsets = rows[None, :] * S + s_offs[:, None]
 
-    if CENTERED:
-        pi_row_offset = tl.load(
-            Pi_offset_ptr + row_global, mask=row_valid, other=0.0
+    pi_row_offset = tl.load(
+        Pi_offset_ptr + row_global, mask=row_valid, other=0.0
+    )
+    pibar_row_offset = tl.load(
+        Pibar_offset_ptr + row_global, mask=row_valid, other=0.0
+    )
+    pibar_offset_corr = (pibar_row_offset - pi_row_offset).to(DTYPE)
+    leaf_offset_corr = (-pi_row_offset).to(DTYPE)
+    if has_splits:
+        dts_row_offset = tl.load(
+            dts_offset_ptr + rows, mask=row_valid, other=0.0
         )
-        pibar_row_offset = tl.load(
-            Pibar_offset_ptr + row_global, mask=row_valid, other=0.0
-        )
-        pibar_offset_corr = (pibar_row_offset - pi_row_offset).to(DTYPE)
-        leaf_offset_corr = (-pi_row_offset).to(DTYPE)
-        if has_splits:
-            dts_row_offset = tl.load(
-                dts_offset_ptr + rows, mask=row_valid, other=0.0
-            )
-            dts_offset_corr = (dts_row_offset - pi_row_offset).to(DTYPE)
-        else:
-            dts_offset_corr = tl.zeros([BLOCK_W], dtype=DTYPE)
+        dts_offset_corr = (dts_row_offset - pi_row_offset).to(DTYPE)
     else:
-        pibar_offset_corr = tl.zeros([BLOCK_W], dtype=DTYPE)
-        leaf_offset_corr = tl.zeros([BLOCK_W], dtype=DTYPE)
         dts_offset_corr = tl.zeros([BLOCK_W], dtype=DTYPE)
 
     family = tl.full([BLOCK_W], value=0, dtype=tl.int64)
@@ -678,7 +666,7 @@ def _wave_backward_uniform_param_store_kernel(
         t5 = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
     else:
         t5 = tl.full([BLOCK_S, BLOCK_W], value=NEG_LARGE, dtype=DTYPE)
-    if CENTERED and (USE_LEAF_INDEX or HAS_LEAF_TERM):
+    if USE_LEAF_INDEX or HAS_LEAF_TERM:
         t5 += leaf_offset_corr[None, :]
 
     m = tl.maximum(t0, t1)
@@ -839,7 +827,6 @@ def _dts_cross_backward_accum_kernel(
     SIDE_ACTIVE_THRESHOLD_ENABLED: tl.constexpr,
     SKIP_INACTIVE_PIBAR_OUTPUT_ZERO: tl.constexpr,
     DTYPE: tl.constexpr,
-    CENTERED: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
 
@@ -928,23 +915,16 @@ def _dts_cross_backward_accum_kernel(
     parent_vk_base = parent_w * S
     out_base = i * S
 
-    if CENTERED:
-        pi_offset_l = tl.load(Pi_offset_ptr + sl)
-        pi_offset_r = tl.load(Pi_offset_ptr + sr)
-        pi_offset_parent = tl.load(Pi_offset_ptr + parent_global)
-        pibar_offset_l = tl.load(Pibar_offset_ptr + sl)
-        pibar_offset_r = tl.load(Pibar_offset_ptr + sr)
-        corr0 = (pi_offset_l + pi_offset_r - pi_offset_parent).to(DTYPE)
-        corr1 = (pi_offset_l + pibar_offset_r - pi_offset_parent).to(DTYPE)
-        corr2 = (pi_offset_r + pibar_offset_l - pi_offset_parent).to(DTYPE)
-        inv_denom_corr_l = (pi_offset_l - pibar_offset_l).to(DTYPE)
-        inv_denom_corr_r = (pi_offset_r - pibar_offset_r).to(DTYPE)
-    else:
-        corr0 = tl.zeros((1,), dtype=DTYPE)
-        corr1 = tl.zeros((1,), dtype=DTYPE)
-        corr2 = tl.zeros((1,), dtype=DTYPE)
-        inv_denom_corr_l = tl.zeros((1,), dtype=DTYPE)
-        inv_denom_corr_r = tl.zeros((1,), dtype=DTYPE)
+    pi_offset_l = tl.load(Pi_offset_ptr + sl)
+    pi_offset_r = tl.load(Pi_offset_ptr + sr)
+    pi_offset_parent = tl.load(Pi_offset_ptr + parent_global)
+    pibar_offset_l = tl.load(Pibar_offset_ptr + sl)
+    pibar_offset_r = tl.load(Pibar_offset_ptr + sr)
+    corr0 = (pi_offset_l + pi_offset_r - pi_offset_parent).to(DTYPE)
+    corr1 = (pi_offset_l + pibar_offset_r - pi_offset_parent).to(DTYPE)
+    corr2 = (pi_offset_r + pibar_offset_l - pi_offset_parent).to(DTYPE)
+    inv_denom_corr_l = (pi_offset_l - pibar_offset_l).to(DTYPE)
+    inv_denom_corr_r = (pi_offset_r - pibar_offset_r).to(DTYPE)
 
     sum_pD = tl.zeros((1,), dtype=DTYPE)
     sum_pS = tl.zeros((1,), dtype=DTYPE)

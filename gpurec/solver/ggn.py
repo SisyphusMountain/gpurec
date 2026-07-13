@@ -46,14 +46,10 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
     wrapper just forwards it through to the gated fast path.
     """
     so = static.solver_options
-    centered_state = sv.get("centered_pi_state")
-    centered_kwargs = (
-        {
-            "pi_offset": centered_state.pi_offset,
-            "pibar_offset": centered_state.pibar_offset,
-        }
-        if centered_state is not None
-        else {}
+    pi_state = sv["pi_state"]
+    pi_state.validate(
+        sv["pi_wave"], sv["pibar_wave"], sv["pibar_row_max"],
+        check_values=False,
     )
     return implicit_grad_loglik_vjp_wave(
         static.wave_layout, static.species_helpers,
@@ -77,7 +73,8 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         seed_root=seed_root, drop_norm=drop_norm, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
         reserved_scratch_bytes=reserved_scratch_bytes,
-        **centered_kwargs,
+        pi_offset=pi_state.pi_offset,
+        pibar_offset=pi_state.pibar_offset,
     )
 
 

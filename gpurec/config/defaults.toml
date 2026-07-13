@@ -19,7 +19,6 @@
 e_max_iter = 128
 e_tol = 1e-8
 pi_iters = 64
-pi_representation = "absolute"
 neumann_terms = 64
 self_loop_solver = "neumann"
 bicgstab_max_iter = 128

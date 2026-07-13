@@ -1,6 +1,6 @@
 """Forward-mode tangent (Jvp) of the cross-wave dts reduction.
 
-Linearization of ``compute_dts_forward`` (dts_fused.py). For each split (left row ``l``, right row
+Linearization of ``compute_dts_forward`` (pi_forward.py). For each split (left row ``l``, right row
 ``r``) feeding parent wave row ``p = reduce_idx[n]``, the 5 terms are
 ``t0=lsp+log_d+pi_l+pi_r``, ``t1=lsp+pi_l+pibar_r``, ``t2=lsp+pi_r+pibar_l``,
 ``t3=lsp+log_s+Pi[l,c1]+Pi[r,c2]``, ``t4=lsp+log_s+Pi[r,c1]+Pi[l,c2]``, and
@@ -18,7 +18,7 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core.kernels.dts_fused import _load_rate, _tl_float_dtype
+from gpurec.core.kernels.pi_forward import _load_rate, _tl_float_dtype
 
 
 @triton.jit
@@ -28,7 +28,7 @@ def _dts_tangent_kernel(
     dts_r_ptr, d_out_ptr, item_idx, item_offset,
     Pi_offset, Pibar_offset, dts_offset,
     S: tl.constexpr, BLOCK_S: tl.constexpr, ROW_STRIDE: tl.constexpr,
-    BY_STATE: tl.constexpr, CENTERED: tl.constexpr, DTYPE: tl.constexpr,
+    BY_STATE: tl.constexpr, DTYPE: tl.constexpr,
 ):
     NEG = -float("inf")
     n = tl.program_id(0)
@@ -71,31 +71,22 @@ def _dts_tangent_kernel(
     dpi_l_c2 = tl.load(dPi + base_l + c2, mask=c2v, other=0.0)
     lsp = tl.load(log_split_probs + n)
 
-    if CENTERED:
-        # The centered DTS normalizer is a residual in dts_offset[parent_w]'s
-        # frame.  Align each child combination to that frame before forming
-        # its softmax weight.  Offsets have no tangent: dpi/dpibar are
-        # derivatives of the represented absolute state.
-        out_offset = tl.load(dts_offset + parent_w)
-        pi_off_l = tl.load(Pi_offset + left)
-        pi_off_r = tl.load(Pi_offset + right)
-        pibar_off_l = tl.load(Pibar_offset + left)
-        pibar_off_r = tl.load(Pibar_offset + right)
-        corr0 = (pi_off_l + pi_off_r - out_offset).to(DTYPE)
-        corr1 = (pi_off_l + pibar_off_r - out_offset).to(DTYPE)
-        corr2 = (pi_off_r + pibar_off_l - out_offset).to(DTYPE)
-        t0 = lsp + log_d + pi_l + pi_r + corr0
-        t1 = lsp + pi_l + pibar_r + corr1
-        t2 = lsp + pi_r + pibar_l + corr2
-        t3 = lsp + log_s + pi_l_c1 + pi_r_c2 + corr0
-        t4 = lsp + log_s + pi_r_c1 + pi_l_c2 + corr0
-    else:
-        # Keep the established absolute arithmetic and generated kernel path.
-        t0 = lsp + log_d + pi_l + pi_r
-        t1 = lsp + pi_l + pibar_r
-        t2 = lsp + pi_r + pibar_l
-        t3 = lsp + log_s + pi_l_c1 + pi_r_c2
-        t4 = lsp + log_s + pi_r_c1 + pi_l_c2
+    # The DTS normalizer is a residual in dts_offset[parent_w]'s frame. Align
+    # each child combination to that frame before forming its softmax weight.
+    # Offsets have no tangent: dpi/dpibar differentiate the represented rows.
+    out_offset = tl.load(dts_offset + parent_w)
+    pi_off_l = tl.load(Pi_offset + left)
+    pi_off_r = tl.load(Pi_offset + right)
+    pibar_off_l = tl.load(Pibar_offset + left)
+    pibar_off_r = tl.load(Pibar_offset + right)
+    corr0 = (pi_off_l + pi_off_r - out_offset).to(DTYPE)
+    corr1 = (pi_off_l + pibar_off_r - out_offset).to(DTYPE)
+    corr2 = (pi_off_r + pibar_off_l - out_offset).to(DTYPE)
+    t0 = lsp + log_d + pi_l + pi_r + corr0
+    t1 = lsp + pi_l + pibar_r + corr1
+    t2 = lsp + pi_r + pibar_l + corr2
+    t3 = lsp + log_s + pi_l_c1 + pi_r_c2 + corr0
+    t4 = lsp + log_s + pi_r_c1 + pi_l_c2 + corr0
     dt0 = dlog_d + dpi_l + dpi_r
     dt1 = dpi_l + dpibar_r
     dt2 = dpi_r + dpibar_l
@@ -119,46 +110,35 @@ def compute_dts_tangent(
     log_pD_vec, log_pS_vec, dlog_pD_vec, dlog_pS_vec, dts_r, item_idx,
     *, log_split_probs=None, n_eq1=None, eq1_reduce_idx=None,
     ge2_ptr=None, ge2_parent_ids=None, ge2_max_fanout=None, item_offset=0,
-    pi_offset=None, pibar_offset=None, dts_offset=None,
+    pi_offset, pibar_offset, dts_offset,
 ):
-    """Tangent of absolute or centered DTS (full ``reduce_idx`` scatter).
+    """Tangent of gauge-carrying DTS (full ``reduce_idx`` scatter).
 
-    Supplying ``pi_offset``, ``pibar_offset``, and ``dts_offset`` selects the
-    centered primal-weight path.  The returned tensor is still the derivative
-    of absolute DTS; offset selection is a non-differentiated gauge.
+    The returned tensor differentiates the represented absolute DTS; gauge
+    selection itself is not differentiated.
     """
     N = int(lefts.shape[0])
     S = int(Pi.shape[1])
     d_out = torch.zeros((W, S), device=Pi.device, dtype=Pi.dtype)
+    C = int(Pi.shape[0])
+    for name, offset, rows in (
+        ("pi_offset", pi_offset, C),
+        ("pibar_offset", pibar_offset, C),
+        ("dts_offset", dts_offset, int(W)),
+    ):
+        if offset.ndim != 1 or int(offset.shape[0]) != rows:
+            raise ValueError(f"{name} must have shape [{rows}]")
+        if offset.dtype != torch.float64 or offset.device != Pi.device:
+            raise TypeError(f"{name} must be fp64 on the Pi device")
+    pi_offset = pi_offset.contiguous()
+    pibar_offset = pibar_offset.contiguous()
+    dts_offset = dts_offset.contiguous()
     if N == 0:
         return d_out
-    centered = any(x is not None for x in (pi_offset, pibar_offset, dts_offset))
-    if centered and any(x is None for x in (pi_offset, pibar_offset, dts_offset)):
-        raise ValueError(
-            "pi_offset, pibar_offset, and dts_offset are all required for centered DTS tangent"
-        )
-    if centered:
-        C = int(Pi.shape[0])
-        for name, offset, rows in (
-            ("pi_offset", pi_offset, C),
-            ("pibar_offset", pibar_offset, C),
-            ("dts_offset", dts_offset, int(W)),
-        ):
-            if offset.ndim != 1 or int(offset.shape[0]) != rows:
-                raise ValueError(f"{name} must have shape [{rows}]")
-            if offset.dtype != torch.float64 or offset.device != Pi.device:
-                raise TypeError(f"{name} must be fp64 on the Pi device")
-        pi_offset = pi_offset.contiguous()
-        pibar_offset = pibar_offset.contiguous()
-        dts_offset = dts_offset.contiguous()
-    else:
-        # Compile-time CENTERED=False eliminates all offset loads; these are
-        # unused pointer placeholders and do not alter the absolute kernel.
-        pi_offset = pibar_offset = dts_offset = Pi
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        # float64 batch static -> compute dtype at the boundary (see dts_fused.compute_dts_forward).
+        # float64 batch static -> compute dtype at the canonical forward boundary.
         log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
     by_state = log_pD_vec.ndim == 2 and int(log_pD_vec.shape[1]) != 1
     row_stride = 0 if int(log_pD_vec.shape[0]) == 1 else int(log_pD_vec.stride(0))
@@ -169,7 +149,6 @@ def compute_dts_tangent(
         dts_r, d_out, item_idx, int(item_offset),
         pi_offset, pibar_offset, dts_offset,
         S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_STATE=bool(by_state),
-        CENTERED=bool(centered),
         DTYPE=_tl_float_dtype(Pi.dtype),
     )
     return d_out

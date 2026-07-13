@@ -1,14 +1,14 @@
 import pytest
 import torch
 
-from gpurec.core.centered_state import CenteredPiState
+from gpurec.core.pi_state import PiState
 
 
 def test_centered_rows_reconstruct_in_fp64_and_preserve_impossible_lanes():
     residual = torch.tensor([[0.25, -1.5, float("-inf")]], dtype=torch.float32)
     offset = torch.tensor([1200.125], dtype=torch.float64)
 
-    absolute = CenteredPiState.reconstruct_rows(residual, offset)
+    absolute = PiState.reconstruct_rows(residual, offset)
 
     assert absolute.dtype == torch.float64
     torch.testing.assert_close(
@@ -23,11 +23,11 @@ def test_centered_rows_reconstruct_in_fp64_and_preserve_impossible_lanes():
 def test_centered_rows_reject_ambiguous_offset_layout():
     residual = torch.zeros((2, 3), dtype=torch.float32)
     with pytest.raises(ValueError, match="one value per residual row"):
-        CenteredPiState.reconstruct_rows(
+        PiState.reconstruct_rows(
             residual, torch.zeros(1, dtype=torch.float64)
         )
     with pytest.raises(TypeError, match="fp64"):
-        CenteredPiState.reconstruct_rows(
+        PiState.reconstruct_rows(
             residual, torch.zeros(2, dtype=torch.float32)
         )
 
@@ -37,7 +37,7 @@ def test_complete_centered_state_validates_frames_on_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is not available")
     pi = torch.zeros((2, 3), device="cuda", dtype=torch.float32)
-    state = CenteredPiState(
+    state = PiState(
         pi_offset=torch.zeros(2, device="cuda", dtype=torch.float64),
         pibar_offset=torch.ones(2, device="cuda", dtype=torch.float64),
     )
@@ -60,7 +60,7 @@ def test_centered_state_rejects_nonfinite_offsets_on_explicit_audit(bad_value: f
     if not torch.cuda.is_available():
         pytest.skip("CUDA is not available")
     pi = torch.zeros((1, 2), device="cuda", dtype=torch.float32)
-    state = CenteredPiState(
+    state = PiState(
         pi_offset=torch.tensor([bad_value], device="cuda", dtype=torch.float64),
         pibar_offset=torch.zeros(1, device="cuda", dtype=torch.float64),
     )
@@ -73,7 +73,7 @@ def test_centered_state_rejects_noncanonical_all_impossible_row():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is not available")
     impossible = torch.full((1, 2), float("-inf"), device="cuda")
-    state = CenteredPiState(
+    state = PiState(
         pi_offset=torch.ones(1, device="cuda", dtype=torch.float64),
         pibar_offset=torch.zeros(1, device="cuda", dtype=torch.float64),
     )

@@ -24,12 +24,6 @@ def add_common_args(parser) -> None:
     # ``make_solver_options`` can tell "not passed" apart from "passed the same value the
     # config/default already has" -- an explicitly-passed flag must win over --config.
     parser.add_argument("--pi-iters", type=int, default=None)
-    parser.add_argument(
-        "--pi-representation",
-        choices=["absolute", "centered"],
-        default=None,
-        help="Pi/Pibar storage; centered uses CUDA fp32 residuals plus fp64 row offsets",
-    )
     parser.add_argument("--neumann-terms", type=int, default=None)
     parser.add_argument("--e-max-iter", type=int, default=None)
 
@@ -62,8 +56,6 @@ def make_solver_options(args):
     overrides = {}
     if (pi_iters := getattr(args, "pi_iters", None)) is not None:
         overrides["pi_iters"] = pi_iters
-    if (pi_representation := getattr(args, "pi_representation", None)) is not None:
-        overrides["pi_representation"] = pi_representation
     if (neumann_terms := getattr(args, "neumann_terms", None)) is not None:
         overrides["neumann_terms"] = neumann_terms
     if (e_max_iter := getattr(args, "e_max_iter", None)) is not None:

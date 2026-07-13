@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 
 from gpurec.api.solver_options import SolverOptions
-from gpurec.core.centered_state import CenteredPiState
+from gpurec.core.pi_state import PiState
 from gpurec.core.scheduling.batching import build_wave_layout, build_wave_layout_from_plan
 
 
@@ -17,7 +17,7 @@ class _BatchStatic:
     family_indices: list[int]
     family_index_tensor: torch.Tensor
     solver_options: SolverOptions
-    centered_pi_forward_state: CenteredPiState | None = None
+    pi_forward_state: PiState | None = None
     warm_E: torch.Tensor | None = None
     warm_v: dict | None = None   # per-wave backward Pi-adjoint warm-start cache (keyed by wave-start ws)
     warm_adjoint_ok: bool = True  # memory gate: False -> ignore GPUREC_WARM_ADJOINT (cache won't fit), run cold

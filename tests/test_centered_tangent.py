@@ -4,8 +4,7 @@ import pytest
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.core.kernels.centered_pi_forward import compute_dts_forward_centered
-from gpurec.core.kernels.dts_fused import compute_dts_forward
+from gpurec.core.kernels.pi_forward import compute_dts_forward
 from gpurec.core.kernels.dts_tangent import compute_dts_tangent
 from gpurec.core.scheduling import batching
 from gpurec.solver.forward_tangent import jvp_root_scores
@@ -149,7 +148,7 @@ def test_centered_dts_tangent_matches_absolute_fp64(fanout: int) -> None:
             "ge2_max_fanout": fanout,
         }
 
-    dts, dts_offset = compute_dts_forward_centered(
+    dts, dts_offset = compute_dts_forward(
         pi,
         pi_offset,
         pibar,
@@ -190,11 +189,11 @@ def test_centered_dts_tangent_matches_absolute_fp64(fanout: int) -> None:
         **layout,
     )
 
-    pi_absolute = pi.double() + pi_offset[:, None]
-    pibar_absolute = pibar.double() + pibar_offset[:, None]
-    dts_absolute = compute_dts_forward(
-        pi_absolute,
-        pibar_absolute,
+    dts_reference, dts_reference_offset = compute_dts_forward(
+        pi.double(),
+        pi_offset,
+        pibar.double(),
+        pibar_offset,
         lefts,
         rights,
         sp_child1,
@@ -208,8 +207,8 @@ def test_centered_dts_tangent_matches_absolute_fp64(fanout: int) -> None:
         **layout,
     )
     reference = compute_dts_tangent(
-        pi_absolute,
-        pibar_absolute,
+        pi.double(),
+        pibar.double(),
         dpi.double(),
         dpibar.double(),
         lefts,
@@ -222,9 +221,12 @@ def test_centered_dts_tangent_matches_absolute_fp64(fanout: int) -> None:
         log_p_s.double(),
         dlog_p_d.double(),
         dlog_p_s.double(),
-        dts_absolute,
+        dts_reference,
         family_idx,
         log_split_probs=log_split_probs,
+        pi_offset=pi_offset,
+        pibar_offset=pibar_offset,
+        dts_offset=dts_reference_offset,
         **layout,
     )
     torch.testing.assert_close(got.double(), reference, rtol=2e-6, atol=3e-7)
@@ -249,9 +251,7 @@ def test_centered_root_jvp_matches_fp64_uniform_and_weighted(tmp_path: Path) -> 
         clade_budget=None,
         batch_packing="sequential",
         max_wave_size=8,
-        solver_options=SolverOptions(
-            **common, e_tol=1e-7, pi_representation="centered"
-        ),
+        solver_options=SolverOptions(**common, e_tol=1e-7),
     )
     reference_model = GeneReconModel(
         species_tree,
@@ -262,9 +262,7 @@ def test_centered_root_jvp_matches_fp64_uniform_and_weighted(tmp_path: Path) -> 
         clade_budget=None,
         batch_packing="sequential",
         max_wave_size=8,
-        solver_options=SolverOptions(
-            **common, e_tol=1e-12, pi_representation="absolute"
-        ),
+        solver_options=SolverOptions(**common, e_tol=1e-12),
     )
     split_metas = [
         meta for meta in centered_model.wave_layout["wave_metas"] if "sl" in meta
@@ -296,7 +294,7 @@ def test_centered_root_jvp_matches_fp64_uniform_and_weighted(tmp_path: Path) -> 
         _, centered_saved = forward_solve(
             centered_model.batch_statics, theta32, alpha32
         )
-        assert centered_saved["centered_pi_state"] is not None
+        assert centered_saved["pi_state"] is not None
         centered_jvp = jvp_root_scores(
             centered_model.batch_statics[0],
             theta32,
@@ -311,7 +309,7 @@ def test_centered_root_jvp_matches_fp64_uniform_and_weighted(tmp_path: Path) -> 
         _, reference_saved = forward_solve(
             reference_model.batch_statics, theta64, alpha64
         )
-        assert reference_saved["centered_pi_state"] is None
+        assert reference_saved["pi_state"] is not None
         reference_jvp = jvp_root_scores(
             reference_model.batch_statics[0],
             theta64,

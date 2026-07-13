@@ -72,7 +72,6 @@ def run_fit(args) -> int:
     user_solver = (
         args.config is not None
         or args.pi_iters is not None
-        or getattr(args, "pi_representation", None) is not None
         or args.neumann_terms is not None
         or args.e_max_iter is not None
     )

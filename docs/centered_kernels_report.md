@@ -2,8 +2,9 @@
 
 ## Result
 
-Centered Pi/Pibar storage is supported through forward, first-order, tangent,
-second-order, exact-HVP, and GGN paths. A component-level fp32/fp64 audit found
+Centered Pi/Pibar storage is the CUDA execution path for fp32 and fp64 models,
+including forward, first-order, tangent, second-order, exact-HVP, and GGN
+computations. A component-level fp32/fp64 audit found
 that absolute fp32 Pi/DTS propagation, rather than the extinction fixed point,
 was the dominant forward-error source. Fixing the centered leaf and split-DTS
 frames makes centered fp32 materially more accurate on the one-family fp64
@@ -30,17 +31,17 @@ target:
 | forward | `2,822.64 ms` | `2,880.39 ms` | **+2.56%** |
 | loss + full gradient | `6,959.41 ms` | `7,030.91 ms` | **+0.71%** |
 
-All 12 full-workload losses are identical within each representation. The
+All 12 full-workload losses are identical within each historical variant. The
 forward paired-overhead samples range from `+0.24%` to `+5.27%`; loss+gradient
 ranges from `-3.28%` to `+2.27%`. Paired medians are used because they control
 short-term GPU clock drift better than ratios of independent medians.
 
 ## Implementation and correctness gates
 
-`SolverOptions.pi_representation` is the supported switch. `"absolute"`
-remains the default and `"centered"` selects CUDA fp32 residual matrices with
-one fp64 offset per row. The former environment experiment is no longer
-consulted.
+CUDA Pi/Pibar matrices are always stored as centered residuals in the model
+dtype, with one fp64 offset per row. This is a solver invariant for both fp32
+and fp64 models; there is no Python, TOML, CLI, environment, or internal
+absolute-storage fallback.
 
 The state contract is specified in
 [`centered_state_contract.md`](centered_state_contract.md). Inactive and wholly
@@ -52,8 +53,8 @@ its sampler boundary.
 The final precision changes are deliberately narrow:
 
 - root rows, E, origination values, cross-batch loss reductions, and the small
-  root/survival adjoint seeds use an fp64 likelihood head for both
-  representations;
+  root/survival adjoint seeds use an fp64 likelihood head for every model
+  dtype;
 - fp32 parameter log-softmaxes are computed in fp64 and rounded once;
 - leaf observations select their actual frame rather than an assumed zero
   frame; and
@@ -74,7 +75,8 @@ Final validation command:
 .venv/bin/python -m pytest -q
 ```
 
-Result: `308 passed, 11 skipped, 23 warnings in 96.16s`. The warnings are the
+Result after canonical-path consolidation: `307 passed, 11 skipped, 23 warnings
+in 123.95s`. The warnings are the
 existing TorchScript deprecation and fp32 GMRES tolerance-floor warnings.
 
 ## Benchmark method
@@ -90,16 +92,18 @@ Hardware and software:
 The benchmark initializes log2-rate logits to zero, runs 128 E iterations at
 `1e-8` tolerance, 64 Pi iterations, and 64 Neumann terms. CUDA is synchronized
 around every host `perf_counter` sample. Three warmups exclude compilation and
-12 raw samples are retained. The paired phase alternates which representation
-runs first and reverses that order for gradient evaluation. Peak values are
-PyTorch CUDA allocation peaks.
+12 raw samples are retained. The historical paired phase alternates which
+experimental implementation runs first and reverses that order for gradient
+evaluation. Peak values are PyTorch CUDA allocation peaks.
 
 The full workload has 1,055 families, 1,036,963 clades, 1,331 species nodes,
 and five streamed batches in specieswise mode. Warm-adjoint caching is disabled
 for both variants because the estimated 5.1 GiB cache plus 15.6 GiB scratch
 exceeds the 18.4--18.8 GiB safety budget.
 
-Commands (generated JSON remains under ignored `output/`):
+Historical commands used to produce this report are shown below. The
+comparison drivers were removed when the alternate absolute implementation was
+deleted; they remain available from Git history at commit `f6d2ac37`.
 
 ```bash
 export GPUREC_HOGENOM_ROOT=/path/to/hogenom
@@ -127,7 +131,7 @@ export GPUREC_HOGENOM_ROOT=/path/to/hogenom
 The weighted one-family capture uses nonzero DTL logits and nonuniform receiver
 and origination weights. All three variants converge E in 18 iterations and
 produce 2,007 matched captures without missing shared tensors or mask
-mismatches. Centered mode adds 52 native residual/virtual-offset captures for
+mismatches. The centered variant adds 52 native residual/virtual-offset captures for
 the DTS framing side channel.
 
 | weighted quantity | absolute fp32 | centered fp32 | absolute fp64 |
@@ -157,13 +161,13 @@ tree.
 | repeated-gradient maximum delta | `8.583e-6` | `2.861e-6` | `4.44e-14` |
 
 The repeatability delta reflects nondeterministic fp32 atomic order and is not
-an error-to-reference measurement. Both fp32 modes have stable repeated losses,
+an error-to-reference measurement. Both historical fp32 variants have stable repeated losses,
 and five fixed SGD steps remain finite and monotonically decreasing.
 
-The fp64 likelihood head is a representation-independent fix. For the same
-absolute fp32 roots, its loss is `304.852344664`, versus `304.852355957` for a
-manual fp32 head. Centering supplies the larger additional gain by preserving
-Pi/DTS row-local low bits.
+The fp64 likelihood head is independent of Pi storage framing. For the same
+historical absolute fp32 roots, its loss is `304.852344664`, versus
+`304.852355957` for a manual fp32 head. Centering supplies the larger additional
+gain by preserving Pi/DTS row-local low bits.
 
 ### Full 1,055-family workload
 
@@ -187,8 +191,9 @@ frames attacks the measured dominant error without changing dense storage.
 
 ## Conclusion
 
-Centered mode is a supported opt-in representation with complete derivative
-coverage. The fp32/fp64 tensor capture demonstrates a real centered-Pi benefit:
-roughly 7--16x on the unweighted loss/gradient gates and 8--15x on the weighted
-forward/root gates. The fixes retain fp32 dense kernels and confine fp64 to
-small reductions and row gauges.
+Centered state is the canonical CUDA representation with complete derivative
+coverage for fp32 and fp64 models. The fp32/fp64 tensor capture demonstrates a
+real centered-Pi benefit: roughly 7--16x on the unweighted loss/gradient gates
+and 8--15x on the weighted forward/root gates. For fp32 models the fixes retain
+fp32 dense kernels and confine fp64 to small reductions and row gauges; fp64
+models use fp64 residuals and the same centered-state contract.

@@ -1,5 +1,10 @@
 # Centered Pi Heuristic Offsets
 
+> Historical design note. The heuristic gauge described here is implemented in
+> the canonical `pi_forward.py` path. The exact-centered prototype and absolute
+> fused comparison kernels discussed below have been removed; the remainder is
+> retained as the performance rationale for the current implementation.
+
 The centered Pi representation does not need each stored row to be centered at
 the exact row maximum. It only needs to avoid storing values such as
 `1500 + small_residual`, where fp32 loses the small residual. An offset that

@@ -2,6 +2,15 @@ import torch
 import triton
 import triton.language as tl
 
+__all__ = [
+    "compute_dts_forward",
+    "compute_leaf_initial_wave_step",
+    "compute_wave_step",
+    "_load_rate",
+    "_prepare_wave_launch",
+    "_tl_float_dtype",
+]
+
 
 def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
@@ -70,7 +79,7 @@ def _row_logsumexp(
 
 
 @triton.jit
-def _pibar_tile_centered(
+def _pibar_tile(
     Pi_ptr,
     receiver_log_probs_ptr,
     base,
@@ -112,7 +121,7 @@ def _pibar_tile_centered(
 
 
 @triton.jit
-def _leaf_initial_wave_step_centered_kernel(
+def _leaf_initial_wave_step_kernel(
     Pi_new_ptr,
     Pi_new_offset_ptr,
     ws,
@@ -254,7 +263,7 @@ def _leaf_initial_wave_step_centered_kernel(
 
 
 @triton.jit
-def _wave_step_centered_kernel(
+def _wave_step_kernel(
     Pi_ptr,
     Pi_offset_ptr,
     ws,
@@ -335,7 +344,7 @@ def _wave_step_centered_kernel(
             axis=0,
         ).to(DTYPE)
     else:
-        # Leaf initialization and the first virtually centered DTS iteration already
+        # Leaf initialization and the first virtually gauged DTS iteration already
         # put ordinary Pi iterates in their local frame. Avoid repeating four
         # vector shifts on every later fixed-point iteration.
         row_shift = tl.zeros((), dtype=DTYPE)
@@ -358,10 +367,10 @@ def _wave_step_centered_kernel(
         ).to(DTYPE)
         # The leaf source represents ``leaf_obs_logp``, not a zero-frame
         # value. Using 0 here forced every negative HOGENOM row back into the
-        # absolute frame after the exactly centered leaf initializer.
+        # absolute frame after the exactly gauged leaf initializer.
         term_base = tl.maximum(term_base, leaf_obs_logp.to(tl.float64))
     pi_corr = (effective_pi_offset - term_base).to(DTYPE)
-    # DTS storage remains in its original gauge. The virtual centered offset
+    # DTS storage remains in its original gauge. The virtual row offset
     # participates only in base selection; one fp64 subtraction folds its
     # shift into the same correction the recurrence already applies.
     dts_corr = (dts_offset - term_base).to(DTYPE)
@@ -379,7 +388,7 @@ def _wave_step_centered_kernel(
         pi_w = pi_w - row_shift
         const_offsets = const_base + s_offs
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-        pibar_w = _pibar_tile_centered(
+        pibar_w = _pibar_tile(
             Pi_ptr,
             receiver_log_probs_ptr,
             pi_base,
@@ -460,7 +469,7 @@ def _wave_step_centered_kernel(
             )
             row_max_diff = tl.maximum(row_max_diff, tl.max(diff, axis=0).to(tl.float32))
 
-    # Only the final iterate is published as centered state; earlier iterates
+    # Only the final iterate is published as row-gauged state; earlier iterates
     # are internal gauge-equivalent scratch. Canonicalize the published row in
     # its existing traversal without charging every fixed-point iteration.
     if STORE_FINAL_PIBAR:
@@ -497,7 +506,7 @@ def _wave_step_centered_kernel(
             mask = s_offs < S
             const_offsets = const_base + s_offs
             max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-            pibar_w = _pibar_tile_centered(
+            pibar_w = _pibar_tile(
                 Pi_new_ptr,
                 receiver_log_probs_ptr,
                 global_base,
@@ -525,7 +534,7 @@ def _wave_step_centered_kernel(
 
 
 @triton.jit
-def _dts_eq1_centered_kernel(
+def _dts_eq1_kernel(
     Pi,
     Pi_offset,
     Pibar,
@@ -627,7 +636,7 @@ def _dts_eq1_centered_kernel(
 
 
 @triton.jit
-def _dts_ge2_centered_stage1_kernel(
+def _dts_ge2_stage1_kernel(
     Pi,
     Pi_offset,
     Pibar,
@@ -827,7 +836,7 @@ def _dts_ge2_stage2_kernel(
     tl.store(out_offset + parent_w, row_base_offset, mask=tile_has_finite)
 
 
-def compute_leaf_initial_wave_step_centered(
+def compute_leaf_initial_wave_step(
     Pi_out,
     Pi_out_offset,
     ws,
@@ -850,7 +859,7 @@ def compute_leaf_initial_wave_step_centered(
     use_receiver_weights=True,
 ):
     block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
-    _leaf_initial_wave_step_centered_kernel[(W,)](
+    _leaf_initial_wave_step_kernel[(W,)](
         Pi_out,
         Pi_out_offset,
         ws,
@@ -878,7 +887,7 @@ def compute_leaf_initial_wave_step_centered(
     )
 
 
-def compute_wave_step_centered(
+def compute_wave_step(
     Pi_in,
     Pi_in_offset,
     Pi_out,
@@ -915,7 +924,7 @@ def compute_wave_step_centered(
 ):
     has_splits = DTS_reduced is not None
     if has_splits and DTS_offset is None:
-        raise ValueError("DTS_offset is required with centered split DTS input")
+        raise ValueError("DTS_offset is required with row-gauged split DTS input")
     if has_splits and DTS_center_offset is None:
         # Direct callers that are not the first DTS-input launch have no
         # virtual shift to publish; their storage offset is the correct base.
@@ -938,12 +947,12 @@ def compute_wave_step_centered(
         or DTS_center_offset.data_ptr() == Pibar_offset.data_ptr()
     ):
         raise ValueError(
-            "centered split virtual framing requires wave-local aliased Pi/DTS inputs "
+            "split virtual framing requires wave-local aliased Pi/DTS inputs "
             "and a distinct output buffer"
         )
     compute_diff = pi_residual_out is not None
     block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
-    _wave_step_centered_kernel[(W,)](
+    _wave_step_kernel[(W,)](
         Pi_in,
         Pi_in_offset,
         ws,
@@ -986,7 +995,7 @@ def compute_wave_step_centered(
     )
 
 
-def compute_dts_forward_centered(
+def compute_dts_forward(
     Pi,
     Pi_offset,
     Pibar,
@@ -1037,7 +1046,7 @@ def compute_dts_forward_centered(
     active = active_parent_rows if active_parent_rows is not None else reduce_idx
 
     if int(n_eq1) > 0:
-        _dts_eq1_centered_kernel[(int(n_eq1), triton.cdiv(S, block_s))](
+        _dts_eq1_kernel[(int(n_eq1), triton.cdiv(S, block_s))](
             Pi,
             Pi_offset,
             Pibar,
@@ -1076,7 +1085,7 @@ def compute_dts_forward_centered(
     partial_offset = torch.empty(
         (n_groups * max_tiles,), device=Pi.device, dtype=torch.float64
     )
-    _dts_ge2_centered_stage1_kernel[(n_groups, max_tiles, triton.cdiv(S, block_s))](
+    _dts_ge2_stage1_kernel[(n_groups, max_tiles, triton.cdiv(S, block_s))](
         Pi,
         Pi_offset,
         Pibar,

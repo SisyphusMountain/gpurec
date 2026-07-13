@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pytest
@@ -6,13 +7,11 @@ import torch
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import evaluate_static_convergence
 from gpurec.core.inference.solver import solve_forward_residual, solve_resident_e_pi
-from gpurec.core.kernels.centered_pi_forward import (
-    compute_dts_forward_centered,
-    compute_leaf_initial_wave_step_centered,
-    compute_wave_step_centered,
+from gpurec.core.kernels.pi_forward import (
+    compute_dts_forward,
+    compute_leaf_initial_wave_step,
+    compute_wave_step,
 )
-from gpurec.core.kernels.dts_fused import compute_dts_forward
-from gpurec.core.kernels.wave_step import compute_leaf_initial_wave_step
 from gpurec.core.scheduling import batching
 
 
@@ -118,8 +117,7 @@ def test_centered_leaf_initialization_matches_nonzero_observation_seed(
         [[-0.3, -1.1, -2.2, -4.75, -0.8]], device=device, dtype=dtype
     )
 
-    absolute = torch.empty((1, S), device=device, dtype=dtype)
-    centered = torch.empty_like(absolute)
+    residual = torch.empty((1, S), device=device, dtype=dtype)
     offset = torch.empty((1,), device=device, dtype=torch.float64)
     args = (
         0,
@@ -141,17 +139,29 @@ def test_centered_leaf_initialization_matches_nonzero_observation_seed(
         family_idx,
     )
     compute_leaf_initial_wave_step(
-        absolute, *args, use_receiver_weights=use_receiver_weights
-    )
-    compute_leaf_initial_wave_step_centered(
-        centered, offset, *args, use_receiver_weights=use_receiver_weights
+        residual, offset, *args, use_receiver_weights=use_receiver_weights
     )
 
-    reconstructed = centered.double() + offset[:, None]
-    torch.testing.assert_close(
-        reconstructed, absolute.double(), rtol=0.0, atol=5e-7
+    # The same canonical kernel in fp64 is the precision oracle. Inputs remain
+    # in the same gauges; only the residual arithmetic changes dtype.
+    reference_residual = torch.empty((1, S), device=device, dtype=torch.float64)
+    reference_offset = torch.empty_like(offset)
+    args64 = tuple(
+        value.double() if torch.is_tensor(value) and value.is_floating_point() else value
+        for value in args
     )
-    torch.testing.assert_close(offset, absolute.amax(dim=1).double(), rtol=0.0, atol=5e-7)
+    compute_leaf_initial_wave_step(
+        reference_residual,
+        reference_offset,
+        *args64,
+        use_receiver_weights=use_receiver_weights,
+    )
+    reconstructed = residual.double() + offset[:, None]
+    reference = reference_residual + reference_offset[:, None]
+    torch.testing.assert_close(
+        reconstructed, reference, rtol=0.0, atol=5e-7
+    )
+    torch.testing.assert_close(offset, reconstructed.amax(dim=1), rtol=0.0, atol=5e-7)
 
 
 @pytest.mark.gpu
@@ -194,7 +204,7 @@ def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows()
     leaf_logp = torch.zeros((W, S), device=device, dtype=dtype)
     family_idx = torch.arange(W, device=device, dtype=torch.long)
 
-    compute_wave_step_centered(
+    compute_wave_step(
         pi_in,
         pi_in_offset,
         pi_out,
@@ -263,7 +273,7 @@ def test_centered_final_pibar_all_impossible_row_uses_zero_offset() -> None:
     impossible = torch.full_like(rates, float("-inf"))
     children = torch.full((S,), S, device=device, dtype=torch.long)
 
-    compute_wave_step_centered(
+    compute_wave_step(
         pi_in,
         pi_in_offset,
         pi_out,
@@ -330,7 +340,7 @@ def test_centered_split_input_uses_raw_max_for_virtual_dts_frame(
     impossible = torch.full_like(dts, float("-inf"))
     children = torch.full((S,), S, device=device, dtype=torch.long)
 
-    compute_wave_step_centered(
+    compute_wave_step(
         dts,
         dts_offset,
         pi_out,
@@ -455,7 +465,7 @@ def test_centered_dts_accepts_float64_split_statics_and_matches_float64_referenc
             "ge2_max_fanout": fanout,
         }
 
-    centered_out, out_offset = compute_dts_forward_centered(
+    centered_out, out_offset = compute_dts_forward(
         pi,
         pi_offset,
         pibar,
@@ -473,11 +483,11 @@ def test_centered_dts_accepts_float64_split_statics_and_matches_float64_referenc
         **layout,
     )
 
-    pi_absolute = pi.double() + pi_offset[:, None]
-    pibar_absolute = pibar.double() + pibar_offset[:, None]
-    reference = compute_dts_forward(
-        pi_absolute,
-        pibar_absolute,
+    reference_residual, reference_offset = compute_dts_forward(
+        pi.double(),
+        pi_offset,
+        pibar.double(),
+        pibar_offset,
         lefts,
         rights,
         sp_child1,
@@ -491,6 +501,7 @@ def test_centered_dts_accepts_float64_split_statics_and_matches_float64_referenc
         **layout,
     )
     reconstructed = centered_out.double() + out_offset[:, None]
+    reference = reference_residual + reference_offset[:, None]
     torch.testing.assert_close(reconstructed, reference, rtol=0.0, atol=1e-5)
     assert out_offset.dtype == torch.float64
 
@@ -511,7 +522,7 @@ def test_centered_dts_empty_and_inactive_rows_use_zero_offset() -> None:
     rates = torch.full((1, S), -2.0, device=device)
     family_idx = torch.tensor([0], device=device, dtype=torch.long)
 
-    empty, empty_offset = compute_dts_forward_centered(
+    empty, empty_offset = compute_dts_forward(
         pi,
         pi_offset,
         pibar,
@@ -529,7 +540,7 @@ def test_centered_dts_empty_and_inactive_rows_use_zero_offset() -> None:
     assert torch.isneginf(empty).all().item()
     assert torch.equal(empty_offset, torch.zeros_like(empty_offset))
 
-    inactive, inactive_offset = compute_dts_forward_centered(
+    inactive, inactive_offset = compute_dts_forward(
         pi,
         pi_offset,
         pibar,
@@ -584,7 +595,7 @@ def test_centered_dts_impossible_eq1_and_ge2_rows_canonicalize_offset(
             "ge2_max_fanout": fanout,
         }
 
-    residual, offset = compute_dts_forward_centered(
+    residual, offset = compute_dts_forward(
         pi,
         pi_offset,
         pibar,
@@ -610,40 +621,47 @@ def test_centered_dts_impossible_eq1_and_ge2_rows_canonicalize_offset(
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("weighted", [False, True])
-def test_centered_pi_forward_matches_loss_for_receiver_and_origination_cases(
+def test_pi_forward_matches_fp64_for_receiver_and_origination_cases(
     tmp_path: Path,
     weighted: bool,
 ) -> None:
     _require_native_cuda()
     species_tree, gene_trees = _write_tiny_ale_example(tmp_path)
-    options = SolverOptions(
-        e_max_iter=8,
-        e_tol=1e-5,
-        pi_iters=4,
-        pi_representation="absolute",
-        neumann_terms=0,
-    )
-    model = GeneReconModel(
-        species_tree,
-        gene_trees,
-        device="cuda",
-        family_chunk_size=1,
-        clade_budget=None,
-        batch_packing="sequential",
-        max_wave_size=8,
-        solver_options=options,
-    )
-    receiver_weights = torch.zeros_like(model.receiver_weights)
-    origination_weights = torch.zeros_like(model.origination_weights)
-    if weighted:
-        receiver_weights = torch.linspace(
-            -1.25, 1.75, receiver_weights.numel(), device=receiver_weights.device
-        )
-        origination_weights = torch.linspace(
-            0.9, -1.1, origination_weights.numel(), device=origination_weights.device
+    def build(dtype: torch.dtype, e_tol: float) -> GeneReconModel:
+        return GeneReconModel(
+            species_tree,
+            gene_trees,
+            device="cuda",
+            dtype=dtype,
+            family_chunk_size=1,
+            clade_budget=None,
+            batch_packing="sequential",
+            max_wave_size=8,
+            solver_options=SolverOptions(
+                e_max_iter=32,
+                e_tol=e_tol,
+                pi_iters=8,
+                neumann_terms=16,
+            ),
         )
 
-    split_metas = [meta for meta in model.wave_layout["wave_metas"] if "sl" in meta]
+    model32 = build(torch.float32, 1e-7)
+    model64 = build(torch.float64, 1e-12)
+    with torch.no_grad():
+        model64.theta.copy_(model32.theta.double())
+    receiver32 = torch.zeros_like(model32.receiver_weights)
+    origination32 = torch.zeros_like(model32.origination_weights)
+    if weighted:
+        receiver32 = torch.linspace(
+            -1.25, 1.75, receiver32.numel(), device=receiver32.device
+        )
+        origination32 = torch.linspace(
+            0.9, -1.1, origination32.numel(), device=origination32.device
+        )
+    receiver64 = receiver32.double()
+    origination64 = origination32.double()
+
+    split_metas = [meta for meta in model32.wave_layout["wave_metas"] if "sl" in meta]
     assert any(int(meta["n_eq1"]) > 0 for meta in split_metas)
     assert any(
         meta.get("ge2_parent_ids") is not None
@@ -651,150 +669,117 @@ def test_centered_pi_forward_matches_loss_for_receiver_and_origination_cases(
         for meta in split_metas
     )
 
-    absolute_solve = solve_resident_e_pi(
-        model.batch_statics[0],
-        model.theta.detach(),
-        receiver_weights,
+    solved32 = solve_resident_e_pi(
+        model32.batch_statics[0],
+        model32.theta.detach(),
+        receiver32,
         warm_start_E=None,
     )
-    absolute_forward_residual = solve_forward_residual(
-        model.batch_statics[0],
-        model.theta.detach(),
-        receiver_weights,
-        pi_iters=4,
+    # The batch static intentionally stores only the most recent solve's sidecar.
+    # Retain the state paired with this result before later diagnostic/model solves
+    # replace that reference.
+    state32 = model32.batch_statics[0].pi_forward_state
+    assert state32 is not None
+    residual32 = solve_forward_residual(
+        model32.batch_statics[0],
+        model32.theta.detach(),
+        receiver32,
+        pi_iters=8,
         warm_start_E=None,
     )
-    with torch.no_grad():
-        base_loss = model(
-            receiver_weights=receiver_weights,
-            origination_weights=origination_weights,
+    solved64 = solve_resident_e_pi(
+        model64.batch_statics[0],
+        model64.theta.detach(),
+        receiver64,
+        warm_start_E=None,
+    )
+    state64 = model64.batch_statics[0].pi_forward_state
+    assert state64 is not None
+    residual64 = solve_forward_residual(
+        model64.batch_statics[0],
+        model64.theta.detach(),
+        receiver64,
+        pi_iters=8,
+        warm_start_E=None,
+    )
+    convergence = evaluate_static_convergence(
+        model32.batch_statics[0],
+        model32.theta.detach(),
+        receiver32,
+        pi_iters_high=8,
+        neumann_terms=16,
+    )
+    def loss_and_grads(model, receiver, origination):
+        theta = model.theta.detach().clone().requires_grad_(True)
+        receiver = receiver.detach().clone().requires_grad_(True)
+        origination = origination.detach().clone().requires_grad_(True)
+        loss = model(
+            theta=theta,
+            receiver_weights=receiver,
+            origination_weights=origination,
         )
-    absolute_theta = model.theta.detach().clone().requires_grad_(True)
-    absolute_receiver = receiver_weights.detach().clone().requires_grad_(True)
-    absolute_origination = origination_weights.detach().clone().requires_grad_(True)
-    absolute_grad_loss = model(
-        theta=absolute_theta,
-        receiver_weights=absolute_receiver,
-        origination_weights=absolute_origination,
-    )
-    absolute_grads = torch.autograd.grad(
-        absolute_grad_loss,
-        (absolute_theta, absolute_receiver, absolute_origination),
-    )
-    model.clear_warm_starts()
-    model.configure_solver(pi_representation="centered")
-    centered_solve = solve_resident_e_pi(
-        model.batch_statics[0],
-        model.theta.detach(),
-        receiver_weights,
-        warm_start_E=None,
-    )
-    centered_forward_residual = solve_forward_residual(
-        model.batch_statics[0],
-        model.theta.detach(),
-        receiver_weights,
-        pi_iters=4,
-        warm_start_E=None,
-    )
-    centered_convergence = evaluate_static_convergence(
-        model.batch_statics[0],
-        model.theta.detach(),
-        receiver_weights,
-        pi_iters_high=4,
-        neumann_terms=2,
-    )
-    with torch.no_grad():
-        centered_loss = model(
-            receiver_weights=receiver_weights,
-            origination_weights=origination_weights,
-        )
-    centered_theta = model.theta.detach().clone().requires_grad_(True)
-    centered_receiver = receiver_weights.detach().clone().requires_grad_(True)
-    centered_origination = origination_weights.detach().clone().requires_grad_(True)
-    centered_grad_loss = model(
-        theta=centered_theta,
-        receiver_weights=centered_receiver,
-        origination_weights=centered_origination,
-    )
-    centered_grads = torch.autograd.grad(
-        centered_grad_loss,
-        (centered_theta, centered_receiver, centered_origination),
-    )
-    centered_state = getattr(model.batch_statics[0], "centered_pi_forward_state", None)
+        return loss, torch.autograd.grad(loss, (theta, receiver, origination))
 
-    assert centered_state is not None
-    assert centered_state.pi_offset.dtype == torch.float64
-    assert centered_state.pibar_offset.dtype == torch.float64
-    assert torch.isfinite(centered_loss).item()
-    torch.testing.assert_close(centered_loss, base_loss.double(), rtol=0.0, atol=5e-6)
-    torch.testing.assert_close(
-        centered_forward_residual,
-        absolute_forward_residual,
-        rtol=0.0,
-        atol=1e-5,
-    )
-    torch.testing.assert_close(
-        centered_convergence[0],
-        centered_forward_residual,
-        rtol=0.0,
-        atol=0.0,
-    )
-    assert all(torch.isfinite(value).all().item() for value in centered_convergence)
-    torch.testing.assert_close(
-        centered_grad_loss,
-        absolute_grad_loss.double(),
-        rtol=0.0,
-        atol=5e-6,
-    )
-    for centered_grad, absolute_grad in zip(centered_grads, absolute_grads):
-        assert torch.isfinite(centered_grad).all().item()
-        torch.testing.assert_close(
-            centered_grad,
-            absolute_grad,
-            rtol=2e-5,
-            atol=2e-5,
-        )
+    loss32, grads32 = loss_and_grads(model32, receiver32, origination32)
+    loss64, grads64 = loss_and_grads(model64, receiver64, origination64)
+    assert state32.pi_offset.dtype == state64.pi_offset.dtype == torch.float64
+    assert torch.isfinite(loss32).item()
+    torch.testing.assert_close(loss32, loss64, rtol=0.0, atol=2e-5)
+    torch.testing.assert_close(residual32, residual64, rtol=0.0, atol=2e-5)
+    torch.testing.assert_close(convergence[0], residual32, rtol=0.0, atol=0.0)
+    assert all(torch.isfinite(value).all().item() for value in convergence)
+    for grad32, grad64 in zip(grads32, grads64):
+        assert torch.isfinite(grad32).all().item()
+        torch.testing.assert_close(grad32.double(), grad64, rtol=5e-5, atol=2e-5)
 
-    absolute_root, absolute_pi, absolute_pibar, absolute_row_max = (
-        absolute_solve[4],
-        absolute_solve[5],
-        absolute_solve[6],
-        absolute_solve[7],
-    )
-    centered_root, centered_pi, centered_pibar, centered_row_max = (
-        centered_solve[4],
-        centered_solve[5],
-        centered_solve[6],
-        centered_solve[7],
-    )
-    pi_reconstructed = centered_pi.double() + centered_state.pi_offset[:, None]
-    pibar_reconstructed = centered_pibar.double() + centered_state.pibar_offset[:, None]
-    # Centering intentionally changes fp32 rounding; this toy fixture is a
-    # mathematical-parity check, while the HOGENOM capture harness supplies the
-    # large-magnitude fp64 accuracy ordering.
-    torch.testing.assert_close(centered_root, absolute_root.double(), rtol=0.0, atol=1.5e-5)
-    torch.testing.assert_close(pi_reconstructed, absolute_pi.double(), rtol=0.0, atol=1e-5)
-    torch.testing.assert_close(pibar_reconstructed, absolute_pibar.double(), rtol=0.0, atol=1e-5)
-    # The saved row max is in the same residual frame as Pi, so adding Pi's
-    # offset reconstructs the absolute metadata consumed by the normal path.
+    root32, pi32, pibar32, row_max32 = solved32[4:8]
+    root64, pi64, pibar64, row_max64 = solved64[4:8]
+    torch.testing.assert_close(root32, root64, rtol=0.0, atol=2e-5)
     torch.testing.assert_close(
-        centered_row_max.double() + centered_state.pi_offset,
-        absolute_row_max.double(),
+        state32.reconstruct_pi(pi32), state64.reconstruct_pi(pi64), rtol=0.0, atol=2e-5
+    )
+    pi_absolute32 = state32.reconstruct_pi(pi32)
+    pibar_absolute32 = state32.reconstruct_pibar(pibar32)
+    pibar_absolute64 = state64.reconstruct_pibar(pibar64)
+    finite32 = torch.isfinite(pibar_absolute32)
+    finite64 = torch.isfinite(pibar_absolute64)
+    # Pibar excludes the current species' ancestor path by subtracting its mass
+    # from the row sum.  A complement below one fp32 ulp of the row maximum can
+    # therefore round to zero in fp32 even though its log value is representable.
+    # That is the ordinary hot-reduction precision floor, not a framing error.
+    assert not bool((finite32 & ~finite64).any().item())
+    common_finite = finite32 & finite64
+    torch.testing.assert_close(
+        pibar_absolute32[common_finite],
+        pibar_absolute64[common_finite],
         rtol=0.0,
-        atol=1e-5,
+        atol=2e-5,
+    )
+    fp32_log_ulp = math.log2(torch.finfo(torch.float32).eps)
+    lost_sub_ulp = ~finite32 & finite64
+    resolution_floor = pi_absolute32.amax(dim=1, keepdim=True) + fp32_log_ulp
+    assert bool(
+        (pibar_absolute64[lost_sub_ulp] <= resolution_floor.expand_as(pibar_absolute64)[lost_sub_ulp])
+        .all()
+        .item()
+    )
+    torch.testing.assert_close(
+        state32.reconstruct_pibar_row_max(row_max32),
+        state64.reconstruct_pibar_row_max(row_max64),
+        rtol=0.0,
+        atol=2e-5,
     )
 
 
 
 @pytest.mark.gpu
-def test_centered_pi_forward_streams_batches_without_losing_fp64_loss(tmp_path: Path) -> None:
+def test_pi_forward_streams_batches_without_losing_fp64_loss(tmp_path: Path) -> None:
     _require_native_cuda()
     species_tree, gene_trees = _write_tiny_ale_example(tmp_path)
     options = SolverOptions(
         e_max_iter=8,
         e_tol=1e-5,
         pi_iters=4,
-        pi_representation="centered",
         neumann_terms=0,
     )
     single = GeneReconModel(

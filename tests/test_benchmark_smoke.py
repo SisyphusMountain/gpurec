@@ -16,7 +16,6 @@ def test_python_drivers_help():
     for py in [
         "bench_gpurec_fit.py",
         "eval_at_alerax_rates.py",
-        "diagnose_forward_precision.py",
     ]:
         r = subprocess.run([sys.executable, str(BENCH / py), "--help"],
                            capture_output=True, text=True)

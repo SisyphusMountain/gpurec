@@ -1,5 +1,13 @@
 # Centered-kernel worktree brief
 
+> Historical planning brief. The implementation described below has been
+> completed and then consolidated: row-gauged Pi/Pibar storage is now the only
+> CUDA path, and the former absolute modules and runtime selector were removed.
+> See [`centered_state_contract.md`](centered_state_contract.md) and
+> [`centered_kernels_report.md`](centered_kernels_report.md) for the current
+> contract and validation. Module names and opt-in instructions below are kept
+> only as the original project record.
+
 ## Mission
 
 Develop a production-quality centered representation for gpurec's log-domain

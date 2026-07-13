@@ -15,11 +15,11 @@ from gpurec.core.inference.solver import (
 from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
 
 
-def _centered_backward_kwargs(static: _BatchStatic) -> dict[str, torch.Tensor]:
-    """Return the offset side channel for the just-completed centered solve."""
-    state = getattr(static, "centered_pi_forward_state", None)
+def _backward_offsets(static: _BatchStatic) -> dict[str, torch.Tensor]:
+    """Return the row gauges from the just-completed Pi solve."""
+    state = getattr(static, "pi_forward_state", None)
     if state is None:
-        return {}
+        raise RuntimeError("Pi forward did not publish its row-offset state")
     return {"pi_offset": state.pi_offset, "pibar_offset": state.pibar_offset}
 
 
@@ -132,7 +132,7 @@ def evaluate_static_loss_grad(
             reserved_scratch_bytes=(static.warm_scratch_reserved_bytes if _warm_v is not None else None),
             origination_log_probs=o_lp,
             origination_probs=o_p,
-            **_centered_backward_kwargs(static),
+            **_backward_offsets(static),
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
@@ -205,7 +205,7 @@ def evaluate_static_convergence(
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
             collect_backward_relres=True,
-            **_centered_backward_kwargs(static),
+            **_backward_offsets(static),
         )
     return forward_resid, backward_relres, backward_vk_mag
 
@@ -292,7 +292,7 @@ def evaluate_static_loss_vector_grad(
             reserved_scratch_bytes=(static.warm_scratch_reserved_bytes if _warm_v is not None else None),
             origination_log_probs=o_lp,
             origination_probs=o_p,
-            **_centered_backward_kwargs(static),
+            **_backward_offsets(static),
         )
         grad_theta = grad_theta.detach()
         grad_receiver = grad_receiver.detach()
@@ -314,8 +314,8 @@ def stream_batches(
     need_grad: bool,
     need_origination_grad: bool = False,
 ):
-    # The likelihood head and cross-batch family sum are representation-
-    # independent fp64 reductions; the dense forward state remains configured.
+    # The likelihood head and cross-batch family sum are fp64 reductions; the
+    # dense forward state remains in its row-gauged storage.
     loss_dtype = torch.float64
     total = torch.zeros((), dtype=loss_dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None

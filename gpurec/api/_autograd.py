@@ -45,17 +45,14 @@ class _GeneReconFunction(torch.autograd.Function):
             o_lp, o_p = _origination_log_probs(origination_weights, theta)
             loss = nll_from_root_rows(root_rows, E, origination_log_probs=o_lp, origination_probs=o_p)
 
-        centered_pi_state = getattr(static, "centered_pi_forward_state", None)
-        ctx.centered_pi_forward = centered_pi_state is not None
-        if centered_pi_state is None:
-            pi_offset = torch.empty((0,), device=pi_wave.device, dtype=torch.float64)
-            pibar_offset = torch.empty((0,), device=pi_wave.device, dtype=torch.float64)
-        else:
-            # Save the exact offsets used by this forward.  Keeping only a
-            # pointer on ``static`` is unsafe when another forward runs before
-            # this autograd context's backward and replaces the static state.
-            pi_offset = centered_pi_state.pi_offset
-            pibar_offset = centered_pi_state.pibar_offset
+        pi_state = getattr(static, "pi_forward_state", None)
+        if pi_state is None:
+            raise RuntimeError("Pi forward did not publish its row-offset state")
+        # Save the exact offsets used by this forward. Keeping only a pointer on
+        # ``static`` is unsafe when another forward replaces the static state
+        # before this autograd context's backward executes.
+        pi_offset = pi_state.pi_offset
+        pibar_offset = pi_state.pibar_offset
         ctx.save_for_backward(
             theta,
             receiver_weights,
@@ -106,11 +103,6 @@ class _GeneReconFunction(torch.autograd.Function):
         static = ctx.static
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         o_lp, o_p = _origination_log_probs(origination_weights, theta)
-        centered_kwargs = (
-            {"pi_offset": pi_offset, "pibar_offset": pibar_offset}
-            if bool(getattr(ctx, "centered_pi_forward", False))
-            else {}
-        )
         grad_theta, grad_receiver_weights = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -142,10 +134,11 @@ class _GeneReconFunction(torch.autograd.Function):
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
             origination_log_probs=o_lp,
             origination_probs=o_p,
-            **centered_kwargs,
+            pi_offset=pi_offset,
+            pibar_offset=pibar_offset,
         )
-        # The centered and absolute kernels return cotangents in the primal
-        # matrix dtype.  Match the configured autograd input dtype explicitly.
+        # Kernels return cotangents in the primal matrix dtype. Match the
+        # configured autograd input dtype explicitly.
         grad_theta = grad_theta.to(device=theta.device, dtype=theta.dtype)
         grad_receiver_weights = grad_receiver_weights.to(
             device=receiver_weights.device, dtype=receiver_weights.dtype
@@ -193,7 +186,7 @@ class _GeneReconFullLossFunction(torch.autograd.Function):
             else grad_origination.to(device=origination_weights.device, dtype=origination_weights.dtype)
         )
         # The streamed likelihood head deliberately carries the scalar loss in
-        # fp64 for both representations; preserve that dtype.
+        # fp64; preserve that dtype.
         return loss.to(device=theta.device)
 
     @staticmethod

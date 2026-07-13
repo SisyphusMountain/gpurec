@@ -25,8 +25,7 @@ from gpurec.core.parameters.extract_parameters import (
     as_family_param, as_family_species, extract_parameters_uniform,
     extract_parameters_weighted_receivers,
 )
-from gpurec.core.kernels.dts_fused import compute_dts_forward
-from gpurec.core.kernels.centered_pi_forward import compute_dts_forward_centered
+from gpurec.core.kernels.pi_forward import compute_dts_forward
 from gpurec.core.kernels.dts_tangent import compute_dts_tangent
 from gpurec.core.kernels.e_step_tangent import e_tangent_fixed_point
 from gpurec.core.kernels.wave_tangent import (
@@ -204,18 +203,10 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
 
     pi = sv["pi_wave"]
     pibar = sv["pibar_wave"]
-    centered_state = sv.get("centered_pi_state")
-    centered = centered_state is not None
-    configured_centered = (
-        str(getattr(static.solver_options, "pi_representation", "absolute")).strip().lower()
-        == "centered"
-    )
-    if configured_centered and not centered:
-        raise RuntimeError(
-            "centered JVP requires saved['centered_pi_state'] from the matching forward_solve"
-        )
-    pi_offset = centered_state.pi_offset if centered else None
-    pibar_offset = centered_state.pibar_offset if centered else None
+    pi_state = sv["pi_state"]
+    pi_state.validate(pi, pibar, sv["pibar_row_max"], check_values=False)
+    pi_offset = pi_state.pi_offset
+    pibar_offset = pi_state.pibar_offset
     C = int(pi.shape[0])
     dpi = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
     dpibar = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
@@ -239,26 +230,15 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
         has_splits = "sl" in meta
         has_leaf = not has_splits
         if has_splits:
-            if centered:
-                dts_r, dts_offset = compute_dts_forward_centered(
-                    pi, pi_offset, pibar, pibar_offset,
-                    meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
-                    base["pd_param"], base["ps_param"], family_idx=item_idx,
-                    log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
-                    eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
-                    ge2_parent_ids=meta.get("ge2_parent_ids"),
-                    ge2_max_fanout=meta.get("ge2_max_fanout"), family_offset=ws,
-                )
-            else:
-                dts_r = compute_dts_forward(
-                    pi, pibar, meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
-                    base["pd_param"], base["ps_param"], family_idx=item_idx,
-                    log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
-                    eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
-                    ge2_parent_ids=meta.get("ge2_parent_ids"),
-                    ge2_max_fanout=meta.get("ge2_max_fanout"), family_offset=ws,
-                )
-                dts_offset = None
+            dts_r, dts_offset = compute_dts_forward(
+                pi, pi_offset, pibar, pibar_offset,
+                meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
+                base["pd_param"], base["ps_param"], family_idx=item_idx,
+                log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
+                eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
+                ge2_parent_ids=meta.get("ge2_parent_ids"),
+                ge2_max_fanout=meta.get("ge2_max_fanout"), family_offset=ws,
+            )
             d_dts = compute_dts_tangent(
                 pi, pibar, dpi, dpibar, meta["sl"], meta["sr"], c1, c2, W, meta["reduce_idx"],
                 base["pd_param"], base["ps_param"], dcst["dpd_param"], dcst["dps_param"], dts_r, item_idx,

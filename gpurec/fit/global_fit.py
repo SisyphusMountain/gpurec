@@ -35,15 +35,10 @@ _LN2 = 0.6931471805599453
 _GLOBAL_RATE_BOUNDS = RateBounds.genewise()
 
 
-def _tier_solver_options(solver_options, *, pi_iters: int, neumann_terms: int) -> SolverOptions:
-    """Keep representation selection while applying this recipe's fixed tiers."""
-    if isinstance(solver_options, dict):
-        pi_representation = solver_options.get("pi_representation", "absolute")
-    else:
-        pi_representation = getattr(solver_options, "pi_representation", "absolute")
+def _tier_solver_options(*, pi_iters: int, neumann_terms: int) -> SolverOptions:
+    """Apply this recipe's fixed Pi, Neumann, and E-adjoint tiers."""
     return SolverOptions(
         pi_iters=pi_iters,
-        pi_representation=pi_representation,
         neumann_terms=neumann_terms,
         e_adjoint_solver="neumann",
     )
@@ -59,8 +54,7 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
 
     This recipe fixes its own forward tiers (``fit_pi``/``fit_neu`` for the fit,
     ``eval_pi``/``eval_neu`` for the final NLL), always with the Neumann
-    E-adjoint. It preserves ``solver_options.pi_representation`` across those
-    internally constructed tiers.
+    E-adjoint.
     """
     bounds = _GLOBAL_RATE_BOUNDS
     lo, hi = log2_rate_bounds(bounds=bounds)          # hi finite (2.0), so bound-active logic is well defined
@@ -71,9 +65,7 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
 
     # genewise-mode model at the cheap fit tier: per-family loss+grad that we ACCUMULATE (sum over
     # families) into the shared 3x3. sum_f NLL_f(theta) with theta shared -> grad = sum_f grad_f.
-    so_fit = _tier_solver_options(
-        solver_options, pi_iters=fit_pi, neumann_terms=fit_neu
-    )
+    so_fit = _tier_solver_options(pi_iters=fit_pi, neumann_terms=fit_neu)
     model = GeneReconModel(species_tree, genes, mode="genewise", device=device, dtype=dtype,
                            solver_options=so_fit)
     G = model.theta.shape[0]
@@ -148,9 +140,7 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
     if (eval_pi, eval_neu) != (fit_pi, fit_neu):
         del model
         torch.cuda.empty_cache()
-        so_eval = _tier_solver_options(
-            solver_options, pi_iters=eval_pi, neumann_terms=eval_neu
-        )
+        so_eval = _tier_solver_options(pi_iters=eval_pi, neumann_terms=eval_neu)
         eval_model = GeneReconModel(species_tree, genes, mode="genewise", device=device, dtype=dtype,
                                     solver_options=so_eval)
     else:

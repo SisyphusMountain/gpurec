@@ -4,9 +4,6 @@ import pytest
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.api._centered_implicit_grad import (
-    implicit_grad_loglik_vjp_wave_centered_reference,
-)
 from gpurec.api._implicit_grad import implicit_grad_loglik_vjp_wave
 from gpurec.core.inference.solver import (
     receiver_weights_are_uniform,
@@ -75,27 +72,29 @@ C_1 3
     return species_tree, gene_tree
 
 
-def _options(representation: str) -> SolverOptions:
+def _options(dtype: torch.dtype) -> SolverOptions:
     return SolverOptions(
         e_max_iter=32,
-        e_tol=1e-7,
+        e_tol=1e-12 if dtype == torch.float64 else 1e-7,
         pi_iters=8,
-        pi_representation=representation,
         neumann_terms=16,
         use_adjoint_pruning=False,
     )
 
 
-def _model(species_tree: Path, genes: list[Path], representation: str) -> GeneReconModel:
+def _model(
+    species_tree: Path, genes: list[Path], dtype: torch.dtype = torch.float32
+) -> GeneReconModel:
     return GeneReconModel(
         species_tree,
         genes,
         device="cuda",
+        dtype=dtype,
         family_chunk_size=1,
         clade_budget=None,
         batch_packing="sequential",
         max_wave_size=8,
-        solver_options=_options(representation),
+        solver_options=_options(dtype),
     )
 
 
@@ -167,17 +166,22 @@ def _implicit_kwargs(model, solved, receiver_weights, origination_weights):
 @pytest.mark.gpu
 @pytest.mark.parametrize("weighted", [False, True])
 @pytest.mark.parametrize("pruned", [False, True])
-def test_centered_native_backward_matches_fp64_reconstruction_reference(
+def test_native_backward_matches_fp64(
     tmp_path: Path,
     weighted: bool,
     pruned: bool,
 ) -> None:
     _require_native_cuda()
     species_tree, gene = _write_split_fanout_example(tmp_path)
-    model = _model(species_tree, [gene], "centered")
+    model = _model(species_tree, [gene])
+    reference_model = _model(species_tree, [gene], torch.float64)
     theta, receiver, origination = _inputs(model, weighted)
+    theta64, receiver64, origination64 = (
+        theta.double(), receiver.double(), origination.double()
+    )
     with torch.no_grad():
         model.theta.copy_(theta)
+        reference_model.theta.copy_(theta64)
 
     split_metas = [meta for meta in model.wave_layout["wave_metas"] if "sl" in meta]
     assert any(int(meta["n_eq1"]) > 0 for meta in split_metas)
@@ -190,11 +194,24 @@ def test_centered_native_backward_matches_fp64_reconstruction_reference(
     solved = solve_resident_e_pi(
         model.batch_statics[0], model.theta, receiver, warm_start_E=None
     )
+    reference_solved = solve_resident_e_pi(
+        reference_model.batch_statics[0],
+        reference_model.theta,
+        receiver64,
+        warm_start_E=None,
+    )
     pi, pibar, pibar_row_max = solved[5], solved[6], solved[7]
-    state = model.batch_statics[0].centered_pi_forward_state
+    state = model.batch_statics[0].pi_forward_state
+    reference_state = reference_model.batch_statics[0].pi_forward_state
+    assert state is not None and reference_state is not None
     kwargs = _implicit_kwargs(model, solved, receiver, origination)
+    reference_kwargs = _implicit_kwargs(
+        reference_model, reference_solved, receiver64, origination64
+    )
     kwargs["use_adjoint_pruning"] = pruned
     kwargs["adjoint_pruning_threshold"] = 2.0 if pruned else 1e-6
+    reference_kwargs["use_adjoint_pruning"] = pruned
+    reference_kwargs["adjoint_pruning_threshold"] = 2.0 if pruned else 1e-6
     native = implicit_grad_loglik_vjp_wave(
         model.wave_layout,
         model.species_helpers,
@@ -205,20 +222,21 @@ def test_centered_native_backward_matches_fp64_reconstruction_reference(
         pibar_offset=state.pibar_offset,
         **kwargs,
     )
-    reference = implicit_grad_loglik_vjp_wave_centered_reference(
-        model.wave_layout,
-        model.species_helpers,
-        Pi_star_wave=pi,
-        Pibar_star_wave=pibar,
-        uniform_pibar_row_max=pibar_row_max,
-        centered_pi_state=state,
-        **kwargs,
+    reference = implicit_grad_loglik_vjp_wave(
+        reference_model.wave_layout,
+        reference_model.species_helpers,
+        Pi_star_wave=reference_solved[5],
+        Pibar_star_wave=reference_solved[6],
+        uniform_pibar_row_max=reference_solved[7],
+        pi_offset=reference_state.pi_offset,
+        pibar_offset=reference_state.pibar_offset,
+        **reference_kwargs,
     )
 
     for native_grad, reference_grad in zip(native, reference):
         assert torch.isfinite(native_grad).all().item()
         torch.testing.assert_close(
-            native_grad.double(), reference_grad, rtol=1e-5, atol=2e-6
+            native_grad.double(), reference_grad, rtol=5e-5, atol=2e-5
         )
 
 
@@ -237,15 +255,15 @@ def _value_and_grads(model, theta, receiver, origination):
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("weighted", [False, True])
-def test_centered_native_backward_matches_single_streamed_and_absolute(
+def test_native_backward_matches_single_streamed_and_fp64(
     tmp_path: Path,
     weighted: bool,
 ) -> None:
     _require_native_cuda()
     species_tree, gene = _write_split_fanout_example(tmp_path)
-    single = _model(species_tree, [gene], "centered")
-    streamed = _model(species_tree, [gene, gene], "centered")
-    absolute = _model(species_tree, [gene, gene], "absolute")
+    single = _model(species_tree, [gene])
+    streamed = _model(species_tree, [gene, gene])
+    reference = _model(species_tree, [gene, gene], torch.float64)
     theta, receiver, origination = _inputs(single, weighted)
 
     single_loss, single_grads = _value_and_grads(
@@ -254,8 +272,8 @@ def test_centered_native_backward_matches_single_streamed_and_absolute(
     streamed_loss, streamed_grads = _value_and_grads(
         streamed, theta, receiver, origination
     )
-    absolute_loss, absolute_grads = _value_and_grads(
-        absolute, theta, receiver, origination
+    reference_loss, reference_grads = _value_and_grads(
+        reference, theta.double(), receiver.double(), origination.double()
     )
 
     assert single_loss.dtype == torch.float64
@@ -264,16 +282,16 @@ def test_centered_native_backward_matches_single_streamed_and_absolute(
         streamed_loss, 2.0 * single_loss, rtol=0.0, atol=1e-5
     )
     torch.testing.assert_close(
-        streamed_loss, absolute_loss.double(), rtol=0.0, atol=1e-5
+        streamed_loss, reference_loss, rtol=0.0, atol=2e-5
     )
-    for single_grad, streamed_grad, absolute_grad in zip(
-        single_grads, streamed_grads, absolute_grads
+    for single_grad, streamed_grad, reference_grad in zip(
+        single_grads, streamed_grads, reference_grads
     ):
         torch.testing.assert_close(
             streamed_grad, 2.0 * single_grad, rtol=3e-5, atol=3e-6
         )
         torch.testing.assert_close(
-            streamed_grad, absolute_grad, rtol=3e-5, atol=3e-6
+            streamed_grad.double(), reference_grad, rtol=5e-5, atol=2e-5
         )
 
 
@@ -282,7 +300,7 @@ def test_centered_autograd_saves_offsets_from_each_forward(tmp_path: Path) -> No
     """A later solve on the same static must not replace an earlier ctx's gauges."""
     _require_native_cuda()
     species_tree, gene = _write_split_fanout_example(tmp_path)
-    shared = _model(species_tree, [gene], "centered")
+    shared = _model(species_tree, [gene])
     receiver = torch.linspace(
         -0.8, 0.7, shared.receiver_weights.numel(), device="cuda"
     )
@@ -300,7 +318,7 @@ def test_centered_autograd_saves_offsets_from_each_forward(tmp_path: Path) -> No
 
     references = []
     for theta in (theta_a.detach(), theta_b.detach()):
-        model = _model(species_tree, [gene], "centered")
+        model = _model(species_tree, [gene])
         theta_ref = theta.clone().requires_grad_(True)
         loss_ref = model(
             theta=theta_ref,

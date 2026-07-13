@@ -50,7 +50,6 @@ _BASE_SOLVER = {
         "e_max_iter", "e_tol", "self_loop_solver",
         "bicgstab_max_iter", "bicgstab_tol", "bicgstab_breakdown_tol",
         "adjoint_pruning_threshold", "use_adjoint_pruning", "pibar_side_threshold",
-        "pi_representation",
     )
 }
 

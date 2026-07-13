@@ -87,14 +87,9 @@ def solve_resident_e_pi(
         family_idx=static.rate_family_idx,
         pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
         pi_residual_out=pi_residual_out,
-        pi_representation=solver_options.pi_representation,
     )
-    centered_pi_state = None
-    if len(pi_forward_result) == 5:
-        root_rows, pi_wave, pibar_wave, pibar_row_max, centered_pi_state = pi_forward_result
-    else:
-        root_rows, pi_wave, pibar_wave, pibar_row_max = pi_forward_result
-    static.centered_pi_forward_state = centered_pi_state
+    root_rows, pi_wave, pibar_wave, pibar_row_max, pi_state = pi_forward_result
+    static.pi_forward_state = pi_state
     return (
         E,
         E_s1,

@@ -23,7 +23,7 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core.kernels.dts_fused import _load_rate, _tl_float_dtype
+from gpurec.core.kernels.pi_forward import _load_rate, _tl_float_dtype
 
 
 @triton.jit
@@ -37,8 +37,7 @@ def _dts_split_so_kernel(
     ud_l_ptr, ud_r_ptr, dud_l_ptr, dud_r_ptr,
     d_grad_pD_ptr, d_grad_pS_ptr, d_grad_mt_ptr,
     S: tl.constexpr, BLOCK_S: tl.constexpr, ROW_STRIDE: tl.constexpr,
-    BY_STATE: tl.constexpr, MT_ROW_STRIDE: tl.constexpr,
-    CENTERED: tl.constexpr, DTYPE: tl.constexpr,
+    BY_STATE: tl.constexpr, MT_ROW_STRIDE: tl.constexpr, DTYPE: tl.constexpr,
 ):
     LN2 = 0.6931471805599453
     NEG = -float("inf")
@@ -55,23 +54,16 @@ def _dts_split_so_kernel(
     base_r = right * S
     base_p = (ws + parent_w) * S
 
-    if CENTERED:
-        pi_offset_l = tl.load(Pi_offset + left)
-        pi_offset_r = tl.load(Pi_offset + right)
-        pi_offset_parent = tl.load(Pi_offset + ws + parent_w)
-        pibar_offset_l = tl.load(Pibar_offset + left)
-        pibar_offset_r = tl.load(Pibar_offset + right)
-        corr0 = (pi_offset_l + pi_offset_r - pi_offset_parent).to(DTYPE)
-        corr1 = (pi_offset_l + pibar_offset_r - pi_offset_parent).to(DTYPE)
-        corr2 = (pi_offset_r + pibar_offset_l - pi_offset_parent).to(DTYPE)
-        inv_denom_corr_l = (pi_offset_l - pibar_offset_l).to(DTYPE)
-        inv_denom_corr_r = (pi_offset_r - pibar_offset_r).to(DTYPE)
-    else:
-        corr0 = tl.zeros((), dtype=DTYPE)
-        corr1 = tl.zeros((), dtype=DTYPE)
-        corr2 = tl.zeros((), dtype=DTYPE)
-        inv_denom_corr_l = tl.zeros((), dtype=DTYPE)
-        inv_denom_corr_r = tl.zeros((), dtype=DTYPE)
+    pi_offset_l = tl.load(Pi_offset + left)
+    pi_offset_r = tl.load(Pi_offset + right)
+    pi_offset_parent = tl.load(Pi_offset + ws + parent_w)
+    pibar_offset_l = tl.load(Pibar_offset + left)
+    pibar_offset_r = tl.load(Pibar_offset + right)
+    corr0 = (pi_offset_l + pi_offset_r - pi_offset_parent).to(DTYPE)
+    corr1 = (pi_offset_l + pibar_offset_r - pi_offset_parent).to(DTYPE)
+    corr2 = (pi_offset_r + pibar_offset_l - pi_offset_parent).to(DTYPE)
+    inv_denom_corr_l = (pi_offset_l - pibar_offset_l).to(DTYPE)
+    inv_denom_corr_r = (pi_offset_r - pibar_offset_r).to(DTYPE)
 
     pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG)
     pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG)
@@ -263,7 +255,7 @@ def dts_backward_so(
     d_rhs, d_grad_pD, d_grad_pS, d_grad_mt, d_grad_col,
     *, compact_level_ptr=None, compact_level_parents=None,
     compact_level_child1=None, compact_level_child2=None,
-    use_col_weights=False, dcol=None, pi_offset=None, pibar_offset=None,
+    use_col_weights=False, dcol=None, pi_offset, pibar_offset,
 ):
     """Second-order contraction of the dts backward + pibar tree at fixed adjoint v.
 
@@ -277,33 +269,29 @@ def dts_backward_so(
     """
     sl, sr = meta["sl"], meta["sr"]
     N = int(sl.numel())
+    dev, dt = Pi.device, Pi.dtype
+    expected_rows = int(Pi.shape[0])
+    for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
+        if value.ndim != 1 or int(value.shape[0]) != expected_rows:
+            raise ValueError(f"{name} must have shape [{expected_rows}]")
+        if value.dtype != torch.float64:
+            raise TypeError(f"{name} must use torch.float64")
+        if value.device != dev:
+            raise ValueError(f"{name} must be on the Pi device")
+    pi_offset = pi_offset.contiguous()
+    pibar_offset = pibar_offset.contiguous()
     if N == 0:
         return
     lsp = meta.get("log_split_probs")
     if lsp is None:
         lsp = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        # float64 batch static -> compute dtype at the boundary (see dts_fused.compute_dts_forward).
+        # float64 batch static -> compute dtype at the canonical forward boundary.
         lsp = lsp.reshape(N).to(Pi.dtype).contiguous()
     by_state = log_pD_param.ndim == 2 and int(log_pD_param.shape[1]) != 1
     row_stride = 0 if int(log_pD_param.shape[0]) == 1 else int(log_pD_param.stride(0))
     mt_row_stride = 0 if int(mc_item.shape[0]) == 1 else int(mc_item.stride(0))
     block_s = min(512, triton.next_power_of_2(S))
-    dev, dt = Pi.device, Pi.dtype
-    centered = pi_offset is not None or pibar_offset is not None
-    if centered and (pi_offset is None or pibar_offset is None):
-        raise ValueError("pi_offset and pibar_offset must be provided together")
-    if centered:
-        expected_rows = int(Pi.shape[0])
-        for name, value in (("pi_offset", pi_offset), ("pibar_offset", pibar_offset)):
-            if value.ndim != 1 or int(value.shape[0]) != expected_rows:
-                raise ValueError(f"{name} must have shape [{expected_rows}]")
-            if value.dtype != torch.float64:
-                raise TypeError(f"{name} must use torch.float64")
-            if value.device != dev:
-                raise ValueError(f"{name} must be on the Pi device")
-        pi_offset = pi_offset.contiguous()
-        pibar_offset = pibar_offset.contiguous()
 
     # The split kernel accumulates the second-order log_pD/log_pS cotangents per SPECIES via the
     # d_grad_p*_ptr + item*S + s layout (identical to d_grad_mt). That matches a [rows, S] buffer,
@@ -329,8 +317,8 @@ def dts_backward_so(
 
     _dts_split_so_kernel[(N, triton.cdiv(S, block_s))](
         Pi, dPi, Pibar, dPibar,
-        pi_offset if centered else Pi,
-        pibar_offset if centered else Pibar,
+        pi_offset,
+        pibar_offset,
         v,
         sl, sr, node_child1, node_child2,
         log_pD_param, log_pS_param, dlog_pD_param, dlog_pS_param, mc_item, dmc_item,
@@ -339,7 +327,7 @@ def dts_backward_so(
         d_rhs, ud_l, ud_r, dud_l, dud_r,
         dgpD_k, dgpS_k, d_grad_mt,
         S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_STATE=bool(by_state),
-        MT_ROW_STRIDE=mt_row_stride, CENTERED=bool(centered),
+        MT_ROW_STRIDE=mt_row_stride,
         DTYPE=_tl_float_dtype(Pi.dtype),
     )
     if pd_reduced:
