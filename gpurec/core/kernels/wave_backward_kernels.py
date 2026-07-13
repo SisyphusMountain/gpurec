@@ -79,7 +79,6 @@ def _wave_backward_uniform_2d_precompute_kernel(
     CONST_LAYOUT: tl.constexpr,
     DTYPE: tl.constexpr,
     USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
-    USE_RECEIVER_WEIGHTS: tl.constexpr,
 ):
     """Precompute self-loop J^T coefficients for a block of rows and all species."""
     NEG_LARGE: tl.constexpr = -float("inf")
@@ -124,11 +123,8 @@ def _wave_backward_uniform_2d_precompute_kernel(
     pi_w = tl.load(Pi_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
     pibar_w = tl.load(Pibar_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
     row_max_safe = tl.where(row_max != NEG_LARGE, row_max, tl.zeros_like(row_max))
-    if USE_RECEIVER_WEIGHTS:
-        receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
-        p_prime = tl.exp2(receiver_logp[:, None] + pi_w - row_max_safe[None, :])
-    else:
-        p_prime = tl.exp2(pi_w - row_max_safe[None, :])
+    receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
+    p_prime = tl.exp2(receiver_logp[:, None] + pi_w - row_max_safe[None, :])
     row_sum = tl.sum(tl.where(mask, p_prime, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)), axis=0)
 
     family = tl.full([BLOCK_W], value=0, dtype=tl.int64)
@@ -233,23 +229,16 @@ def _wave_backward_uniform_2d_precompute_kernel(
             mask=cur_valid[:, None] & row_mask[None, :],
             other=NEG_LARGE,
         ).to(DTYPE)
-        if USE_RECEIVER_WEIGHTS:
-            receiver_logp_anc = tl.load(
-                receiver_log_probs_ptr + cur,
-                mask=cur_valid,
-                other=NEG_LARGE,
-            ).to(DTYPE)
-            ancestor_sum += tl.where(
-                cur_valid[:, None] & row_mask[None, :],
-                tl.exp2(receiver_logp_anc[:, None] + pi_anc - row_max_safe[None, :]),
-                tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
-            )
-        else:
-            ancestor_sum += tl.where(
-                cur_valid[:, None] & row_mask[None, :],
-                tl.exp2(pi_anc - row_max_safe[None, :]),
-                tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
-            )
+        receiver_logp_anc = tl.load(
+            receiver_log_probs_ptr + cur,
+            mask=cur_valid,
+            other=NEG_LARGE,
+        ).to(DTYPE)
+        ancestor_sum += tl.where(
+            cur_valid[:, None] & row_mask[None, :],
+            tl.exp2(receiver_logp_anc[:, None] + pi_anc - row_max_safe[None, :]),
+            tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
+        )
         cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
     denom = row_sum[None, :] - ancestor_sum
     inv_denom = tl.where(denom > 0.0, 1.0 / denom, tl.zeros_like(denom))
@@ -1288,7 +1277,6 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
     USE_ACTIVE_MASK: tl.constexpr,
     USE_SIDE_ACTIVE: tl.constexpr,
     ACCUM_RECEIVER_GRAD: tl.constexpr,
-    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Uniform Pibar from-u_d tree correction using compact per-level nodes."""
@@ -1346,11 +1334,8 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
         valid_mask = s_offs < S
         mask = valid_mask & row_active
         pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        if USE_RECEIVER_WEIGHTS:
-            receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=valid_mask, other=NEG_LARGE)
-            p_prime = tl.exp2(receiver_logp + pi_val - row_max_safe)
-        else:
-            p_prime = tl.exp2(pi_val - row_max_safe)
+        receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=valid_mask, other=NEG_LARGE)
+        p_prime = tl.exp2(receiver_logp + pi_val - row_max_safe)
         subtree_sum = tl.load(pibar_ud_ptr + row_base + s_offs, mask=mask, other=0.0)
         contrib = p_prime * (A - subtree_sum)
         tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)

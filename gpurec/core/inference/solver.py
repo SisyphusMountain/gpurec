@@ -6,7 +6,6 @@ from gpurec.core.inference.forward import pi_wave_forward
 from gpurec.core.inference.logspace import logsumexp2, log2_survival
 from gpurec.core.kernels.e_step import e_fixed_point_triton
 from gpurec.core.parameters.extract_parameters import (
-    extract_parameters_uniform,
     extract_parameters_weighted_receivers,
     origination_log_probs_from_weights,
     resolve_accumulator_dtype,
@@ -38,10 +37,9 @@ def solve_resident_e_pi(
         getattr(static, "accumulator_dtype", None),
         fallback=theta.dtype,
     )
-    use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
     S = int(static.species_helpers["S"])
-    if use_receiver_weights:
-        log_p_s, log_p_d, log_p_l, max_transfer, receiver_log_probs = extract_parameters_weighted_receivers(
+    log_p_s, log_p_d, log_p_l, max_transfer, receiver_log_probs = (
+        extract_parameters_weighted_receivers(
             theta.detach(),
             receiver_weights.detach(),
             static.species_helpers,
@@ -49,15 +47,7 @@ def solve_resident_e_pi(
             genewise=static.genewise,
             accumulator_dtype=accumulator_dtype,
         )
-    else:
-        log_p_s, log_p_d, log_p_l, max_transfer = extract_parameters_uniform(
-            theta.detach(),
-            static.species_helpers["unnorm_row_max"].to(device=theta.device, dtype=theta.dtype),
-            specieswise=static.specieswise,
-            genewise=static.genewise,
-            accumulator_dtype=accumulator_dtype,
-        )
-        receiver_log_probs = theta.new_full((S,), -math.log2(S))
+    )
     e_shape = (int(static.wave_layout["root_clade_ids"].numel()) if static.genewise else 1, S)
     E0 = (
         warm_start_E.detach().to(theta).contiguous()
@@ -71,7 +61,6 @@ def solve_resident_e_pi(
         log_pL=log_p_l,
         max_transfer=max_transfer,
         receiver_log_probs=receiver_log_probs,
-        use_receiver_weights=use_receiver_weights,
         sp_parent=static.species_helpers["sp_parent"],
         sp_child1=static.species_helpers["sp_child1"],
         sp_child2=static.species_helpers["sp_child2"],
@@ -90,7 +79,6 @@ def solve_resident_e_pi(
         log_p_d=log_p_d,
         max_transfer_mat=max_transfer,
         receiver_log_probs=receiver_log_probs,
-        use_receiver_weights=use_receiver_weights,
         family_idx=static.rate_family_idx,
         pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
         pi_residual_out=pi_residual_out,

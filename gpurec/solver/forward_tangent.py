@@ -20,9 +20,8 @@ import torch
 from torch.func import jvp
 
 from gpurec.config import dtype_rel_tol_default
-from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.parameters.extract_parameters import (
-    as_family_param, as_family_species, extract_parameters_uniform,
+    as_family_param, as_family_species,
     extract_parameters_weighted_receivers,
 )
 from gpurec.core.kernels.pi_forward import compute_dts_forward
@@ -33,24 +32,6 @@ from gpurec.core.kernels.wave_tangent import (
 )
 
 DEFAULT_SELF_MAX_ITER = 200
-
-
-def param_jvp_uniform(static, theta, v):
-    """Forward-mode tangent of extract_parameters_uniform along v (use_col_weights=False path)."""
-    unnorm_row_max = static.species_helpers["unnorm_row_max"].to(device=theta.device, dtype=theta.dtype)
-
-    def f(th):
-        return extract_parameters_uniform(
-            th,
-            unnorm_row_max,
-            specieswise=static.specieswise,
-            genewise=static.genewise,
-            accumulator_dtype=getattr(static, "accumulator_dtype", None),
-        )
-
-    primals, tangents = jvp(f, (theta,), (v,))
-    # (log_pS, log_pD, log_pL, max_coupling)
-    return tangents
 
 
 def param_jvp_weighted(static, theta, alpha, u_theta, u_alpha):
@@ -66,8 +47,6 @@ def param_jvp_weighted(static, theta, alpha, u_theta, u_alpha):
       ``(diag(w) - w w^T) u_alpha / ln2`` in log2-space — autograd computes it, do NOT hand-roll.
       This is the alpha tangent SEED threaded into the e-step / wave / dts tangents.
 
-    ``uniform_fast=True`` keeps the ``- log2(S)`` shift so the tangent's ``max_transfer`` matches the
-    primal forward's; the JVP differentiates through ``receiver_norm`` regardless.
     """
     sh = static.species_helpers
     al = alpha.to(device=theta.device, dtype=theta.dtype)
@@ -76,7 +55,6 @@ def param_jvp_weighted(static, theta, alpha, u_theta, u_alpha):
     def f(th, a):
         return extract_parameters_weighted_receivers(
             th, a, sh, specieswise=static.specieswise, genewise=static.genewise,
-            uniform_fast=True,
             accumulator_dtype=getattr(static, "accumulator_dtype", None),
         )
 
@@ -109,29 +87,22 @@ def _default_tol(dtype):
 
 
 def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
-                            alpha=None, u_alpha=None, use_col_weights=False):
-    """E + parameter tangents assembled into the wave-step tangent constants.
-
-    ``alpha``/``u_alpha`` (and ``use_col_weights``) turn on the WEIGHTED forward tangent: the
-    parameter JVP differentiates through ``receiver_norm`` (so ``dmax_coupling`` carries the alpha
-    coupling) and the softmax-Jacobian seed ``dcol = dreceiver_log_probs`` is threaded into the
-    E-step tangent fixed point ALONGSIDE the wave tangent (consistency required: an inconsistent
-    dcol -> O(1) FD failure). With ``alpha=None`` this is the legacy uniform theta-only tangent
-    (bit-for-bit)."""
+                            alpha=None, u_alpha=None):
+    """Assemble E and parameter tangents for the wave-step tangent."""
     sh = static.species_helpers
     if alpha is None:
-        dlog_pS, dlog_pD, dlog_pL, dmax_coupling = param_jvp_uniform(static, theta, v)
-        dcol = None
-    else:
-        dlog_pS, dlog_pD, dlog_pL, dmax_coupling, dcol = param_jvp_weighted(
-            static, theta, alpha, v, u_alpha,
-        )
+        alpha = torch.zeros((S,), device=theta.device, dtype=theta.dtype)
+    if u_alpha is None:
+        u_alpha = torch.zeros_like(alpha)
+    dlog_pS, dlog_pD, dlog_pL, dmax_coupling, dcol = param_jvp_weighted(
+        static, theta, alpha, v, u_alpha,
+    )
     dE, dE_s1, dE_s2, dEbar = e_tangent_fixed_point(
         sv["E"], dlog_pS, dlog_pD, dlog_pL, dmax_coupling,
         sv["log_pS"], sv["log_pD"], sv["log_pL"], sv["max_transfer"], sv["receiver_log_probs"],
         sh["sp_parent"], sh["sp_child1"], sh["sp_child2"], int(sh["max_ancestor_depth"]),
         max_iter=int(static.solver_options.e_max_iter), tol=e_tol,
-        use_col_weights=bool(use_col_weights), dcol_log_probs=dcol,
+        dcol_log_probs=dcol,
     )
     if raw_out is not None:
         raw_out.update(dlog_pS=dlog_pS, dlog_pD=dlog_pD, dlog_pL=dlog_pL,
@@ -152,7 +123,7 @@ def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
         "dMC": dmc_item, "dleaf": dps_item,
         "dpd_param": as_family_param(dlog_pD, item_rows, S_),
         "dps_param": as_family_param(dlog_pS, item_rows, S_),
-        "_dcol": dcol,  # softmax-Jacobian alpha seed (None on the legacy uniform path)
+        "_dcol": dcol,
     }
 
 
@@ -170,7 +141,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     ``alpha``/``u_alpha`` turn on the WEIGHTED forward tangent (S3): the parameter JVP goes through
     ``extract_parameters_weighted_receivers`` so ``dMC`` carries the alpha->receiver_norm coupling,
     and the softmax-Jacobian seed ``dcol = dreceiver_log_probs`` is threaded IDENTICALLY into the
-    E-step tangent fixed point AND the wave-step tangent (use_col_weights=True). At a non-uniform
+    E-step tangent fixed point AND the wave-step tangent. At a non-uniform
     base this is what makes the tangent FINITE and self-consistent with the weighted primal (the
     legacy uniform tangent NaNs there). ``alpha=None`` -> legacy uniform theta-only tangent.
 
@@ -191,18 +162,13 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     c1, c2, parent = sh["sp_child1"], sh["sp_child2"], sh["sp_parent"]
     mad = int(sh["max_ancestor_depth"])
 
-    # S3: weighted tangent iff a non-uniform base alpha is supplied (matches the primal's
-    # use_receiver_weights derivation). dcol is the softmax-Jacobian seed; col is the live
-    # receiver_log_probs already stored in sv.
-    weighted = alpha is not None
-    use_col_weights = bool(weighted) and not receiver_weights_are_uniform(alpha)
     col_logp = sv["receiver_log_probs"]
 
     base = wave_step_constants(sv, S)
     raw = {} if return_full else None
     dcst = _wave_tangent_constants(
         static, theta, v, sv, S, e_tol, raw_out=raw,
-        alpha=alpha if weighted else None, u_alpha=u_alpha, use_col_weights=use_col_weights,
+        alpha=alpha, u_alpha=u_alpha,
     )
     dcol = dcst.pop("_dcol")
 
@@ -225,7 +191,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
             col_logp, c1, c2, parent, mad, dts_r, d_dts,
             leaf_state_idx=leaf_state_idx, leaf_logp=base["leaf"], dleaf_logp=dcst["dleaf"],
             item_idx=item_idx, dPibar_out=(dpibar if store else None),
-            has_leaf_term=has_leaf, input_ws=None, use_col_weights=use_col_weights,
+            has_leaf_term=has_leaf, input_ws=None,
             dcol_log_probs=dcol,
             pi_offset=pi_offset, dts_offset=dts_offset,
         )
@@ -268,7 +234,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 col_logp, c1, c2, parent, mad, dts_r, d_dts,
                 leaf_state_idx=leaf_state_idx, leaf_logp=base["leaf"], dleaf_logp=dcst["dleaf"],
                 item_idx=item_idx, dPibar_out=dpibar, has_leaf_term=has_leaf,
-                use_col_weights=use_col_weights, dcol_log_probs=dcol,
+                dcol_log_probs=dcol,
                 pi_offset=pi_offset, dts_offset=dts_offset,
             )
         elif self_iters is not None:

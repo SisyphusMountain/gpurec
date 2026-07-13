@@ -6,10 +6,7 @@ import torch
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._implicit_grad import implicit_grad_loglik_vjp_wave
 from gpurec.config import GpurecConfig, PrecisionOptions
-from gpurec.core.inference.solver import (
-    receiver_weights_are_uniform,
-    solve_resident_e_pi,
-)
+from gpurec.core.inference.solver import solve_resident_e_pi
 from gpurec.core.parameters.extract_parameters import (
     origination_log_probs_from_weights,
 )
@@ -157,7 +154,6 @@ def _implicit_kwargs(model, solved, receiver_weights, origination_weights):
         log_pL=log_pL,
         max_transfer_mat=max_transfer,
         receiver_log_probs=receiver_log_probs,
-        use_receiver_weights=not receiver_weights_are_uniform(receiver_weights),
         theta=model.theta,
         receiver_weights=receiver_weights,
         family_idx=static.rate_family_idx,

@@ -153,7 +153,6 @@ def extract_parameters_weighted_receivers(
     *,
     specieswise=False,
     genewise=False,
-    uniform_fast=False,
     accumulator_dtype: torch.dtype | None = None,
 ):
     zeros = theta.new_zeros((*theta.shape[:-1], 1))
@@ -173,6 +172,4 @@ def extract_parameters_weighted_receivers(
         max_transfer = log_pT + receiver_norm
     else:
         max_transfer = log_pT.unsqueeze(-1) + receiver_norm
-    if uniform_fast:
-        max_transfer = max_transfer - math.log2(int(species_helpers["S"]))
     return result[..., 0], result[..., 1], result[..., 2], max_transfer, receiver_log_probs

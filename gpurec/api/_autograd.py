@@ -5,7 +5,6 @@ from gpurec.core.inference.solver import (
     nll_from_root_rows,
     origination_grad_from_root_rows,
     origination_weights_are_uniform,
-    receiver_weights_are_uniform,
     solve_resident_e_pi,
 )
 from gpurec.core.parameters.extract_parameters import (
@@ -125,7 +124,6 @@ class _GeneReconFunction(torch.autograd.Function):
         ) = ctx.saved_tensors
         static = ctx.static
         accumulator_dtype = ctx.accumulator_dtype
-        use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         o_lp, o_p = _origination_log_probs(
             origination_weights,
             theta,
@@ -145,7 +143,6 @@ class _GeneReconFunction(torch.autograd.Function):
             log_pL=log_pL,
             max_transfer_mat=max_transfer_vec,
             receiver_log_probs=receiver_log_probs,
-            use_receiver_weights=use_receiver_weights,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,

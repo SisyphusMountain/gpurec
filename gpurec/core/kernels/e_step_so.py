@@ -20,7 +20,7 @@ def _e_step_so_prepare_kernel(
     d_grad_E_ptr, d_grad_pS_ptr, d_grad_pD_ptr, d_grad_pL_ptr, d_grad_mc_ptr,
     r_ptr, dr_ptr, excl_ptr, dexcl_ptr, tot_ptr, dtot_ptr,
     S: tl.constexpr, BLOCK_S: tl.constexpr, MAX_ANCESTOR_DEPTH: tl.constexpr,
-    USE_COL_WEIGHTS: tl.constexpr, DTYPE: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
     LN2 = 0.6931471805599453
     g = tl.program_id(0)
@@ -48,16 +48,10 @@ def _e_step_so_prepare_kernel(
     dpL = tl.load(dlog_pL_ptr + base + offs, mask=mask, other=0.0)
     g_new = tl.load(g_new_ptr + base + offs, mask=mask, other=0.0)
     g_ebar = tl.load(g_ebar_ptr + base + offs, mask=mask, other=0.0)
-    # Uniform and weighted receiver measures are distinct model semantics. The
-    # unweighted branch represents equal receiver mass, not missing data.
-    if USE_COL_WEIGHTS:
-        col = tl.load(col_log_probs_ptr + offs, mask=mask, other=NEG_INF)
-        dcol = tl.load(dcol_ptr + offs, mask=mask, other=0.0)
-        wE = col + E
-        dwE = dcol + dE
-    else:
-        wE = E
-        dwE = dE
+    col = tl.load(col_log_probs_ptr + offs, mask=mask, other=NEG_INF)
+    dcol = tl.load(dcol_ptr + offs, mask=mask, other=0.0)
+    wE = col + E
+    dwE = dcol + dE
     row_max = tl.max(wE, axis=0)
     row_max_safe = tl.where(row_max != NEG_INF, row_max, tl.zeros([1], dtype=DTYPE))
 
@@ -111,14 +105,10 @@ def _e_step_so_prepare_kernel(
         valid = mask & (cur >= 0) & (cur < S)
         E_a = tl.load(E_ptr + base + cur, mask=valid, other=NEG_INF)
         dE_a = tl.load(dE_ptr + base + cur, mask=valid, other=0.0)
-        if USE_COL_WEIGHTS:
-            col_a = tl.load(col_log_probs_ptr + cur, mask=valid, other=NEG_INF)
-            dcol_a = tl.load(dcol_ptr + cur, mask=valid, other=0.0)
-            r_a = tl.where(valid, tl.exp2(col_a + E_a - row_max_safe), zero)
-            dr_a = LN2 * r_a * (dcol_a + dE_a)
-        else:
-            r_a = tl.where(valid, tl.exp2(E_a - row_max_safe), zero)
-            dr_a = LN2 * r_a * dE_a
+        col_a = tl.load(col_log_probs_ptr + cur, mask=valid, other=NEG_INF)
+        dcol_a = tl.load(dcol_ptr + cur, mask=valid, other=0.0)
+        r_a = tl.where(valid, tl.exp2(col_a + E_a - row_max_safe), zero)
+        dr_a = LN2 * r_a * (dcol_a + dE_a)
         anc += r_a
         danc += dr_a
         cur = tl.load(node_parent_ptr + cur, mask=valid, other=-1).to(tl.int32)
@@ -168,7 +158,6 @@ def e_step_backward_so(
     node_parent, node_child1, node_child2, max_ancestor_depth,
     g_new, g_ebar,
     dE, dE_new, dE_s1, dE_s2, dEbar, dlog_pS, dlog_pD, dlog_pL, dcol,
-    *, use_col_weights=False,
 ):
     """Return the E-step second-order contraction documented in LaTeX."""
     G, S = int(E.shape[0]), int(E.shape[1])
@@ -189,7 +178,7 @@ def e_step_backward_so(
         d_grad_E, d_grad_pS, d_grad_pD, d_grad_pL, d_grad_mc,
         r, dr, excl, dexcl, tot, dtot,
         S, BLOCK_S=block_s, MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
-        USE_COL_WEIGHTS=bool(use_col_weights), DTYPE=_tl_float_dtype(E.dtype),
+        DTYPE=_tl_float_dtype(E.dtype),
         num_warps=8,
     )
     _e_step_so_finalize_kernel[(G,)](

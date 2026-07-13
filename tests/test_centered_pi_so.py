@@ -155,7 +155,6 @@ def test_centered_wave_so_matches_reconstructed_absolute(
         dleaf_logp=dleaf,
         item_idx=item_idx,
         has_leaf_term=not has_splits,
-        use_col_weights=weighted,
         d_rhs=d_rhs,
         dcol=dcol,
     )
@@ -298,7 +297,6 @@ def test_centered_dts_so_matches_reconstructed_absolute(
             d_grad_pS,
             d_grad_mt,
             d_grad_col,
-            use_col_weights=True,
             dcol=dcol,
             pi_offset=pi_gauge,
             pibar_offset=pibar_gauge,

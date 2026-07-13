@@ -413,7 +413,6 @@ def implicit_grad_loglik_vjp_wave(
     E_s2: torch.Tensor, Ebar: torch.Tensor, log_pS: torch.Tensor,
     log_pD: torch.Tensor, log_pL: torch.Tensor, max_transfer_mat: torch.Tensor,
     receiver_log_probs: torch.Tensor,
-    use_receiver_weights: bool,
     theta: torch.Tensor, receiver_weights: torch.Tensor, uniform_pibar_row_max: torch.Tensor,
     family_idx: torch.Tensor,
     specieswise: bool = False,
@@ -629,7 +628,6 @@ def implicit_grad_loglik_vjp_wave(
             compact_level_child1=compact_level_child1,
             compact_level_child2=compact_level_child2,
             grad_receiver_log_probs=grad_receiver_log_probs,
-            use_receiver_weights=use_receiver_weights,
             self_loop_solver=self_loop_solver,
             return_last_increment=collect_backward_relres,
             initial_v=init_v,
@@ -747,7 +745,6 @@ def implicit_grad_loglik_vjp_wave(
                 compact_level_child1=compact_level_child1,
                 compact_level_child2=compact_level_child2,
                 grad_receiver_log_probs=grad_receiver_log_probs,
-                use_receiver_weights=use_receiver_weights,
                 side_active_threshold=pibar_side_threshold,
             )
     if collect_backward_relres:
@@ -763,7 +760,6 @@ def implicit_grad_loglik_vjp_wave(
     return _e_adjoint_and_theta_vjp(
         E_star, log_pS, log_pD, log_pL, max_transfer_mat,
         receiver_log_probs,
-        use_receiver_weights,
         grad_E_acc, grad_Ebar_acc, grad_E_s1_acc, grad_E_s2_acc,
         grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
         int(root_ids.numel()), theta, receiver_weights, species_helpers,
@@ -781,7 +777,7 @@ def implicit_grad_loglik_vjp_wave(
 
 
 def _e_adjoint_and_theta_vjp(
-    E_star, log_pS, log_pD, log_pL, max_transfer_mat, receiver_log_probs, use_receiver_weights,
+    E_star, log_pS, log_pD, log_pL, max_transfer_mat, receiver_log_probs,
     grad_E, grad_Ebar, grad_E_s1, grad_E_s2,
     grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
     n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
@@ -822,7 +818,6 @@ def _e_adjoint_and_theta_vjp(
             max_transfer_mat,
             receiver_log_probs,
             *topology_args,
-            use_receiver_weights=use_receiver_weights,
         )
         # ``drop_norm`` (GGN/J^T use) skips the loss's explicit E-normalization term, which is not
         # part of d(Pi_root)/dtheta. Default False -> the full real gradient (production path).
@@ -880,7 +875,6 @@ def _e_adjoint_and_theta_vjp(
             species_helpers,
             specieswise=specieswise,
             genewise=genewise,
-            uniform_fast=not use_receiver_weights,
             accumulator_dtype=accumulator_dtype,
         )
         S = int(species_helpers["S"])
@@ -901,7 +895,6 @@ def _e_adjoint_and_theta_vjp(
             mt_r,
             receiver_log_probs_r,
             *topology_args,
-            use_receiver_weights=use_receiver_weights,
         )
         grad_theta, grad_receiver = torch.autograd.grad(
             (param_loss, Ebar_from_params, E_from_params),

@@ -119,10 +119,8 @@ def test_dts_forward_rejects_mixed_offset_dtypes() -> None:
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("use_receiver_weights", [False, True])
 @pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
 def test_centered_leaf_initialization_matches_nonzero_observation_seed(
-    use_receiver_weights: bool,
     accumulator_dtype: torch.dtype,
 ) -> None:
     _require_cuda()
@@ -185,9 +183,7 @@ def test_centered_leaf_initialization_matches_nonzero_observation_seed(
         leaf_logp,
         family_idx,
     )
-    compute_leaf_initial_wave_step(
-        residual, offset, *args, use_receiver_weights=use_receiver_weights
-    )
+    compute_leaf_initial_wave_step(residual, offset, *args)
 
     # The same canonical kernel in fp64 is the precision oracle. Inputs remain
     # in the same gauges; only the residual arithmetic changes dtype.
@@ -201,7 +197,6 @@ def test_centered_leaf_initialization_matches_nonzero_observation_seed(
         reference_residual,
         reference_offset,
         *args64,
-        use_receiver_weights=use_receiver_weights,
     )
     reconstructed = residual.to(accumulator_dtype) + offset[:, None]
     reference = reference_residual + reference_offset[:, None]
@@ -287,7 +282,6 @@ def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows(
         pibar_row_max=pibar_row_max,
         store_final_pibar=True,
         has_leaf_term=False,
-        use_receiver_weights=False,
         pi_residual_out=pi_residual,
     )
 
@@ -354,7 +348,6 @@ def test_centered_final_pibar_all_impossible_row_uses_zero_offset() -> None:
         pibar_row_max=torch.empty((1,), device=device),
         store_final_pibar=True,
         has_leaf_term=False,
-        use_receiver_weights=False,
     )
 
     assert torch.isneginf(pibar).all().item()
@@ -425,7 +418,6 @@ def test_centered_split_input_uses_raw_max_for_virtual_dts_frame(
         store_final_pibar=True,
         has_leaf_term=False,
         input_ws=0,
-        use_receiver_weights=weighted,
     )
 
     torch.testing.assert_close(

@@ -2,8 +2,8 @@
 non-uniform base when ``u_alpha != 0``.
 
 This isolates the S5 kernel (`_wave_so_kernel` / `wave_backward_so`). It runs a REAL ``hvp(u)``
-on the 8-hogenom fixture at the seeded NON-UNIFORM base alpha (so ``use_col_weights=True`` and
-``dcol`` is the live softmax-Jacobian seed) and captures every ``wave_backward_so`` return via a
+on the 8-hogenom fixture at the seeded NON-UNIFORM base alpha (with ``dcol`` as the live
+softmax-Jacobian seed) and captures every ``wave_backward_so`` return via a
 wrapper, asserting the new 8th output ``d_grad_col`` is finite and not identically zero.
 
 It ALSO re-asserts the regression invariant from the other side: with ``u_alpha = 0`` the captured
@@ -31,7 +31,7 @@ def _capture_run(static, theta, alpha, u, *, tangent_self_iters=128):
     def wrapped(*args, **kw):
         out = orig(*args, **kw)
         # new return is (d_out, *6 d_aws, d_grad_col); record the col cotangent + its dcol input
-        captured.append((out[-1].detach().clone(), kw.get("dcol"), kw.get("use_col_weights")))
+        captured.append((out[-1].detach().clone(), kw.get("dcol")))
         return out
 
     hx.wave_backward_so = wrapped
@@ -64,14 +64,13 @@ def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128):
     _Hu_live, cap_live = _capture_run(static, theta, alpha, u_full,
                                       tangent_self_iters=tangent_self_iters)
     n_waves = len(cap_live)
-    all_finite = all(bool(torch.isfinite(c).all()) for c, _, _ in cap_live)
-    use_col_all = all(bool(b) for _, _, b in cap_live)
-    dcol_seen = [d for _, d, _ in cap_live if d is not None]
+    all_finite = all(bool(torch.isfinite(c).all()) for c, _ in cap_live)
+    dcol_seen = [d for _, d in cap_live if d is not None]
     dcol_nonzero = bool(dcol_seen) and any(float(d.abs().max()) > 0 for d in dcol_seen)
-    total_col_norm = float(sum(float(c.norm()) for c, _, _ in cap_live))
-    max_col_abs = max((float(c.abs().max()) for c, _, _ in cap_live), default=0.0)
-    n_nonzero_waves = sum(1 for c, _, _ in cap_live if float(c.abs().max()) > 0)
-    print(f"  live (u_alpha!=0): waves={n_waves} use_col_weights_all={use_col_all} "
+    total_col_norm = float(sum(float(c.norm()) for c, _ in cap_live))
+    max_col_abs = max((float(c.abs().max()) for c, _ in cap_live), default=0.0)
+    n_nonzero_waves = sum(1 for c, _ in cap_live if float(c.abs().max()) > 0)
+    print(f"  live (u_alpha!=0): waves={n_waves} "
           f"dcol_nonzero={dcol_nonzero} all_finite={all_finite}")
     print(f"     d_grad_col: nonzero_waves={n_nonzero_waves}/{n_waves} "
           f"sum|.|2={total_col_norm:.4e} max_abs={max_col_abs:.4e}")
@@ -82,8 +81,8 @@ def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128):
     # dcol == 0 but do NOT require d_grad_col == 0 in this direction.
     _Hu_z, cap_zero = _capture_run(static, theta, alpha, u_zero_alpha,
                                    tangent_self_iters=tangent_self_iters)
-    max_dcol_zero = max((float(d.abs().max()) for _, d, _ in cap_zero if d is not None), default=0.0)
-    max_col_zero = max((float(c.abs().max()) for c, _, _ in cap_zero), default=0.0)
+    max_dcol_zero = max((float(d.abs().max()) for _, d in cap_zero if d is not None), default=0.0)
+    max_col_zero = max((float(c.abs().max()) for c, _ in cap_zero), default=0.0)
     print(f"  u_alpha=0,u_theta!=0: max|dcol|={max_dcol_zero:.3e} (must be 0)  "
           f"max|d_grad_col|={max_col_zero:.3e} (H_at block: may be !=0)")
 
@@ -91,10 +90,10 @@ def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128):
     u_null = torch.zeros(p, device=device, dtype=torch.float64)
     _Hu_n, cap_null = _capture_run(static, theta, alpha, u_null,
                                    tangent_self_iters=tangent_self_iters)
-    max_col_null = max((float(c.abs().max()) for c, _, _ in cap_null), default=0.0)
+    max_col_null = max((float(c.abs().max()) for c, _ in cap_null), default=0.0)
     print(f"  u==0 null: max|d_grad_col|={max_col_null:.3e} (must be EXACTLY 0)")
 
-    live_ok = all_finite and use_col_all and dcol_nonzero and (n_nonzero_waves > 0) \
+    live_ok = all_finite and dcol_nonzero and (n_nonzero_waves > 0) \
         and (total_col_norm > 0.0)
     # regression invariant: zero seed -> zero softmax-Jacobian tangent (dcol) in BOTH; the null
     # direction must give an exactly-zero col-cotangent (no spurious scatter).

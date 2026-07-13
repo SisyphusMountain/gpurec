@@ -49,7 +49,6 @@ def _wave_step_tangent_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
-    USE_COL_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     NEG = -float("inf")
@@ -71,17 +70,10 @@ def _wave_step_tangent_kernel(
 
     pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
     dpi_w = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
-    if USE_COL_WEIGHTS:
-        colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
-        dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)
-        weighted = colw + pi_w
-        # col a variable: the pibar denom weights p'=2^(colw+pi-rm) gain a col-row tangent ->
-        # d(weighted)=dpi+dcol enters dRS/dAS (row_max FROZEN -> cancels). The +ln2 p' dcol of
-        # the SO kernel; here ln2 cancels in the log2-denom tangent (dpibar=(dRS-dAS)/denom).
-        dweighted = dpi_w + dcolw
-    else:
-        weighted = pi_w
-        dweighted = dpi_w
+    colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
+    dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)
+    weighted = colw + pi_w
+    dweighted = dpi_w + dcolw
     row_max = tl.max(weighted, axis=0)
     row_max_safe = tl.where(row_max != NEG, row_max, tl.zeros([1], dtype=DTYPE))
     r = tl.where(mask, tl.exp2(weighted - row_max_safe), zero)
@@ -95,14 +87,10 @@ def _wave_step_tangent_kernel(
         cv = mask & (cur >= 0) & (cur < S)
         pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cv, other=NEG)
         dpi_anc = tl.load(dPi_ptr + pi_base + cur, mask=cv, other=0.0)
-        if USE_COL_WEIGHTS:
-            col_anc = tl.load(col_log_probs_ptr + cur, mask=cv, other=NEG)
-            dcol_anc = tl.load(dcol_log_probs_ptr + cur, mask=cv, other=0.0)
-            r_anc = tl.where(cv, tl.exp2(col_anc + pi_anc - row_max_safe), zero)
-            dweighted_anc = dpi_anc + dcol_anc
-        else:
-            r_anc = tl.where(cv, tl.exp2(pi_anc - row_max_safe), zero)
-            dweighted_anc = dpi_anc
+        col_anc = tl.load(col_log_probs_ptr + cur, mask=cv, other=NEG)
+        dcol_anc = tl.load(dcol_log_probs_ptr + cur, mask=cv, other=0.0)
+        r_anc = tl.where(cv, tl.exp2(col_anc + pi_anc - row_max_safe), zero)
+        dweighted_anc = dpi_anc + dcol_anc
         ancestor_sum += r_anc
         dAS += r_anc * dweighted_anc
         cur = tl.load(node_parent_ptr + cur, mask=cv, other=-1).to(tl.int32)
@@ -214,7 +202,6 @@ def _wave_step_tangent_selfloop_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
-    USE_COL_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fuse fixed-count wave-tangent self-loop iterations."""
@@ -234,13 +221,9 @@ def _wave_step_tangent_selfloop_kernel(
 
     # ---- invariant setup (computed once) ----
     pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
-    if USE_COL_WEIGHTS:
-        colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
-        dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)  # invariant col seed
-        weighted = colw + pi_w
-    else:
-        dcolw = zero
-        weighted = pi_w
+    colw = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
+    dcolw = tl.load(dcol_log_probs_ptr + s_offs, mask=mask, other=0.0)
+    weighted = colw + pi_w
     row_max = tl.max(weighted, axis=0)
     row_max_safe = tl.where(row_max != NEG, row_max, tl.zeros([1], dtype=DTYPE))
     r = tl.where(mask, tl.exp2(weighted - row_max_safe), zero)
@@ -385,7 +368,7 @@ def compute_wave_step_tangent_selfloop(
     col_log_probs, node_child1, node_child2, node_parent, max_ancestor_depth,
     DTS_reduced=None, dDTS=None,
     *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx,
-    dPibar_out=None, has_leaf_term=True, use_col_weights=True, dcol_log_probs=None,
+    dPibar_out=None, has_leaf_term=True, dcol_log_probs=None,
     pi_offset, dts_offset=None,
 ):
     """Run fixed-count wave-tangent iterations; see the LaTeX reference."""
@@ -398,7 +381,7 @@ def compute_wave_step_tangent_selfloop(
     store_pibar = dPibar_out is not None
     dPi_out_rows = dPi_io.narrow(0, int(ws), int(W))
     dummy = Pi_in
-    dcol = (col_log_probs if dcol_log_probs is None
+    dcol = (torch.zeros_like(col_log_probs) if dcol_log_probs is None
             else dcol_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype).reshape(S).contiguous())
     _wave_step_tangent_selfloop_kernel[(int(W),)](
         Pi_in, dPi_io,
@@ -424,7 +407,6 @@ def compute_wave_step_tangent_selfloop(
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
-        USE_COL_WEIGHTS=bool(use_col_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=_WST_NUM_WARPS,
     )
@@ -436,7 +418,7 @@ def compute_wave_step_tangent(
     col_log_probs, node_child1, node_child2, node_parent, max_ancestor_depth,
     DTS_reduced=None, dDTS=None,
     *, leaf_state_idx, leaf_logp, dleaf_logp, item_idx,
-    dPibar_out=None, has_leaf_term=True, input_ws=None, use_col_weights=True, dcol_log_probs=None,
+    dPibar_out=None, has_leaf_term=True, input_ws=None, dcol_log_probs=None,
     pi_offset, dts_offset=None,
 ):
     """Apply the wave-step JVP documented in the LaTeX reference."""
@@ -449,7 +431,7 @@ def compute_wave_step_tangent(
     store_pibar = dPibar_out is not None
     dPi_out_rows = dPi_out.narrow(0, int(ws), int(W))
     dummy = Pi_in  # unused placeholder for None pointers
-    dcol = (col_log_probs if dcol_log_probs is None
+    dcol = (torch.zeros_like(col_log_probs) if dcol_log_probs is None
             else dcol_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype).reshape(S).contiguous())
     _wave_step_tangent_kernel[(int(W),)](
         Pi_in, dPi_in,
@@ -474,7 +456,6 @@ def compute_wave_step_tangent(
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
-        USE_COL_WEIGHTS=bool(use_col_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=_WST_NUM_WARPS,
     )

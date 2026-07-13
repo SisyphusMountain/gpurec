@@ -36,8 +36,6 @@ def _e_step_tangent_2d_kernel(
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
-    COMPUTE_DIFF: tl.constexpr,
-    USE_COL_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     g = tl.program_id(0)
@@ -49,16 +47,10 @@ def _e_step_tangent_2d_kernel(
 
     E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
     dE = tl.load(dE_ptr + base + offs, mask=mask, other=0.0)
-    if USE_COL_WEIGHTS:
-        col_logp = tl.load(col_log_probs_ptr + offs, mask=mask, other=neg_inf)
-        dcol = tl.load(dcol_log_probs_ptr + offs, mask=mask, other=0.0)
-        weighted_E = col_logp + E
-        # col is now a variable: d(weighted_E) = dE + dcol (the col-row tangent enters the
-        # Ebar denom alongside dE). row_max FROZEN (Ebar normalizer-invariant), so it cancels.
-        dweighted = dE + dcol
-    else:
-        weighted_E = E
-        dweighted = dE
+    col_logp = tl.load(col_log_probs_ptr + offs, mask=mask, other=neg_inf)
+    dcol = tl.load(dcol_log_probs_ptr + offs, mask=mask, other=0.0)
+    weighted_E = col_logp + E
+    dweighted = dE + dcol
     row_max = tl.max(weighted_E, axis=0)
     row_max_safe = tl.where(row_max != neg_inf, row_max, tl.zeros([1], dtype=DTYPE))
     r = tl.where(mask, tl.exp2(weighted_E - row_max_safe), zero)
@@ -72,14 +64,10 @@ def _e_step_tangent_2d_kernel(
         cur_valid = mask & (cur >= 0) & (cur < S)
         E_anc = tl.load(E_ptr + base + cur, mask=cur_valid, other=neg_inf)
         dE_anc = tl.load(dE_ptr + base + cur, mask=cur_valid, other=0.0)
-        if USE_COL_WEIGHTS:
-            col_anc = tl.load(col_log_probs_ptr + cur, mask=cur_valid, other=neg_inf)
-            dcol_anc = tl.load(dcol_log_probs_ptr + cur, mask=cur_valid, other=0.0)
-            r_anc = tl.where(cur_valid, tl.exp2(col_anc + E_anc - row_max_safe), zero)
-            dweighted_anc = dE_anc + dcol_anc
-        else:
-            r_anc = tl.where(cur_valid, tl.exp2(E_anc - row_max_safe), zero)
-            dweighted_anc = dE_anc
+        col_anc = tl.load(col_log_probs_ptr + cur, mask=cur_valid, other=neg_inf)
+        dcol_anc = tl.load(dcol_log_probs_ptr + cur, mask=cur_valid, other=0.0)
+        r_anc = tl.where(cur_valid, tl.exp2(col_anc + E_anc - row_max_safe), zero)
+        dweighted_anc = dE_anc + dcol_anc
         ancestor_sum += r_anc
         dAS += r_anc * dweighted_anc
         cur = tl.load(node_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int32)
@@ -136,32 +124,34 @@ def _e_step_tangent_2d_kernel(
     tl.store(dE_s1_out_ptr + base + offs, dE_s1, mask=mask)
     tl.store(dE_s2_out_ptr + base + offs, dE_s2, mask=mask)
     tl.store(dEbar_out_ptr + base + offs, dEbar, mask=mask)
-    if COMPUTE_DIFF:
-        diff = tl.where(mask, tl.abs(dE_new - dE), zero)
-        tl.store(max_diff_out_ptr + g, tl.max(diff, axis=0))
+    diff = tl.where(mask, tl.abs(dE_new - dE), zero)
+    tl.store(max_diff_out_ptr + g, tl.max(diff, axis=0))
 
 
 def _launch_e_step_tangent_2d(
     E, dE, log_pS_mat, log_pD_mat, log_pL_mat, max_coupling_mat, col_log_probs, dcol_log_probs,
     dlog_pS_mat, dlog_pD_mat, dlog_pL_mat, dmax_coupling_mat,
     node_parent, node_child1, node_child2, max_ancestor_depth,
-    *, out=None, max_diff_out=None, use_col_weights=True,
+    *, out=None, max_diff_out=None,
 ):
     G = int(E.shape[0])
     S = int(E.shape[1])
     block_s = int(triton.next_power_of_2(S))
     dE_new, dE_s1, dE_s2, dEbar = (torch.empty_like(E) for _ in range(4)) if out is None else out
+    max_diff = (
+        torch.empty((G,), dtype=E.dtype, device=E.device)
+        if max_diff_out is None
+        else max_diff_out
+    )
     _e_step_tangent_2d_kernel[(G,)](
         E, dE, dE_new, dE_s1, dE_s2, dEbar,
-        dE_new if max_diff_out is None else max_diff_out,
+        max_diff,
         log_pS_mat, log_pD_mat, log_pL_mat, max_coupling_mat, col_log_probs, dcol_log_probs,
         dlog_pS_mat, dlog_pD_mat, dlog_pL_mat, dmax_coupling_mat,
         node_parent, node_child1, node_child2,
         S,
         BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
-        COMPUTE_DIFF=max_diff_out is not None,
-        USE_COL_WEIGHTS=bool(use_col_weights),
         DTYPE=_tl_float_dtype(E.dtype),
         num_warps=8,
     )
@@ -173,7 +163,7 @@ def e_tangent_fixed_point(
     dlog_pS, dlog_pD, dlog_pL, dmax_coupling,
     log_pS, log_pD, log_pL, max_coupling, col_log_probs,
     node_parent, node_child1, node_child2, max_ancestor_depth,
-    *, max_iter=None, tol=None, use_col_weights=True, dE0=None, dcol_log_probs=None,
+    *, max_iter=None, tol=None, dE0=None, dcol_log_probs=None,
 ):
     """Solve the tangent fixed point documented in the LaTeX reference."""
     if max_iter is None:
@@ -197,7 +187,7 @@ def e_tangent_fixed_point(
     for _ in range(int(max_iter)):
         _launch_e_step_tangent_2d(
             E_a, dE_a, *args, out=(dE_b, dE_s1, dE_s2, dEbar),
-            max_diff_out=max_diff_out, use_col_weights=bool(use_col_weights),
+            max_diff_out=max_diff_out,
         )
         dE_a, dE_b = dE_b, dE_a
         max_diff = float(max_diff_out.max().item())
@@ -206,6 +196,6 @@ def e_tangent_fixed_point(
             break
 
     _, dE_s1, dE_s2, dEbar = _launch_e_step_tangent_2d(
-        E_a, dE_a, *args, use_col_weights=bool(use_col_weights),
+        E_a, dE_a, *args,
     )
     return dE_a, dE_s1, dE_s2, dEbar
