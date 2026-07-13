@@ -4,7 +4,7 @@ S3 (``docs/optim/receiver_weights_hvp_plan.md``) replaces the uniform forward ta
 JVP of ``extract_parameters_weighted_receivers`` so the parameter tangent ``dMC`` carries the
 ``alpha -> receiver_log_probs -> receiver_valid_log_normalizer (receiver_norm) -> max_transfer``
 coupling, and the softmax-Jacobian seed ``dcol = dreceiver_log_probs`` is threaded IDENTICALLY into
-the E-step tangent fixed point AND the wave-step tangent. This is the
+the E-step tangent fixed point AND the wave-step tangent (use_col_weights=True). This is the
 prerequisite that makes a pure-theta tangent FINITE at a non-uniform base (the legacy uniform
 tangent NaNs there) and adds the real alpha->rate forward sensitivity.
 
@@ -78,6 +78,7 @@ def run(n_families=8, device="cuda", seed=0, tangent_self_iters=128, eps=1e-6, n
     def f_extract(th, al):
         return extract_parameters_weighted_receivers(
             th, al, sh, specieswise=static.specieswise, genewise=static.genewise,
+            uniform_fast=True,
         )
 
     _, tang = torch.func.jvp(f_extract, (theta, alpha), (u_theta_seed, u_alpha_seed))

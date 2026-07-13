@@ -4,6 +4,6 @@ Parameter-shaping utilities that convert learnable optimization variables into l
 
 ## Files
 
-- `extract_parameters.py`: Provides helpers for broadcasting global, specieswise, and genewise parameters to family/species shapes. Inference always normalizes receiver logits into base-2 log weights; equal logits give the uniform receiver measure.
+- `extract_parameters.py`: Provides helpers for broadcasting global, specieswise, and genewise parameters to family/species shapes. `extract_parameters_uniform` turns unconstrained `theta` values into base-2 log probabilities for speciation, duplication, loss, and transfer terms, including transfer row-max normalization.
 
 Generated `__pycache__` files are interpreter artifacts and are not part of the source implementation.

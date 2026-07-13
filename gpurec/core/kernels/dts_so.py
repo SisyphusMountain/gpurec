@@ -183,7 +183,7 @@ def _dts_tree_so_kernel(
     d_rhs_ptr, d_grad_col_ptr,
     n_ws: tl.constexpr, S: tl.constexpr, stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr, N_LEVELS: tl.constexpr,
-    DTYPE: tl.constexpr,
+    USE_COL_WEIGHTS: tl.constexpr, DTYPE: tl.constexpr,
 ):
     """Evaluate the DTS transfer-tree curvature term documented in LaTeX."""
     LN2 = 0.6931471805599453
@@ -243,11 +243,18 @@ def _dts_tree_so_kernel(
         mask = s_offs < S
         pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
         dpi_val = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
-        col_logp = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
-        dcol_val = tl.load(dcol_ptr + s_offs, mask=mask, other=0.0)
-        p_prime = tl.exp2(col_logp + pi_val - rm_safe)
-        p_prime = tl.where(pi_val != NEG, p_prime, tl.zeros_like(p_prime))
-        dp_prime = LN2 * p_prime * (dpi_val + dcol_val)
+        if USE_COL_WEIGHTS:
+            col_logp = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
+            dcol_val = tl.load(dcol_ptr + s_offs, mask=mask, other=0.0)
+            p_prime = tl.exp2(col_logp + pi_val - rm_safe)
+            p_prime = tl.where(pi_val != NEG, p_prime, tl.zeros_like(p_prime))
+            # col is a variable: p' = exp2(col + pi - rm), so dp' = ln2 p' (dpi + dcol) (rm frozen).
+            # The contrib at :228 then carries +ln2 p' dcol into BOTH d_rhs and d_grad_col scatters.
+            dp_prime = LN2 * p_prime * (dpi_val + dcol_val)
+        else:
+            p_prime = tl.exp2(pi_val - rm_safe)
+            p_prime = tl.where(pi_val != NEG, p_prime, tl.zeros_like(p_prime))
+            dp_prime = LN2 * p_prime * dpi_val
         sub = tl.load(receiver_adjoint_ptr + row_base + s_offs, mask=mask, other=0.0)
         dsub = tl.load(d_receiver_adjoint_ptr + row_base + s_offs, mask=mask, other=0.0)
         contrib = dp_prime * (A - sub) + p_prime * (dA - dsub)
@@ -262,7 +269,7 @@ def dts_backward_so(
     d_rhs, d_grad_pD, d_grad_pS, d_grad_mt, d_grad_col,
     *, compact_level_ptr=None, compact_level_parents=None,
     compact_level_child1=None, compact_level_child2=None,
-    dcol=None, pi_offset, pibar_offset,
+    use_col_weights=False, dcol=None, pi_offset, pibar_offset,
 ):
     """Accumulate the DTS second-order contraction documented in LaTeX."""
     sl, sr = meta["sl"], meta["sr"]
@@ -346,9 +353,8 @@ def dts_backward_so(
     if compact_level_ptr is None:
         raise ValueError("dts_backward_so requires compact_level_* tables for the tree kernel")
     n_levels = int(compact_level_ptr.numel()) - 1
-    dcol_arg = torch.zeros((S,), device=dev, dtype=dt) if dcol is None else dcol
     _dts_tree_so_kernel[(2 * N,)](
-        Pi, dPi, col_log_probs, dcol_arg,
+        Pi, dPi, col_log_probs, dcol if dcol is not None else Pi,
         ud, dud, sl, sr,
         pibar_row_max,
         compact_level_ptr.contiguous(), compact_level_parents.contiguous(),
@@ -356,7 +362,7 @@ def dts_backward_so(
         d_rhs, d_grad_col,
         n_ws=N, S=S, stride_C=int(Pi.stride(0)),
         BLOCK_S=block_s, N_LEVELS=n_levels,
-        DTYPE=_tl_float_dtype(Pi.dtype),
+        USE_COL_WEIGHTS=bool(use_col_weights), DTYPE=_tl_float_dtype(Pi.dtype),
         # num_warps=8 trims _dts_tree_so ~8% vs 4 on 666x80 (back-to-back wall 997->989ms;
         # nsys kernel 12%->11% of HVP). Each program owns a full side-row walked in BLOCK_S
         # chunks -> more warps hide the dependent level-walk loads. split kernel unaffected (kept

@@ -74,6 +74,7 @@ def _row_logsumexp(
     base,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     TRACK_RAW_MAX: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
@@ -87,8 +88,11 @@ def _row_logsumexp(
         pi_val = tl.load(Pi_ptr + base + s_offs, mask=mask, other=NEG_INF)
         if TRACK_RAW_MAX:
             raw_row_max = tl.maximum(raw_row_max, tl.max(pi_val, axis=0))
-        receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=mask, other=NEG_INF)
-        weighted_pi = receiver_logp + pi_val
+        if USE_RECEIVER_WEIGHTS:
+            receiver_logp = tl.load(receiver_log_probs_ptr + s_offs, mask=mask, other=NEG_INF)
+            weighted_pi = receiver_logp + pi_val
+        else:
+            weighted_pi = pi_val
         new_max = tl.maximum(row_max, tl.max(weighted_pi, axis=0))
         new_max_safe = tl.where(new_max != NEG_INF, new_max, tl.zeros_like(new_max))
         previous = tl.where(
@@ -116,22 +120,30 @@ def _pibar_tile(
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
     ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
     row_max_safe = tl.where(row_max != NEG_INF, row_max, tl.zeros_like(row_max))
-    cur = s_offs.to(tl.int64) # FIXME: should not have an autocast, if it has to be int64, the original tensor should have this dtype when preprocessing.
+    cur = s_offs.to(tl.int64)
     for _ in range(0, MAX_ANCESTOR_DEPTH):
         cur_valid = mask & (cur >= 0) & (cur < S)
         pi_anc = tl.load(Pi_ptr + base + cur, mask=cur_valid, other=NEG_INF)
-        receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=cur_valid, other=NEG_INF)
-        ancestor_sum += tl.where(
-            cur_valid,
-            tl.exp2(receiver_logp_anc + pi_anc - row_max_safe),
-            tl.zeros([BLOCK_S], dtype=DTYPE),
-        )
-        cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int64) # FIXME: same thing.
+        if USE_RECEIVER_WEIGHTS:
+            receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=cur_valid, other=NEG_INF)
+            ancestor_sum += tl.where(
+                cur_valid,
+                tl.exp2(receiver_logp_anc + pi_anc - row_max_safe),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
+        else:
+            ancestor_sum += tl.where(
+                cur_valid,
+                tl.exp2(pi_anc - row_max_safe),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
+        cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int64)
     denom = row_sum - ancestor_sum
     return tl.where(denom > 0.0, tl.log2(denom) + row_max + max_transfer, NEG_INF)
 
@@ -159,6 +171,7 @@ def _leaf_initial_wave_step_kernel(
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
     ACC_DTYPE: tl.constexpr,
 ):
@@ -171,8 +184,11 @@ def _leaf_initial_wave_step_kernel(
     leaf_species = tl.load(leaf_species_ptr + global_row)
     leaf_start = tl.load(sp_subtree_start_ptr + leaf_species)
     leaf_end = tl.load(sp_subtree_end_ptr + leaf_species)
-    leaf_receiver_logp = tl.load(receiver_log_probs_ptr + leaf_species).to(DTYPE) # FIXME: same thing.
-    leaf_obs_logp = tl.load(leaf_logp_ptr + family * S + leaf_species).to(DTYPE) # FIXME: same thing.
+    if USE_RECEIVER_WEIGHTS:
+        leaf_receiver_logp = tl.load(receiver_log_probs_ptr + leaf_species).to(DTYPE)
+    else:
+        leaf_receiver_logp = tl.zeros((), dtype=DTYPE)
+    leaf_obs_logp = tl.load(leaf_logp_ptr + family * S + leaf_species).to(DTYPE)
 
     row_max = tl.full((), value=NEG_LARGE, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
@@ -312,6 +328,8 @@ def _wave_step_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_FINAL_PIBAR: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
     ACC_DTYPE: tl.constexpr,
 ):
@@ -333,14 +351,20 @@ def _wave_step_kernel(
         pi_base,
         S,
         BLOCK_S,
-        INPUT_IS_DTS,
+        USE_RECEIVER_WEIGHTS,
+        INPUT_IS_DTS and USE_RECEIVER_WEIGHTS,
         DTYPE,
     )
     # ``row_max`` is already required for Pibar. Absorb it lazily into the
     # accumulator-dtype row frame so the recurrence consumes near-zero residuals without an
     # exact recenter/store pass over the input row.
     if INPUT_IS_DTS:
-        shift_source = raw_row_max
+        if USE_RECEIVER_WEIGHTS:
+            shift_source = raw_row_max
+        else:
+            # Without receiver weights ``row_max`` is already the raw maximum;
+            # compile out the second tile reduction entirely.
+            shift_source = row_max
         row_shift = tl.max(
             tl.where(
                 shift_source != NEG_LARGE,
@@ -384,7 +408,8 @@ def _wave_step_kernel(
     if STORE_FINAL_PIBAR:
         pi_has_finite = tl.full((), value=0, dtype=tl.int32)
 
-    row_max_diff = tl.zeros([1], dtype=tl.float32)
+    if COMPUTE_DIFF:
+        row_max_diff = tl.zeros([1], dtype=tl.float32)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -406,6 +431,7 @@ def _wave_step_kernel(
             S,
             BLOCK_S,
             MAX_ANCESTOR_DEPTH,
+            USE_RECEIVER_WEIGHTS,
             DTYPE,
         )
         pibar_w = pibar_w - row_shift
@@ -457,20 +483,21 @@ def _wave_step_kernel(
                 tl.max(tl.where(mask & (result != NEG_LARGE), 1, 0), axis=0),
             )
 
-        # Compare represented absolute values in the accumulator dtype
-        # without materializing either large absolute row.
-        finite = mask & (result != NEG_LARGE) & (pi_w != NEG_LARGE)
-        diff = tl.where(
-            finite,
-            tl.abs(
-                result.to(ACC_DTYPE)
-                - pi_w.to(ACC_DTYPE)
-                + term_base
-                - effective_pi_offset
-            ),
-            tl.zeros([BLOCK_S], dtype=ACC_DTYPE),
-        )
-        row_max_diff = tl.maximum(row_max_diff, tl.max(diff, axis=0).to(tl.float32))
+        if COMPUTE_DIFF:
+            # Compare represented absolute values in the accumulator dtype
+            # without materializing either large absolute row.
+            finite = mask & (result != NEG_LARGE) & (pi_w != NEG_LARGE)
+            diff = tl.where(
+                finite,
+                tl.abs(
+                    result.to(ACC_DTYPE)
+                    - pi_w.to(ACC_DTYPE)
+                    + term_base
+                    - effective_pi_offset
+                ),
+                tl.zeros([BLOCK_S], dtype=ACC_DTYPE),
+            )
+            row_max_diff = tl.maximum(row_max_diff, tl.max(diff, axis=0).to(tl.float32))
 
     # Only the final iterate is published as row-gauged state; earlier iterates
     # are internal gauge-equivalent scratch. Canonicalize the published row in
@@ -481,7 +508,8 @@ def _wave_step_kernel(
         pi_new_offset = term_base
     tl.store(Pi_new_offset_ptr + global_row, pi_new_offset)
 
-    tl.store(pi_residual_out_ptr + global_row, tl.max(row_max_diff, axis=0))
+    if COMPUTE_DIFF:
+        tl.store(pi_residual_out_ptr + global_row, tl.max(row_max_diff, axis=0))
 
     if has_splits and INPUT_IS_DTS:
         tl.store(DTS_center_offset_ptr + w, dts_center_offset)
@@ -493,6 +521,7 @@ def _wave_step_kernel(
             global_base,
             S,
             BLOCK_S,
+            USE_RECEIVER_WEIGHTS,
             False,
             DTYPE,
         )
@@ -520,6 +549,7 @@ def _wave_step_kernel(
                 S,
                 BLOCK_S,
                 MAX_ANCESTOR_DEPTH,
+                USE_RECEIVER_WEIGHTS,
                 DTYPE,
             )
             pibar_has_finite = tl.maximum(
@@ -860,6 +890,7 @@ def compute_leaf_initial_wave_step(
     leaf_species_idx,
     leaf_logp,
     family_idx,
+    use_receiver_weights=True,
 ):
     Pi_out_offset = _validate_offset_tensor(
         "Pi_out_offset",
@@ -891,6 +922,7 @@ def compute_leaf_initial_wave_step(
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_out.dtype),
         ACC_DTYPE=_tl_float_dtype(Pi_out_offset.dtype),
         num_warps=8,
@@ -929,6 +961,7 @@ def compute_wave_step(
     store_final_pibar=False,
     has_leaf_term=True,
     input_ws=None,
+    use_receiver_weights=True,
     pi_residual_out=None,
 ):
     Pi_in_offset = _validate_offset_tensor(
@@ -996,7 +1029,7 @@ def compute_wave_step(
             "split virtual framing requires wave-local aliased Pi/DTS inputs "
             "and a distinct output buffer"
         )
-    residual_out = torch.empty_like(pibar_row_max) if pi_residual_out is None else pi_residual_out
+    compute_diff = pi_residual_out is not None
     block_s, const_row_stride = _prepare_wave_launch(S, DL_const)
     _wave_step_kernel[(W,)](
         Pi_in,
@@ -1026,7 +1059,7 @@ def compute_wave_step(
         Pibar,
         Pibar_offset,
         pibar_row_max,
-        residual_out,
+        pi_residual_out if compute_diff else pibar_row_max,
         S,
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
@@ -1034,6 +1067,8 @@ def compute_wave_step(
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_FINAL_PIBAR=bool(store_final_pibar),
+        COMPUTE_DIFF=compute_diff,
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
         num_warps=8,

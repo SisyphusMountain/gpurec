@@ -9,6 +9,7 @@ from gpurec.core.inference.solver import (
     nll_vector_from_root_rows,
     origination_grad_from_root_rows,
     origination_weights_are_uniform,
+    receiver_weights_are_uniform,
     solve_resident_e_pi,
 )
 from gpurec.core.parameters.extract_parameters import (
@@ -131,6 +132,7 @@ def evaluate_static_loss_grad(
         static.warm_E = E.detach()
         if not need_grad:
             return loss, None, None, None
+        use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
         # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
         if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
@@ -153,6 +155,7 @@ def evaluate_static_loss_grad(
             log_pL=log_pL,
             max_transfer_mat=max_transfer_vec,
             receiver_log_probs=receiver_log_probs,
+            use_receiver_weights=use_receiver_weights,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
@@ -222,6 +225,7 @@ def evaluate_static_convergence(
         forward_resid = torch.zeros(n_fam, device=theta.device, dtype=torch.float32)
         forward_resid.scatter_reduce_(0, fam_local, pi_residual, reduce="amax", include_self=True)
 
+        use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         nt = static.solver_options.neumann_terms if neumann_terms is None else int(neumann_terms)
         backward_relres, backward_vk_mag = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
@@ -237,6 +241,7 @@ def evaluate_static_convergence(
             log_pL=log_pL,
             max_transfer_mat=max_transfer_vec,
             receiver_log_probs=receiver_log_probs,
+            use_receiver_weights=use_receiver_weights,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
@@ -304,6 +309,7 @@ def evaluate_static_loss_vector_grad(
             static.warm_E = E.detach()
         if not need_grad:
             return loss_vec, None, None, None
+        use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
         # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
         # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
         if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
@@ -326,6 +332,7 @@ def evaluate_static_loss_vector_grad(
             log_pL=log_pL,
             max_transfer_mat=max_transfer_vec,
             receiver_log_probs=receiver_log_probs,
+            use_receiver_weights=use_receiver_weights,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,

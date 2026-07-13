@@ -307,6 +307,7 @@ def _wave_backward_uniform_2d(
     compact_level_child1,
     compact_level_child2,
     grad_receiver_log_probs=None,
+    use_receiver_weights=True,
     self_loop_grad_targets=None,
     initial_v=None,
     self_loop_solver="neumann",
@@ -478,6 +479,7 @@ def _wave_backward_uniform_2d(
         CONST_LAYOUT=int(const_layout),
         DTYPE=_tl_float_dtype(dtype),
         USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         **launch_options,
     )
 
@@ -770,6 +772,7 @@ def wave_backward_uniform_fused(
     compact_level_child1=None,
     compact_level_child2=None,
     grad_receiver_log_probs=None,
+    use_receiver_weights=True,
     self_loop_grad_targets=None,
     initial_v=None,
     self_loop_solver="neumann",
@@ -871,6 +874,7 @@ def wave_backward_uniform_fused(
         compact_level_child1=compact_level_child1,
         compact_level_child2=compact_level_child2,
         grad_receiver_log_probs=grad_receiver_log_probs,
+        use_receiver_weights=use_receiver_weights,
         self_loop_grad_targets=self_loop_grad_targets,
         initial_v=initial_v,
         self_loop_solver=self_loop_solver,
@@ -1144,6 +1148,7 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     compact_level_child1=None,
     compact_level_child2=None,
     grad_receiver_log_probs=None,
+    use_receiver_weights=True,
     side_active_threshold=0.0,
 ):
     """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
@@ -1236,6 +1241,7 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_SIDE_ACTIVE=bool(side_active is not None),
         ACCUM_RECEIVER_GRAD=bool(grad_receiver_log_probs is not None),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         **launch_options,
     )

@@ -94,8 +94,6 @@ class GeneReconModel(torch.nn.Module):
         self.theta = torch.nn.Parameter(
             torch.full(theta_shape, math.log2(bounds.init_rate), dtype=dtype, device=device)
         )
-        # Receiver logits are always consumed through a normalized weighted measure.
-        # Equal zero logits are the uniform default.
         self.receiver_weights = torch.nn.Parameter(
             torch.zeros((int(species_helpers["S"]),), dtype=dtype, device=device)
         )

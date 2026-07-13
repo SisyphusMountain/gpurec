@@ -20,6 +20,7 @@ def pi_wave_forward(
     log_p_d,
     max_transfer_mat,
     receiver_log_probs,
+    use_receiver_weights: bool = True,
     *,
     family_idx: torch.Tensor,
     pi_iters: int = 6,
@@ -135,6 +136,7 @@ def pi_wave_forward(
                     wave_layout["leaf_species_index"],
                     log_p_s_family,
                     family_idx=family_idx,
+                    use_receiver_weights=use_receiver_weights,
                 )
             else:
                 step_input_ws = 0 if local_iter == 1 and not has_leaf_term else None
@@ -169,6 +171,7 @@ def pi_wave_forward(
                     store_final_pibar=local_iter == pi_iters - 1,
                     has_leaf_term=has_leaf_term,
                     input_ws=step_input_ws,
+                    use_receiver_weights=use_receiver_weights,
                     pi_residual_out=(
                         pi_residual_out if local_iter == pi_iters - 1 else None
                     ),

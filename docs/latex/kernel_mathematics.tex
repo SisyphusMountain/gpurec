@@ -44,13 +44,9 @@ parent of state $s$.  We include $s$ itself in its ancestral path:
 \[
   \Anc(s)=\{s,\operatorname{pa}(s),\operatorname{pa}^2(s),\ldots\}.
 \]
-The normalized receiver log-weight is
-\[
-  \rho_s=\log_2\!\left(\frac{\exp(\alpha_s)}
-  {\sum_r\exp(\alpha_r)}\right).
-\]
-Every kernel uses this receiver measure.  Equal logits represent the uniform
-case, for which $\rho_s=-\log_2|\mathcal S|$ for every $s$.
+The receiver log-weight is $\rho_s$.  In the uniform-receiver model,
+$\rho_s=0$ for every $s$; this is a distinct mathematical model, not a missing
+input convention.
 
 For gene family $g$ and species state $s$, write
 $\ell^S_{g,s}$, $\ell^D_{g,s}$, and $\ell^L_{g,s}$ for log-probabilities of

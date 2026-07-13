@@ -18,6 +18,7 @@ from __future__ import annotations
 import torch
 
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2
+from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.api._implicit_grad import _safe_exp2_ratio, implicit_grad_loglik_vjp_wave
 from gpurec.core.parameters.extract_parameters import resolve_accumulator_dtype
 
@@ -57,6 +58,7 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         E_star=sv["E"], E_s1=sv["E_s1"], E_s2=sv["E_s2"], Ebar=sv["Ebar"],
         log_pS=sv["log_pS"], log_pD=sv["log_pD"], log_pL=sv["log_pL"],
         max_transfer_mat=sv["max_transfer"], receiver_log_probs=sv["receiver_log_probs"],
+        use_receiver_weights=not receiver_weights_are_uniform(receiver_weights),
         theta=theta, receiver_weights=receiver_weights,
         uniform_pibar_row_max=sv["pibar_row_max"], family_idx=static.rate_family_idx,
         specieswise=static.specieswise, genewise=static.genewise,

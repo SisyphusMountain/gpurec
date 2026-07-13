@@ -34,6 +34,8 @@ def _e_step_forward_2d_kernel(
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     g = tl.program_id(0)
@@ -44,8 +46,11 @@ def _e_step_forward_2d_kernel(
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
 
     E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
-    receiver_logp = tl.load(receiver_log_probs_ptr + offs, mask=mask, other=neg_inf)
-    weighted_E = receiver_logp + E
+    if USE_RECEIVER_WEIGHTS:
+        receiver_logp = tl.load(receiver_log_probs_ptr + offs, mask=mask, other=neg_inf)
+        weighted_E = receiver_logp + E
+    else:
+        weighted_E = E
     row_max = tl.max(weighted_E, axis=0)
     row_max_safe = tl.where(row_max != neg_inf, row_max, tl.zeros([1], dtype=DTYPE))
     row_sum = tl.sum(tl.exp2(weighted_E - row_max_safe), axis=0)
@@ -55,8 +60,11 @@ def _e_step_forward_2d_kernel(
     for _ in range(0, MAX_ANCESTOR_DEPTH):
         cur_valid = mask & (cur >= 0) & (cur < S)
         E_anc = tl.load(E_ptr + base + cur, mask=cur_valid, other=neg_inf)
-        receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=cur_valid, other=neg_inf)
-        ancestor_sum += tl.where(cur_valid, tl.exp2(receiver_logp_anc + E_anc - row_max_safe), zero)
+        if USE_RECEIVER_WEIGHTS:
+            receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=cur_valid, other=neg_inf)
+            ancestor_sum += tl.where(cur_valid, tl.exp2(receiver_logp_anc + E_anc - row_max_safe), zero)
+        else:
+            ancestor_sum += tl.where(cur_valid, tl.exp2(E_anc - row_max_safe), zero)
         cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1).to(tl.int32)
 
     c1 = tl.load(sp_child1_ptr + offs, mask=mask, other=-1)
@@ -92,8 +100,9 @@ def _e_step_forward_2d_kernel(
     tl.store(E_s1_out_ptr + base + offs, E_s1, mask=mask)
     tl.store(E_s2_out_ptr + base + offs, E_s2, mask=mask)
     tl.store(Ebar_out_ptr + base + offs, Ebar, mask=mask)
-    diff = tl.where(mask, tl.abs(E_new - E), zero)
-    tl.store(max_diff_out_ptr + g, tl.max(diff, axis=0))
+    if COMPUTE_DIFF:
+        diff = tl.where(mask, tl.abs(E_new - E), zero)
+        tl.store(max_diff_out_ptr + g, tl.max(diff, axis=0))
 
 
 @triton.jit
@@ -119,13 +128,14 @@ def _e_step_backward_prepare_2d_kernel(
     grad_log_pD_ptr,
     grad_log_pL_ptr,
     grad_max_transfer_ptr,
-    grad_receiver_log_probs_ptr, # FIXME: unused parameter
+    grad_receiver_log_probs_ptr,
     r_ptr,
     excluded_u_ptr,
     total_u_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     g = tl.program_id(0)
@@ -136,8 +146,11 @@ def _e_step_backward_prepare_2d_kernel(
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
 
     E = tl.load(E_ptr + base + offs, mask=mask, other=neg_inf)
-    receiver_logp = tl.load(receiver_log_probs_ptr + offs, mask=mask, other=neg_inf)
-    weighted_E = receiver_logp + E
+    if USE_RECEIVER_WEIGHTS:
+        receiver_logp = tl.load(receiver_log_probs_ptr + offs, mask=mask, other=neg_inf)
+        weighted_E = receiver_logp + E
+    else:
+        weighted_E = E
     E_new = tl.load(E_new_ptr + base + offs, mask=mask, other=neg_inf)
     E_s1 = tl.load(E_s1_ptr + base + offs, mask=mask, other=neg_inf)
     E_s2 = tl.load(E_s2_ptr + base + offs, mask=mask, other=neg_inf)
@@ -195,8 +208,11 @@ def _e_step_backward_prepare_2d_kernel(
     for _ in range(0, MAX_ANCESTOR_DEPTH):
         valid = mask & (cur >= 0) & (cur < S)
         E_anc = tl.load(E_ptr + base + cur, mask=valid, other=neg_inf)
-        receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=valid, other=neg_inf)
-        ancestor_sum += tl.where(valid, tl.exp2(receiver_logp_anc + E_anc - row_max_safe), zero)
+        if USE_RECEIVER_WEIGHTS:
+            receiver_logp_anc = tl.load(receiver_log_probs_ptr + cur, mask=valid, other=neg_inf)
+            ancestor_sum += tl.where(valid, tl.exp2(receiver_logp_anc + E_anc - row_max_safe), zero)
+        else:
+            ancestor_sum += tl.where(valid, tl.exp2(E_anc - row_max_safe), zero)
         cur = tl.load(sp_parent_ptr + cur, mask=valid, other=-1).to(tl.int32)
 
     denom = row_sum - ancestor_sum
@@ -247,23 +263,19 @@ def _launch_e_step_forward_2d(
     *,
     max_diff_out: torch.Tensor | None = None,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+    use_receiver_weights: bool = True,
 ):
     G = int(E.shape[0])
     S = int(E.shape[1])
     block_s = int(triton.next_power_of_2(S))
     E_new, E_s1, E_s2, Ebar = (torch.empty_like(E) for _ in range(4)) if out is None else out
-    max_diff = (
-        torch.empty((G,), dtype=E.dtype, device=E.device)
-        if max_diff_out is None
-        else max_diff_out
-    )
     _e_step_forward_2d_kernel[(G,)](
         E,
         E_new,
         E_s1,
         E_s2,
         Ebar,
-        max_diff,
+        E_new if max_diff_out is None else max_diff_out,
         log_pS_mat,
         log_pD_mat,
         log_pL_mat,
@@ -275,6 +287,8 @@ def _launch_e_step_forward_2d(
         S,
         BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        COMPUTE_DIFF=max_diff_out is not None,
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(E.dtype),
         num_warps=8,
     )
@@ -294,6 +308,7 @@ class _TritonEStep2D(torch.autograd.Function):
         sp_child1,
         sp_child2,
         max_ancestor_depth: int,
+        use_receiver_weights: bool,
     ):
         return _launch_e_step_forward_2d(
             E,
@@ -306,12 +321,14 @@ class _TritonEStep2D(torch.autograd.Function):
             sp_child1,
             sp_child2,
             int(max_ancestor_depth),
+            use_receiver_weights=bool(use_receiver_weights),
         )
 
     @staticmethod
     def setup_context(ctx, inputs, output):
         ctx.save_for_backward(inputs[0], *output, *inputs[1:4], inputs[5], *inputs[6:9])
         ctx.max_ancestor_depth = int(inputs[9])
+        ctx.use_receiver_weights = bool(inputs[10])
 
     @staticmethod
     def backward(ctx, grad_E_new, grad_E_s1_out, grad_E_s2_out, grad_Ebar_out):
@@ -371,6 +388,7 @@ class _TritonEStep2D(torch.autograd.Function):
             S,
             BLOCK_S=block_s,
             MAX_ANCESTOR_DEPTH=int(ctx.max_ancestor_depth),
+            USE_RECEIVER_WEIGHTS=bool(ctx.use_receiver_weights),
             DTYPE=_tl_float_dtype(E.dtype),
             num_warps=8,
         )
@@ -395,6 +413,7 @@ class _TritonEStep2D(torch.autograd.Function):
             None,
             None,
             None,
+            None,
         )
 
 
@@ -409,6 +428,7 @@ def e_step_triton_autograd(
     sp_child1: torch.Tensor,
     sp_child2: torch.Tensor,
     max_ancestor_depth: int,
+    use_receiver_weights: bool = True,
 ):
     E_arg = E.contiguous()
     return _TritonEStep2D.apply(
@@ -419,6 +439,7 @@ def e_step_triton_autograd(
         sp_child1,
         sp_child2,
         int(max_ancestor_depth),
+        bool(use_receiver_weights),
     )
 
 
@@ -436,6 +457,7 @@ def e_fixed_point_triton(
     *,
     max_iter: int | None = None,
     tol: float | None = None,
+    use_receiver_weights: bool = True,
 ):
     if max_iter is None:
         max_iter = SolverOptions().e_max_iter
@@ -475,6 +497,7 @@ def e_fixed_point_triton(
             *forward_args,
             max_diff_out=max_diff_out,
             out=(E_b, E_s1, E_s2, Ebar),
+            use_receiver_weights=bool(use_receiver_weights),
         )
         E_a, E_b = E_b, E_a
         max_diff = float(max_diff_out.max().item())
@@ -484,6 +507,7 @@ def e_fixed_point_triton(
     _, E_s1, E_s2, Ebar = _launch_e_step_forward_2d(
         E_a,
         *forward_args,
+        use_receiver_weights=bool(use_receiver_weights),
     )
 
     return E_a, E_s1, E_s2, Ebar

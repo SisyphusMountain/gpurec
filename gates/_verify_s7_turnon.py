@@ -1,6 +1,10 @@
 """S7 turn-on gate: the BACKWARD/cache is FINITE + grad_col is CORRECT at a NON-UNIFORM base.
 
-S7 checks that the weighted backward/cache is finite and correct at a non-uniform base.
+S7 derives ``use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)`` and
+threads it through ``vjp_root_to_theta`` (ggn.py, killing the False hardcode at :58),
+``build_point_cache`` (hvp_exact.py), and the HVP-loop kernel calls + uniform_fast hardcode in
+``make_exact_hvp``. Before S7 the entire HVP machinery was hardcoded to the UNIFORM path, so at a
+non-uniform base the E-adjoint blew up to ~1e18 (use_receiver_weights=False in ggn.py:58).
 
 This gate (per the plan, the S7 FD gate) checks ONLY the backward/cache + grad_col -- it does NOT
 run the HVP tangent sweep (that is S3: the tangent forward is still uniform and would NaN here).

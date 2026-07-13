@@ -209,11 +209,11 @@ reduction (6 ms GPU) into `_dts_split_so` — but we are CPU/launch-bound, so it
 
 - **Latent col-gradient inconsistency** (`dts_so.py`, tree part):
   `d_grad_col += contrib_t.sum(0)` accumulates unconditionally, even with
-  the old unweighted path where `p_prime` has no col dependence (true derivative 0).
+  `use_col_weights=False` where `p_prime` has no col dependence (true derivative 0).
   Invisible today because uniform col weights make `cot_col`'s head contribution
   vanish; will silently corrupt H if col weights are activated. Audit the whole SO path
-  against what the old primal kernels did with `grad_col_log_probs`, and re-gate with receiver
-  weights on.
+  against what the primal kernels do with `grad_col_log_probs` under
+  `use_col_weights=False`, and re-gate with col weights on.
 - **All FD gates ran on a G=1 fixture.** Unexercised by any oracle: `_scatter_accum`'s
   G>1 branches, `e_step_so`'s per-g-row parallelism, the known-latent e_step atomic
   race surface. Direction: run the e_so/wave_so/dts_so gates on a (possibly synthetic)
