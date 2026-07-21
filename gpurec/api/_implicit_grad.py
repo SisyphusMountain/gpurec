@@ -5,7 +5,7 @@ import torch
 from gpurec.api.solver_options import SolverOptions
 from gpurec.config import dtype_rel_tol_default as _bicgstab_rel_tol_default, dtype_rel_tol_floor as _bicgstab_rel_tol_floor
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
-from gpurec.core.kernels.pi_forward import compute_dts_forward
+from gpurec.core.kernels.pi_forward import _select_log_split_probs, compute_dts_forward
 from gpurec.core.kernels.wave_backward import (
     compute_active_adjoint_row_mask,
     accumulate_gene_split_event_vjp,
@@ -578,7 +578,7 @@ def implicit_grad_loglik_vjp_wave(
                 log_pD_param,
                 log_pS_param,
                 family_idx=family_idx,
-                log_split_probs=meta.get("log_split_probs"),
+                log_split_probs=_select_log_split_probs(meta, Pi_star_wave.dtype),
                 n_single_split_parents=meta.get("n_eq1"),
                 single_split_parent_rows=meta.get("eq1_reduce_idx"),
                 multiple_split_group_ptr=meta.get("ge2_ptr"),
@@ -722,13 +722,7 @@ def implicit_grad_loglik_vjp_wave(
                 split_left_rows,
                 split_right_rows,
                 meta["reduce_idx"],
-                meta.get(
-                    "log_split_probs",
-                    split_left_rows.new_zeros(
-                        (int(split_left_rows.numel()),),
-                        dtype=Pi_star_wave.dtype,
-                    ),
-                ),
+                _select_log_split_probs(meta, Pi_star_wave.dtype),
                 log_pD_param,
                 log_pS_param,
                 sp_child1,
