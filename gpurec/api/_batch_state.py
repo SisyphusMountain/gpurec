@@ -23,6 +23,8 @@ class _BatchStatic:
     pi_forward_state: PiState | None = None
     warm_E: torch.Tensor | None = None
     warm_v: dict | None = None   # per-wave backward Pi-adjoint warm-start cache (keyed by wave-start ws)
+    warm_v_tangent: dict | None = None  # gpurec.solver.hvp_exact tangent-adjoint warm-start cache,
+    # keyed by {probe_id: {ws: v_k}} -- see SolverOptions.use_hvp_warm_start.
     warm_adjoint_ok: bool = True  # memory gate: False -> ignore GPUREC_WARM_ADJOINT (cache won't fit), run cold
     # Transient per-wave self-loop scratch headroom (bytes) the warm-adjoint fit decision already
     # reserved at build time (``warm_adjoint_fits``'s max-batch scratch). Passed to the forward

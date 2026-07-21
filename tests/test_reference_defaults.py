@@ -75,3 +75,9 @@ def test_map_cv_cv_so_matches_factory():
     ref_solver = GpurecConfig.map_cv_reference().solver
     for k, v in _CV_SO.items():
         assert getattr(ref_solver, k) == v
+
+
+def test_solver_options_use_hvp_warm_start_defaults_true():
+    from gpurec import SolverOptions
+    so = SolverOptions()
+    assert so.use_hvp_warm_start is True

@@ -34,6 +34,12 @@ def build_genewise_model(n_fam=2, dtype=torch.float64, device="cuda", per_family
 
 
 @pytest.mark.gpu
+def test_batch_static_warm_v_tangent_defaults_to_none():
+    m = build_genewise_model()
+    assert m.batch_statics[0].warm_v_tangent is None
+
+
+@pytest.mark.gpu
 def test_genewise_theta_hvp_matches_fd():
     m = build_genewise_model()
     static = m.batch_statics[0]

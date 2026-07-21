@@ -27,6 +27,7 @@ bicgstab_max_iter = 128
 # guard, unused by the GMRES E-adjoint solve) -- omitted, dataclass default kept.
 adjoint_pruning_threshold = 1e-6
 use_adjoint_pruning = true
+use_hvp_warm_start = true
 pibar_side_threshold = 0.0
 e_tangent_tol = 1e-9
 
