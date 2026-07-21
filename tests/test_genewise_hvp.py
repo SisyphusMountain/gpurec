@@ -391,10 +391,15 @@ def test_genewise_point_cache_warm_start_matches_fd_across_repeated_calls():
     _l0, sv0 = forward_solve([static], theta0, rw)
     make_exact_hvp([static], theta0, rw, sv0, tangent_self_iters=128)  # populates static.warm_v
     assert static.warm_v is not None and len(static.warm_v) > 0
+    warm_v_id_after_call1 = id(static.warm_v)
 
     theta1 = theta0 + 0.01
     _l1, sv1 = forward_solve([static], theta1, rw)
     hvp1 = make_exact_hvp([static], theta1, rw, sv1, tangent_self_iters=128)
+    assert id(static.warm_v) == warm_v_id_after_call1, (
+        "static.warm_v was reassigned instead of reused across calls -- the warm-start gate "
+        "must only create a fresh dict when static.warm_v is None, never unconditionally"
+    )
     fd1 = _fd_hessian_hvp(make_value_and_grad([static], rw, theta_shape=(F, 3)),
                           theta1.reshape(-1).contiguous(), None, eps=1e-5)
     for j in range(3):
