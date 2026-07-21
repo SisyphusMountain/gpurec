@@ -10,6 +10,7 @@ from gpurec.core.kernels.pi_forward import (
     _load_event_log_probability,
     _tl_float_dtype,
     _validate_offset_tensor,
+    _validate_residual_tensors,
 )
 
 
@@ -190,6 +191,18 @@ def compute_dts_tangent(
     """Return the DTS JVP; see ``docs/latex/kernel_mathematics.tex``."""
     N = int(split_left_rows.shape[0])
     S = int(Pi.shape[1])
+    _validate_residual_tensors(
+        Pi,
+        Pibar=Pibar,
+        dPi=dPi,
+        dPibar=dPibar,
+        log_pD_vec=log_pD_vec,
+        log_pS_vec=log_pS_vec,
+        dlog_pD_vec=dlog_pD_vec,
+        dlog_pS_vec=dlog_pS_vec,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+        log_split_probs=log_split_probs,
+    )
     d_gene_split_log_likelihood = torch.zeros(
         (W, S), device=Pi.device, dtype=Pi.dtype
     )
@@ -221,8 +234,7 @@ def compute_dts_tangent(
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        # Batch static -> compute dtype at the canonical forward boundary.
-        log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
+        log_split_probs = log_split_probs.reshape(N).contiguous()
     by_species = log_pD_vec.ndim == 2 and int(log_pD_vec.shape[1]) != 1
     row_stride = 0 if int(log_pD_vec.shape[0]) == 1 else int(log_pD_vec.stride(0))
     block_s = min(512, triton.next_power_of_2(S))
