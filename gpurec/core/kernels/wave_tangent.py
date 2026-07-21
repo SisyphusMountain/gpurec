@@ -12,6 +12,7 @@ from gpurec.core.kernels.pi_forward import (
     _prepare_wave_launch,
     _tl_float_dtype,
     _validate_offset_tensor,
+    _validate_residual_tensors,
 )
 
 # Launch tuning for the reconciliation-likelihood JVP. Tuned on the representative 666x80 fixture
@@ -506,6 +507,55 @@ def _prepare_wave_offsets(Pi_in, pi_offset, gene_split_offset, has_splits, W):
     return pi_offset, (gene_split_offset if has_splits else pi_offset)
 
 
+def _validate_wave_tangent_inputs(
+    Pi_in,
+    *,
+    dPi,
+    max_transfer_mat,
+    dmax_transfer,
+    duplication_loss_const,
+    d_duplication_loss_const,
+    Ebar,
+    dEbar,
+    E,
+    dE,
+    speciation_child1_const,
+    d_speciation_child1_const,
+    speciation_child2_const,
+    d_speciation_child2_const,
+    receiver_log_probs,
+    leaf_logp,
+    d_leaf_logp,
+    gene_split_log_likelihood,
+    d_gene_split_log_likelihood,
+    dreceiver_log_probs,
+    dPibar_out,
+):
+    _validate_residual_tensors(
+        Pi_in,
+        dPi=dPi,
+        max_transfer_mat=max_transfer_mat,
+        dmax_transfer=dmax_transfer,
+        duplication_loss_const=duplication_loss_const,
+        d_duplication_loss_const=d_duplication_loss_const,
+        Ebar=Ebar,
+        dEbar=dEbar,
+        E=E,
+        dE=dE,
+        speciation_child1_const=speciation_child1_const,
+        d_speciation_child1_const=d_speciation_child1_const,
+        speciation_child2_const=speciation_child2_const,
+        d_speciation_child2_const=d_speciation_child2_const,
+        receiver_log_probs=receiver_log_probs,
+        leaf_logp=leaf_logp,
+        d_leaf_logp=d_leaf_logp,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+        d_gene_split_log_likelihood=d_gene_split_log_likelihood,
+        dreceiver_log_probs=dreceiver_log_probs,
+        dPibar_out=dPibar_out,
+    )
+
+
 def compute_wave_step_tangent_selfloop(
     Pi_in, dPi_io, ws, W, S, n_iters,
     max_transfer_mat, dmax_transfer,
@@ -536,6 +586,29 @@ def compute_wave_step_tangent_selfloop(
         else dreceiver_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype)
         .reshape(S)
         .contiguous()
+    )
+    _validate_wave_tangent_inputs(
+        Pi_in,
+        dPi=dPi_io,
+        max_transfer_mat=max_transfer_mat,
+        dmax_transfer=dmax_transfer,
+        duplication_loss_const=duplication_loss_const,
+        d_duplication_loss_const=d_duplication_loss_const,
+        Ebar=Ebar,
+        dEbar=dEbar,
+        E=E,
+        dE=dE,
+        speciation_child1_const=speciation_child1_const,
+        d_speciation_child1_const=d_speciation_child1_const,
+        speciation_child2_const=speciation_child2_const,
+        d_speciation_child2_const=d_speciation_child2_const,
+        receiver_log_probs=receiver_log_probs,
+        leaf_logp=leaf_logp,
+        d_leaf_logp=d_leaf_logp,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+        d_gene_split_log_likelihood=d_gene_split_log_likelihood,
+        dreceiver_log_probs=dreceiver_log_probs,
+        dPibar_out=dPibar_out,
     )
     _apply_reconciliation_self_loop_jvp_iterations_kernel[(int(W),)](
         Pi_in, dPi_io,
@@ -600,6 +673,30 @@ def compute_wave_step_tangent(
         else dreceiver_log_probs.to(device=Pi_in.device, dtype=Pi_in.dtype)
         .reshape(S)
         .contiguous()
+    )
+    _validate_residual_tensors(Pi_in, dPi_out=dPi_out)
+    _validate_wave_tangent_inputs(
+        Pi_in,
+        dPi=dPi_in,
+        max_transfer_mat=max_transfer_mat,
+        dmax_transfer=dmax_transfer,
+        duplication_loss_const=duplication_loss_const,
+        d_duplication_loss_const=d_duplication_loss_const,
+        Ebar=Ebar,
+        dEbar=dEbar,
+        E=E,
+        dE=dE,
+        speciation_child1_const=speciation_child1_const,
+        d_speciation_child1_const=d_speciation_child1_const,
+        speciation_child2_const=speciation_child2_const,
+        d_speciation_child2_const=d_speciation_child2_const,
+        receiver_log_probs=receiver_log_probs,
+        leaf_logp=leaf_logp,
+        d_leaf_logp=d_leaf_logp,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+        d_gene_split_log_likelihood=d_gene_split_log_likelihood,
+        dreceiver_log_probs=dreceiver_log_probs,
+        dPibar_out=dPibar_out,
     )
     _update_reconciliation_likelihood_jvp_kernel[(int(W),)](
         Pi_in, dPi_in,
