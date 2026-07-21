@@ -10,6 +10,7 @@ from gpurec.core.kernels.pi_forward import (
     _prepare_wave_launch,
     _tl_float_dtype,
     _validate_offset_tensor,
+    _validate_residual_tensors,
 )
 
 
@@ -65,7 +66,7 @@ def _reconciliation_vjp_directional_derivative_kernel(
     transfer_complement_log_likelihood = tl.load(Pibar_ptr + pi_base + s_offs, mask=mask, other=NEG)
     d_transfer_complement_log_likelihood = tl.load(dPibar_ptr + pi_base + s_offs, mask=mask, other=0.0)
     v = tl.load(v_ptr + out_base + s_offs, mask=mask, other=0.0)
-    receiver_mass_log_scale = tl.load(pibar_row_max_ptr + ws + w).to(DTYPE)
+    receiver_mass_log_scale = tl.load(pibar_row_max_ptr + ws + w)
     receiver_mass_log_scale_safe = tl.where(receiver_mass_log_scale != NEG, receiver_mass_log_scale, tl.zeros((), dtype=DTYPE))
 
     pi_offset = tl.load(Pi_offset_ptr + ws + w)
@@ -491,6 +492,31 @@ def wave_backward_so(
     _, const_row_stride = _prepare_wave_launch(S, duplication_loss_const)
     block_s = int(triton.next_power_of_2(S))
     device, dtype = Pi_star.device, Pi_star.dtype
+    _validate_residual_tensors(
+        Pi_star,
+        dPi=dPi,
+        Pibar_star=Pibar_star,
+        dPibar=dPibar,
+        v=v,
+        pibar_row_max=pibar_row_max,
+        duplication_loss_const=duplication_loss_const,
+        d_duplication_loss_const=d_duplication_loss_const,
+        Ebar=Ebar,
+        dEbar=dEbar,
+        E=E,
+        dE=dE,
+        speciation_child1_const=speciation_child1_const,
+        d_speciation_child1_const=d_speciation_child1_const,
+        speciation_child2_const=speciation_child2_const,
+        d_speciation_child2_const=d_speciation_child2_const,
+        receiver_log_probs=receiver_log_probs,
+        dreceiver_log_probs=dreceiver_log_probs,
+        leaf_logp=leaf_logp,
+        d_leaf_logp=d_leaf_logp,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+        d_gene_split_log_likelihood=d_gene_split_log_likelihood,
+        d_rhs=d_rhs,
+    )
     expected_rows = int(Pi_star.shape[0])
     pi_offset = _validate_offset_tensor(
         "pi_offset",
