@@ -31,6 +31,8 @@ from run_cv import DATASETS, _CV_SO
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.optimization import clamp_log_rate_, project_rate_gradient_, log2_rate_bounds
 from gpurec.core.inference.solver import solve_forward_residual
+from gpurec.solver.value_and_grad import forward_solve
+from gpurec.solver.hvp_exact import make_exact_hvp
 
 DEV = "cuda"; DT = torch.float32
 DATASET = os.environ.get("DATASET", "hogenom")
@@ -44,7 +46,7 @@ ESC_PATIENCE = int(os.environ.get("ESC_PATIENCE", "3"))   # checks with no drop 
 STUCK_MAX = int(os.environ.get("STUCK_MAX", "10"))        # checks with no drop at all -> escalate (fallback)
 NEU_OPT = int(os.environ.get("NEU_OPT", "16")); NEU_CERT = int(os.environ.get("NEU_CERT", "64"))
 MIN_RATE = float(os.environ.get("MIN_RATE", "1e-6")); MAX_RATE = float(os.environ.get("MAX_RATE", "2"))
-TOL = float(os.environ.get("TOL", "1e-3")); FD_EPS = 1e-2; MU = 1e-2; TRUST = 2.0
+TOL = float(os.environ.get("TOL", "1e-3")); MU = 1e-2; TRUST = 2.0
 CONV_TOL = float(os.environ.get("CONV_TOL", "1e-2"))   # per-family loss-plateau threshold (DROP_BY=loss only)
 CHECK = int(os.environ.get("CHECK", "4")); FRAC = float(os.environ.get("FRAC", "0.30"))
 # A family is "converged" (droppable) by its projected GRADIENT |Pg|<TOL (DEFAULT, reliable & free -- g is
@@ -109,6 +111,35 @@ def forward_resid(m, th, pi):                                   # per-family for
             r = solve_forward_residual(static, m._theta_for_static(static, th), rw, pi_iters=pi)
             out[static.family_index_tensor.to(DEV)] = r.to(DEV)
     return out
+
+def _analytic_hessian(m, theta, pi_cur):
+    """Per-family [G,3,3] curvature via 3 broadcast analytic-HVP probes, warm-started via
+    probe_id. Duplicated from gpurec/fit/genewise_fit.py's helper of the same name (not imported
+    -- this script is a standalone reimplementation, no cross-import by design)."""
+    G = theta.shape[0]
+    rw = m.receiver_weights.detach()
+    if len(m.batch_statics) > 1:
+        hvp = make_exact_hvp(m.batch_statics, theta, rw, None, tangent_self_iters=pi_cur)
+        cols = []
+        for j in range(3):
+            u = torch.zeros(G, 3, device=DEV, dtype=DT); u[:, j] = 1.0
+            cols.append(hvp(u.reshape(-1), probe_id=j)[: G * 3].reshape(G, 3))
+        H = torch.stack(cols, dim=-1)
+    else:
+        static = m.batch_statics[0]
+        fam = static.family_index_tensor.to(DEV)
+        theta_b = theta.index_select(0, fam).contiguous()
+        _l, sv = forward_solve(m.batch_statics, theta, rw)
+        hvp = make_exact_hvp(m.batch_statics, theta_b, rw, sv, tangent_self_iters=pi_cur)
+        cols = []
+        for j in range(3):
+            u_b = torch.zeros(G, 3, device=DEV, dtype=DT); u_b[:, j] = 1.0
+            out_b = hvp(u_b.reshape(-1), probe_id=j)[: G * 3].reshape(G, 3)
+            col = torch.zeros(G, 3, device=DEV, dtype=DT)
+            col.index_add_(0, fam, out_b)
+            cols.append(col)
+        H = torch.stack(cols, dim=-1)
+    return 0.5 * (H + H.transpose(1, 2))
 
 carry = None                                                    # families deferred to the NEXT pi tier (REBATCH_RESID)
 for pi_idx, PI_CUR in enumerate(PIS):                            # ascending pi tiers; stiff residual escalates
@@ -199,12 +230,8 @@ for pi_idx, PI_CUR in enumerate(PIS):                            # ascending pi 
                     break
                 loss_ref = lv.clone()
         if it % HESS_EVERY == 0 or Hd is None or Hd.shape[0] != sub.shape[0]:
-            H = torch.zeros(sub.shape[0], 3, 3, device=DEV, dtype=DT)
-            for j in range(3):
-                tp = sub.clone(); tp[:, j] += FD_EPS; _, gp = lg(m, tp)
-                tm = sub.clone(); tm[:, j] -= FD_EPS; _, gm = lg(m, tm)
-                H[:, :, j] = (gp - gm) / (2 * FD_EPS)
-            H = 0.5 * (H + H.transpose(1, 2)); e, V = torch.linalg.eigh(H)
+            H = _analytic_hessian(m, sub, PI_CUR)
+            e, V = torch.linalg.eigh(H)
             Hd = V @ torch.diag_embed(e.clamp(min=MU)) @ V.transpose(1, 2)
         fixed = ((sub >= TH_HI - 1e-6) & (g < 0)) | ((sub <= TH_LO + 1e-6) & (g > 0)); free = (~fixed).float()
         Hred = Hd * free.unsqueeze(1) * free.unsqueeze(2) + torch.diag_embed(1.0 - free)
@@ -220,12 +247,8 @@ opt_s = time.perf_counter() - t0
 tc = time.perf_counter()
 mfull = build(fam_paths, CERT_PI, NEU_CERT)
 _, g = lg(mfull, theta); pg = pgmax(theta, g)
-H = torch.zeros(F_all, 3, 3, device=DEV, dtype=DT)
-for j in range(3):
-    tp = theta.clone(); tp[:, j] += FD_EPS; _, gp = lg(mfull, tp)
-    tm = theta.clone(); tm[:, j] -= FD_EPS; _, gm = lg(mfull, tm)
-    H[:, :, j] = (gp - gm) / (2 * FD_EPS)
-H = 0.5 * (H + H.transpose(1, 2)); lam_min = torch.linalg.eigvalsh(H)[:, 0]
+H = _analytic_hessian(mfull, theta, CERT_PI)
+lam_min = torch.linalg.eigvalsh(H)[:, 0]
 at_lo = (theta <= TH_LO + 1e-6); at_hi = (theta >= TH_HI - 1e-6); bound_active = (at_lo | at_hi).any(dim=1)
 conv = pg < TOL; pd = lam_min > TOL; total = time.perf_counter() - t0
 premature = int((was_dropped & ~conv).sum())
