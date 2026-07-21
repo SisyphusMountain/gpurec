@@ -262,37 +262,6 @@ def test_gene_recon_model_forward_and_backward_on_tiny_example(tmp_path: Path) -
     assert torch.isfinite(model.receiver_weights.grad).all().item()
 
 
-def test_gene_recon_model_backward_accepts_gmres_solver_options(tmp_path: Path) -> None:
-    _require_preprocess_native()
-    device = _require_cuda_triton()
-    species_tree, gene_trees = _write_tiny_example(tmp_path)
-    model = GeneReconModel(
-        species_tree,
-        gene_trees,
-        device=device,
-        family_chunk_size=1,
-        clade_budget=None,
-        batch_packing="sequential",
-        max_wave_size=4,
-        solver_options=SolverOptions(
-            e_max_iter=4,
-            e_tol=1e-4,
-            pi_iters=2,
-            neumann_terms=1,
-            self_loop_solver="gmres",
-        ),
-    )
-
-    loss = model()
-    assert torch.isfinite(loss).item()
-
-    loss.backward()
-    assert model.theta.grad is not None
-    assert torch.isfinite(model.theta.grad).all().item()
-    assert model.receiver_weights.grad is not None
-    assert torch.isfinite(model.receiver_weights.grad).all().item()
-
-
 def test_zero_receiver_logits_match_uniform_receiver_formula(tmp_path: Path) -> None:
     _require_preprocess_native()
     species_tree = tmp_path / "species.nwk"

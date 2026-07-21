@@ -31,7 +31,7 @@ _SP = (f"{_ROOT}/runs/MFP/true_start_ufboot1000/"
        "starting_species_tree.newick")
 # converged fp64 solver (same as _verify_hvp): neither fwd nor bwd truncation-limited
 _SO = dict(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64,
-           self_loop_solver="neumann", bicgstab_max_iter=500, bicgstab_tol=1e-10,
+           bicgstab_max_iter=500, bicgstab_tol=1e-10,
            bicgstab_breakdown_tol=1e-30, adjoint_pruning_threshold=1e-6,
            use_adjoint_pruning=True, pibar_side_threshold=0.0)
 

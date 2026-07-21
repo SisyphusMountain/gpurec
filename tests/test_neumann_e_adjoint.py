@@ -167,7 +167,7 @@ def _build_small_static(*, n_fam=5, dtype=torch.float64):
 
     so = SolverOptions(
         e_max_iter=2000, e_tol=1e-12, pi_iters=128,
-        neumann_terms=64, self_loop_solver="neumann",
+        neumann_terms=64,
         bicgstab_max_iter=200, bicgstab_tol=1e-12, bicgstab_breakdown_tol=1e-30,
         adjoint_pruning_threshold=0.0, use_adjoint_pruning=False, pibar_side_threshold=0.0,
     )

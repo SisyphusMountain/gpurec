@@ -261,7 +261,7 @@ def run_primates_dense(device="cuda", seed=3, tangent_self_iters=64):
         from gpurec.core.inference.solver import receiver_weights_are_uniform
         from gpurec.solver.receiver_curvature import build_joint_hvp
         so = SolverOptions(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64,
-                           self_loop_solver="neumann", bicgstab_max_iter=500, bicgstab_tol=1e-10,
+                           bicgstab_max_iter=500, bicgstab_tol=1e-10,
                            bicgstab_breakdown_tol=1e-30, adjoint_pruning_threshold=1e-6,
                            use_adjoint_pruning=True, pibar_side_threshold=0.0)
         so.validate()

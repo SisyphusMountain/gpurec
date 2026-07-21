@@ -164,7 +164,6 @@ def _implicit_kwargs(model, solved, receiver_weights, origination_weights):
         specieswise=static.specieswise,
         genewise=static.genewise,
         neumann_terms=model.solver_options.neumann_terms,
-        self_loop_solver=model.solver_options.self_loop_solver,
         bicgstab_max_iter=model.solver_options.bicgstab_max_iter,
         bicgstab_tol=model.solver_options.bicgstab_tol,
         bicgstab_breakdown_tol=model.solver_options.bicgstab_breakdown_tol,

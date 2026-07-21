@@ -153,7 +153,7 @@ def test_hvp_path_threads_reserved_scratch_bytes_when_warm_active(monkeypatch, t
     from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp_single
     from gpurec.solver.value_and_grad import forward_solve
 
-    so = SolverOptions(neumann_terms=16, pi_iters=32, self_loop_solver="neumann",
+    so = SolverOptions(neumann_terms=16, pi_iters=32,
                         bicgstab_max_iter=200, bicgstab_tol=1e-8, bicgstab_breakdown_tol=1e-30,
                         adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True,
                         pibar_side_threshold=0.0)

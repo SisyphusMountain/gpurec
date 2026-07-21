@@ -192,96 +192,6 @@ def compute_active_adjoint_row_mask(rhs, threshold, *, use_pruning=True):
     return active_mask
 
 
-@torch.no_grad()
-def _gmres_solve_wave_self_loop(
-    apply_a,
-    rhs: torch.Tensor,
-    *,
-    max_iter: int,
-) -> torch.Tensor:
-    """Solve ``A v = rhs`` for one wave with fixed-iteration unrestarted GMRES."""
-    max_iter = int(max_iter)
-    if max_iter < 1:
-        return torch.zeros_like(rhs)
-
-    b_norm_t = torch.linalg.vector_norm(rhs)
-    if float(b_norm_t.detach().cpu()) == 0.0:
-        return torch.zeros_like(rhs)
-
-    return _gmres_solve_wave_self_loop_fixed_cgs2(
-        apply_a,
-        rhs,
-        max_iter=max_iter,
-        b_norm_t=b_norm_t,
-    )
-
-
-def _gmres_solve_wave_self_loop_fixed_cgs2(
-    apply_a,
-    rhs: torch.Tensor,
-    *,
-    max_iter: int,
-    b_norm_t: torch.Tensor,
-) -> torch.Tensor:
-    """Fixed-m GMRES Arnoldi using batched CGS with one reorthogonalization."""
-    basis = torch.empty(
-        (max_iter + 1, *rhs.shape),
-        dtype=rhs.dtype,
-        device=rhs.device,
-    )
-    basis_2d = basis.reshape(max_iter + 1, -1)
-    basis_2d[0].copy_(rhs.reshape(-1) / b_norm_t)
-    hessenberg = torch.zeros(
-        (max_iter + 1, max_iter),
-        dtype=rhs.dtype,
-        device=rhs.device,
-    )
-    least_squares_rhs = torch.zeros((max_iter + 1,), dtype=rhs.dtype, device=rhs.device)
-    least_squares_rhs[0] = b_norm_t
-    coeff_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
-    coeff2_buf = torch.empty((max_iter,), dtype=rhs.dtype, device=rhs.device)
-    work = torch.empty_like(rhs).reshape(-1)
-    work2 = torch.empty_like(rhs).reshape(-1)
-
-    effective_iter = max_iter
-    # Happy-breakdown tolerance, purely relative to ||rhs|| and the working precision. ``rhs == 0``
-    # is already handled by the caller, so ``b_norm_t > 0`` here and the tol is strictly positive.
-    # (The old ``clamp(b_norm_t, min=1.0)`` floored the scale at a magic 1.0; dropping it only makes
-    # breakdown *less* eager for small ||rhs||, i.e. it runs more Arnoldi steps and is more accurate,
-    # never less -- so it cannot truncate the Krylov space prematurely.)
-    breakdown_tol = torch.finfo(rhs.dtype).eps * b_norm_t
-    for j in range(max_iter):
-        w = apply_a(basis[j]).reshape(-1)
-        q = basis_2d[: j + 1]
-        coeff = coeff_buf[: j + 1]
-        torch.mv(q, w, out=coeff)
-        hessenberg[: j + 1, j].copy_(coeff)
-        torch.addmv(w, q.t(), coeff, beta=1.0, alpha=-1.0, out=work)
-
-        coeff2 = coeff2_buf[: j + 1]
-        torch.mv(q, work, out=coeff2)
-        hessenberg[: j + 1, j].add_(coeff2)
-        torch.addmv(work, q.t(), coeff2, beta=1.0, alpha=-1.0, out=work2)
-
-        next_norm_t = torch.linalg.vector_norm(work2)
-        hessenberg[j + 1, j] = next_norm_t
-        if bool((next_norm_t <= breakdown_tol).detach().cpu()):
-            effective_iter = j + 1
-            break
-        if j + 1 < max_iter:
-            # Reached only when the breakdown check above did NOT fire, i.e.
-            # ``next_norm_t > breakdown_tol > 0`` -- so the divisor is strictly positive and no
-            # floor is needed (the old ``clamp(next_norm_t, min=tiny)`` was a dead no-op here).
-            torch.div(work2, next_norm_t, out=basis_2d[j + 1])
-
-    h_sub = hessenberg[: effective_iter + 1, :effective_iter]
-    rhs_sub = least_squares_rhs[: effective_iter + 1]
-    y = torch.linalg.lstsq(h_sub, rhs_sub).solution
-    out = torch.empty_like(rhs)
-    torch.mv(basis_2d[:effective_iter].t(), y, out=out.reshape(-1))
-    return out
-
-
 def _solve_reconciliation_wave_vjp_2d(
     Pi_star, Pibar_star, ws, W, S,
     gene_split_log_likelihood,
@@ -310,7 +220,6 @@ def _solve_reconciliation_wave_vjp_2d(
     use_receiver_weights=True,
     self_loop_grad_targets=None,
     initial_v=None,
-    self_loop_solver="neumann",
     return_last_increment=False,
     reserved_scratch_bytes=None,
     pi_offset,
@@ -485,63 +394,8 @@ def _solve_reconciliation_wave_vjp_2d(
         **launch_options,
     )
 
-    self_loop_solver = str(self_loop_solver).strip().lower()
     jt_options = {"num_warps": 2}
-    if self_loop_solver == "gmres":
-        if initial_v is not None:
-            raise ValueError("GMRES self-loop solve does not support initial_v")
-        gmres_a_buf = torch.empty_like(v_k)
-        gmres_rhs = rhs
-        gmres_active_mask = active_mask
-        if active_mask is not None:
-            gmres_active_mask = active_mask.to(device=device, dtype=torch.bool).contiguous()
-            gmres_rhs = rhs * gmres_active_mask[:, None].to(dtype=dtype)
-
-        def _apply_a(term_in: torch.Tensor) -> torch.Tensor:
-            _apply_reconciliation_self_loop_transpose_kernel[(n_row_blocks,)](
-                term_in,
-                gmres_a_buf,
-                rhs,
-                gmres_active_mask if gmres_active_mask is not None else rhs,
-                self_loop_diagonal,
-                donor_adjoint_coefficient,
-                receiver_mass,
-                speciation_child1_probability,
-                speciation_child2_probability,
-                species_child1,
-                species_child2,
-                species_parent,
-                compact_level_ptr,
-                compact_level_parents,
-                compact_level_child1,
-                compact_level_child2,
-                subtree_donor_adjoint,
-                v_k,
-                W,
-                S,
-                block_w,
-                block_s,
-                block_nodes,
-                compact_level_ptr.numel() - 1,
-                USE_ACTIVE_MASK=bool(gmres_active_mask is not None),
-                SKIP_INACTIVE_SCRATCH_ZERO=False,
-                FIXED_POINT_UPDATE=False,
-                DTYPE=_tl_float_dtype(dtype),
-                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-                OUTPUT_A=True,
-                ACCUMULATE_V=False,
-                **jt_options,
-            )
-            return gmres_a_buf
-
-        v_k.copy_(
-            _gmres_solve_wave_self_loop(
-                _apply_a,
-                gmres_rhs,
-                max_iter=int(neumann_terms),
-            )
-        )
-    elif self_loop_solver == "neumann" and initial_v is not None:
+    if initial_v is not None:
         if tuple(initial_v.shape) != scratch_shape:
             raise ValueError(
                 f"initial_v shape {tuple(initial_v.shape)} does not match "
@@ -583,7 +437,7 @@ def _solve_reconciliation_wave_vjp_2d(
                 ACCUMULATE_V=True,
                 **jt_options,
             )
-    elif self_loop_solver == "neumann":
+    else:
         for n in range(int(neumann_terms)):
             term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
             term_out = spec_buf if n % 2 == 0 else term_buf
@@ -621,15 +475,12 @@ def _solve_reconciliation_wave_vjp_2d(
                 ACCUMULATE_V=True,
                 **jt_options,
             )
-    else:
-        raise ValueError(f"unsupported self-loop solver {self_loop_solver!r}")
 
     # Per-row relative size of the last Neumann increment = validated stiffness predictor.
     # Computed before the param-store kernel runs (which may reuse scratch buffers).
     last_increment_relres = None
     if (
         return_last_increment
-        and self_loop_solver == "neumann"
         and initial_v is None
         and int(neumann_terms) > 0
     ):
@@ -790,7 +641,6 @@ def solve_reconciliation_wave_vjp(
     use_receiver_weights=True,
     self_loop_grad_targets=None,
     initial_v=None,
-    self_loop_solver="neumann",
     return_last_increment=False,
     reserved_scratch_bytes=None,
     *,
@@ -893,7 +743,6 @@ def solve_reconciliation_wave_vjp(
         use_receiver_weights=use_receiver_weights,
         self_loop_grad_targets=self_loop_grad_targets,
         initial_v=initial_v,
-        self_loop_solver=self_loop_solver,
         return_last_increment=return_last_increment,
         reserved_scratch_bytes=reserved_scratch_bytes,
         pi_offset=pi_offset,

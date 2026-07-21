@@ -63,7 +63,7 @@ ARCHAEA_ROOT = os.environ.get("GPUREC_ARCHAEA_ROOT", f"{DATA}/alerax_archaea_dav
 _SP_TREE = f"{ARCHAEA_ROOT}/species_reference/reference_species_tree.newick"
 # converged solver (matches the CV / bounded-theta runs)
 _CV_SO = dict(e_max_iter=2000, e_tol=1e-8, pi_iters=64, neumann_terms=64,
-              self_loop_solver="neumann", bicgstab_max_iter=500, bicgstab_tol=1e-7,
+              bicgstab_max_iter=500, bicgstab_tol=1e-7,
               bicgstab_breakdown_tol=1e-30, adjoint_pruning_threshold=1e-6,
               use_adjoint_pruning=True, pibar_side_threshold=0.0)
 

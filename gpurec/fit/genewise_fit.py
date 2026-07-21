@@ -47,7 +47,7 @@ _GENEWISE_RATE_BOUNDS = RateBounds.genewise()
 _BASE_SOLVER = {
     k: getattr(GpurecConfig.genewise_reference().solver, k)
     for k in (
-        "e_max_iter", "e_tol", "self_loop_solver",
+        "e_max_iter", "e_tol",
         "bicgstab_max_iter", "bicgstab_tol", "bicgstab_breakdown_tol",
         "adjoint_pruning_threshold", "use_adjoint_pruning", "pibar_side_threshold",
     )

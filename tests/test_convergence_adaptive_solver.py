@@ -1,12 +1,10 @@
-"""Tests for per-family solver-convergence detection + stiffness-aware rebatching.
+"""Tests for per-family solver-convergence diagnostics + explicit rebatching.
 
 Covers:
   - explicit ``family_group_assignments`` rebatching (Rust + Python round-trip),
   - per-batch ``SolverOptions`` assignment without clobbering the global options,
-  - ``classify_families`` tier logic (incl. the severe GMRES tier),
   - forward Pi residual diagnostic (converged at high ``pi_iters``, large at low),
-  - backward Neumann relres diagnostic (monotone in ``neumann_terms``),
-  - the ``adapt_solver_to_convergence`` round-trip (detect -> rebatch -> per-tier options).
+  - backward Neumann relres diagnostic (monotone in ``neumann_terms``).
 """
 
 from pathlib import Path
@@ -148,15 +146,14 @@ def test_set_batch_solver_options_is_per_batch_and_keeps_global(tmp_path: Path) 
     model = _build(tmp_path, 6, device="cpu")
     model.replan_batches(family_group_assignments=[0, 1, 2, 0, 1, 2])
     opts = {
-        0: SolverOptions(pi_iters=16, neumann_terms=4, self_loop_solver="neumann"),
-        1: SolverOptions(pi_iters=32, neumann_terms=20, self_loop_solver="neumann"),
-        2: SolverOptions(pi_iters=64, neumann_terms=32, self_loop_solver="gmres"),
+        0: SolverOptions(pi_iters=16, neumann_terms=4),
+        1: SolverOptions(pi_iters=32, neumann_terms=20),
+        2: SolverOptions(pi_iters=64, neumann_terms=32),
     }
     model.set_batch_solver_options(opts)
     for batch, static in zip(model.family_batches, model.batch_statics):
         label = [0, 1, 2, 0, 1, 2][batch[0]]
         assert static.solver_options.neumann_terms == opts[label].neumann_terms
-        assert static.solver_options.self_loop_solver == opts[label].self_loop_solver
     # distinct objects (no aliasing) and global options untouched
     assert len({id(s.solver_options) for s in model.batch_statics}) == len(model.batch_statics)
     assert model.solver_options.neumann_terms == 16
@@ -167,18 +164,6 @@ def test_set_batch_solver_options_requires_grouping(tmp_path: Path) -> None:
     model = _build(tmp_path, 3, device="cpu")
     with pytest.raises(ValueError):
         model.set_batch_solver_options({0: SolverOptions()})
-
-
-def test_classify_families_three_tiers(tmp_path: Path) -> None:
-    _require_native()
-    model = _build(tmp_path, 1, device="cpu")
-    report = {
-        "forward_resid": torch.tensor([0.0, 0.0, 2e-3, 0.0]),
-        "backward_relres": torch.tensor([0.0, 2e-3, 0.0, float("inf")]),
-        "vk_magnitude": torch.tensor([1.0, 1.0, 1.0, 2e4]),
-    }
-    labels = model.classify_families(report)
-    assert labels.tolist() == [0, 1, 1, 2]  # converged / mild / mild / severe(GMRES)
 
 
 def test_forward_residual_converges_with_pi_iters(tmp_path: Path) -> None:
@@ -212,23 +197,3 @@ def test_backward_relres_monotone_in_neumann_terms(tmp_path: Path) -> None:
         medians.append(float(finite.median()))
     # more Neumann terms -> smaller residual
     assert medians[0] > medians[1] > medians[2]
-
-
-def test_adapt_solver_to_convergence_roundtrip(tmp_path: Path) -> None:
-    device = _require_cuda()
-    _require_native()
-    model = _build_archaea(16, device=device, neumann_terms=16)
-    _set_moderate_theta(model)
-    # Force under-convergence by measuring at neumann_terms=2 -> mild tier.
-    result = model.adapt_solver_to_convergence(pi_iters_high=400, neumann_terms=2)
-    assert set(result["counts"]) <= {0, 1, 2}
-    assert result["counts"].get(1, 0) > 0  # at nt=2 the real families are under-converged
-    # global options untouched; warm starts cleared after rebatch
-    assert model.solver_options.neumann_terms == 16
-    assert all(static.warm_E is None for static in model.batch_statics)
-    # mixed per-batch options still drive a working forward+backward
-    model.theta.requires_grad_(True)
-    loss = model()
-    loss.backward()
-    assert torch.isfinite(loss)
-    assert torch.isfinite(model.theta.grad).all()

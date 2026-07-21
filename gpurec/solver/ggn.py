@@ -63,7 +63,6 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         uniform_pibar_row_max=sv["pibar_row_max"], family_idx=static.rate_family_idx,
         specieswise=static.specieswise, genewise=static.genewise,
         neumann_terms=int(so.neumann_terms if neumann_terms is None else neumann_terms),
-        self_loop_solver=so.self_loop_solver,
         bicgstab_max_iter=so.bicgstab_max_iter,
         bicgstab_tol=(so.bicgstab_tol if bicgstab_tol is None else bicgstab_tol),
         bicgstab_breakdown_tol=so.bicgstab_breakdown_tol,

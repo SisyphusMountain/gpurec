@@ -34,7 +34,6 @@ def test_genewise_reference_factory_reproduces_recipe():
     solver = cfg.solver
     assert solver.e_max_iter == 128
     assert solver.e_tol == 1e-8
-    assert solver.self_loop_solver == "neumann"
     assert solver.bicgstab_max_iter == 128
     assert solver.bicgstab_tol == 1e-7
     assert solver.bicgstab_breakdown_tol == 1e-30
@@ -50,7 +49,6 @@ def test_map_cv_reference_factory_reproduces_recipe():
     assert solver.neumann_terms == 64
     assert solver.e_max_iter == 128
     assert solver.e_tol == 1e-8
-    assert solver.self_loop_solver == "neumann"
     assert solver.bicgstab_max_iter == 128
     assert solver.bicgstab_tol is None
     assert solver.bicgstab_breakdown_tol is None

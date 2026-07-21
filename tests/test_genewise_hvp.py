@@ -15,7 +15,7 @@ from gpurec.fit.newton_cg import _fd_hessian_hvp
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 
 _D = "tests/data/alerax/test_trees_200"
-_SO = dict(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64, self_loop_solver="neumann",
+_SO = dict(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64,
            bicgstab_max_iter=500, bicgstab_tol=1e-10, bicgstab_breakdown_tol=1e-30,
            adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0)
 

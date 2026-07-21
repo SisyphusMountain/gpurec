@@ -233,10 +233,8 @@ def _gmres(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
     E-adjoint (the case that trips BiCGSTAB's biorthogonality guard and makes it
     raise a spurious "singular/ill-conditioned" error) is solved robustly. The
     Arnoldi step uses batched classical Gram-Schmidt with one reorthogonalization
-    (CGS2) -- one ``mv`` per step, matching the proven wave self-loop GMRES
-    (:func:`gpurec.core.kernels.wave_backward._gmres_solve_wave_self_loop_fixed_cgs2`)
-    -- and the small Hessenberg least-squares gives the true minimal residual for
-    early stopping.
+    (CGS2) -- one ``mv`` per step -- and the small Hessenberg least-squares gives
+    the true minimal residual for early stopping.
 
     ``tol`` is a RELATIVE residual target (``||r|| / max(||b||, 1)``); ``None`` ->
     the dtype-matched default (:func:`_bicgstab_rel_tol_default`, fp32 1e-6 /
@@ -419,7 +417,6 @@ def implicit_grad_loglik_vjp_wave(
     specieswise: bool = False,
     genewise: bool = False,
     neumann_terms: int | None = None,
-    self_loop_solver: str = "neumann",
     bicgstab_max_iter: int | None = None,
     bicgstab_tol=None,
     bicgstab_breakdown_tol=None,
@@ -444,9 +441,6 @@ def implicit_grad_loglik_vjp_wave(
     neumann_terms = int(neumann_terms)
     if neumann_terms < 0:
         raise ValueError("neumann_terms must be non-negative")
-    self_loop_solver = str(self_loop_solver).strip().lower()
-    if self_loop_solver not in ("neumann", "gmres"):
-        raise ValueError("self_loop_solver must be one of: neumann, gmres")
     if bicgstab_max_iter is None:
         bicgstab_max_iter = SolverOptions().bicgstab_max_iter
     if e_adjoint_solver is None:
@@ -630,7 +624,6 @@ def implicit_grad_loglik_vjp_wave(
             compact_level_child2=compact_level_child2,
             grad_receiver_log_probs=grad_receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
-            self_loop_solver=self_loop_solver,
             return_last_increment=collect_backward_relres,
             initial_v=init_v,
             reserved_scratch_bytes=reserved_scratch_bytes,
