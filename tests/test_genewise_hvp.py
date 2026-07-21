@@ -377,6 +377,53 @@ def test_genewise_joint_newton_multibatch():
 
 
 @pytest.mark.gpu
+def test_genewise_point_cache_warm_start_matches_fd_across_repeated_calls():
+    """Two make_exact_hvp calls at nearby theta on the same static: the second call's
+    point-cache backward pass reuses static.warm_v (populated by the first call). The
+    result must still match FD within the existing correctness tolerance."""
+    m = build_genewise_model()
+    static = m.batch_statics[0]
+    F = len(m.families)
+    S = int(m.species_helpers["S"])
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+
+    theta0 = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    _l0, sv0 = forward_solve([static], theta0, rw)
+    make_exact_hvp([static], theta0, rw, sv0, tangent_self_iters=128)  # populates static.warm_v
+    assert static.warm_v is not None and len(static.warm_v) > 0
+
+    theta1 = theta0 + 0.01
+    _l1, sv1 = forward_solve([static], theta1, rw)
+    hvp1 = make_exact_hvp([static], theta1, rw, sv1, tangent_self_iters=128)
+    fd1 = _fd_hessian_hvp(make_value_and_grad([static], rw, theta_shape=(F, 3)),
+                          theta1.reshape(-1).contiguous(), None, eps=1e-5)
+    for j in range(3):
+        u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, j] = 1.0
+        u = u.reshape(-1)
+        Ha, Hf = hvp1(u).double(), fd1(u).double()
+        rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
+        assert torch.isfinite(Ha).all() and rel < 5e-4, f"broadcast e_{j}: rel={rel:.2e}"
+
+
+@pytest.mark.gpu
+def test_genewise_point_cache_warm_start_disabled_by_config():
+    """use_hvp_warm_start=False -> static.warm_v is never touched."""
+    so = SolverOptions(**_SO)
+    so.use_hvp_warm_start = False
+    so.validate()
+    m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 2, mode="genewise",
+                       device="cuda", dtype=torch.float64, solver_options=so)
+    static = m.batch_statics[0]
+    F = len(m.families)
+    S = int(m.species_helpers["S"])
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    _l, sv = forward_solve([static], theta, rw)
+    make_exact_hvp([static], theta, rw, sv, tangent_self_iters=128)
+    assert static.warm_v is None
+
+
+@pytest.mark.gpu
 def test_stream_batches_multibatch_origination_grad():
     # Multi-batch per-family origination grad: stream_batches must scatter each batch-local [G_b,S]
     # origination grad into the full [G,S] accumulator (index_add_), not shape-mismatch on .add_().

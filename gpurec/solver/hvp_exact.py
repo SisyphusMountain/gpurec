@@ -272,9 +272,16 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
         origination_probs = torch.exp2(origination_log_probs)
 
     if cache is None:
+        if getattr(static, "warm_adjoint_ok", True) and static.solver_options.use_hvp_warm_start:
+            if static.warm_v is None:
+                static.warm_v = {}
+            _warm_v = static.warm_v
+        else:
+            _warm_v = None
         _, _, cache = build_point_cache(static, theta, col_weights, sv,
                                         origination_log_probs=origination_log_probs,
-                                        origination_probs=origination_probs)
+                                        origination_probs=origination_probs,
+                                        warm_v=_warm_v)
     acc = cache["accum"]
     wE = cache["e_side"]["wE"]
     reserved_scratch_bytes = _warm_reserved_scratch_bytes(static)
