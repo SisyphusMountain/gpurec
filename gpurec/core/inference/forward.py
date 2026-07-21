@@ -5,6 +5,7 @@ from ..kernels.pi_forward import (
     compute_dts_forward,
     compute_leaf_initial_wave_step,
     compute_wave_step,
+    _select_log_split_probs,
 )
 from ..parameters.extract_parameters import as_family_param, as_family_species
 
@@ -92,7 +93,7 @@ def pi_wave_forward(
                 log_p_d_param,
                 log_p_s_param,
                 family_idx=family_idx,
-                log_split_probs=meta.get("log_split_probs"),
+                log_split_probs=_select_log_split_probs(meta, pi.dtype),
                 n_single_split_parents=meta.get("n_eq1"),
                 single_split_parent_rows=meta.get("eq1_reduce_idx"),
                 multiple_split_group_ptr=meta.get("ge2_ptr"),
