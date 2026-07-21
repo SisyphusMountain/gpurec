@@ -418,7 +418,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     )
     _head_grad_ctx.__exit__(None, None, None)
 
-    def hvp(u_vec):
+    def hvp(u_vec, probe_id=None):
         # Joint split: u = [u_theta (theta_numel); u_alpha (S)]. The theta-milestone harness still
         # passes a length-(theta_numel) vector (u_alpha implicitly 0); accept both. theta_shape is
         # explicit (do NOT assume [S,3]).
@@ -517,6 +517,18 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 if _wi % free_cache_every == 0:
                     free_cuda_cache_if_tight()
                 ws, W = wave["ws"], wave["W"]
+                _tangent_warm = (
+                    probe_id is not None
+                    and getattr(static, "warm_adjoint_ok", True)
+                    and static.solver_options.use_hvp_warm_start
+                )
+                _probe_cache = None
+                _init_v = None
+                if _tangent_warm:
+                    if static.warm_v_tangent is None:
+                        static.warm_v_tangent = {}
+                    _probe_cache = static.warm_v_tangent.setdefault(probe_id, {})
+                    _init_v = _probe_cache.get(ws)
                 meta = wave["meta"]
                 v_k = wave["v"]
                 gene_split_log_likelihood = wave["dts_r"]
@@ -612,12 +624,23 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     compact_level_child1=sh["compact_level_child1"],
                     compact_level_child2=sh["compact_level_child2"],
                     grad_receiver_log_probs=d_grad_receiver_log_probs, use_receiver_weights=use_receiver_weights,
+                    initial_v=_init_v,
                     return_last_increment=False,
                     reserved_scratch_bytes=reserved_scratch_bytes,
                     pi_offset=pi_offset,
                     pibar_offset=pibar_offset,
                     gene_split_offset=gene_split_offset,
                 )
+                if _tangent_warm:
+                    _mask = wave.get("active_mask")
+                    if _mask is not None:
+                        _row_active = _mask.reshape(_mask.shape[0], -1).ne(0).any(dim=1)
+                        _cached_v = torch.where(
+                            _row_active.unsqueeze(-1), dv, torch.zeros((), dtype=dv.dtype, device=dv.device)
+                        )
+                    else:
+                        _cached_v = dv
+                    _probe_cache[ws] = _cached_v.detach()
                 duplication_loss_event_vjp = (
                     contraction_duplication_loss_vjp + linear_duplication_loss_vjp
                 )

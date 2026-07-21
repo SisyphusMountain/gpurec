@@ -444,3 +444,92 @@ def test_stream_batches_multibatch_origination_grad():
         m.batch_statics, th, rw, om, genewise=True, need_grad=True, need_origination_grad=True)
     assert tuple(g_om.shape) == (G, S)
     assert torch.isfinite(g_om).all()
+
+
+@pytest.mark.gpu
+def test_genewise_tangent_warm_start_matches_fd():
+    """probe_id passed on two nearby-theta calls: warm-started tangent-adjoint result
+    still matches FD within the existing correctness tolerance, AND static.warm_v_tangent's
+    per-probe dicts are genuinely reused (not clobbered) across repeated hvp() calls."""
+    m = build_genewise_model()
+    static = m.batch_statics[0]
+    F = len(m.families)
+    S = int(m.species_helpers["S"])
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+
+    theta0 = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    _l0, sv0 = forward_solve([static], theta0, rw)
+    hvp0 = make_exact_hvp([static], theta0, rw, sv0, tangent_self_iters=128)
+    for j in range(3):
+        u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, j] = 1.0
+        hvp0(u.reshape(-1), probe_id=j)
+    assert static.warm_v_tangent is not None
+    assert set(static.warm_v_tangent.keys()) == {0, 1, 2}
+    probe_cache_ids_after_call1 = {j: id(static.warm_v_tangent[j]) for j in range(3)}
+
+    theta1 = theta0 + 0.01
+    _l1, sv1 = forward_solve([static], theta1, rw)
+    hvp1 = make_exact_hvp([static], theta1, rw, sv1, tangent_self_iters=128)
+    fd1 = _fd_hessian_hvp(make_value_and_grad([static], rw, theta_shape=(F, 3)),
+                          theta1.reshape(-1).contiguous(), None, eps=1e-5)
+    for j in range(3):
+        u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, j] = 1.0
+        u = u.reshape(-1)
+        Ha, Hf = hvp1(u, probe_id=j).double(), fd1(u).double()
+        rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
+        assert torch.isfinite(Ha).all() and rel < 5e-4, f"warm probe_id={j}: rel={rel:.2e}"
+    for j in range(3):
+        assert id(static.warm_v_tangent[j]) == probe_cache_ids_after_call1[j], (
+            f"static.warm_v_tangent[{j}] was reassigned instead of reused across calls"
+        )
+
+
+@pytest.mark.gpu
+def test_genewise_tangent_warm_start_probes_do_not_cross_contaminate():
+    m = build_genewise_model()
+    static = m.batch_statics[0]
+    F = len(m.families)
+    S = int(m.species_helpers["S"])
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    _l, sv = forward_solve([static], theta, rw)
+    hvp = make_exact_hvp([static], theta, rw, sv, tangent_self_iters=128)
+    u0 = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u0[:, 0] = 1.0
+    u1 = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u1[:, 1] = 1.0
+    hvp(u0.reshape(-1), probe_id=0)
+    hvp(u1.reshape(-1), probe_id=1)
+    assert static.warm_v_tangent[0].keys() == static.warm_v_tangent[1].keys()
+    n_checked = 0
+    for ws in static.warm_v_tangent[0]:
+        v0 = static.warm_v_tangent[0][ws]
+        v1 = static.warm_v_tangent[1][ws]
+        # This fixture's adjoint_pruning_threshold=1e-6 (see _SO) marks several of this
+        # 2-family tree's internal-node waves entirely inactive (confirmed via each wave's
+        # pre-existing cache["waves"][i]["active_mask"], built once by build_point_cache --
+        # independent of probe_id); the NaN-safe masking then legitimately zeros v_k for
+        # BOTH probes there (nothing to contaminate). Restrict the distinctness check to
+        # waves where at least one probe's cached v is non-negligible.
+        if max(float(v0.abs().max()), float(v1.abs().max())) < 1e-8:
+            continue
+        n_checked += 1
+        assert not torch.allclose(v0, v1), "different probe directions must cache distinct v_k"
+    assert n_checked > 0, "no non-trivial wave found to check cross-contamination"
+
+
+@pytest.mark.gpu
+def test_genewise_tangent_warm_start_disabled_by_config():
+    so = SolverOptions(**_SO)
+    so.use_hvp_warm_start = False
+    so.validate()
+    m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 2, mode="genewise",
+                       device="cuda", dtype=torch.float64, solver_options=so)
+    static = m.batch_statics[0]
+    F = len(m.families)
+    S = int(m.species_helpers["S"])
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    _l, sv = forward_solve([static], theta, rw)
+    hvp = make_exact_hvp([static], theta, rw, sv, tangent_self_iters=128)
+    u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, 0] = 1.0
+    hvp(u.reshape(-1), probe_id=0)
+    assert static.warm_v_tangent is None or 0 not in static.warm_v_tangent
