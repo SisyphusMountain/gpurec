@@ -555,3 +555,53 @@ def test_fit_genewise_converges_on_small_fixture():
     assert res["converged"] == 4
     assert res["pg_max"] < 1e-2
     assert math.isfinite(res["loss_bits"])
+
+
+@pytest.mark.gpu
+def test_fit_genewise_converges_with_multibatch_analytic_hvp():
+    """Same correctness check as test_fit_genewise_converges_on_small_fixture, but forces
+    len(m.batch_statics) > 1 via a small clade_budget so the analytic-HVP multi-batch branch
+    (the streaming gather/scatter path -- what actually runs in production at real scale) gets
+    automated coverage, not just the single-batch branch. All families use the SAME gene tree,
+    so if the multi-batch gather/scatter ever shuffles a family's result to the wrong row, the
+    per-family thetas would stop matching each other -- a robust, cheap way to catch attribution
+    bugs without needing distinct per-family ground truth."""
+    from gpurec.fit.genewise_fit import fit_genewise
+    from gpurec import GeneReconModel, SolverOptions
+
+    n_fam = 6
+    clade_budget = 500  # starting point -- verify this actually forces >1 batch for this fixture,
+    # adjust if not (see Step 2 of the dispatch instructions)
+
+    # Confirm the setup genuinely exercises the multi-batch branch before trusting the fit result.
+    probe = GeneReconModel(
+        f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * n_fam, mode="genewise",
+        device="cuda", dtype=torch.float32,
+        solver_options=SolverOptions(), clade_budget=clade_budget,
+    )
+    assert len(probe.batch_statics) > 1, (
+        f"clade_budget={clade_budget} did not force multiple batches for {n_fam} families -- "
+        "lower it until this assertion passes, then use the same value in the fit_genewise call below"
+    )
+    del probe
+    torch.cuda.empty_cache()
+
+    res = fit_genewise(
+        f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * n_fam,
+        device="cuda", dtype=torch.float32,
+        adam_steps=5, pi_tiers=(16,), neu_opt=16, neu_cert=16,
+        clade_budget=clade_budget, max_iter=60, certify=True, verbose=False,
+    )
+    assert res["n_families"] == n_fam
+    assert torch.isfinite(res["theta"]).all()
+    assert res["converged"] == n_fam
+    assert res["pg_max"] < 1e-2
+    assert math.isfinite(res["loss_bits"])
+    # All families are identical gene trees -> their converged thetas must agree with each other.
+    # If the multi-batch gather/scatter ever misattributes a family's result to the wrong row,
+    # this is what would catch it.
+    theta_mean = res["theta"].mean(dim=0, keepdim=True)
+    assert torch.allclose(res["theta"], theta_mean.expand_as(res["theta"]), atol=1e-2), (
+        f"per-family thetas disagree despite identical gene trees -- possible multi-batch "
+        f"gather/scatter attribution bug: {res['theta']}"
+    )
