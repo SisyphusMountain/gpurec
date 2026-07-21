@@ -277,7 +277,7 @@ def test_centered_dts_so_matches_reconstructed_absolute(
         "sr": sr,
         "reduce_idx": torch.zeros((fanout,), device=device, dtype=torch.long),
         "log_split_probs": torch.tensor(
-            [-0.4, -1.1][:fanout], device=device, dtype=torch.float64
+            [-0.4, -1.1][:fanout], device=device, dtype=dtype
         ),
         "start": ws,
     }

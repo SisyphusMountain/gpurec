@@ -43,11 +43,11 @@ def test_fidelity_float64_reaches_machine_precision(fixture):
 
     The CCP split log-probs (``log_split_probs``) and the transfer row-max
     (``unnorm_row_max``) are computed in float64 by the Rust preprocessor. If either is
-    stored truncated to float32 in the batch (batching.py) and not cast back to the compute
-    dtype at the kernel boundary, float64 reconciliation floors at ~1e-5 nats instead of
-    reaching f64 round-off. This guards that regression: with both statics kept float64 and
-    cast to the compute dtype (extract_parameters_uniform / the DTS launchers), every fixture
-    lands within 1e-8 nats of AleRax_fixed (observed <=3e-12). The looser 1e-3 gate above
+    quantized through float32 before an fp64 tensor is created, float64 reconciliation floors
+    at ~1e-5 nats instead of reaching f64 round-off. This guards that regression: Rust retains
+    f64 values through serialization, then batching materializes each tensor directly in its
+    owning model or accumulator dtype. Every fixture lands within 1e-8 nats of AleRax_fixed
+    (observed <=3e-12). The looser 1e-3 gate above
     would not catch a re-truncation; this one will.
     """
     import torch

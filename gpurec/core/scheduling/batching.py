@@ -23,10 +23,28 @@ def _resolve_accumulator_dtype(accumulator_dtype: torch.dtype | str | None) -> t
     return accumulator_dtype
 
 
+def _resolve_model_dtype(model_dtype: torch.dtype | str | None) -> torch.dtype:
+    """Resolve the dense-kernel dtype for standalone scheduling helpers."""
+    if model_dtype is None:
+        return PrecisionOptions().model_torch_dtype
+    if isinstance(model_dtype, str):
+        return resolve_torch_dtype(model_dtype)
+    torch_dtype_name(model_dtype)
+    return model_dtype
+
+
 def _normalize_batch_packing(batch_packing: str, clade_budget: int | None) -> str:
     if clade_budget is None and batch_packing in {"depth_first_fit", "clade_first_fit"}:
         return "sequential"
     return batch_packing
+
+
+def _materialize_split_probabilities(values, *, device) -> dict[torch.dtype, torch.Tensor]:
+    """Create both supported dense-kernel variants directly from f64 payload values."""
+    return {
+        dtype: torch.tensor(values, dtype=dtype, device=device).contiguous()
+        for dtype in (torch.float32, torch.float64)
+    }
 
 
 def _load_native_module():
@@ -90,9 +108,11 @@ def build_wave_layout_from_plan(
     payload,
     *,
     device: torch.device | str,
+    model_dtype: torch.dtype | str | None = None,
     accumulator_dtype: torch.dtype | str | None = None,
 ):
-    accumulator_dtype = _resolve_accumulator_dtype(accumulator_dtype)
+    model_dtype = _resolve_model_dtype(model_dtype)
+    _resolve_accumulator_dtype(accumulator_dtype)
     plan = payload["plan"]
     logp = [float(value) for value in payload["log_split_probs_sorted"]]
     index_dtype = torch.int32
@@ -109,16 +129,18 @@ def build_wave_layout_from_plan(
         }
         if raw_meta.get("has_splits"):
             split_indices = [int(idx) for idx in raw_meta.get("split_indices", [])]
+            split_values = [logp[idx] for idx in split_indices]
+            split_probabilities = _materialize_split_probabilities(
+                split_values, device=device
+            )
             meta["sl"] = torch.tensor(raw_meta["sl"], dtype=index_dtype, device=device).contiguous()
             meta["sr"] = torch.tensor(raw_meta["sr"], dtype=index_dtype, device=device).contiguous()
             meta["reduce_idx"] = torch.tensor(raw_meta["reduce_idx"], dtype=index_dtype, device=device).contiguous()
-            meta["log_split_probs"] = torch.tensor(
-                [logp[idx] for idx in split_indices],
-                # CCP split log-probabilities feed log-sum-exp reductions, so retain them at
-                # the configured accumulation precision until a kernel explicitly casts them.
-                dtype=accumulator_dtype,
-                device=device,
-            ).contiguous()
+            # Rust computes and serializes these values as f64. Keep prebuilt
+            # variants for both supported model dtypes so ``model.to(...)`` and
+            # explicit runtime parameters never widen an fp32-quantized tensor.
+            meta["_log_split_probs_by_dtype"] = split_probabilities
+            meta["log_split_probs"] = split_probabilities[model_dtype]
             meta["n_eq1"] = int(raw_meta.get("n_eq1", 0))
             if raw_meta.get("eq1_reduce_idx"):
                 meta["eq1_reduce_idx"] = torch.tensor(
@@ -209,9 +231,11 @@ def build_wave_layout(
     *,
     device: torch.device | str,
     max_wave_size: int = 8192,
+    model_dtype: torch.dtype | str | None = None,
     accumulator_dtype: torch.dtype | str | None = None,
 ):
-    accumulator_dtype = _resolve_accumulator_dtype(accumulator_dtype)
+    model_dtype = _resolve_model_dtype(model_dtype)
+    _resolve_accumulator_dtype(accumulator_dtype)
     offsets, levels_by_family, leaf_pairs = [], [], []
     split_parents_global, lefts_global, rights_global, logp_global = [], [], [], []
     root_ids_global = []
@@ -284,8 +308,9 @@ def build_wave_layout(
     lefts_t = torch.tensor(lefts_new, dtype=index_dtype, device=device)
     rights_t = torch.tensor(rights_new, dtype=index_dtype, device=device)
     parents_t = torch.tensor(parents_new, dtype=index_dtype, device=device)
-    # Keep CCP split log-probabilities at the configured accumulation precision.
-    logp_t = torch.tensor(logp_global, dtype=accumulator_dtype, device=device)
+    # ``logp_global`` contains Python doubles decoded from Rust f64 values. Build
+    # both supported kernel inputs directly, without an intermediate cast.
+    logp_by_dtype = _materialize_split_probabilities(logp_global, device=device)
     wave_metas = []
     order_head = 0
     for wave_idx, wave in enumerate(waves):
@@ -308,7 +333,12 @@ def build_wave_layout(
             meta["sr"] = rights_t[split_tensor].contiguous()
             reduce_idx = (parents_t[split_tensor] - start).contiguous()
             meta["reduce_idx"] = reduce_idx
-            meta["log_split_probs"] = logp_t[split_tensor].contiguous()
+            split_probabilities = {
+                dtype: values[split_tensor].contiguous()
+                for dtype, values in logp_by_dtype.items()
+            }
+            meta["_log_split_probs_by_dtype"] = split_probabilities
+            meta["log_split_probs"] = split_probabilities[model_dtype]
             meta["n_eq1"] = n_eq1
             if n_eq1:
                 meta["eq1_reduce_idx"] = reduce_idx[:n_eq1].contiguous()

@@ -137,10 +137,10 @@ def test_centered_dts_tangent_matches_absolute_fp64(
     dlog_p_s = torch.tensor(
         [[-0.3, 0.2, -0.1, 0.4, -0.5]], device=device
     )
-    log_split_probs = torch.tensor(
-        [-0.123456789, -1.234567891, -2.345678912][:fanout],
-        device=device,
-        dtype=torch.float64,
+    split_values = [-0.123456789, -1.234567891, -2.345678912][:fanout]
+    log_split_probs = torch.tensor(split_values, device=device, dtype=pi.dtype)
+    reference_log_split_probs = torch.tensor(
+        split_values, device=device, dtype=torch.float64
     )
     layout = {}
     if fanout > 1:
@@ -210,7 +210,7 @@ def test_centered_dts_tangent_matches_absolute_fp64(
         log_p_d.double(),
         log_p_s.double(),
         family_idx,
-        log_split_probs=log_split_probs,
+        log_split_probs=reference_log_split_probs,
         **layout,
     )
     reference = compute_dts_tangent(
@@ -230,7 +230,7 @@ def test_centered_dts_tangent_matches_absolute_fp64(
         dlog_p_s.double(),
         dts_reference,
         family_idx,
-        log_split_probs=log_split_probs,
+        log_split_probs=reference_log_split_probs,
         pi_offset=pi_offset.double(),
         pibar_offset=pibar_offset.double(),
         gene_split_offset=dts_reference_offset,

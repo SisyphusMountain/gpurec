@@ -92,6 +92,26 @@ def test_model_float32_accumulator_reaches_preprocessing_statics():
         for meta in static.wave_layout["wave_metas"]:
             if "log_split_probs" in meta:
                 assert meta["log_split_probs"].dtype == torch.float32
+                assert set(meta["_log_split_probs_by_dtype"]) == {
+                    torch.float32,
+                    torch.float64,
+                }
+
+
+def test_model_mixed_precision_materializes_each_preprocessing_value_in_its_owner_dtype():
+    cfg = GpurecConfig(
+        precision=PrecisionOptions(model_dtype="float32", accumulator_dtype="float64")
+    )
+    model = _build_cpu_model(config=cfg)
+
+    # Transfer normalization metadata belongs to accumulator-domain reductions.
+    assert model.species_helpers["unnorm_row_max"].dtype == torch.float64
+    # Split probabilities are direct dense-kernel inputs and must arrive in the
+    # model dtype rather than being narrowed inside every Triton program.
+    for static in model.batch_statics:
+        for meta in static.wave_layout["wave_metas"]:
+            if "log_split_probs" in meta:
+                assert meta["log_split_probs"].dtype == torch.float32
 
 
 def test_model_explicit_dtype_overrides_config_precision():

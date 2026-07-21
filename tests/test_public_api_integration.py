@@ -163,6 +163,66 @@ def test_preprocess_dataset_on_tiny_ale_example(tmp_path: Path) -> None:
     assert root_logp == pytest.approx([torch.log2(torch.tensor(1 / 3)).item()] * 3)
 
 
+def test_rust_f64_split_probabilities_materialize_without_fp32_round_trip(
+    tmp_path: Path,
+) -> None:
+    _require_preprocess_native()
+    species_tree, gene_trees = _write_tiny_ale_example(tmp_path)
+    raw = preprocess_dataset(
+        species_tree,
+        gene_trees,
+        family_chunk_size=1,
+        clade_budget=None,
+        batch_packing="sequential",
+        max_wave_size=8,
+        accumulator_dtype=torch.float64,
+    )
+
+    rust_value = next(
+        value
+        for value in raw["families"][0]["log_split_probs_sorted"]
+        if value != 0.0
+    )
+    fp32_round_trip = float(torch.tensor(rust_value, dtype=torch.float32))
+    assert rust_value != fp32_round_trip
+
+    layout64 = build_wave_layout_from_plan(
+        raw["batch_wave_layouts"][0],
+        device="cpu",
+        model_dtype=torch.float64,
+        accumulator_dtype=torch.float64,
+    )
+    split64 = torch.cat(
+        [
+            meta["log_split_probs"]
+            for meta in layout64["wave_metas"]
+            if "log_split_probs" in meta
+        ]
+    )
+    assert any(value.item() == rust_value for value in split64)
+    assert all(value.item() != fp32_round_trip for value in split64 if value.item() != 0.0)
+
+    layout32 = build_wave_layout_from_plan(
+        raw["batch_wave_layouts"][0],
+        device="cpu",
+        model_dtype=torch.float32,
+        accumulator_dtype=torch.float64,
+    )
+    assert all(
+        meta["log_split_probs"].dtype == torch.float32
+        for meta in layout32["wave_metas"]
+        if "log_split_probs" in meta
+    )
+    split64_from_mixed_layout = torch.cat(
+        [
+            meta["_log_split_probs_by_dtype"][torch.float64]
+            for meta in layout32["wave_metas"]
+            if "log_split_probs" in meta
+        ]
+    )
+    assert any(value.item() == rust_value for value in split64_from_mixed_layout)
+
+
 def test_rust_plan_and_python_wave_layout_match_on_tiny_example(tmp_path: Path) -> None:
     _require_preprocess_native()
     species_tree, gene_trees = _write_tiny_example(tmp_path)

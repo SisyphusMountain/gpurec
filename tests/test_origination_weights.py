@@ -94,6 +94,37 @@ def test_fp32_origination_gradient_matches_promoted_head():
     torch.testing.assert_close(actual, reference.float(), rtol=0.0, atol=0.0)
 
 
+@pytest.mark.parametrize("per_family", [False, True])
+def test_manual_origination_gradient_matches_autograd_with_tiny_survival(per_family):
+    """The closed form stays accurate where naive ``1 - exp2(E)`` cancels."""
+    torch.manual_seed(19)
+    n_families, n_species = 4, 9
+    root = -900.0 + 4.0 * torch.randn(n_families, n_species, dtype=torch.float64)
+    extinction = -torch.linspace(
+        1.0e-18,
+        9.0e-18,
+        n_families * n_species,
+        dtype=torch.float64,
+    ).reshape(n_families, n_species)
+    assert torch.equal(torch.exp2(extinction), torch.ones_like(extinction))
+    shape = (n_families, n_species) if per_family else (n_species,)
+    weights = torch.randn(shape, dtype=torch.float64)
+
+    reference_weights = weights.clone().requires_grad_(True)
+    log_probs = origination_log_probs_from_weights(reference_weights)
+    loss = nll_vector_from_root_rows(
+        root,
+        extinction,
+        origination_log_probs=log_probs,
+        origination_probs=torch.exp2(log_probs),
+    ).sum()
+    (reference,) = torch.autograd.grad(loss, reference_weights)
+
+    actual = origination_grad_from_root_rows(root, extinction, weights)
+    assert not actual.requires_grad
+    torch.testing.assert_close(actual, reference, rtol=2e-13, atol=2e-13)
+
+
 @pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
 def test_fp32_execution_uses_configured_origination_head(accumulator_dtype):
     weights = torch.linspace(-2.0, 1.0, 17, dtype=torch.float32)

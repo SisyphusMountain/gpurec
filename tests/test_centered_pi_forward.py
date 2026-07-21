@@ -118,6 +118,28 @@ def test_dts_forward_rejects_mixed_offset_dtypes() -> None:
         )
 
 
+def test_dts_forward_rejects_split_probabilities_outside_model_dtype() -> None:
+    pi = torch.zeros((1, 1), dtype=torch.float32)
+    index = torch.zeros(1, dtype=torch.long)
+    with pytest.raises(TypeError, match="log_split_probs must match residual dtype"):
+        compute_dts_forward(
+            pi,
+            torch.zeros(1, dtype=torch.float64),
+            pi.clone(),
+            torch.zeros(1, dtype=torch.float64),
+            index,
+            index,
+            torch.ones(1, dtype=torch.long),
+            torch.ones(1, dtype=torch.long),
+            1,
+            index,
+            pi,
+            pi,
+            index,
+            log_split_probs=torch.zeros(1, dtype=torch.float64),
+        )
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize("use_receiver_weights", [False, True])
 @pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
@@ -458,7 +480,7 @@ def test_centered_split_input_uses_raw_max_for_virtual_dts_frame(
 @pytest.mark.gpu
 @pytest.mark.parametrize("fanout", [1, 3])
 @pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
-def test_centered_dts_accepts_float64_split_statics_and_matches_float64_reference(
+def test_centered_dts_uses_model_dtype_split_statics_and_matches_float64_reference(
     fanout: int,
     accumulator_dtype: torch.dtype,
 ) -> None:
@@ -504,11 +526,14 @@ def test_centered_dts_accepts_float64_split_statics_and_matches_float64_referenc
     log_p_s = torch.tensor(
         [[-1.4, -1.6, -1.8, -2.0, -2.2]], device=device, dtype=torch.float32
     )
-    # Batch preprocessing intentionally owns these statics in float64.
+    split_values = [-0.123456789, -1.234567891, -2.345678912][:fanout]
     log_split_probs = torch.tensor(
-        [-0.123456789, -1.234567891, -2.345678912][:fanout],
+        split_values,
         device=device,
-        dtype=torch.float64,
+        dtype=pi.dtype,
+    )
+    reference_log_split_probs = torch.tensor(
+        split_values, device=device, dtype=torch.float64
     )
 
     layout = {}
@@ -557,7 +582,7 @@ def test_centered_dts_accepts_float64_split_statics_and_matches_float64_referenc
         log_p_d.double(),
         log_p_s.double(),
         family_idx,
-        log_split_probs=log_split_probs,
+        log_split_probs=reference_log_split_probs,
         **layout,
     )
     reconstructed = centered_out.double() + out_offset[:, None]

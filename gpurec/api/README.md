@@ -15,9 +15,10 @@ Generated `__pycache__` files are interpreter artifacts and are not part of the 
 
 CUDA Pi/Pibar state always uses centered residuals in the model dtype plus row
 offsets in the configured accumulator dtype. `[precision].model_dtype` controls
-parameters and dense E/Pi residual state; `[precision].accumulator_dtype`
-controls row offsets, the final likelihood head, streamed family/batch
-reductions, small parameter softmaxes, and floating preprocessing statics.
+parameters, dense E/Pi residual state, and dense-kernel wave metadata;
+`[precision].accumulator_dtype` controls row offsets, the final likelihood
+head, streamed family/batch reductions, small parameter softmaxes, and
+accumulator-domain preprocessing statics.
 Parameter gradients are returned in the model dtype.
 
 The supported model/accumulator pairs are `float32/float32`,

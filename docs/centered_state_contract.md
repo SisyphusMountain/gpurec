@@ -119,7 +119,9 @@ mix Pi row-max metadata and Pibar require `Pi_offset - Pibar_offset`.
 Production Pi/Pibar state always uses model-dtype residuals (fp32 or fp64) plus
 configured-accumulator offsets on CUDA. Parameter/E tensors retain the model
 dtype; likelihood heads, streamed reductions, small parameter softmaxes, and
-floating preprocessing statics use the accumulator dtype.
+accumulator-domain preprocessing statics use the accumulator dtype. Rust emits
+floating preprocessing values as f64; wave layouts materialize fp32 and fp64
+variants directly from that payload and select the dense kernel's model dtype.
 Offset selection is bookkeeping and is not differentiated; derivatives are
 derivatives of the represented absolute recurrence. Returned gradients must
 match the model parameter dtype.

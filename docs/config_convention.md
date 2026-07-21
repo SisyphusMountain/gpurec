@@ -84,8 +84,11 @@ uses the same loader.
   `config.precision.model_dtype`. `config.precision.accumulator_dtype` still applies when
   `dtype=` overrides the model dtype and must be at least as wide as that effective dtype.
 - **Precision responsibilities.** `model_dtype` controls parameters and dense E/Pi residual
-  state. `accumulator_dtype` controls centered row offsets, the likelihood head and streamed
-  reductions, small parameter softmaxes, and floating preprocessing statics. Both accept
+  state and dense-kernel wave metadata. `accumulator_dtype` controls centered row offsets, the
+  likelihood head and streamed reductions, small parameter softmaxes, and accumulator-domain
+  preprocessing statics. Rust floating outputs remain f64 until Python materializes each tensor
+  directly in its owning domain's dtype; dense wave metadata keeps directly constructed fp32 and
+  fp64 variants for runtime dtype changes. Both accept
   `"float32"` and `"float64"`. The supported pairs are `float32/float32`, `float32/float64`, and
   `float64/float64` (model/accumulator); `float64/float32` is rejected because an accumulator may
   be wider than model state but never narrower. This policy covers model execution and its

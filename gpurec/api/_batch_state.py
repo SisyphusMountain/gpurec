@@ -50,13 +50,17 @@ def build_batch_static(
     batch_families = [families[index] for index in batch]
     wave_layout = (
         build_wave_layout_from_plan(
-            plan, device=device, accumulator_dtype=accumulator_dtype
+            plan,
+            device=device,
+            model_dtype=precision_options.model_torch_dtype,
+            accumulator_dtype=accumulator_dtype,
         )
         if plan is not None
         else build_wave_layout(
             batch_families,
             device=device,
             max_wave_size=max_wave_size,
+            model_dtype=precision_options.model_torch_dtype,
             accumulator_dtype=accumulator_dtype,
         )
     )
