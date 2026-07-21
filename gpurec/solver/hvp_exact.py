@@ -910,7 +910,7 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
     S = int(col_weights.numel())
     per_family_orig = (origination_weights is not None and origination_weights.ndim == 2)
 
-    def hvp(u_vec):
+    def hvp(u_vec, probe_id=None):
         u_vec = u_vec.to(device=dev, dtype=dtype)
         n_tail = int(u_vec.numel()) - theta_numel
         if not genewise:
@@ -925,7 +925,7 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
                     origination_log_probs=origination_log_probs,
                     origination_probs=origination_probs, origination_weights=origination_weights,
                 )
-                contrib = hvp_b(u_vec)
+                contrib = hvp_b(u_vec, probe_id=probe_id)
                 out = contrib if out is None else out + contrib
                 del hvp_b, sv_b
                 free_cuda_cache_if_tight()
@@ -965,7 +965,9 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
                 parts.append(u_alpha)
             if has_omega:
                 parts.append(u_omega_full.index_select(0, fam_b).reshape(-1))
-            o_b = hvp_b(torch.cat(parts) if len(parts) > 1 else u_theta_b).to(dtype=dtype)
+            o_b = hvp_b(
+                torch.cat(parts) if len(parts) > 1 else u_theta_b, probe_id=probe_id
+            ).to(dtype=dtype)
             out_theta.index_add_(0, fam_b, o_b[:3 * G_b].reshape(G_b, 3))
             if has_alpha:
                 out_alpha = out_alpha + o_b[3 * G_b:3 * G_b + S]

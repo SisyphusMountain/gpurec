@@ -178,3 +178,23 @@ def test_streaming_with_neumann_e_adjoint():
     Ha, Hf = hvp(u).double(), fd(u).double()
     rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
     assert torch.isfinite(Ha).all() and rel < 1e-3, f"neumann streaming FD rel={rel:.2e}"
+
+
+@pytest.mark.gpu
+def test_genewise_streaming_tangent_warm_start_probe_id_forwards_to_batches():
+    """probe_id passed to the streaming hvp() must reach each batch's own static.warm_v_tangent."""
+    m = _build(family_chunk_size=3, mode="genewise")  # n_families=8 default -> >=2 batches
+    assert len(m.batch_statics) > 1
+    F = len(m.families)
+    S = int(m.species_helpers["S"])
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+
+    hvp = make_exact_hvp(m.batch_statics, theta, rw, None, tangent_self_iters=128)
+    u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, 0] = 1.0
+    hvp(u.reshape(-1), probe_id=0)
+
+    for static in m.batch_statics:
+        assert static.warm_v_tangent is not None
+        assert 0 in static.warm_v_tangent
+        assert len(static.warm_v_tangent[0]) > 0
