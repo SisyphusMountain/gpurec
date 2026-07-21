@@ -9,7 +9,10 @@ import triton
 import triton.language as tl
 
 from gpurec.core.kernels._dts_layout_contract import dts_backward_param_layout
-from gpurec.core.kernels.pi_forward import _validate_offset_tensor
+from gpurec.core.kernels.pi_forward import (
+    _validate_offset_tensor,
+    _validate_residual_tensors,
+)
 from gpurec.core.memory_policy import proposal0_memory_gate
 
 from gpurec.core.kernels.wave_backward_kernels import (
@@ -253,6 +256,37 @@ def _solve_reconciliation_wave_vjp_2d(
 
     device = Pi_star.device
     dtype = Pi_star.dtype
+    grad_targets = {}
+    if self_loop_grad_targets is not None:
+        target_names = (
+            "grad_log_pD",
+            "grad_log_pS",
+            "grad_E",
+            "grad_Ebar",
+            "grad_E_s1",
+            "grad_E_s2",
+            "grad_max_transfer",
+        )
+        grad_targets = dict(zip(target_names, self_loop_grad_targets[:7]))
+    _validate_residual_tensors(
+        Pi_star,
+        Pibar_star=Pibar_star,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+        rhs=rhs,
+        max_transfer=max_transfer,
+        duplication_loss_const=duplication_loss_const,
+        Ebar=Ebar,
+        E=E,
+        speciation_child1_const=speciation_child1_const,
+        speciation_child2_const=speciation_child2_const,
+        receiver_log_probs=receiver_log_probs,
+        leaf_term_wt=leaf_term_wt,
+        leaf_logp=leaf_logp,
+        pibar_row_max=pibar_row_max,
+        grad_receiver_log_probs=grad_receiver_log_probs,
+        initial_v=initial_v,
+        **grad_targets,
+    )
     expected_rows = int(Pi_star.shape[0])
     pi_offset = _validate_offset_tensor(
         "pi_offset",
@@ -281,7 +315,7 @@ def _solve_reconciliation_wave_vjp_2d(
         )
     elif gene_split_offset is not None:
         raise ValueError("gene_split_offset is only valid for a split wave")
-    receiver_log_probs = receiver_log_probs.to(device=device, dtype=dtype).contiguous()
+    receiver_log_probs = receiver_log_probs.contiguous()
     if species_parent is None:
         raise ValueError("species_parent is required for the retained 2D self-loop path")
     species_parent = species_parent.to(device=device, dtype=torch.int32).contiguous()
@@ -323,7 +357,7 @@ def _solve_reconciliation_wave_vjp_2d(
 
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained 2D self-loop path")
-    pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
+    pibar_row_max = pibar_row_max.contiguous()
     skip_inactive_scratch_zero = True
     if family_idx is not None:
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
@@ -401,7 +435,7 @@ def _solve_reconciliation_wave_vjp_2d(
                 f"initial_v shape {tuple(initial_v.shape)} does not match "
                 f"wave scratch shape {scratch_shape}"
             )
-        v_k.copy_(initial_v.to(device=device, dtype=dtype).contiguous())
+        v_k.copy_(initial_v.contiguous())
         for _n in range(int(neumann_terms)):
             _apply_reconciliation_self_loop_transpose_kernel[(n_row_blocks,)](
                 v_k,
@@ -703,7 +737,7 @@ def solve_reconciliation_wave_vjp(
     max_ancestor_depth = max(1, int(max_ancestor_depth))
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained backward fast path")
-    pibar_row_max = pibar_row_max.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
+    pibar_row_max = pibar_row_max.contiguous()
 
     return _solve_reconciliation_wave_vjp_2d(
         Pi_star,
@@ -804,7 +838,7 @@ def accumulate_gene_split_event_vjp(
         dtype=pi_offset.dtype,
     )
 
-    split_log_priors = log_split_probs.squeeze(-1) if log_split_probs.ndim > 1 else log_split_probs
+    split_log_priors = (log_split_probs.squeeze(-1) if log_split_probs.ndim > 1 else log_split_probs).contiguous()
     family_idx_arg = None
     if family_idx is not None:
         family_idx_arg = family_idx.to(device=device, dtype=torch.long).contiguous()
@@ -853,6 +887,20 @@ def accumulate_gene_split_event_vjp(
             )
     else:
         max_transfer_layout = 0
+    _validate_residual_tensors(
+        Pi_star,
+        Pibar_star=Pibar_star,
+        v_k=v_k,
+        log_split_probs=split_log_priors,
+        log_pD=log_pD_arg,
+        log_pS=log_pS_arg,
+        accumulated_rhs=accumulated_rhs,
+        grad_log_pD=grad_log_pD,
+        grad_log_pS=grad_log_pS,
+        grad_max_transfer=grad_max_transfer,
+        max_transfer=max_transfer if output_donor_adjoint else None,
+        pibar_row_max=pibar_row_max if output_donor_adjoint else None,
+    )
     if output_donor_adjoint and pibar_row_max.numel() < Pi_star.shape[0]:
         raise ValueError("pibar_row_max must contain one row-max value per Pi row")
     if output_active_donor_sides and not output_donor_adjoint:
@@ -1083,7 +1131,16 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
     compact_level_parents = compact_level_parents.contiguous()
     compact_level_child1 = compact_level_child1.contiguous()
     compact_level_child2 = compact_level_child2.contiguous()
-    receiver_log_probs = receiver_log_probs.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
+    _validate_residual_tensors(
+        Pi_star,
+        receiver_log_probs=receiver_log_probs,
+        donor_adjoint=donor_adjoint,
+        total_donor_adjoint=total_donor_adjoint,
+        pibar_row_max=pibar_row_max,
+        accumulated_rhs=accumulated_rhs,
+        grad_receiver_log_probs=grad_receiver_log_probs,
+    )
+    receiver_log_probs = receiver_log_probs.contiguous()
     receiver_grad_arg = (
         grad_receiver_log_probs
         if grad_receiver_log_probs is not None
