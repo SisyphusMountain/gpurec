@@ -163,7 +163,7 @@ def fit_genewise(
     it: ``cfg = GpurecConfig.genewise_reference(); cfg.solver.e_max_iter = 999; fit_genewise(..., config=cfg)``.
 
     NOT threaded: ``config.newton`` (this recipe's Newton step is a bespoke box-constrained
-    trust-region FD 3x3 Hessian solve, not a ``NewtonOptions`` consumer); ``config.regularizer``
+    trust-region analytic-HVP 3x3 Hessian solve, not a ``NewtonOptions`` consumer); ``config.regularizer``
     (unused -- this recipe has no regularization term); ``config.memory`` (the adjoint warm-start
     is controlled by the ``GPUREC_WARM_ADJOINT`` env var + the library's own memory gate, not a
     config field).
