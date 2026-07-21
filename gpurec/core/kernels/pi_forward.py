@@ -8,8 +8,10 @@ __all__ = [
     "compute_wave_step",
     "_load_event_log_probability",
     "_prepare_wave_launch",
+    "_select_log_split_probs",
     "_tl_float_dtype",
     "_validate_offset_tensor",
+    "_validate_residual_tensors",
 ]
 
 
@@ -40,6 +42,45 @@ def _validate_offset_tensor(
     if value.device != device:
         raise ValueError(f"{name} must be on {device}")
     return value.contiguous()
+
+
+def _validate_residual_tensors(reference, /, **tensors) -> None:
+    """Require dense kernel tensors to share the model dtype and device.
+
+    Centered offsets are intentionally excluded: they use the accumulator
+    dtype and are validated separately by :func:`_validate_offset_tensor`.
+    """
+    if not torch.is_tensor(reference):
+        raise TypeError("residual reference must be a tensor")
+    if reference.dtype not in _SUPPORTED_FLOAT_DTYPES:
+        raise TypeError("residual tensors must use torch.float32 or torch.float64")
+    for name, value in tensors.items():
+        if value is None:
+            continue
+        if not torch.is_tensor(value):
+            raise TypeError(f"{name} must be a tensor")
+        if value.dtype != reference.dtype:
+            raise TypeError(
+                f"{name} must match residual dtype {reference.dtype}, got {value.dtype}"
+            )
+        if value.device != reference.device:
+            raise ValueError(f"{name} must be on {reference.device}")
+
+
+def _select_log_split_probs(meta, dtype):
+    """Return preprocessing-owned split probabilities for a kernel dtype."""
+    variants = meta.get("_log_split_probs_by_dtype")
+    if variants is not None:
+        try:
+            return variants[dtype]
+        except KeyError as exc:
+            raise TypeError(f"no split-probability tensor for residual dtype {dtype}") from exc
+    value = meta.get("log_split_probs")
+    if value is None and "sl" in meta:
+        value = torch.zeros(
+            int(meta["sl"].numel()), device=meta["sl"].device, dtype=dtype
+        )
+    return value
 
 
 def _prepare_wave_launch(S: int, const_tensor) -> tuple[int, int]:
@@ -191,10 +232,10 @@ def _initialize_leaf_reconciliation_likelihood_kernel(
     leaf_start = tl.load(species_subtree_start_ptr + leaf_species)
     leaf_end = tl.load(species_subtree_end_ptr + leaf_species)
     if USE_RECEIVER_WEIGHTS:
-        leaf_receiver_log_probability = tl.load(receiver_log_probs_ptr + leaf_species).to(DTYPE)
+        leaf_receiver_log_probability = tl.load(receiver_log_probs_ptr + leaf_species)
     else:
         leaf_receiver_log_probability = tl.zeros((), dtype=DTYPE)
-    leaf_observation_log_probability = tl.load(leaf_logp_ptr + family * S + leaf_species).to(DTYPE)
+    leaf_observation_log_probability = tl.load(leaf_logp_ptr + family * S + leaf_species)
 
     row_max = tl.full((), value=NEG_LARGE, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
@@ -408,7 +449,7 @@ def _update_reconciliation_likelihood_kernel(
                 tl.zeros_like(shift_source),
             ),
             axis=0,
-        ).to(DTYPE)
+        )
     else:
         # Leaf initialization and the first virtually gauged DTS iteration already
         # put ordinary Pi iterates in their local frame. Avoid repeating four
@@ -430,7 +471,7 @@ def _update_reconciliation_likelihood_kernel(
         leaf_species = tl.load(leaf_species_ptr + global_row)
         leaf_observation_log_probability = tl.load(
             leaf_logp_ptr + family_const * S + leaf_species
-        ).to(DTYPE)
+        )
         # The leaf source represents ``leaf_observation_log_probability``, not a zero-frame
         # value. Using 0 here forced every negative HOGENOM row back into the
         # absolute frame after the exactly gauged leaf initializer.
@@ -1041,6 +1082,17 @@ def compute_leaf_initial_wave_step(
     family_idx,
     use_receiver_weights=True,
 ):
+    _validate_residual_tensors(
+        Pi_out,
+        max_transfer_mat=max_transfer_mat,
+        duplication_loss_const=duplication_loss_const,
+        Ebar=Ebar,
+        E=E,
+        speciation_child1_const=speciation_child1_const,
+        speciation_child2_const=speciation_child2_const,
+        receiver_log_probs=receiver_log_probs,
+        leaf_logp=leaf_logp,
+    )
     Pi_out_offset = _validate_offset_tensor(
         "Pi_out_offset",
         Pi_out_offset,
@@ -1113,6 +1165,21 @@ def compute_wave_step(
     use_receiver_weights=True,
     pi_residual_out=None,
 ):
+    _validate_residual_tensors(
+        Pi_in,
+        Pi_out=Pi_out,
+        Pibar=Pibar,
+        max_transfer_mat=max_transfer_mat,
+        duplication_loss_const=duplication_loss_const,
+        Ebar=Ebar,
+        E=E,
+        speciation_child1_const=speciation_child1_const,
+        speciation_child2_const=speciation_child2_const,
+        receiver_log_probs=receiver_log_probs,
+        leaf_logp=leaf_logp,
+        pibar_row_max=pibar_row_max,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+    )
     Pi_in_offset = _validate_offset_tensor(
         "Pi_in_offset",
         Pi_in_offset,
@@ -1250,6 +1317,13 @@ def compute_dts_forward(
 ):
     N = int(split_left_rows.shape[0])
     S = int(Pi.shape[1])
+    _validate_residual_tensors(
+        Pi,
+        Pibar=Pibar,
+        log_pD_vec=log_pD_vec,
+        log_pS_vec=log_pS_vec,
+        log_split_probs=log_split_probs,
+    )
     Pi_offset = _validate_offset_tensor(
         "Pi_offset",
         Pi_offset,
@@ -1272,9 +1346,7 @@ def compute_dts_forward(
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        # Preprocessing owns split statics. Match the residual compute dtype at
-        # the DTS boundary so they do not change the loop-carried arithmetic.
-        log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
+        log_split_probs = log_split_probs.reshape(N).contiguous()
     if n_single_split_parents is None:
         n_single_split_parents = N
         single_split_parent_rows = reduce_idx
