@@ -8,8 +8,10 @@ import triton.language as tl
 
 from gpurec.core.kernels.pi_forward import (
     _load_event_log_probability,
+    _select_log_split_probs,
     _tl_float_dtype,
     _validate_offset_tensor,
+    _validate_residual_tensors,
 )
 
 
@@ -231,8 +233,8 @@ def _gene_split_event_vjp_directional_derivative_kernel(
     # Convert each transfer-complement event VJP into the donor-adjoint
     # coefficient used by the subtree formula. The stabilizing row maximum is
     # frozen, so only max_transfer and Pibar contribute to the scale tangent.
-    left_pibar_row_max = tl.load(pibar_row_max_ptr + left_clade_row).to(DTYPE)
-    right_pibar_row_max = tl.load(pibar_row_max_ptr + right_clade_row).to(DTYPE)
+    left_pibar_row_max = tl.load(pibar_row_max_ptr + left_clade_row)
+    right_pibar_row_max = tl.load(pibar_row_max_ptr + right_clade_row)
     left_exclusion_is_finite = mask & (left_pibar != NEG_INF)
     right_exclusion_is_finite = mask & (right_pibar != NEG_INF)
     left_exclusion_scale = tl.where(
@@ -303,7 +305,7 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
 
     pi_base = child * stride_C
     row_base = row * S
-    receiver_mass_log_scale = tl.load(pibar_row_max_ptr + child).to(DTYPE)
+    receiver_mass_log_scale = tl.load(pibar_row_max_ptr + child)
     receiver_mass_log_scale_safe = tl.where(
         receiver_mass_log_scale != NEG,
         receiver_mass_log_scale,
@@ -461,6 +463,29 @@ def dts_backward_so(
     split_right_rows = meta["sr"]
     n_splits = int(split_left_rows.numel())
     device, dtype = Pi.device, Pi.dtype
+    split_log_priors = _select_log_split_probs(meta, Pi.dtype)
+    _validate_residual_tensors(
+        Pi,
+        dPi=dPi,
+        Pibar=Pibar,
+        dPibar=dPibar,
+        v=v,
+        log_pD_param=log_pD_param,
+        log_pS_param=log_pS_param,
+        dlog_pD_param=dlog_pD_param,
+        dlog_pS_param=dlog_pS_param,
+        max_transfer=max_transfer,
+        d_max_transfer=d_max_transfer,
+        receiver_log_probs=receiver_log_probs,
+        pibar_row_max=pibar_row_max,
+        d_rhs=d_rhs,
+        d_grad_pD=d_grad_pD,
+        d_grad_pS=d_grad_pS,
+        d_grad_max_transfer=d_grad_max_transfer,
+        d_grad_receiver_log_probs=d_grad_receiver_log_probs,
+        dreceiver_log_probs=dreceiver_log_probs,
+        log_split_probs=split_log_priors,
+    )
     expected_rows = int(Pi.shape[0])
     pi_offset = _validate_offset_tensor(
         "pi_offset",
@@ -478,17 +503,13 @@ def dts_backward_so(
     )
     if n_splits == 0:
         return
-    split_log_priors = meta.get("log_split_probs")
     if split_log_priors is None:
         split_log_priors = torch.zeros(
             (n_splits,), device=Pi.device, dtype=Pi.dtype
         )
     else:
-        # Scheduling retains split priors at accumulator precision. DTS event
-        # probabilities are residual-state quantities, so convert once at this
-        # mathematical boundary; preprocessing cannot choose the model dtype.
         split_log_priors = (
-            split_log_priors.reshape(n_splits).to(Pi.dtype).contiguous()
+            split_log_priors.reshape(n_splits).contiguous()
         )
     by_species = log_pD_param.ndim == 2 and int(log_pD_param.shape[1]) != 1
     row_stride = 0 if int(log_pD_param.shape[0]) == 1 else int(log_pD_param.stride(0))
