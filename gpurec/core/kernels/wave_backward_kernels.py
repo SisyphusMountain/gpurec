@@ -120,12 +120,12 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     else:
         gene_split_frame_shift = tl.zeros([BLOCK_W], dtype=DTYPE)
 
-    row_max = tl.load(Pibar_row_max_ptr + row_global, mask=row_valid, other=NEG_LARGE).to(DTYPE)
-    reconciliation_log_likelihood = tl.load(Pi_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
-    transfer_complement_log_likelihood = tl.load(Pibar_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+    row_max = tl.load(Pibar_row_max_ptr + row_global, mask=row_valid, other=NEG_LARGE)
+    reconciliation_log_likelihood = tl.load(Pi_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE)
+    transfer_complement_log_likelihood = tl.load(Pibar_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE)
     row_max_safe = tl.where(row_max != NEG_LARGE, row_max, tl.zeros_like(row_max))
     if USE_RECEIVER_WEIGHTS:
-        receiver_log_probability = tl.load(receiver_log_probs_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
+        receiver_log_probability = tl.load(receiver_log_probs_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
         receiver_mass = tl.exp2(receiver_log_probability[:, None] + reconciliation_log_likelihood - row_max_safe[None, :])
     else:
         receiver_mass = tl.exp2(reconciliation_log_likelihood - row_max_safe[None, :])
@@ -146,15 +146,15 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
         const_mask = species_valid[:, None]
     else:
         const_mask = mask
-    duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE)
     extinction_complement_log_probability = tl.load(
         Ebar_ptr + const_offsets, mask=const_mask, other=NEG_LARGE
-    ).to(DTYPE)
+    )
     extinction_log_probability = tl.load(
         E_ptr + const_offsets, mask=const_mask, other=NEG_LARGE
-    ).to(DTYPE)
-    speciation_child1_const = tl.load(speciation_child1_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
-    speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    )
+    speciation_child1_const = tl.load(speciation_child1_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE)
+    speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE)
 
     c1 = tl.load(species_child1_ptr + s_offs, mask=species_valid, other=0)
     c2 = tl.load(species_child2_ptr + s_offs, mask=species_valid, other=0)
@@ -164,12 +164,12 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
         Pi_star_ptr + row_global[None, :] * stride + c1[:, None],
         mask=(species_valid & c1_valid)[:, None] & row_mask[None, :],
         other=NEG_LARGE,
-    ).to(DTYPE)
+    )
     reconciliation_child2_log_likelihood = tl.load(
         Pi_star_ptr + row_global[None, :] * stride + c2[:, None],
         mask=(species_valid & c2_valid)[:, None] & row_mask[None, :],
         other=NEG_LARGE,
-    ).to(DTYPE)
+    )
 
     duplication_loss_log_term = duplication_loss_const + reconciliation_log_likelihood
     transfer_loss_log_term = (
@@ -186,23 +186,23 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
         leaf_species = tl.load(leaf_species_ptr + row_global, mask=row_valid, other=-1)
         leaf_hit = mask & (leaf_species[None, :] == s_offs[:, None])
         if LEAF_LOGP_MODE == 3:
-            leaf_logp = tl.load(leaf_logp_ptr).to(DTYPE)
+            leaf_logp = tl.load(leaf_logp_ptr)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         elif LEAF_LOGP_MODE == 1:
-            leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE).to(DTYPE)
+            leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
         elif LEAF_LOGP_MODE == 2:
             leaf_logp = tl.load(
                 leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
                 mask=leaf_hit,
                 other=NEG_LARGE,
-            ).to(DTYPE)
+            )
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
-            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
     elif HAS_LEAF_TERM:
-        leaf_observation_log_term = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+        leaf_observation_log_term = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE)
     else:
         leaf_observation_log_term = tl.full([BLOCK_S, BLOCK_W], value=NEG_LARGE, dtype=DTYPE)
     if USE_LEAF_INDEX or HAS_LEAF_TERM:
@@ -227,7 +227,7 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     inverse_local_event_scaled_mass = tl.where(local_event_scaled_mass > 0.0, 1.0 / local_event_scaled_mass, tl.zeros_like(local_event_scaled_mass))
 
     if has_splits:
-        gene_split_log_likelihood = tl.load(gene_split_log_likelihood_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+        gene_split_log_likelihood = tl.load(gene_split_log_likelihood_ptr + out_offsets, mask=mask, other=NEG_LARGE)
         gene_split_log_likelihood += gene_split_frame_shift[None, :]
         local_event_log_likelihood = tl.log2(local_event_scaled_mass) + local_event_max
         updated_reconciliation_max = tl.maximum(local_event_log_likelihood, gene_split_log_likelihood)
@@ -249,13 +249,13 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
             + ancestor_species[:, None],
             mask=ancestor_valid[:, None] & row_mask[None, :],
             other=NEG_LARGE,
-        ).to(DTYPE)
+        )
         if USE_RECEIVER_WEIGHTS:
             ancestor_receiver_log_probability = tl.load(
                 receiver_log_probs_ptr + ancestor_species,
                 mask=ancestor_valid,
                 other=NEG_LARGE,
-            ).to(DTYPE)
+            )
             ancestor_sum += tl.where(
                 ancestor_valid[:, None] & row_mask[None, :],
                 tl.exp2(
@@ -288,7 +288,7 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     speciation_child2_probability = within_wave_probability * speciation_child2_mass * inverse_local_event_scaled_mass
 
     zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
-    rhs_val = tl.load(rhs_ptr + out_offsets, mask=mask, other=0.0).to(DTYPE)
+    rhs_val = tl.load(rhs_ptr + out_offsets, mask=mask, other=0.0)
     tl.store(v_k_ptr + out_offsets, tl.where(mask, rhs_val, zero), mask=store_mask)
     tl.store(self_loop_diagonal_ptr + out_offsets, tl.where(mask, self_loop_diagonal, zero), mask=store_mask)
     tl.store(donor_adjoint_coefficient_ptr + out_offsets, tl.where(mask, donor_adjoint_coefficient, zero), mask=store_mask)
@@ -357,8 +357,8 @@ def _apply_reconciliation_self_loop_transpose_kernel(
         store_mask = species_valid[:, None] & row_valid[None, :]
     offsets = rows[None, :] * S + s_offs[:, None]
 
-    input_adjoint = tl.load(term_in_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-    donor_adjoint_coefficient = tl.load(donor_adjoint_coefficient_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    input_adjoint = tl.load(term_in_ptr + offsets, mask=mask, other=0.0)
+    donor_adjoint_coefficient = tl.load(donor_adjoint_coefficient_ptr + offsets, mask=mask, other=0.0)
     donor_adjoint = input_adjoint * donor_adjoint_coefficient
     total_donor_adjoint = tl.sum(tl.where(mask, donor_adjoint, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)), axis=0)
     tl.store(subtree_donor_adjoint_ptr + offsets, tl.where(mask, donor_adjoint, tl.zeros_like(donor_adjoint)), mask=store_mask)
@@ -381,17 +381,17 @@ def _apply_reconciliation_self_loop_transpose_kernel(
                 subtree_donor_adjoint_ptr + row_base + parent[:, None],
                 mask=reduce_mask,
                 other=0.0,
-            ).to(DTYPE)
+            )
             c1_val = tl.load(
                 subtree_donor_adjoint_ptr + row_base + c1[:, None],
                 mask=reduce_mask & (c1 < S)[:, None],
                 other=0.0,
-            ).to(DTYPE)
+            )
             c2_val = tl.load(
                 subtree_donor_adjoint_ptr + row_base + c2[:, None],
                 mask=reduce_mask & (c2 < S)[:, None],
                 other=0.0,
-            ).to(DTYPE)
+            )
             tl.store(
                 subtree_donor_adjoint_ptr + row_base + parent[:, None],
                 parent_val + c1_val + c2_val,
@@ -402,9 +402,9 @@ def _apply_reconciliation_self_loop_transpose_kernel(
 
     tl.debug_barrier()
 
-    subtree_donor_adjoint = tl.load(subtree_donor_adjoint_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-    self_loop_diagonal = tl.load(self_loop_diagonal_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-    receiver_mass = tl.load(receiver_mass_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    subtree_donor_adjoint = tl.load(subtree_donor_adjoint_ptr + offsets, mask=mask, other=0.0)
+    self_loop_diagonal = tl.load(self_loop_diagonal_ptr + offsets, mask=mask, other=0.0)
+    receiver_mass = tl.load(receiver_mass_ptr + offsets, mask=mask, other=0.0)
     self_loop_vjp_without_child_edges = (
         input_adjoint * self_loop_diagonal
         + receiver_mass
@@ -420,12 +420,12 @@ def _apply_reconciliation_self_loop_transpose_kernel(
             term_in_ptr + row_base + parent[:, None],
             mask=parent_mask,
             other=0.0,
-        ).to(DTYPE)
+        )
         speciation_parent_to_child_probability = tl.load(
             speciation_child1_probability_ptr + offsets,
             mask=parent_mask,
             other=0.0,
-        ).to(DTYPE)
+        )
         self_loop_vjp = (
             self_loop_vjp_without_child_edges
             + parent_input_adjoint * speciation_parent_to_child_probability
@@ -445,8 +445,8 @@ def _apply_reconciliation_self_loop_transpose_kernel(
 
         c1 = tl.load(species_child1_ptr + s_offs, mask=species_valid, other=S)
         c2 = tl.load(species_child2_ptr + s_offs, mask=species_valid, other=S)
-        speciation_child1_probability = tl.load(speciation_child1_probability_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-        speciation_child2_probability = tl.load(speciation_child2_probability_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        speciation_child1_probability = tl.load(speciation_child1_probability_ptr + offsets, mask=mask, other=0.0)
+        speciation_child2_probability = tl.load(speciation_child2_probability_ptr + offsets, mask=mask, other=0.0)
         row_base = rows[None, :] * S
         c1_mask = (species_valid & (c1 < S))[:, None] & row_mask[None, :]
         c2_mask = (species_valid & (c2 < S))[:, None] & row_mask[None, :]
@@ -454,12 +454,12 @@ def _apply_reconciliation_self_loop_transpose_kernel(
             term_out_ptr + row_base + c1[:, None],
             mask=c1_mask,
             other=0.0,
-        ).to(DTYPE)
+        )
         current_child2_vjp = tl.load(
             term_out_ptr + row_base + c2[:, None],
             mask=c2_mask,
             other=0.0,
-        ).to(DTYPE)
+        )
         tl.store(
             term_out_ptr + row_base + c1[:, None],
             current_child1_vjp
@@ -477,7 +477,7 @@ def _apply_reconciliation_self_loop_transpose_kernel(
 
         self_loop_vjp = tl.load(
             term_out_ptr + offsets, mask=mask, other=0.0
-        ).to(DTYPE)
+        )
 
     operator_output = (
         input_adjoint - self_loop_vjp if OUTPUT_A else self_loop_vjp
@@ -489,14 +489,14 @@ def _apply_reconciliation_self_loop_transpose_kernel(
     )
 
     if FIXED_POINT_UPDATE:
-        rhs_val = tl.load(rhs_update_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        rhs_val = tl.load(rhs_update_ptr + offsets, mask=mask, other=0.0)
         tl.store(
             v_k_ptr + offsets,
             tl.where(mask, rhs_val + self_loop_vjp, tl.zeros_like(self_loop_vjp)),
             mask=store_mask,
         )
     elif ACCUMULATE_V:
-        v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0)
         tl.store(v_k_ptr + offsets, v_prev + self_loop_vjp, mask=mask)
 
 
@@ -535,8 +535,8 @@ def _accumulate_transfer_receiver_log_probability_vjp_kernel(
     store_mask = species_valid[:, None] & row_valid[None, :]
     offsets = rows[None, :] * S + s_offs[:, None]
 
-    input_adjoint = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-    donor_adjoint_coefficient = tl.load(donor_adjoint_coefficient_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    input_adjoint = tl.load(v_k_ptr + offsets, mask=mask, other=0.0)
+    donor_adjoint_coefficient = tl.load(donor_adjoint_coefficient_ptr + offsets, mask=mask, other=0.0)
     donor_adjoint = input_adjoint * donor_adjoint_coefficient
     zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
     total_donor_adjoint = tl.sum(tl.where(mask, donor_adjoint, zero), axis=0)
@@ -560,17 +560,17 @@ def _accumulate_transfer_receiver_log_probability_vjp_kernel(
                 subtree_donor_adjoint_ptr + row_base + parent[:, None],
                 mask=reduce_mask,
                 other=0.0,
-            ).to(DTYPE)
+            )
             c1_val = tl.load(
                 subtree_donor_adjoint_ptr + row_base + c1[:, None],
                 mask=reduce_mask & (c1 < S)[:, None],
                 other=0.0,
-            ).to(DTYPE)
+            )
             c2_val = tl.load(
                 subtree_donor_adjoint_ptr + row_base + c2[:, None],
                 mask=reduce_mask & (c2 < S)[:, None],
                 other=0.0,
-            ).to(DTYPE)
+            )
             tl.store(
                 subtree_donor_adjoint_ptr + row_base + parent[:, None],
                 parent_val + c1_val + c2_val,
@@ -579,8 +579,8 @@ def _accumulate_transfer_receiver_log_probability_vjp_kernel(
             node_start += BLOCK_NODES
         tl.debug_barrier()
 
-    subtree_donor_adjoint = tl.load(subtree_donor_adjoint_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-    receiver_mass = tl.load(receiver_mass_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    subtree_donor_adjoint = tl.load(subtree_donor_adjoint_ptr + offsets, mask=mask, other=0.0)
+    receiver_mass = tl.load(receiver_mass_ptr + offsets, mask=mask, other=0.0)
     transfer_complement_vjp = receiver_mass * (total_donor_adjoint[None, :] - subtree_donor_adjoint)
     species_contrib = tl.sum(tl.where(mask, transfer_complement_vjp, zero), axis=1)
     tl.atomic_add(
@@ -683,18 +683,18 @@ def _accumulate_reconciliation_event_vjp_kernel(
         const_offsets = s_offs[:, None]
 
     const_mask = species_valid[:, None] if CONST_LAYOUT == 0 else mask
-    reconciliation_log_likelihood = tl.load(Pi_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
-    transfer_complement_log_likelihood = tl.load(Pibar_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
-    parent_adjoint = tl.load(v_k_ptr + out_offsets, mask=mask, other=0.0).to(DTYPE)
-    duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    reconciliation_log_likelihood = tl.load(Pi_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE)
+    transfer_complement_log_likelihood = tl.load(Pibar_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE)
+    parent_adjoint = tl.load(v_k_ptr + out_offsets, mask=mask, other=0.0)
+    duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE)
     extinction_complement_log_probability = tl.load(
         Ebar_ptr + const_offsets, mask=const_mask, other=NEG_LARGE
-    ).to(DTYPE)
+    )
     extinction_log_probability = tl.load(
         E_ptr + const_offsets, mask=const_mask, other=NEG_LARGE
-    ).to(DTYPE)
-    speciation_child1_const = tl.load(speciation_child1_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
-    speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    )
+    speciation_child1_const = tl.load(speciation_child1_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE)
+    speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE)
 
     c1 = tl.load(species_child1_ptr + s_offs, mask=species_valid, other=0)
     c2 = tl.load(species_child2_ptr + s_offs, mask=species_valid, other=0)
@@ -704,12 +704,12 @@ def _accumulate_reconciliation_event_vjp_kernel(
         Pi_star_ptr + row_global[None, :] * stride + c1[:, None],
         mask=(species_valid & c1_valid)[:, None] & row_mask[None, :],
         other=NEG_LARGE,
-    ).to(DTYPE)
+    )
     reconciliation_child2_log_likelihood = tl.load(
         Pi_star_ptr + row_global[None, :] * stride + c2[:, None],
         mask=(species_valid & c2_valid)[:, None] & row_mask[None, :],
         other=NEG_LARGE,
-    ).to(DTYPE)
+    )
 
     duplication_loss_log_term = duplication_loss_const + reconciliation_log_likelihood
     transfer_loss_log_term = (
@@ -726,23 +726,23 @@ def _accumulate_reconciliation_event_vjp_kernel(
         leaf_species = tl.load(leaf_species_ptr + row_global, mask=row_valid, other=-1)
         leaf_hit = mask & (leaf_species[None, :] == s_offs[:, None])
         if LEAF_LOGP_MODE == 3:
-            leaf_logp = tl.load(leaf_logp_ptr).to(DTYPE)
+            leaf_logp = tl.load(leaf_logp_ptr)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         elif LEAF_LOGP_MODE == 1:
-            leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE).to(DTYPE)
+            leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
         elif LEAF_LOGP_MODE == 2:
             leaf_logp = tl.load(
                 leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
                 mask=leaf_hit,
                 other=NEG_LARGE,
-            ).to(DTYPE)
+            )
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
-            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
     elif HAS_LEAF_TERM:
-        leaf_observation_log_term = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+        leaf_observation_log_term = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE)
     else:
         leaf_observation_log_term = tl.full([BLOCK_S, BLOCK_W], value=NEG_LARGE, dtype=DTYPE)
     if USE_LEAF_INDEX or HAS_LEAF_TERM:
@@ -767,7 +767,7 @@ def _accumulate_reconciliation_event_vjp_kernel(
     inverse_local_event_scaled_mass = tl.where(local_event_scaled_mass > 0.0, 1.0 / local_event_scaled_mass, tl.zeros_like(local_event_scaled_mass))
 
     if has_splits:
-        gene_split_log_likelihood = tl.load(gene_split_log_likelihood_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+        gene_split_log_likelihood = tl.load(gene_split_log_likelihood_ptr + out_offsets, mask=mask, other=NEG_LARGE)
         gene_split_log_likelihood += gene_split_frame_shift[None, :]
         local_event_log_likelihood = tl.log2(local_event_scaled_mass) + local_event_max
         updated_reconciliation_max = tl.maximum(local_event_log_likelihood, gene_split_log_likelihood)
@@ -926,7 +926,7 @@ def _accumulate_gene_split_event_vjp_kernel(
     left_clade_row = tl.load(split_left_rows_ptr + split_index).to(tl.int64)
     right_clade_row = tl.load(split_right_rows_ptr + split_index).to(tl.int64)
     parent_wave_row = tl.load(reduce_idx_ptr + split_index).to(tl.int64)
-    split_log_prior = tl.load(log_split_probs_ptr + split_index).to(DTYPE)
+    split_log_prior = tl.load(log_split_probs_ptr + split_index)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_wave_row)
         if parent_active == 0:
@@ -979,14 +979,14 @@ def _accumulate_gene_split_event_vjp_kernel(
         right_family = 0
 
     if PARAM_LAYOUT == 0 and DEVICE_SCALAR_PARAMS:
-        log_pD = tl.load(log_pD_arg).to(DTYPE)
-        log_pS = tl.load(log_pS_arg).to(DTYPE)
+        log_pD = tl.load(log_pD_arg)
+        log_pS = tl.load(log_pS_arg)
     elif PARAM_LAYOUT == 0:
         log_pD = log_pD_arg
         log_pS = log_pS_arg
     elif PARAM_LAYOUT == 2:
-        log_pD = tl.load(log_pD_arg + parent_family).to(DTYPE)
-        log_pS = tl.load(log_pS_arg + parent_family).to(DTYPE)
+        log_pD = tl.load(log_pD_arg + parent_family)
+        log_pS = tl.load(log_pS_arg + parent_family)
     else:
         log_pD = tl.zeros((1,), dtype=DTYPE)
         log_pS = tl.zeros((1,), dtype=DTYPE)
@@ -1016,8 +1016,8 @@ def _accumulate_gene_split_event_vjp_kernel(
     right_total_donor_adjoint = tl.zeros((1,), dtype=DTYPE)
     scalar_lane_offset = tl.arange(0, 1)
     if OUTPUT_DONOR_ADJOINT:
-        left_pibar_row_max = tl.load(pibar_row_max_ptr + left_clade_row).to(DTYPE)
-        right_pibar_row_max = tl.load(pibar_row_max_ptr + right_clade_row).to(DTYPE)
+        left_pibar_row_max = tl.load(pibar_row_max_ptr + left_clade_row)
+        right_pibar_row_max = tl.load(pibar_row_max_ptr + right_clade_row)
         left_donor_side_nonzero = tl.full((1,), value=0, dtype=tl.int32)
         right_donor_side_nonzero = tl.full((1,), value=0, dtype=tl.int32)
         left_donor_adjoint_abs_sum = tl.zeros((1,), dtype=DTYPE)
@@ -1028,30 +1028,30 @@ def _accumulate_gene_split_event_vjp_kernel(
         valid_mask = s_offs < S
         mask = valid_mask & parent_active
 
-        left_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
-        right_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
-        left_transfer_complement_log_likelihood = tl.load(Pibar_star_ptr + left_transfer_complement_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
-        right_transfer_complement_log_likelihood = tl.load(Pibar_star_ptr + right_transfer_complement_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        left_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + s_offs, mask=mask, other=NEG_LARGE)
+        right_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + s_offs, mask=mask, other=NEG_LARGE)
+        left_transfer_complement_log_likelihood = tl.load(Pibar_star_ptr + left_transfer_complement_base + s_offs, mask=mask, other=NEG_LARGE)
+        right_transfer_complement_log_likelihood = tl.load(Pibar_star_ptr + right_transfer_complement_base + s_offs, mask=mask, other=NEG_LARGE)
 
         c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
         c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=0)
         c1_valid = (c1 < S) & mask
         c2_valid = (c2 < S) & mask
-        left_child1_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
-        left_child2_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
-        right_child1_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
-        right_child2_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
+        left_child1_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + c1, mask=c1_valid, other=NEG_LARGE)
+        left_child2_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + c2, mask=c2_valid, other=NEG_LARGE)
+        right_child1_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + c1, mask=c1_valid, other=NEG_LARGE)
+        right_child2_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + c2, mask=c2_valid, other=NEG_LARGE)
 
-        parent_reconciliation_log_likelihood = tl.load(Pi_star_ptr + parent_clade_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
-        parent_adjoint = tl.load(v_k_ptr + parent_adjoint_base + s_offs, mask=mask, other=0.0).to(DTYPE)
+        parent_reconciliation_log_likelihood = tl.load(Pi_star_ptr + parent_clade_base + s_offs, mask=mask, other=NEG_LARGE)
+        parent_adjoint = tl.load(v_k_ptr + parent_adjoint_base + s_offs, mask=mask, other=0.0)
 
         if PARAM_LAYOUT == 1:
-            duplication_log_probability = tl.load(log_pD_arg + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
-            speciation_log_probability = tl.load(log_pS_arg + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+            duplication_log_probability = tl.load(log_pD_arg + s_offs, mask=valid_mask, other=NEG_LARGE)
+            speciation_log_probability = tl.load(log_pS_arg + s_offs, mask=valid_mask, other=NEG_LARGE)
         elif PARAM_LAYOUT == 3:
             param_base = parent_family * S
-            duplication_log_probability = tl.load(log_pD_arg + param_base + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
-            speciation_log_probability = tl.load(log_pS_arg + param_base + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+            duplication_log_probability = tl.load(log_pD_arg + param_base + s_offs, mask=valid_mask, other=NEG_LARGE)
+            speciation_log_probability = tl.load(log_pS_arg + param_base + s_offs, mask=valid_mask, other=NEG_LARGE)
         else:
             duplication_log_probability = log_pD
             speciation_log_probability = log_pS
@@ -1111,8 +1111,8 @@ def _accumulate_gene_split_event_vjp_kernel(
                 mask=mask,
             )
         else:
-            left_reconciliation_vjp = tl.load(left_reconciliation_vjp_ptr, mask=mask, other=0.0).to(DTYPE)
-            right_reconciliation_vjp = tl.load(right_reconciliation_vjp_ptr, mask=mask, other=0.0).to(DTYPE)
+            left_reconciliation_vjp = tl.load(left_reconciliation_vjp_ptr, mask=mask, other=0.0)
+            right_reconciliation_vjp = tl.load(right_reconciliation_vjp_ptr, mask=mask, other=0.0)
             tl.store(
                 left_reconciliation_vjp_ptr,
                 left_reconciliation_vjp + duplication_event_vjp + transfer_left_retained_event_vjp,
@@ -1125,10 +1125,10 @@ def _accumulate_gene_split_event_vjp_kernel(
             )
         if OUTPUT_DONOR_ADJOINT:
             if MAX_TRANSFER_LAYOUT == 1:
-                left_max_transfer = tl.load(max_transfer_ptr + left_family * S + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
-                right_max_transfer = tl.load(max_transfer_ptr + right_family * S + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+                left_max_transfer = tl.load(max_transfer_ptr + left_family * S + s_offs, mask=valid_mask, other=0.0)
+                right_max_transfer = tl.load(max_transfer_ptr + right_family * S + s_offs, mask=valid_mask, other=0.0)
             else:
-                max_transfer = tl.load(max_transfer_ptr + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+                max_transfer = tl.load(max_transfer_ptr + s_offs, mask=valid_mask, other=0.0)
                 left_max_transfer = max_transfer
                 right_max_transfer = max_transfer
             left_transfer_complement_is_finite = (left_transfer_complement_log_likelihood != NEG_LARGE) & mask
@@ -1268,7 +1268,7 @@ def _accumulate_gene_split_event_vjp_kernel(
         tl.store(total_donor_adjoint_ptr + tl.num_programs(0) + split_index + scalar_lane_offset, right_total_donor_adjoint)
         if OUTPUT_SIDE_ACTIVE:
             if SIDE_ACTIVE_THRESHOLD_ENABLED:
-                threshold = tl.load(side_active_threshold_ptr).to(DTYPE)
+                threshold = tl.load(side_active_threshold_ptr)
                 left_donor_adjoint_bound = left_donor_adjoint_abs_sum
                 right_donor_adjoint_bound = right_donor_adjoint_abs_sum
                 tl.store(active_donor_side_ptr + split_index + scalar_lane_offset, left_donor_adjoint_bound > threshold)
@@ -1294,18 +1294,18 @@ def _accumulate_gene_split_event_vjp_kernel(
             c1_valid = (c1 < S) & mask
             c2_valid = (c2 < S) & mask
 
-            left_child1_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
-            left_child2_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
-            right_child1_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
-            right_child2_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
+            left_child1_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + c1, mask=c1_valid, other=NEG_LARGE)
+            left_child2_reconciliation_log_likelihood = tl.load(Pi_star_ptr + left_clade_base + c2, mask=c2_valid, other=NEG_LARGE)
+            right_child1_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + c1, mask=c1_valid, other=NEG_LARGE)
+            right_child2_reconciliation_log_likelihood = tl.load(Pi_star_ptr + right_clade_base + c2, mask=c2_valid, other=NEG_LARGE)
 
-            parent_reconciliation_log_likelihood = tl.load(Pi_star_ptr + parent_clade_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
-            parent_adjoint = tl.load(v_k_ptr + parent_adjoint_base + s_offs, mask=mask, other=0.0).to(DTYPE)
+            parent_reconciliation_log_likelihood = tl.load(Pi_star_ptr + parent_clade_base + s_offs, mask=mask, other=NEG_LARGE)
+            parent_adjoint = tl.load(v_k_ptr + parent_adjoint_base + s_offs, mask=mask, other=0.0)
 
             if PARAM_LAYOUT == 1:
-                speciation_log_probability = tl.load(log_pS_arg + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+                speciation_log_probability = tl.load(log_pS_arg + s_offs, mask=valid_mask, other=NEG_LARGE)
             elif PARAM_LAYOUT == 3:
-                speciation_log_probability = tl.load(log_pS_arg + parent_family * S + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+                speciation_log_probability = tl.load(log_pS_arg + parent_family * S + s_offs, mask=valid_mask, other=NEG_LARGE)
             else:
                 speciation_log_probability = log_pS
 
@@ -1336,10 +1336,10 @@ def _accumulate_gene_split_event_vjp_kernel(
                 tl.atomic_add(pi_r_c2_out, speciation_lr_event_vjp, sem="relaxed", mask=c2_valid)
                 tl.atomic_add(pi_l_c2_out, speciation_rl_event_vjp, sem="relaxed", mask=c2_valid)
             else:
-                pi_l_c1_cur = tl.load(pi_l_c1_out, mask=c1_valid, other=0.0).to(DTYPE)
-                pi_r_c1_cur = tl.load(pi_r_c1_out, mask=c1_valid, other=0.0).to(DTYPE)
-                pi_r_c2_cur = tl.load(pi_r_c2_out, mask=c2_valid, other=0.0).to(DTYPE)
-                pi_l_c2_cur = tl.load(pi_l_c2_out, mask=c2_valid, other=0.0).to(DTYPE)
+                pi_l_c1_cur = tl.load(pi_l_c1_out, mask=c1_valid, other=0.0)
+                pi_r_c1_cur = tl.load(pi_r_c1_out, mask=c1_valid, other=0.0)
+                pi_r_c2_cur = tl.load(pi_r_c2_out, mask=c2_valid, other=0.0)
+                pi_l_c2_cur = tl.load(pi_l_c2_out, mask=c2_valid, other=0.0)
                 tl.store(pi_l_c1_out, pi_l_c1_cur + speciation_lr_event_vjp, mask=c1_valid)
                 tl.store(pi_r_c1_out, pi_r_c1_cur + speciation_rl_event_vjp, mask=c1_valid)
                 tl.store(pi_r_c2_out, pi_r_c2_cur + speciation_lr_event_vjp, mask=c2_valid)
@@ -1414,7 +1414,7 @@ def _select_active_transfer_donor_sides_kernel(
 
     lane = tl.arange(0, 1)
     if SIDE_ACTIVE_THRESHOLD_ENABLED:
-        threshold = tl.load(side_active_threshold_ptr).to(DTYPE)
+        threshold = tl.load(side_active_threshold_ptr)
         tl.store(side_active_ptr + row + lane, row_abssum > threshold)
     else:
         tl.store(side_active_ptr + row + lane, row_absmax != 0.0)
@@ -1473,9 +1473,9 @@ def _accumulate_transfer_subtree_vjp_kernel(
 
     pi_base = child * stride_C
     row_base = row * S
-    row_max = tl.load(pibar_row_max_ptr + child).to(DTYPE)
+    row_max = tl.load(pibar_row_max_ptr + child)
     row_max_safe = tl.where(row_max != NEG_LARGE, row_max, tl.zeros_like(row_max))
-    total_donor_adjoint = tl.load(total_donor_adjoint_ptr + row).to(DTYPE)
+    total_donor_adjoint = tl.load(total_donor_adjoint_ptr + row)
 
     tl.debug_barrier()
     for level in range(0, N_LEVELS):
