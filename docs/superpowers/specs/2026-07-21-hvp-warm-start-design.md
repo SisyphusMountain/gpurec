@@ -30,10 +30,17 @@ cold inside the HVP construction:
 
 ## Goals
 
-- Warm-start both (1) and (2), gated the same way backward's warm-start is
-  (`GPUREC_WARM_ADJOINT` env var + the existing `warm_adjoint_ok` / memory-gate
-  machinery), plus a new opt-out config field (`use_hvp_warm_start`, default
-  `True`) for the HVP-specific piece.
+- Warm-start both (1) and (2), controlled entirely through `SolverOptions` —
+  no new `os.environ` reads. Backward's existing `GPUREC_WARM_ADJOINT` +
+  `static.warm_v` mechanism stays exactly as it is (out of scope here); the
+  new HVP gating is independent of that env var, gated instead by the new
+  `use_hvp_warm_start` config field (default `True`) and the existing
+  `static.warm_adjoint_ok` memory gate — which is itself computed purely from
+  a memory-budget check (`warm_adjoint_fits` in `gpurec/api/model.py`,
+  `gpurec/core/memory_policy.py`) at model-build time, with no dependency on
+  the env var either. So HVP warm-starting is config-driven top to bottom:
+  set `use_hvp_warm_start=False` in your `GpurecConfig`/TOML file and it's off,
+  full stop.
 - The *tangent-adjoint* warm-start (part 2) additionally requires each call to
   opt in with an explicit `probe_id` (see below) — so even with the config
   field at its default, zero behavior change for existing CG/Lanczos-based HVP
@@ -63,13 +70,10 @@ cold inside the HVP construction:
   forwarded to `implicit_grad_loglik_vjp_wave`'s existing `warm_v` parameter.
 - `build_point_cache` (`gpurec/solver/hvp_exact.py`) gains the same
   `warm_v: dict | None = None`, forwarded to `vjp_root_to_theta`.
-- `make_exact_hvp_single` gates and supplies it exactly like `_execution.py`
-  does today:
+- `make_exact_hvp_single` gates and supplies it — config-only, no env var:
 
   ```python
-  if (os.environ.get("GPUREC_WARM_ADJOINT")
-          and getattr(static, "warm_adjoint_ok", True)
-          and static.solver_options.use_hvp_warm_start):
+  if getattr(static, "warm_adjoint_ok", True) and static.solver_options.use_hvp_warm_start:
       if static.warm_v is None:
           static.warm_v = {}
       _warm_v = static.warm_v
@@ -78,11 +82,14 @@ cold inside the HVP construction:
   ```
 
   then passes `warm_v=_warm_v` into `build_point_cache(...)`.
-- This is the *same* dict the primal gradient call already populates. If a
-  caller computes the gradient (warm-started) and then builds the HVP at
-  (nearly) the same theta, the point cache's own backward pass is already warm.
-  No new state, no new memory beyond what backward already carries when
-  `GPUREC_WARM_ADJOINT` is on.
+- This is the *same* dict the primal gradient call populates when
+  `GPUREC_WARM_ADJOINT` is on. The two mechanisms are decoupled but
+  cooperative: whichever code path (backward or HVP) populates `static.warm_v`
+  first, the other can read it back, as long as its own gate allows reading.
+  If backward's env var is off, `static.warm_v` simply starts empty and the
+  HVP path builds it up on its own (still a net win across repeated
+  Hessian-construction calls at nearby theta, just without a backward head
+  start). No new memory beyond a single `warm_v` dict's footprint.
 
 ### 2. Tangent-adjoint warm-start (new state, opt-in per call)
 
@@ -102,10 +109,9 @@ cold inside the HVP construction:
 - New per-static cache: `static.warm_v_tangent: dict[Any, dict[int, Tensor]]`
   — outer key is `probe_id`, inner key is wave-start offset `ws` (mirrors
   `static.warm_v`'s existing `{ws: tensor}` shape, just one layer deeper).
-- Gating: `GPUREC_WARM_ADJOINT` env var AND `static.warm_adjoint_ok` AND
-  `static.solver_options.use_hvp_warm_start` AND `probe_id is not None`. All
-  four must hold for a given probe's tangent-adjoint solve to read/write
-  `static.warm_v_tangent[probe_id]`.
+- Gating: `static.warm_adjoint_ok` AND `static.solver_options.use_hvp_warm_start`
+  AND `probe_id is not None` — no env var. All three must hold for a given
+  probe's tangent-adjoint solve to read/write `static.warm_v_tangent[probe_id]`.
 - Same NaN-safe sanitization as backward: pruned/inactive rows hold
   uninitialized scratch, so before caching, zero those rows via
   `torch.where(row_active, v_k, 0.0)` — never multiply (0 * NaN = NaN).
@@ -114,11 +120,11 @@ cold inside the HVP construction:
 
 - `SolverOptions.use_hvp_warm_start: bool = True` (`gpurec/api/solver_options.py`),
   following the `use_adjoint_pruning` naming convention. Governs *both*
-  mechanisms above. Default `True` (no behavior change for anyone, since
-  nothing currently passes `probe_id=`, and the point-cache reuse is pure
-  upside when `GPUREC_WARM_ADJOINT` is already on) — but settable to `False`
-  to opt out and save the `warm_v_tangent` memory (up to ~3x a single
-  `warm_v`'s footprint for genewise's 3-probe case) when memory is tight.
+  mechanisms above, entirely independently of `GPUREC_WARM_ADJOINT`. Default
+  `True` (no behavior change for anyone today, since nothing currently passes
+  `probe_id=`) — but settable to `False` to opt out and save the
+  `warm_v_tangent` memory (up to ~3x a single `warm_v`'s footprint for
+  genewise's 3-probe case) when memory is tight.
 - Added to `gpurec/config/defaults.toml`'s `[solver]` section, matching the
   dataclass default, same as every other `SolverOptions` field (the
   `test_defaults_toml_matches_dataclass_defaults` guard test enforces this).
@@ -133,17 +139,18 @@ function's byte-accounting in this pass — a follow-up if it proves necessary.
 ## Testing plan
 
 1. **Unit-level correctness**, extending `tests/test_genewise_hvp.py`:
-   - `GPUREC_WARM_ADJOINT` unset (default): byte-identical to current
-     behavior — critical regression guard, since this must never change
-     anything for existing callers.
-   - `GPUREC_WARM_ADJOINT` set, `probe_id` passed across two calls at nearby
-     theta: warm-started result still agrees with the FD/cold reference within
-     the existing tolerance (`tests/test_genewise_hvp.py`'s `5e-4` gate).
+   - No `probe_id` passed (default): byte-identical to current behavior —
+     critical regression guard, since this must never change anything for
+     existing callers, regardless of `use_hvp_warm_start`.
+   - `use_hvp_warm_start=True` (default), `probe_id` passed across two calls
+     at nearby theta: warm-started result still agrees with the FD/cold
+     reference within the existing tolerance (`tests/test_genewise_hvp.py`'s
+     `5e-4` gate).
    - Probe isolation: probe 0's warm state must not leak into probe 1's
      solve (build two probes with deliberately different cached `v_k` and
      confirm each reads back its own).
-   - `use_hvp_warm_start=False` disables warm-starting even with
-     `GPUREC_WARM_ADJOINT` set and `probe_id` passed.
+   - `use_hvp_warm_start=False` disables warm-starting even with `probe_id`
+     passed — confirms the config field is a real, sufficient off-switch.
 2. **End-to-end benchmark re-run**: repeat the archaea60 `fit_genewise` (FD)
    vs `fit_genewise_analytic` (analytic HVP) comparison from the earlier
    session, this time with both warm-start pieces wired into the analytic
