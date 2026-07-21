@@ -3,6 +3,7 @@ from bisect import bisect_right
 
 import torch
 
+from gpurec.config.precision import PrecisionOptions, resolve_torch_dtype, torch_dtype_name
 from gpurec.core.native import load_native_module
 
 _NATIVE_MODULE = "gpurec_preprocess"
@@ -10,10 +11,40 @@ _NATIVE_LIBRARY = "libgpurec_preprocess.so"
 _EXPECTED_SCHEMA_VERSION = 1
 
 
+def _resolve_accumulator_dtype(accumulator_dtype: torch.dtype | str | None) -> torch.dtype:
+    """Resolve the precision-policy default for standalone scheduling helpers."""
+    if accumulator_dtype is None:
+        return PrecisionOptions().accumulator_torch_dtype
+    if isinstance(accumulator_dtype, str):
+        return resolve_torch_dtype(accumulator_dtype)
+    # Validate tensor dtypes at this boundary instead of failing later in a
+    # kernel launcher with a less useful error.
+    torch_dtype_name(accumulator_dtype)
+    return accumulator_dtype
+
+
+def _resolve_model_dtype(model_dtype: torch.dtype | str | None) -> torch.dtype:
+    """Resolve the dense-kernel dtype for standalone scheduling helpers."""
+    if model_dtype is None:
+        return PrecisionOptions().model_torch_dtype
+    if isinstance(model_dtype, str):
+        return resolve_torch_dtype(model_dtype)
+    torch_dtype_name(model_dtype)
+    return model_dtype
+
+
 def _normalize_batch_packing(batch_packing: str, clade_budget: int | None) -> str:
     if clade_budget is None and batch_packing in {"depth_first_fit", "clade_first_fit"}:
         return "sequential"
     return batch_packing
+
+
+def _materialize_split_probabilities(values, *, device) -> dict[torch.dtype, torch.Tensor]:
+    """Create both supported dense-kernel variants directly from f64 payload values."""
+    return {
+        dtype: torch.tensor(values, dtype=dtype, device=device).contiguous()
+        for dtype in (torch.float32, torch.float64)
+    }
 
 
 def _load_native_module():
@@ -38,7 +69,9 @@ def preprocess_dataset(
     batch_packing: str = "depth_first_fit",
     max_wave_size: int = 8192,
     family_group_assignments: list[int] | None = None,
+    accumulator_dtype: torch.dtype | str | None = None,
 ):
+    accumulator_dtype = _resolve_accumulator_dtype(accumulator_dtype)
     batch_packing = _normalize_batch_packing(batch_packing, clade_budget)
     raw = json.loads(
         _load_native_module().preprocess_dataset(
@@ -55,10 +88,11 @@ def preprocess_dataset(
     )
     _validate_schema_version(raw, payload_name="preprocess_dataset")
     species = raw["species"]
-    # float64: the transfer row-max is computed in f64 by the Rust preprocessor and added into
-    # max_transfer (extract_parameters_uniform, which casts it to the compute dtype). Storing it
-    # f64 keeps full precision for f64 models; f32 models downcast (== the old direct-f32 value).
-    species["unnorm_row_max"] = torch.tensor(species["unnorm_row_max"], dtype=torch.float64)
+    # The Rust preprocessor returns ordinary Python floats. Preserve them at the configured
+    # accumulation precision because this row maximum participates in the transfer softmax.
+    species["unnorm_row_max"] = torch.tensor(
+        species["unnorm_row_max"], dtype=accumulator_dtype
+    )
     for key in (
         "sp_child1", "sp_child2", "sp_parent", "sp_subtree_start", "sp_subtree_end",
         "compact_level_parents", "compact_level_child1", "compact_level_child2",
@@ -70,7 +104,15 @@ def preprocess_dataset(
     return raw
 
 
-def build_wave_layout_from_plan(payload, *, device: torch.device | str):
+def build_wave_layout_from_plan(
+    payload,
+    *,
+    device: torch.device | str,
+    model_dtype: torch.dtype | str | None = None,
+    accumulator_dtype: torch.dtype | str | None = None,
+):
+    model_dtype = _resolve_model_dtype(model_dtype)
+    _resolve_accumulator_dtype(accumulator_dtype)
     plan = payload["plan"]
     logp = [float(value) for value in payload["log_split_probs_sorted"]]
     index_dtype = torch.int32
@@ -87,17 +129,18 @@ def build_wave_layout_from_plan(payload, *, device: torch.device | str):
         }
         if raw_meta.get("has_splits"):
             split_indices = [int(idx) for idx in raw_meta.get("split_indices", [])]
+            split_values = [logp[idx] for idx in split_indices]
+            split_probabilities = _materialize_split_probabilities(
+                split_values, device=device
+            )
             meta["sl"] = torch.tensor(raw_meta["sl"], dtype=index_dtype, device=device).contiguous()
             meta["sr"] = torch.tensor(raw_meta["sr"], dtype=index_dtype, device=device).contiguous()
             meta["reduce_idx"] = torch.tensor(raw_meta["reduce_idx"], dtype=index_dtype, device=device).contiguous()
-            meta["log_split_probs"] = torch.tensor(
-                [logp[idx] for idx in split_indices],
-                # float64: CCP split log-probs are f64 from the Rust preprocessor; the DTS
-                # launchers cast to the compute dtype at the kernel boundary. Full precision
-                # for f64 models; f32 models downcast (identical to the old direct-f32 static).
-                dtype=torch.float64,
-                device=device,
-            ).contiguous()
+            # Rust computes and serializes these values as f64. Keep prebuilt
+            # variants for both supported model dtypes so ``model.to(...)`` and
+            # explicit runtime parameters never widen an fp32-quantized tensor.
+            meta["_log_split_probs_by_dtype"] = split_probabilities
+            meta["log_split_probs"] = split_probabilities[model_dtype]
             meta["n_eq1"] = int(raw_meta.get("n_eq1", 0))
             if raw_meta.get("eq1_reduce_idx"):
                 meta["eq1_reduce_idx"] = torch.tensor(
@@ -183,7 +226,16 @@ def _split_rows_for_family(family):
     return leaf_rows, parents, lefts, rights, logp
 
 
-def build_wave_layout(families, *, device: torch.device | str, max_wave_size: int = 8192):
+def build_wave_layout(
+    families,
+    *,
+    device: torch.device | str,
+    max_wave_size: int = 8192,
+    model_dtype: torch.dtype | str | None = None,
+    accumulator_dtype: torch.dtype | str | None = None,
+):
+    model_dtype = _resolve_model_dtype(model_dtype)
+    _resolve_accumulator_dtype(accumulator_dtype)
     offsets, levels_by_family, leaf_pairs = [], [], []
     split_parents_global, lefts_global, rights_global, logp_global = [], [], [], []
     root_ids_global = []
@@ -256,9 +308,9 @@ def build_wave_layout(families, *, device: torch.device | str, max_wave_size: in
     lefts_t = torch.tensor(lefts_new, dtype=index_dtype, device=device)
     rights_t = torch.tensor(rights_new, dtype=index_dtype, device=device)
     parents_t = torch.tensor(parents_new, dtype=index_dtype, device=device)
-    # float64: see build_wave_layout_from_plan / the DTS launchers — CCP split log-probs are f64
-    # from the Rust preprocessor and cast to the compute dtype at the DTS kernel boundary.
-    logp_t = torch.tensor(logp_global, dtype=torch.float64, device=device)
+    # ``logp_global`` contains Python doubles decoded from Rust f64 values. Build
+    # both supported kernel inputs directly, without an intermediate cast.
+    logp_by_dtype = _materialize_split_probabilities(logp_global, device=device)
     wave_metas = []
     order_head = 0
     for wave_idx, wave in enumerate(waves):
@@ -281,7 +333,12 @@ def build_wave_layout(families, *, device: torch.device | str, max_wave_size: in
             meta["sr"] = rights_t[split_tensor].contiguous()
             reduce_idx = (parents_t[split_tensor] - start).contiguous()
             meta["reduce_idx"] = reduce_idx
-            meta["log_split_probs"] = logp_t[split_tensor].contiguous()
+            split_probabilities = {
+                dtype: values[split_tensor].contiguous()
+                for dtype, values in logp_by_dtype.items()
+            }
+            meta["_log_split_probs_by_dtype"] = split_probabilities
+            meta["log_split_probs"] = split_probabilities[model_dtype]
             meta["n_eq1"] = n_eq1
             if n_eq1:
                 meta["eq1_reduce_idx"] = reduce_idx[:n_eq1].contiguous()

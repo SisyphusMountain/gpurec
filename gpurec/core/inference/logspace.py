@@ -11,6 +11,11 @@ def safe_log2(x: torch.Tensor) -> torch.Tensor:
     return torch.where(positive, torch.log2(torch.where(positive, x, torch.ones_like(x))), x.new_full(x.shape, _NEG_INF))
 
 
+def survival_by_species_from_E(E: torch.Tensor) -> torch.Tensor:
+    """Per-species survival probabilities ``1 - 2**E`` without cancellation."""
+    return -torch.expm1(E * _LN2)
+
+
 def survival_from_E(E: torch.Tensor, origination_probs: torch.Tensor | None = None, *, keepdim: bool = False) -> torch.Tensor:
     """Survival (non-extinction) probability ``1 - sum_s w_s 2^{E_s}``, computed without cancellation.
 
@@ -26,7 +31,7 @@ def survival_from_E(E: torch.Tensor, origination_probs: torch.Tensor | None = No
     (exact as ``E_s -> 0``), and a weighted sum of non-negative terms cannot cancel.  No clamp: when a
     family is genuinely certain to go extinct (``E_s == 0`` for all ``s``) this returns exactly ``0``.
     """
-    surv_s = -torch.expm1(E * _LN2)  # 1 - 2^{E_s} per species, >= 0
+    surv_s = survival_by_species_from_E(E)
     if origination_probs is None:
         return surv_s.mean(dim=-1, keepdim=keepdim)
     return (origination_probs * surv_s).sum(dim=-1, keepdim=keepdim)

@@ -38,6 +38,15 @@ class SolverOptions:
     e_adjoint_solver: str = "gmres"
     adjoint_pruning_threshold: float = 1e-6
     use_adjoint_pruning: bool = True
+    # Warm-starts gpurec.solver.hvp_exact's analytic-HVP construction: (1) reuses the existing
+    # static.warm_v dict for build_point_cache's own backward pass (no new memory), and (2) caches
+    # the tangent-adjoint sweep's own v_k per probe_id in static.warm_v_tangent (new memory, ~probe
+    # count x a single warm_v's footprint). Independent of GPUREC_WARM_ADJOINT -- config-only, no
+    # env var. Default True: part (1) is pure upside when repeatedly calling make_exact_hvp on the
+    # same static; part (2) only activates when a caller explicitly passes probe_id= to hvp(), so
+    # existing CG/Lanczos-based callers (which never do) are unaffected either way. Set False to
+    # save the warm_v_tangent memory.
+    use_hvp_warm_start: bool = True
     pibar_side_threshold: float = 0.0
     # Convergence tolerance for the E-step tangent fixed point in the forward-mode
     # JVP (`gpurec.solver.forward_tangent`). Distinct from `e_tol` (the primal

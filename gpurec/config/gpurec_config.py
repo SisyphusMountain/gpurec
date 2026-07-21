@@ -9,6 +9,7 @@ import torch
 from gpurec.api.solver_options import SolverOptions
 from gpurec.config.memory import MemoryOptions
 from gpurec.config.newton import NewtonOptions
+from gpurec.config.precision import PrecisionOptions
 from gpurec.config.rates import RateBounds
 
 # Package-relative (NOT cwd-relative) path to the hand-written TOML mirror of
@@ -109,10 +110,11 @@ class GpurecConfig:
     """Top-level configuration composing the per-area option dataclasses.
 
     Purely a composition root: constructing ``GpurecConfig()`` is identical to
-    constructing each of the five sub-option dataclasses with their own
+    constructing each of the six sub-option dataclasses with their own
     defaults. No existing dataclass is modified by this module.
     """
     solver: SolverOptions = field(default_factory=SolverOptions)
+    precision: PrecisionOptions = field(default_factory=PrecisionOptions)
     newton: NewtonOptions = field(default_factory=NewtonOptions)
     rates: RateBounds = field(default_factory=RateBounds)
     regularizer: PenaltyOptions = field(default_factory=_default_penalty_options)
@@ -120,7 +122,14 @@ class GpurecConfig:
 
     def validate(self) -> None:
         """Delegate to every sub-option's own ``validate`` (when it defines one)."""
-        for sub in (self.solver, self.newton, self.rates, self.regularizer, self.memory):
+        for sub in (
+            self.solver,
+            self.precision,
+            self.newton,
+            self.rates,
+            self.regularizer,
+            self.memory,
+        ):
             validate_fn = getattr(sub, "validate", None)
             if callable(validate_fn):
                 validate_fn()
