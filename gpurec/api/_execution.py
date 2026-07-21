@@ -107,7 +107,6 @@ def evaluate_static_loss_grad(
             specieswise=static.specieswise,
             genewise=static.genewise,
             neumann_terms=static.solver_options.neumann_terms,
-            self_loop_solver=static.solver_options.self_loop_solver,
             bicgstab_max_iter=static.solver_options.bicgstab_max_iter,
             bicgstab_tol=static.solver_options.bicgstab_tol,
             bicgstab_breakdown_tol=static.solver_options.bicgstab_breakdown_tol,
@@ -185,7 +184,6 @@ def evaluate_static_convergence(
             specieswise=static.specieswise,
             genewise=static.genewise,
             neumann_terms=nt,
-            self_loop_solver="neumann",  # diagnostic always measures Neumann convergence
             e_adjoint_solver=static.solver_options.e_adjoint_solver,
             adjoint_pruning_threshold=static.solver_options.adjoint_pruning_threshold,
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
@@ -265,7 +263,6 @@ def evaluate_static_loss_vector_grad(
             specieswise=static.specieswise,
             genewise=static.genewise,
             neumann_terms=static.solver_options.neumann_terms,
-            self_loop_solver=static.solver_options.self_loop_solver,
             bicgstab_max_iter=static.solver_options.bicgstab_max_iter,
             bicgstab_tol=static.solver_options.bicgstab_tol,
             bicgstab_breakdown_tol=static.solver_options.bicgstab_breakdown_tol,

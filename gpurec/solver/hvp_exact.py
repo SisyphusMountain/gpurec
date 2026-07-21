@@ -447,7 +447,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     compact_level_child1=sh["compact_level_child1"],
                     compact_level_child2=sh["compact_level_child2"],
                     grad_receiver_log_probs=d_gcol, use_receiver_weights=use_receiver_weights,
-                    self_loop_solver=so.self_loop_solver, return_last_increment=False,
+                    return_last_increment=False,
                     reserved_scratch_bytes=reserved_scratch_bytes,
                 )
                 aw0 = c_aw0 + l_aw0

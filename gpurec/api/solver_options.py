@@ -10,7 +10,6 @@ class SolverOptions:
     e_tol: float = 1e-8
     pi_iters: int = 64
     neumann_terms: int = 64
-    self_loop_solver: str = "neumann"
     # Max iterations for the linear E-adjoint / GGN solve. That solve now uses
     # GMRES (:func:`gpurec.api._implicit_grad._gmres`), which is breakdown-free and
     # converges in O(10) steps on the well-conditioned E-adjoint, so it early-stops
@@ -29,8 +28,7 @@ class SolverOptions:
     # called directly (e.g. its unit tests).
     bicgstab_breakdown_tol: Optional[float] = None
     # Solver for the E-adjoint backward linear solve ``(I - J) wE = q`` (the final linear
-    # solve in ``_e_adjoint_and_theta_vjp``, distinct from ``self_loop_solver`` above which
-    # governs the per-wave self-loop). ``"gmres"`` (default, backward compatible): matrix-free
+    # solve in ``_e_adjoint_and_theta_vjp``). ``"gmres"`` (default, backward compatible): matrix-free
     # GMRES, breakdown-free but has a theta-dependent fp32 residual floor from Arnoldi
     # orthogonalization (~1e-6 to 5.5e-6) that can make it fail to converge mid-optimization at
     # large species counts. ``"neumann"``: Neumann-series solve (no orthogonalization -> no fp32
@@ -55,10 +53,6 @@ class SolverOptions:
             raise ValueError("pi_iters must be an even integer at least 2")
         if int(self.neumann_terms) < 0:
             raise ValueError("neumann_terms must be non-negative")
-        self_loop_solver = str(self.self_loop_solver).strip().lower()
-        if self_loop_solver not in ("neumann", "gmres"):
-            raise ValueError("self_loop_solver must be one of: neumann, gmres")
-        self.self_loop_solver = self_loop_solver
         if int(self.bicgstab_max_iter) < 1:
             raise ValueError("bicgstab_max_iter must be at least 1")
         if self.bicgstab_tol is not None and float(self.bicgstab_tol) <= 0.0:
