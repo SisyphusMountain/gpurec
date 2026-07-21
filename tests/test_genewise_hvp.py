@@ -61,15 +61,20 @@ def test_build_point_cache_accepts_and_forwards_warm_v():
 
 @pytest.mark.gpu
 def test_build_point_cache_warm_v_poisoned_seed_changes_result():
-    """A warm_v dict populated with deliberately wrong values must be READ (proving
-    warm_v is actually forwarded, not silently dropped). As a linear system, the final
-    gradient should be numerically identical, but we verify the parameter is consumed by:
-    1. Checking that warm_v gets populated (stored back) on the first call
-    2. Verifying that poisoned values cause measurably different intermediate state or
-       convergence behavior (not just final answer, which must be identical for a linear solve)."""
+    """A warm_v dict populated with deliberately wrong values must measurably perturb
+    the result at a SMALL, non-contracting neumann_terms budget (proving warm_v is
+    actually READ, not silently dropped in forwarding). neumann_terms=1 makes the
+    self-loop's fixed-point update v <- rhs + A @ initial_v exactly LINEAR in
+    initial_v -- no contraction to wash the poisoned seed's effect away, unlike the
+    production neumann_terms=64 default where A^64 would shrink any perturbation
+    below detectable tolerance regardless of whether warm_v is truly consumed.
+    """
     from gpurec.solver.hvp_exact import build_point_cache
 
-    m = build_genewise_model()
+    so = SolverOptions(**{**_SO, "neumann_terms": 1})
+    so.validate()
+    m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 2, mode="genewise",
+                       device="cuda", dtype=torch.float64, solver_options=so)
     static = m.batch_statics[0]
     F = len(m.families)
     S = int(m.species_helpers["S"])
@@ -77,45 +82,21 @@ def test_build_point_cache_warm_v_poisoned_seed_changes_result():
     rw = torch.zeros(S, device="cuda", dtype=torch.float64)
     _l, sv = forward_solve([static], theta, rw)
 
-    # First call with empty warm_v dict -- it should get populated by side effect
+    g_theta_cold, _g_col_cold, _cache_cold = build_point_cache(static, theta, rw, sv, warm_v=None)
+
+    # Let a real call populate a warm_v dict naturally, then corrupt every cached tensor.
     warm_v = {}
-    g_theta_1, _g_col_1, _cache_1 = build_point_cache(static, theta, rw, sv, warm_v=warm_v)
-    assert len(warm_v) > 0, (
-        "warm_v was not populated -- build_point_cache is silently dropping warm_v "
-        "(not storing results back into the dict)"
+    build_point_cache(static, theta, rw, sv, warm_v=warm_v)
+    assert len(warm_v) > 0, "expected at least one wave to populate warm_v"
+    poisoned = {ws: v * 1000.0 + 50.0 for ws, v in warm_v.items()}
+
+    g_theta_poisoned, _g_col_p, _cache_p = build_point_cache(static, theta, rw, sv, warm_v=poisoned)
+
+    assert not torch.allclose(g_theta_poisoned, g_theta_cold), (
+        "poisoned warm_v seed had no effect at neumann_terms=1 (where the self-loop update "
+        "is exactly linear in initial_v) -- warm_v is being silently dropped somewhere in "
+        "vjp_root_to_theta -> implicit_grad_loglik_vjp_wave forwarding"
     )
-
-    # Verify the stored values are tensors of reasonable shape
-    for ws, v in warm_v.items():
-        assert isinstance(v, torch.Tensor), f"warm_v[{ws}] is not a tensor"
-        assert v.dtype == theta.dtype, f"warm_v[{ws}] dtype mismatch"
-
-    # Second call with the same warm_v dict -- should reuse cached adjoints
-    warm_v_reuse = dict(warm_v)  # Make a copy to preserve originals for comparison
-    g_theta_2, _g_col_2, _cache_2 = build_point_cache(static, theta, rw, sv, warm_v=warm_v_reuse)
-
-    # The gradient should be identical (linear system property), confirming warm_v was actually used
-    torch.testing.assert_close(g_theta_1, g_theta_2, rtol=1e-10, atol=1e-12)
-
-    # Third call with poisoned warm_v dict -- if poisoning causes an error or NaN, warm_v IS being read
-    # (silent drop would just ignore the poisoned values). We don't expect the FINAL gradient to differ
-    # (linear system converges to same answer), but reading bad initial conditions may cause issues
-    # in the solve or downstream E-adjoint if warm_v is actually used.
-    poisoned = {ws: v * 1e6 + 1e3 for ws, v in warm_v.items()}
-    try:
-        g_theta_poisoned, _g_col_p, _cache_p = build_point_cache(static, theta, rw, sv, warm_v=poisoned)
-        # If we get here without error and poisoned values were actually READ and used as initial_v,
-        # the solve may have different convergence but should still arrive at same answer (linear system).
-        # The fact that this doesn't error proves warm_v is being forwarded (if silently dropped, this
-        # poisoned dict would be ignored entirely, just like an empty dict).
-        torch.testing.assert_close(g_theta_poisoned, g_theta_1, rtol=1e-10, atol=1e-12)
-    except (RuntimeError, ValueError, AssertionError) as e:
-        # If the backward solver fails or produces NaN/inf due to bad initial_v, that's also proof
-        # that warm_v was actually READ and used as initial conditions (silent drop wouldn't cause an error).
-        if "warm_v" in str(e).lower() or "initial" in str(e).lower():
-            raise  # Re-raise if it's clearly related to warm_v
-        # Otherwise, numerical issues from bad warm-start are expected and prove it was READ
-        pass
 
 
 @pytest.mark.gpu
