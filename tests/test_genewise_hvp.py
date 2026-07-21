@@ -533,3 +533,25 @@ def test_genewise_tangent_warm_start_disabled_by_config():
     u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, 0] = 1.0
     hvp(u.reshape(-1), probe_id=0)
     assert static.warm_v_tangent is None or 0 not in static.warm_v_tangent
+
+
+@pytest.mark.gpu
+def test_fit_genewise_converges_on_small_fixture():
+    """Direct behavior test for fit_genewise itself (previously only covered indirectly via
+    signature/config-wiring checks). Runs the real recipe end-to-end on a handful of families
+    and checks it actually reaches a converged, finite optimum -- this must pass both before and
+    after swapping the Hessian source, since the swap must not change the recipe's behavior
+    contract, only its internal Hessian construction."""
+    from gpurec.fit.genewise_fit import fit_genewise
+
+    res = fit_genewise(
+        f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 4,
+        device="cuda", dtype=torch.float32,
+        adam_steps=5, pi_tiers=(16,), neu_opt=16, neu_cert=16,
+        max_iter=60, certify=True, verbose=False,
+    )
+    assert res["n_families"] == 4
+    assert torch.isfinite(res["theta"]).all()
+    assert res["converged"] == 4
+    assert res["pg_max"] < 1e-2
+    assert math.isfinite(res["loss_bits"])

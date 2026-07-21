@@ -7,9 +7,9 @@ benchmarks; see ``kernel-bench/experiments/alerax_speed/OPTIMIZATION_PLAN.md``) 
 
   1. **Adam warm-up** -- a few large clipped steps (lr=1, grad-clip-norm 10) projected against the rate
      box, to enter the basin fast.
-  2. **Box-constrained trust-region Newton** on the per-family 3x3 **forward-difference** Hessian
-     (3 evals, reusing the base gradient; eigenvalue-clamped to ``mu`` -> PD), converging on the
-     per-family projected gradient ``|Pg| < tol``.
+  2. **Box-constrained trust-region Newton** on the per-family 3x3 **analytic-HVP** Hessian (3
+     broadcast unit-theta-component probes, warm-started across repeated rebuilds; eigenvalue-clamped
+     to ``mu`` -> PD), converging on the per-family projected gradient ``|Pg| < tol``.
   3. **Convergence-based rebatching** -- once a fraction of the active batch has converged (verified at
      the high pi/Neumann tier), those families are frozen and dropped and the model is rebuilt over the
      survivors, so the long tail of hard families runs on a small batch.
@@ -36,6 +36,8 @@ from gpurec.config import GpurecConfig, PrecisionOptions, resolve_torch_dtype
 from gpurec.config.rates import RateBounds
 from gpurec.core.inference.solver import solve_forward_residual
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
+from gpurec.solver.value_and_grad import forward_solve
+from gpurec.solver.hvp_exact import make_exact_hvp
 
 # The genewise rate-bounds preset (floor 1e-6, cap 2.0) -- tighter than the global (1e-10, None)
 # floor in gpurec.optimization / GeneReconModel's theta init. Single source for the fit_genewise
@@ -59,7 +61,7 @@ _BASE_SOLVER = {
 GENEWISE_REFERENCE = dict(
     adam_steps=5, adam_lr=1.0, grad_clip=10.0, pi_tiers=(16, 64), neu_opt=16, neu_cert=64,
     clade_budget=None, tol=1e-3, max_iter=120, check_every=4, drop_frac=0.30, trust=2.0,
-    fd_eps=1e-2, mu=1e-2, fwd_tol=1e-3, improve_frac=0.8, verify_drop=True, eager_defer=True,
+    mu=1e-2, fwd_tol=1e-3, improve_frac=0.8, verify_drop=True, eager_defer=True,
     warm_adjoint=True, certify=False,
 )
 
@@ -79,6 +81,38 @@ def _resolve_gene_trees(spec) -> list[str]:
     if not paths:
         raise FileNotFoundError(f"no gene trees found for: {spec}")
     return paths
+
+
+def _analytic_hessian(m, theta, pi_cur):
+    """Per-family [G,3,3] curvature via 3 broadcast analytic-HVP probes, warm-started via
+    probe_id. Mirrors hvp_exact.py's _make_exact_hvp_streaming genewise gather/scatter for
+    single-batch (which the top-level make_exact_hvp does NOT do for you), and lets it handle
+    multi-batch itself."""
+    G = theta.shape[0]
+    dev, dtype = theta.device, theta.dtype
+    rw = m.receiver_weights.detach()
+    if len(m.batch_statics) > 1:
+        hvp = make_exact_hvp(m.batch_statics, theta, rw, None, tangent_self_iters=pi_cur)
+        cols = []
+        for j in range(3):
+            u = torch.zeros(G, 3, device=dev, dtype=dtype); u[:, j] = 1.0
+            cols.append(hvp(u.reshape(-1), probe_id=j)[: G * 3].reshape(G, 3))
+        H = torch.stack(cols, dim=-1)
+    else:
+        static = m.batch_statics[0]
+        fam = static.family_index_tensor.to(dev)
+        theta_b = theta.index_select(0, fam).contiguous()
+        _l, sv = forward_solve(m.batch_statics, theta, rw)
+        hvp = make_exact_hvp(m.batch_statics, theta_b, rw, sv, tangent_self_iters=pi_cur)
+        cols = []
+        for j in range(3):
+            u_b = torch.zeros(G, 3, device=dev, dtype=dtype); u_b[:, j] = 1.0
+            out_b = hvp(u_b.reshape(-1), probe_id=j)[: G * 3].reshape(G, 3)
+            col = torch.zeros(G, 3, device=dev, dtype=dtype)
+            col.index_add_(0, fam, out_b)
+            cols.append(col)
+        H = torch.stack(cols, dim=-1)
+    return 0.5 * (H + H.transpose(1, 2))
 
 
 def fit_genewise(
@@ -102,7 +136,6 @@ def fit_genewise(
     check_every: int = 4,
     drop_frac: float = 0.30,
     trust: float = 2.0,
-    fd_eps: float = 1e-2,
     mu: float = 1e-2,
     fwd_tol: float = 1e-3,
     improve_frac: float = 0.8,
@@ -290,11 +323,7 @@ def fit_genewise(
                             Hd = None
                             continue
                 if it % 5 == 0 or Hd is None or Hd.shape[0] != sub.shape[0]:
-                    H = torch.zeros(sub.shape[0], 3, 3, device=dev, dtype=dtype)
-                    for j in range(3):
-                        tp = sub.clone(); tp[:, j] += fd_eps; _, gp = lg(m, tp)
-                        H[:, :, j] = (gp - g) / fd_eps            # forward difference (reuse base g) -> 3 evals
-                    H = 0.5 * (H + H.transpose(1, 2))
+                    H = _analytic_hessian(m, sub, pi_cur)
                     e, V = torch.linalg.eigh(H)
                     Hd = V @ torch.diag_embed(e.clamp(min=mu)) @ V.transpose(1, 2)   # convexify -> PD
                 fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
@@ -325,12 +354,7 @@ def fit_genewise(
         try:
             mfull = build(fam_paths, cert_pi, neu_cert)
             _, g = lg(mfull, theta); pg = pgmax(theta, g)
-            H = torch.zeros(F_all, 3, 3, device=dev, dtype=dtype)
-            for j in range(3):
-                tp = theta.clone(); tp[:, j] += fd_eps; _, gp = lg(mfull, tp)
-                tm = theta.clone(); tm[:, j] -= fd_eps; _, gm = lg(mfull, tm)
-                H[:, :, j] = (gp - gm) / (2 * fd_eps)
-            H = 0.5 * (H + H.transpose(1, 2))
+            H = _analytic_hessian(mfull, theta, cert_pi)
             lam_min = torch.linalg.eigvalsh(H)[:, 0]
             bound_active = ((theta <= lo + bounds.bound_active_eps) | (theta >= hi - bounds.bound_active_eps)).any(dim=1)
             conv = pg < tol
