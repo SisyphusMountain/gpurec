@@ -22,6 +22,7 @@ from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.kernels.dts_so import dts_backward_so
 from gpurec.core.kernels.e_step import e_step_triton_autograd
 from gpurec.core.kernels.e_step_so import e_step_backward_so
+from gpurec.core.kernels.pi_forward import _select_log_split_probs
 from gpurec.core.kernels.wave_backward import (
     accumulate_gene_split_event_vjp, accumulate_transfer_complement_vjp_from_donor_adjoint,
     solve_reconciliation_wave_vjp,
@@ -546,7 +547,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         tangent_constants["d_duplication_log_probability_param"],
                         tangent_constants["d_speciation_log_probability_param"],
                         gene_split_log_likelihood, family_idx,
-                        log_split_probs=meta.get("log_split_probs"), family_offset=ws,
+                        log_split_probs=_select_log_split_probs(meta, sv["pi_wave"].dtype), family_offset=ws,
                         pi_offset=pi_offset,
                         pibar_offset=pibar_offset,
                         gene_split_offset=gene_split_offset,
@@ -681,7 +682,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     ) = accumulate_gene_split_event_vjp(
                         sv["pi_wave"], sv["pibar_wave"], dv, ws, meta["sl"], meta["sr"],
                         meta["reduce_idx"],
-                        meta.get("log_split_probs", meta["sl"].new_zeros((int(meta["sl"].numel()),), dtype=dtype)),
+                        _select_log_split_probs(meta, dtype),
                         wave_constants["duplication_log_probability_param"],
                         wave_constants["speciation_log_probability_param"],
                         species_child1, species_child2, d_rhs, S,
