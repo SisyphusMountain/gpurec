@@ -25,7 +25,10 @@ from gpurec.core.parameters.extract_parameters import (
     as_family_param, as_family_species, extract_parameters_uniform,
     extract_parameters_weighted_receivers,
 )
-from gpurec.core.kernels.pi_forward import compute_dts_forward
+from gpurec.core.kernels.pi_forward import (
+    _select_log_split_probs,
+    compute_dts_forward,
+)
 from gpurec.core.kernels.dts_tangent import compute_dts_tangent
 from gpurec.core.kernels.e_step_tangent import e_tangent_fixed_point
 from gpurec.core.kernels.wave_tangent import (
@@ -302,7 +305,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 W, meta["reduce_idx"],
                 base["duplication_log_probability_param"],
                 base["speciation_log_probability_param"], family_idx=family_idx,
-                log_split_probs=meta.get("log_split_probs"), n_single_split_parents=meta.get("n_eq1"),
+                log_split_probs=_select_log_split_probs(meta, pi.dtype), n_single_split_parents=meta.get("n_eq1"),
                 single_split_parent_rows=meta.get("eq1_reduce_idx"), multiple_split_group_ptr=meta.get("ge2_ptr"),
                 multiple_split_parent_rows=meta.get("ge2_parent_ids"),
                 max_splits_per_multiple_parent=meta.get("ge2_max_fanout"), family_offset=ws,
@@ -315,7 +318,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 tangent_constants["d_duplication_log_probability_param"],
                 tangent_constants["d_speciation_log_probability_param"],
                 gene_split_log_likelihood, family_idx,
-                log_split_probs=meta.get("log_split_probs"), family_offset=ws,
+                log_split_probs=_select_log_split_probs(meta, pi.dtype), family_offset=ws,
                 pi_offset=pi_offset, pibar_offset=pibar_offset,
                 gene_split_offset=gene_split_offset,
             )
