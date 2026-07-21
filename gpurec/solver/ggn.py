@@ -31,7 +31,7 @@ _LN2 = 0.6931471805599453
 def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_norm=True,
                       neumann_terms=None, use_pruning=None, bicgstab_tol=None, cache=None,
                       origination_log_probs=None, origination_probs=None,
-                      reserved_scratch_bytes=None):
+                      reserved_scratch_bytes=None, warm_v=None):
     """J^T applied to a root-score cotangent ``seed_root`` [n_root, S] -> ``(grad_theta [S,3], grad_col)``.
 
     Thin wrapper over the production ``implicit_grad_loglik_vjp_wave``: it unpacks ``static``/``sv``
@@ -76,7 +76,7 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
             getattr(static, "accumulator_dtype", None),
             fallback=sv["pi_wave"].dtype,
         ),
-        reserved_scratch_bytes=reserved_scratch_bytes,
+        reserved_scratch_bytes=reserved_scratch_bytes, warm_v=warm_v,
         pi_offset=pi_state.pi_offset,
         pibar_offset=pi_state.pibar_offset,
     )

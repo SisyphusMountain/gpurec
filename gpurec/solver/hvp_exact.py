@@ -65,7 +65,7 @@ def _warm_reserved_scratch_bytes(static):
 
 @torch.no_grad()
 def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=None,
-                      origination_probs=None):
+                      origination_probs=None, warm_v=None):
     """Cache each wave adjoint, split likelihood, activity mask, and the E adjoint.
 
     Returns ``(grad_theta, grad_receiver_weights, cache)``.
@@ -76,6 +76,7 @@ def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=N
         static, sv, None, theta, col_weights, drop_norm=False, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
         reserved_scratch_bytes=_warm_reserved_scratch_bytes(static),
+        warm_v=warm_v,
     )
     return grad_theta, grad_col, cache
 

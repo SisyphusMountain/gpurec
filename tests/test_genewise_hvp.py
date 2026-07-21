@@ -40,6 +40,26 @@ def test_batch_static_warm_v_tangent_defaults_to_none():
 
 
 @pytest.mark.gpu
+def test_build_point_cache_accepts_and_forwards_warm_v():
+    from gpurec.solver.hvp_exact import build_point_cache
+
+    m = build_genewise_model()
+    static = m.batch_statics[0]
+    F = len(m.families)
+    S = int(m.species_helpers["S"])
+    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
+    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
+    _l, sv = forward_solve([static], theta, rw)
+
+    # warm_v=None (today's behavior) and warm_v={} (empty -- no cached entries yet) must agree,
+    # since an empty dict has nothing to look up (init_v is None either way on a first call).
+    g_theta_none, g_col_none, _cache_none = build_point_cache(static, theta, rw, sv, )
+    g_theta_empty, g_col_empty, _cache_empty = build_point_cache(static, theta, rw, sv, warm_v={})
+    torch.testing.assert_close(g_theta_none, g_theta_empty)
+    torch.testing.assert_close(g_col_none, g_col_empty)
+
+
+@pytest.mark.gpu
 def test_genewise_theta_hvp_matches_fd():
     m = build_genewise_model()
     static = m.batch_statics[0]
