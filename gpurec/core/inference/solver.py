@@ -82,6 +82,7 @@ def solve_resident_e_pi(
         max_ancestor_depth=int(static.species_helpers["max_ancestor_depth"]),
         max_iter=solver_options.e_max_iter,
         tol=solver_options.e_tol,
+        leaf_fm_log=getattr(static, "leaf_fm_log", None),
     )
     pi_forward_result = pi_wave_forward(
         wave_layout=static.wave_layout,
