@@ -37,4 +37,5 @@ testpaths = ["tests"]
 markers = [
     "gpu: requires CUDA + Triton (deselect with -m 'not gpu')",
     "slow: long-running test",
+    "regression: golden non-regression benchmark (rustree-simulated; skips if rustree/CUDA absent)",
 ]

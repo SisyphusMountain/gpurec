@@ -26,6 +26,7 @@ import torch
 
 from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
+from gpurec.config import GpurecConfig
 from gpurec.config.rates import RateBounds
 from gpurec.fit.genewise_fit import _resolve_gene_trees
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
@@ -35,17 +36,27 @@ _LN2 = 0.6931471805599453
 _GLOBAL_RATE_BOUNDS = RateBounds.genewise()
 
 
-def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
+def _tier_solver_options(*, pi_iters: int, neumann_terms: int) -> SolverOptions:
+    """Apply this recipe's fixed Pi, Neumann, and E-adjoint tiers."""
+    return SolverOptions(
+        pi_iters=pi_iters,
+        neumann_terms=neumann_terms,
+        e_adjoint_solver="neumann",
+    )
+
+
+def fit_global(species_tree, gene_trees, *, device="cuda", dtype: torch.dtype | str | None = None,
                adam_steps=5, adam_lr=1.0, grad_clip=10.0, tol=1e-3, max_iter=120,
                trust=2.0, fd_eps=1e-2, mu=1e-2, hess_every=5, ftol=1e-6, patience=3,
                fit_pi=16, fit_neu=16, eval_pi=64, eval_neu=64, init_rate=None,
-               solver_options=None, verbose=False) -> dict:
+               solver_options=None, config: GpurecConfig | None = None,
+               verbose=False) -> dict:
     """Fit the shared 3-vector theta via the accumulated genewise recipe. Returns
     ``{mode, theta[cpu,3], rates[cpu,3], nll_bits, nll_nats, gnorm, n_families, wall_s, n_steps}``.
 
-    ``solver_options`` is accepted for API compatibility but not used: this recipe fixes its own
-    forward tiers (``fit_pi``/``fit_neu`` for the fit, ``eval_pi``/``eval_neu`` for the final NLL),
-    always with the Neumann E-adjoint.
+    This recipe fixes its own forward tiers (``fit_pi``/``fit_neu`` for the fit,
+    ``eval_pi``/``eval_neu`` for the final NLL), always with the Neumann
+    E-adjoint.
     """
     bounds = _GLOBAL_RATE_BOUNDS
     lo, hi = log2_rate_bounds(bounds=bounds)          # hi finite (2.0), so bound-active logic is well defined
@@ -56,9 +67,10 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
 
     # genewise-mode model at the cheap fit tier: per-family loss+grad that we ACCUMULATE (sum over
     # families) into the shared 3x3. sum_f NLL_f(theta) with theta shared -> grad = sum_f grad_f.
-    so_fit = SolverOptions(pi_iters=fit_pi, neumann_terms=fit_neu, e_adjoint_solver="neumann")
+    so_fit = _tier_solver_options(pi_iters=fit_pi, neumann_terms=fit_neu)
     model = GeneReconModel(species_tree, genes, mode="genewise", device=device, dtype=dtype,
-                           solver_options=so_fit)
+                           config=config, solver_options=so_fit)
+    dtype = model.dtype
     G = model.theta.shape[0]
 
     def lg(theta3):
@@ -131,9 +143,9 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype=torch.float32,
     if (eval_pi, eval_neu) != (fit_pi, fit_neu):
         del model
         torch.cuda.empty_cache()
-        so_eval = SolverOptions(pi_iters=eval_pi, neumann_terms=eval_neu, e_adjoint_solver="neumann")
+        so_eval = _tier_solver_options(pi_iters=eval_pi, neumann_terms=eval_neu)
         eval_model = GeneReconModel(species_tree, genes, mode="genewise", device=device, dtype=dtype,
-                                    solver_options=so_eval)
+                                    config=config, solver_options=so_eval)
     else:
         eval_model = model
     Gv = eval_model.theta.shape[0]

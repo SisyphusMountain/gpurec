@@ -2384,5 +2384,18 @@ C_1 3
         }
         assert_eq!(root_splits, 3);
         assert_eq!(deterministic_splits, 3);
+
+        // The native payload must retain f64 precision through JSON. Python
+        // can then materialize fp32 or fp64 tensors directly from these values
+        // without ever widening an already-quantized fp32 tensor.
+        assert_ne!(
+            expected_root_logp.to_bits(),
+            (expected_root_logp as f32 as f64).to_bits()
+        );
+        let encoded = serde_json::to_string(&ccp.log_split_probs_sorted).unwrap();
+        let decoded: Vec<f64> = serde_json::from_str(&encoded).unwrap();
+        for (before, after) in ccp.log_split_probs_sorted.iter().zip(decoded.iter()) {
+            assert_eq!(before.to_bits(), after.to_bits());
+        }
     }
 }
