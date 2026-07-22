@@ -1,21 +1,4 @@
-"""Second-order contraction of the dts cross-wave backward (for the analytic exact-Hessian HVP).
-
-Per split (l, r, parent w) the dts backward forms (wave_backward_kernels.py
-``_dts_cross_backward_accum_kernel``, at fixed adjoint v)
-``vd_k = v[w,s] * w_k`` with ``w_k = 2^{lsp + d_k - Pi_parent[w,s]}`` and the five terms
-d0=log_pD+Pi_l+Pi_r, d1=Pi_l+Pibar_r, d2=Pi_r+Pibar_l, d3=log_pS+Pi_l[c1]+Pi_r[c2],
-d4=log_pS+Pi_r[c1]+Pi_l[c2]; it scatters Pi cotangents, stages pibar cotangents
-``ud_l = vd2 * 2^{rm_l+mt_l-Pibar_l}`` / ``ud_r = vd1 * 2^{rm_r+mt_r-Pibar_r}``, and accumulates
-parameter cotangents. The pibar-tree VJP then routes ``contrib[j] = p'_c[j] * (A - sub[j])`` into
-the child rows (p'_c = 2^{(col+)Pi_child - rm_child}, A = sum ud, sub = subtree-or-self sums).
-
-This module computes the tangent of all of that AT FIXED v along (dPi, dPibar, dlog_pD, dlog_pS,
-dmc): kernel 1 (split-parallel) emits the d(vd) scatters into a global d_rhs buffer, stages
-(ud, d_ud) per side, and accumulates d(param) terms; kernel 2 (side-parallel) does the tree part
-``d(contrib) = dp'(A - sub) + p'(dA - dsub)`` with the same atomic path walks. The parent-Pi
-normalizer is NOT frozen (w_k genuinely depends on it: dw_k = ln2 w_k (dd_k - dPi_parent));
-the saved row maxes ARE frozen (normalizer invariance).
-"""
+"""DTS second-order kernels; see ``docs/latex/kernel_mathematics.tex``."""
 
 from __future__ import annotations
 
@@ -23,192 +6,387 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core.kernels.dts_fused import _load_rate, _tl_float_dtype
+from gpurec.core.kernels.pi_forward import (
+    _load_event_log_probability,
+    _select_log_split_probs,
+    _tl_float_dtype,
+    _validate_offset_tensor,
+    _validate_residual_tensors,
+)
 
 
 @triton.jit
-def _dts_split_so_kernel(
-    Pi, dPi, Pibar, dPibar, v_ptr,
-    lefts, rights, node_child1, node_child2,
-    log_pD, log_pS, dlog_pD, dlog_pS, mt_ptr, dmt_ptr,
-    log_split_probs, reduce_idx, item_idx, item_offset, ws,
+def _gene_split_event_vjp_directional_derivative_kernel(
+    Pi, dPi, Pibar, dPibar, Pi_offset, Pibar_offset, v_ptr,
+    split_left_rows, split_right_rows, species_child1, species_child2,
+    log_pD, log_pS, dlog_pD, dlog_pS, max_transfer_ptr, d_max_transfer_ptr,
+    log_split_probs, reduce_idx, family_idx, family_offset, ws,
     pibar_row_max_ptr,
     d_rhs_ptr,
-    ud_l_ptr, ud_r_ptr, dud_l_ptr, dud_r_ptr,
-    d_grad_pD_ptr, d_grad_pS_ptr, d_grad_mt_ptr,
+    left_donor_adjoint_ptr, right_donor_adjoint_ptr,
+    d_left_donor_adjoint_ptr, d_right_donor_adjoint_ptr,
+    d_grad_pD_ptr, d_grad_pS_ptr, d_grad_max_transfer_ptr,
     S: tl.constexpr, BLOCK_S: tl.constexpr, ROW_STRIDE: tl.constexpr,
-    BY_STATE: tl.constexpr, MT_ROW_STRIDE: tl.constexpr, DTYPE: tl.constexpr,
+    BY_SPECIES: tl.constexpr, MAX_TRANSFER_ROW_STRIDE: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
     LN2 = 0.6931471805599453
-    NEG = -float("inf")
+    NEG_INF = -float("inf")
     n = tl.program_id(0)
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
-    parent_w = tl.load(reduce_idx + n).to(tl.int64)
-    item = tl.load(item_idx + item_offset + parent_w).to(tl.int64)
-    left = tl.load(lefts + n).to(tl.int64)
-    right = tl.load(rights + n).to(tl.int64)
-    base_l = left * S
-    base_r = right * S
-    base_p = (ws + parent_w) * S
+    # Metadata remains int32 in memory; flattened address arithmetic is widened
+    # locally so row * S cannot overflow.
+    parent_wave_row = tl.load(reduce_idx + n).to(tl.int64)
+    family = tl.load(family_idx + family_offset + parent_wave_row).to(tl.int64)
+    left_clade_row = tl.load(split_left_rows + n).to(tl.int64)
+    right_clade_row = tl.load(split_right_rows + n).to(tl.int64)
+    left_base = left_clade_row * S
+    right_base = right_clade_row * S
+    parent_base = (ws + parent_wave_row) * S
 
-    pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG)
-    pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG)
-    dpi_l = tl.load(dPi + base_l + s_offs, mask=mask, other=0.0)
-    dpi_r = tl.load(dPi + base_r + s_offs, mask=mask, other=0.0)
-    pibar_l = tl.load(Pibar + base_l + s_offs, mask=mask, other=NEG)
-    pibar_r = tl.load(Pibar + base_r + s_offs, mask=mask, other=NEG)
-    dpibar_l = tl.load(dPibar + base_l + s_offs, mask=mask, other=0.0)
-    dpibar_r = tl.load(dPibar + base_r + s_offs, mask=mask, other=0.0)
-    pi_p = tl.load(Pi + base_p + s_offs, mask=mask, other=NEG)
-    dpi_p = tl.load(dPi + base_p + s_offs, mask=mask, other=0.0)
-    v = tl.load(v_ptr + parent_w * S + s_offs, mask=mask, other=0.0)
+    left_pi_offset = tl.load(Pi_offset + left_clade_row)
+    right_pi_offset = tl.load(Pi_offset + right_clade_row)
+    parent_pi_offset = tl.load(Pi_offset + ws + parent_wave_row)
+    left_pibar_offset = tl.load(Pibar_offset + left_clade_row)
+    right_pibar_offset = tl.load(Pibar_offset + right_clade_row)
+    # Offsets may use wider accumulation precision. Event probabilities belong
+    # to the residual recurrence, so frame shifts are narrowed exactly once at
+    # this boundary before they are combined with Pi/Pibar values.
+    child_frame_shift = (
+        left_pi_offset + right_pi_offset - parent_pi_offset
+    ).to(DTYPE)
+    left_transfer_frame_shift = (
+        left_pi_offset + right_pibar_offset - parent_pi_offset
+    ).to(DTYPE)
+    right_transfer_frame_shift = (
+        right_pi_offset + left_pibar_offset - parent_pi_offset
+    ).to(DTYPE)
+    left_exclusion_frame_shift = (left_pi_offset - left_pibar_offset).to(DTYPE)
+    right_exclusion_frame_shift = (right_pi_offset - right_pibar_offset).to(DTYPE)
 
-    log_d = _load_rate(log_pD, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
-    log_s = _load_rate(log_pS, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
-    dlog_d = _load_rate(dlog_pD, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
-    dlog_s = _load_rate(dlog_pS, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
-    mt = tl.load(mt_ptr + item * MT_ROW_STRIDE + s_offs, mask=mask, other=0.0)
-    dmt = tl.load(dmt_ptr + item * MT_ROW_STRIDE + s_offs, mask=mask, other=0.0)
+    left_pi = tl.load(Pi + left_base + s_offs, mask=mask, other=NEG_INF)
+    right_pi = tl.load(Pi + right_base + s_offs, mask=mask, other=NEG_INF)
+    d_left_pi = tl.load(dPi + left_base + s_offs, mask=mask, other=0.0)
+    d_right_pi = tl.load(dPi + right_base + s_offs, mask=mask, other=0.0)
+    left_pibar = tl.load(Pibar + left_base + s_offs, mask=mask, other=NEG_INF)
+    right_pibar = tl.load(Pibar + right_base + s_offs, mask=mask, other=NEG_INF)
+    d_left_pibar = tl.load(dPibar + left_base + s_offs, mask=mask, other=0.0)
+    d_right_pibar = tl.load(dPibar + right_base + s_offs, mask=mask, other=0.0)
+    parent_reconciliation_log_likelihood = tl.load(
+        Pi + parent_base + s_offs, mask=mask, other=NEG_INF
+    )
+    d_parent_reconciliation_log_likelihood = tl.load(
+        dPi + parent_base + s_offs, mask=mask, other=0.0
+    )
+    parent_adjoint = tl.load(
+        v_ptr + parent_wave_row * S + s_offs, mask=mask, other=0.0
+    )
 
-    c1 = tl.load(node_child1 + s_offs, mask=mask, other=S)
-    c2 = tl.load(node_child2 + s_offs, mask=mask, other=S)
-    c1v = mask & (c1 < S)
-    c2v = mask & (c2 < S)
-    pi_l_c1 = tl.load(Pi + base_l + c1, mask=c1v, other=NEG)
-    pi_r_c2 = tl.load(Pi + base_r + c2, mask=c2v, other=NEG)
-    pi_r_c1 = tl.load(Pi + base_r + c1, mask=c1v, other=NEG)
-    pi_l_c2 = tl.load(Pi + base_l + c2, mask=c2v, other=NEG)
-    dpi_l_c1 = tl.load(dPi + base_l + c1, mask=c1v, other=0.0)
-    dpi_r_c2 = tl.load(dPi + base_r + c2, mask=c2v, other=0.0)
-    dpi_r_c1 = tl.load(dPi + base_r + c1, mask=c1v, other=0.0)
-    dpi_l_c2 = tl.load(dPi + base_l + c2, mask=c2v, other=0.0)
-    lsp = tl.load(log_split_probs + n)
+    duplication_log_probability = _load_event_log_probability(
+        log_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE
+    )
+    speciation_log_probability = _load_event_log_probability(
+        log_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE
+    )
+    d_duplication_log_probability = _load_event_log_probability(
+        dlog_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE
+    )
+    d_speciation_log_probability = _load_event_log_probability(
+        dlog_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE
+    )
+    max_transfer = tl.load(
+        max_transfer_ptr + family * MAX_TRANSFER_ROW_STRIDE + s_offs,
+        mask=mask,
+        other=0.0,
+    )
+    d_max_transfer = tl.load(
+        d_max_transfer_ptr + family * MAX_TRANSFER_ROW_STRIDE + s_offs,
+        mask=mask,
+        other=0.0,
+    )
 
-    d0 = lsp + log_d + pi_l + pi_r
-    d1 = lsp + pi_l + pibar_r
-    d2 = lsp + pi_r + pibar_l
-    d3 = lsp + log_s + pi_l_c1 + pi_r_c2
-    d4 = lsp + log_s + pi_r_c1 + pi_l_c2
-    dd0 = dlog_d + dpi_l + dpi_r
-    dd1 = dpi_l + dpibar_r
-    dd2 = dpi_r + dpibar_l
-    dd3 = dlog_s + dpi_l_c1 + dpi_r_c2
-    dd4 = dlog_s + dpi_r_c1 + dpi_l_c2
+    c1 = tl.load(species_child1 + s_offs, mask=mask, other=S)
+    c2 = tl.load(species_child2 + s_offs, mask=mask, other=S)
+    child1_valid = mask & (c1 < S)
+    child2_valid = mask & (c2 < S)
+    left_pi_child1 = tl.load(Pi + left_base + c1, mask=child1_valid, other=NEG_INF)
+    right_pi_child2 = tl.load(Pi + right_base + c2, mask=child2_valid, other=NEG_INF)
+    right_pi_child1 = tl.load(Pi + right_base + c1, mask=child1_valid, other=NEG_INF)
+    left_pi_child2 = tl.load(Pi + left_base + c2, mask=child2_valid, other=NEG_INF)
+    d_left_pi_child1 = tl.load(dPi + left_base + c1, mask=child1_valid, other=0.0)
+    d_right_pi_child2 = tl.load(dPi + right_base + c2, mask=child2_valid, other=0.0)
+    d_right_pi_child1 = tl.load(dPi + right_base + c1, mask=child1_valid, other=0.0)
+    d_left_pi_child2 = tl.load(dPi + left_base + c2, mask=child2_valid, other=0.0)
+    split_log_prior = tl.load(log_split_probs + n)
+    duplication_log_term = (
+        split_log_prior
+        + duplication_log_probability
+        + left_pi
+        + right_pi
+        + child_frame_shift
+    )
+    transfer_left_retained_log_term = (
+        split_log_prior + left_pi + right_pibar + left_transfer_frame_shift
+    )
+    transfer_right_retained_log_term = (
+        split_log_prior + right_pi + left_pibar + right_transfer_frame_shift
+    )
+    speciation_lr_log_term = (
+        split_log_prior + speciation_log_probability + left_pi_child1 + right_pi_child2
+        + child_frame_shift
+    )
+    speciation_rl_log_term = (
+        split_log_prior + speciation_log_probability + right_pi_child1 + left_pi_child2
+        + child_frame_shift
+    )
+    d_duplication_log_term = (
+        d_duplication_log_probability + d_left_pi + d_right_pi
+    )
+    d_transfer_left_retained_log_term = d_left_pi + d_right_pibar
+    d_transfer_right_retained_log_term = d_right_pi + d_left_pibar
+    d_speciation_lr_log_term = (
+        d_speciation_log_probability + d_left_pi_child1 + d_right_pi_child2
+    )
+    d_speciation_rl_log_term = (
+        d_speciation_log_probability + d_right_pi_child1 + d_left_pi_child2
+    )
 
-    fin = mask & (pi_p != NEG)
-    w0 = tl.where(fin, tl.exp2(d0 - pi_p), zero)
-    w1 = tl.where(fin, tl.exp2(d1 - pi_p), zero)
-    w2 = tl.where(fin, tl.exp2(d2 - pi_p), zero)
-    w3 = tl.where(fin, tl.exp2(d3 - pi_p), zero)
-    w4 = tl.where(fin, tl.exp2(d4 - pi_p), zero)
-    vd1 = v * w1
-    vd2 = v * w2
-    dvd0 = v * LN2 * w0 * (dd0 - dpi_p)
-    dvd1 = v * LN2 * w1 * (dd1 - dpi_p)
-    dvd2 = v * LN2 * w2 * (dd2 - dpi_p)
-    dvd3 = v * LN2 * w3 * (dd3 - dpi_p)
-    dvd4 = v * LN2 * w4 * (dd4 - dpi_p)
+    is_finite = mask & (parent_reconciliation_log_likelihood != NEG_INF)
+    duplication_probability = tl.where(
+        is_finite,
+        tl.exp2(duplication_log_term - parent_reconciliation_log_likelihood),
+        zero,
+    )
+    transfer_left_retained_probability = tl.where(
+        is_finite,
+        tl.exp2(
+            transfer_left_retained_log_term
+            - parent_reconciliation_log_likelihood
+        ),
+        zero,
+    )
+    transfer_right_retained_probability = tl.where(
+        is_finite,
+        tl.exp2(
+            transfer_right_retained_log_term
+            - parent_reconciliation_log_likelihood
+        ),
+        zero,
+    )
+    speciation_lr_probability = tl.where(
+        is_finite,
+        tl.exp2(speciation_lr_log_term - parent_reconciliation_log_likelihood),
+        zero,
+    )
+    speciation_rl_probability = tl.where(
+        is_finite,
+        tl.exp2(speciation_rl_log_term - parent_reconciliation_log_likelihood),
+        zero,
+    )
+    transfer_left_retained_event_vjp = (
+        parent_adjoint * transfer_left_retained_probability
+    )
+    transfer_right_retained_event_vjp = (
+        parent_adjoint * transfer_right_retained_probability
+    )
+    d_duplication_event_vjp = (
+        parent_adjoint * LN2 * duplication_probability
+        * (
+            d_duplication_log_term
+            - d_parent_reconciliation_log_likelihood
+        )
+    )
+    d_transfer_left_retained_event_vjp = (
+        parent_adjoint * LN2 * transfer_left_retained_probability
+        * (
+            d_transfer_left_retained_log_term
+            - d_parent_reconciliation_log_likelihood
+        )
+    )
+    d_transfer_right_retained_event_vjp = (
+        parent_adjoint * LN2 * transfer_right_retained_probability
+        * (
+            d_transfer_right_retained_log_term
+            - d_parent_reconciliation_log_likelihood
+        )
+    )
+    d_speciation_lr_event_vjp = (
+        parent_adjoint * LN2 * speciation_lr_probability
+        * (d_speciation_lr_log_term - d_parent_reconciliation_log_likelihood)
+    )
+    d_speciation_rl_event_vjp = (
+        parent_adjoint * LN2 * speciation_rl_probability
+        * (d_speciation_rl_log_term - d_parent_reconciliation_log_likelihood)
+    )
 
     # tangent of the rhs scatters (same targets as the primal)
-    tl.atomic_add(d_rhs_ptr + base_l + s_offs, dvd0 + dvd1, sem="relaxed", mask=mask)
-    tl.atomic_add(d_rhs_ptr + base_r + s_offs, dvd0 + dvd2, sem="relaxed", mask=mask)
-    tl.atomic_add(d_rhs_ptr + base_l + c1, dvd3, sem="relaxed", mask=c1v)
-    tl.atomic_add(d_rhs_ptr + base_r + c1, dvd4, sem="relaxed", mask=c1v)
-    tl.atomic_add(d_rhs_ptr + base_r + c2, dvd3, sem="relaxed", mask=c2v)
-    tl.atomic_add(d_rhs_ptr + base_l + c2, dvd4, sem="relaxed", mask=c2v)
+    tl.atomic_add(d_rhs_ptr + left_base + s_offs, d_duplication_event_vjp + d_transfer_left_retained_event_vjp, sem="relaxed", mask=mask)
+    tl.atomic_add(d_rhs_ptr + right_base + s_offs, d_duplication_event_vjp + d_transfer_right_retained_event_vjp, sem="relaxed", mask=mask)
+    tl.atomic_add(d_rhs_ptr + left_base + c1, d_speciation_lr_event_vjp, sem="relaxed", mask=child1_valid)
+    tl.atomic_add(d_rhs_ptr + right_base + c1, d_speciation_rl_event_vjp, sem="relaxed", mask=child1_valid)
+    tl.atomic_add(d_rhs_ptr + right_base + c2, d_speciation_lr_event_vjp, sem="relaxed", mask=child2_valid)
+    tl.atomic_add(d_rhs_ptr + left_base + c2, d_speciation_rl_event_vjp, sem="relaxed", mask=child2_valid)
 
-    # pibar staging: ud = vd * 2^{rm + mt - Pibar} (rm frozen), d(ud) = dvd*f + vd*ln2*f*(dmt - dPibar)
-    rm_l = tl.load(pibar_row_max_ptr + left).to(DTYPE)
-    rm_r = tl.load(pibar_row_max_ptr + right).to(DTYPE)
-    fl_ok = mask & (pibar_l != NEG)
-    fr_ok = mask & (pibar_r != NEG)
-    f_l = tl.where(fl_ok, tl.exp2(rm_l + mt - pibar_l), zero)
-    f_r = tl.where(fr_ok, tl.exp2(rm_r + mt - pibar_r), zero)
-    ud_l = vd2 * f_l
-    ud_r = vd1 * f_r
-    dud_l = dvd2 * f_l + vd2 * LN2 * f_l * (dmt - dpibar_l)
-    dud_r = dvd1 * f_r + vd1 * LN2 * f_r * (dmt - dpibar_r)
-    tl.store(ud_l_ptr + n * S + s_offs, ud_l, mask=mask)
-    tl.store(ud_r_ptr + n * S + s_offs, ud_r, mask=mask)
-    tl.store(dud_l_ptr + n * S + s_offs, dud_l, mask=mask)
-    tl.store(dud_r_ptr + n * S + s_offs, dud_r, mask=mask)
+    # Convert each transfer-complement event VJP into the donor-adjoint
+    # coefficient used by the subtree formula. The stabilizing row maximum is
+    # frozen, so only max_transfer and Pibar contribute to the scale tangent.
+    left_pibar_row_max = tl.load(pibar_row_max_ptr + left_clade_row)
+    right_pibar_row_max = tl.load(pibar_row_max_ptr + right_clade_row)
+    left_exclusion_is_finite = mask & (left_pibar != NEG_INF)
+    right_exclusion_is_finite = mask & (right_pibar != NEG_INF)
+    left_exclusion_scale = tl.where(
+        left_exclusion_is_finite,
+        tl.exp2(
+            left_pibar_row_max + max_transfer - left_pibar
+            + left_exclusion_frame_shift
+        ),
+        zero,
+    )
+    right_exclusion_scale = tl.where(
+        right_exclusion_is_finite,
+        tl.exp2(
+            right_pibar_row_max + max_transfer - right_pibar
+            + right_exclusion_frame_shift
+        ),
+        zero,
+    )
+    left_donor_adjoint = (
+        transfer_right_retained_event_vjp * left_exclusion_scale
+    )
+    right_donor_adjoint = (
+        transfer_left_retained_event_vjp * right_exclusion_scale
+    )
+    d_left_donor_adjoint = (
+        d_transfer_right_retained_event_vjp * left_exclusion_scale
+        + transfer_right_retained_event_vjp * LN2 * left_exclusion_scale
+        * (d_max_transfer - d_left_pibar)
+    )
+    d_right_donor_adjoint = (
+        d_transfer_left_retained_event_vjp * right_exclusion_scale
+        + transfer_left_retained_event_vjp * LN2 * right_exclusion_scale
+        * (d_max_transfer - d_right_pibar)
+    )
+    tl.store(left_donor_adjoint_ptr + n * S + s_offs, left_donor_adjoint, mask=mask)
+    tl.store(right_donor_adjoint_ptr + n * S + s_offs, right_donor_adjoint, mask=mask)
+    tl.store(d_left_donor_adjoint_ptr + n * S + s_offs, d_left_donor_adjoint, mask=mask)
+    tl.store(d_right_donor_adjoint_ptr + n * S + s_offs, d_right_donor_adjoint, mask=mask)
 
     # parameter tangents (same buckets as the primal accumulations)
-    tl.atomic_add(d_grad_pD_ptr + item * S + s_offs, dvd0, sem="relaxed", mask=mask)
-    tl.atomic_add(d_grad_pS_ptr + item * S + s_offs, dvd3 + dvd4, sem="relaxed", mask=mask)
-    tl.atomic_add(d_grad_mt_ptr + item * S + s_offs, dvd1 + dvd2, sem="relaxed", mask=mask)
+    tl.atomic_add(d_grad_pD_ptr + family * S + s_offs, d_duplication_event_vjp, sem="relaxed", mask=mask)
+    tl.atomic_add(d_grad_pS_ptr + family * S + s_offs, d_speciation_lr_event_vjp + d_speciation_rl_event_vjp, sem="relaxed", mask=mask)
+    tl.atomic_add(d_grad_max_transfer_ptr + family * S + s_offs, d_transfer_left_retained_event_vjp + d_transfer_right_retained_event_vjp, sem="relaxed", mask=mask)
 
 
 @triton.jit
-def _dts_tree_so_kernel(
-    Pi_ptr, dPi_ptr, col_log_probs_ptr, dcol_ptr,
-    ud_ptr, dud_ptr,
-    sl_ptr, sr_ptr,
+def _transfer_subtree_vjp_directional_derivative_kernel(
+    Pi_ptr, dPi_ptr, receiver_log_probs_ptr, dreceiver_log_probs_ptr,
+    donor_adjoint_ptr, d_donor_adjoint_ptr,
+    split_left_rows_ptr, split_right_rows_ptr,
     pibar_row_max_ptr,
-    compact_level_ptr, compact_level_parent_ptr,
-    compact_level_child1_ptr, compact_level_child2_ptr,
-    d_rhs_ptr, d_grad_col_ptr,
+    level_offsets_ptr, level_parents_ptr,
+    level_child1_ptr, level_child2_ptr,
+    d_rhs_ptr, d_grad_receiver_log_probs_ptr,
     n_ws: tl.constexpr, S: tl.constexpr, stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr, N_LEVELS: tl.constexpr,
-    USE_COL_WEIGHTS: tl.constexpr, DTYPE: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr, DTYPE: tl.constexpr,
 ):
-    """Second-order tangent of the pibar-tree contrib, replacing the host parent-chain walk.
-
-    Bottom-up subtree-or-self accumulation (compact per-level, like the primal
-    ``_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel``) on BOTH ``ud`` -> ``sub`` and
-    ``dud`` -> ``dsub`` in place, then scatters
-    ``d_contrib = dp'(A - sub) + p'(dA - dsub)`` (dp' = ln2 p' dPi, p' frozen row-max) into
-    d_rhs at the child rows and into d_grad_col.
-    """
+    """Evaluate the DTS transfer-tree curvature term documented in LaTeX."""
     LN2 = 0.6931471805599453
     NEG = -float("inf")
     row = tl.program_id(0)
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
-    child_l = tl.load(sl_ptr + split_i).to(tl.int64)
-    child_r = tl.load(sr_ptr + split_i).to(tl.int64)
+    child_l = tl.load(split_left_rows_ptr + split_i).to(tl.int64)
+    child_r = tl.load(split_right_rows_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
 
     pi_base = child * stride_C
     row_base = row * S
-    rm = tl.load(pibar_row_max_ptr + child).to(DTYPE)
-    rm_safe = tl.where(rm != NEG, rm, tl.zeros_like(rm))
+    receiver_mass_log_scale = tl.load(pibar_row_max_ptr + child)
+    receiver_mass_log_scale_safe = tl.where(
+        receiver_mass_log_scale != NEG,
+        receiver_mass_log_scale,
+        tl.zeros_like(receiver_mass_log_scale),
+    )
 
-    # row totals A = sum_s ud, dA = sum_s dud (this program owns the full row): computed here,
-    # BEFORE the in-place level walk overwrites ud/dud with subtree sums.
-    A = tl.zeros((), dtype=DTYPE)
-    dA = tl.zeros((), dtype=DTYPE)
+    # Compute the full donor-adjoint totals before the in-place tree walk turns
+    # each entry into its subtree sum.
+    total_donor_adjoint = tl.zeros((), dtype=DTYPE)
+    d_total_donor_adjoint = tl.zeros((), dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        sm = s_offs < S
-        A += tl.sum(tl.load(ud_ptr + row_base + s_offs, mask=sm, other=0.0))
-        dA += tl.sum(tl.load(dud_ptr + row_base + s_offs, mask=sm, other=0.0))
-
+        species_mask = s_offs < S
+        total_donor_adjoint += tl.sum(
+            tl.load(
+                donor_adjoint_ptr + row_base + s_offs,
+                mask=species_mask,
+                other=0.0,
+            )
+        )
+        d_total_donor_adjoint += tl.sum(
+            tl.load(
+                d_donor_adjoint_ptr + row_base + s_offs,
+                mask=species_mask,
+                other=0.0,
+            )
+        )
+    # All warps must finish the original row totals before any warp overwrites
+    # an internal node with its subtree sum. For example, without this barrier
+    # one warp could replace u[parent] by u[parent]+u[c1]+u[c2] while another
+    # warp is still reducing U, causing c1 and c2 to be counted twice.
     tl.debug_barrier()
     for level in range(0, N_LEVELS):
-        level_start = tl.load(compact_level_ptr + level)
-        level_end = tl.load(compact_level_ptr + level + 1)
+        level_start = tl.load(level_offsets_ptr + level)
+        level_end = tl.load(level_offsets_ptr + level + 1)
         p_start = level_start
         while p_start < level_end:
             node_offs = p_start + tl.arange(0, BLOCK_S)
             node_mask = node_offs < level_end
-            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=-1)
-            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
-            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
-            pv = node_mask & (parent >= 0) & (parent < S)
-            c1v = node_mask & (c1 >= 0) & (c1 < S)
-            c2v = node_mask & (c2 >= 0) & (c2 < S)
-            pval = tl.load(ud_ptr + row_base + parent, mask=pv, other=0.0)
-            c1val = tl.load(ud_ptr + row_base + c1, mask=c1v, other=0.0)
-            c2val = tl.load(ud_ptr + row_base + c2, mask=c2v, other=0.0)
-            tl.store(ud_ptr + row_base + parent, pval + c1val + c2val, mask=pv)
-            dpval = tl.load(dud_ptr + row_base + parent, mask=pv, other=0.0)
-            dc1 = tl.load(dud_ptr + row_base + c1, mask=c1v, other=0.0)
-            dc2 = tl.load(dud_ptr + row_base + c2, mask=c2v, other=0.0)
-            tl.store(dud_ptr + row_base + parent, dpval + dc1 + dc2, mask=pv)
+            parent = tl.load(level_parents_ptr + node_offs, mask=node_mask, other=-1)
+            c1 = tl.load(level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(level_child2_ptr + node_offs, mask=node_mask, other=S)
+            parent_valid = node_mask & (parent >= 0) & (parent < S)
+            c1_mask = node_mask & (c1 >= 0) & (c1 < S)
+            c2_mask = node_mask & (c2 >= 0) & (c2 < S)
+            parent_adjoint = tl.load(
+                donor_adjoint_ptr + row_base + parent,
+                mask=parent_valid,
+                other=0.0,
+            )
+            child1_adjoint = tl.load(
+                donor_adjoint_ptr + row_base + c1, mask=c1_mask, other=0.0
+            )
+            child2_adjoint = tl.load(
+                donor_adjoint_ptr + row_base + c2, mask=c2_mask, other=0.0
+            )
+            tl.store(
+                donor_adjoint_ptr + row_base + parent,
+                parent_adjoint + child1_adjoint + child2_adjoint,
+                mask=parent_valid,
+            )
+            d_parent_adjoint = tl.load(
+                d_donor_adjoint_ptr + row_base + parent,
+                mask=parent_valid,
+                other=0.0,
+            )
+            d_child1_adjoint = tl.load(
+                d_donor_adjoint_ptr + row_base + c1,
+                mask=c1_mask,
+                other=0.0,
+            )
+            d_child2_adjoint = tl.load(
+                d_donor_adjoint_ptr + row_base + c2,
+                mask=c2_mask,
+                other=0.0,
+            )
+            tl.store(
+                d_donor_adjoint_ptr + row_base + parent,
+                d_parent_adjoint + d_child1_adjoint + d_child2_adjoint,
+                mask=parent_valid,
+            )
             p_start += BLOCK_S
         tl.debug_barrier()
 
@@ -217,115 +395,213 @@ def _dts_tree_so_kernel(
         mask = s_offs < S
         pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
         dpi_val = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
-        if USE_COL_WEIGHTS:
-            col_logp = tl.load(col_log_probs_ptr + s_offs, mask=mask, other=NEG)
-            dcol_val = tl.load(dcol_ptr + s_offs, mask=mask, other=0.0)
-            p_prime = tl.exp2(col_logp + pi_val - rm_safe)
-            p_prime = tl.where(pi_val != NEG, p_prime, tl.zeros_like(p_prime))
-            # col is a variable: p' = exp2(col + pi - rm), so dp' = ln2 p' (dpi + dcol) (rm frozen).
-            # The contrib at :228 then carries +ln2 p' dcol into BOTH d_rhs and d_grad_col scatters.
-            dp_prime = LN2 * p_prime * (dpi_val + dcol_val)
+        if USE_RECEIVER_WEIGHTS:
+            receiver_log_probability = tl.load(
+                receiver_log_probs_ptr + s_offs, mask=mask, other=NEG
+            )
+            d_receiver_log_probability = tl.load(
+                dreceiver_log_probs_ptr + s_offs, mask=mask, other=0.0
+            )
+            receiver_mass = tl.exp2(
+                receiver_log_probability + pi_val - receiver_mass_log_scale_safe
+            )
+            receiver_mass = tl.where(
+                pi_val != NEG, receiver_mass, tl.zeros_like(receiver_mass)
+            )
+            d_receiver_mass = (
+                LN2 * receiver_mass
+                * (dpi_val + d_receiver_log_probability)
+            )
         else:
-            p_prime = tl.exp2(pi_val - rm_safe)
-            p_prime = tl.where(pi_val != NEG, p_prime, tl.zeros_like(p_prime))
-            dp_prime = LN2 * p_prime * dpi_val
-        sub = tl.load(ud_ptr + row_base + s_offs, mask=mask, other=0.0)
-        dsub = tl.load(dud_ptr + row_base + s_offs, mask=mask, other=0.0)
-        contrib = dp_prime * (A - sub) + p_prime * (dA - dsub)
-        tl.atomic_add(d_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
-        tl.atomic_add(d_grad_col_ptr + s_offs, contrib, sem="relaxed", mask=mask)
+            receiver_mass = tl.exp2(pi_val - receiver_mass_log_scale_safe)
+            receiver_mass = tl.where(
+                pi_val != NEG, receiver_mass, tl.zeros_like(receiver_mass)
+            )
+            d_receiver_mass = LN2 * receiver_mass * dpi_val
+        subtree_donor_adjoint = tl.load(
+            donor_adjoint_ptr + row_base + s_offs, mask=mask, other=0.0
+        )
+        d_subtree_donor_adjoint = tl.load(
+            d_donor_adjoint_ptr + row_base + s_offs,
+            mask=mask,
+            other=0.0,
+        )
+        d_transfer_complement_vjp = (
+            d_receiver_mass
+            * (total_donor_adjoint - subtree_donor_adjoint)
+            + receiver_mass
+            * (d_total_donor_adjoint - d_subtree_donor_adjoint)
+        )
+        tl.atomic_add(
+            d_rhs_ptr + pi_base + s_offs,
+            d_transfer_complement_vjp,
+            sem="relaxed",
+            mask=mask,
+        )
+        if USE_RECEIVER_WEIGHTS:
+            tl.atomic_add(
+                d_grad_receiver_log_probs_ptr + s_offs,
+                d_transfer_complement_vjp,
+                sem="relaxed",
+                mask=mask,
+            )
 
 
 def dts_backward_so(
     Pi, dPi, Pibar, dPibar, v, ws, meta, S,
-    log_pD_param, log_pS_param, dlog_pD_param, dlog_pS_param, mc_item, dmc_item,
-    col_log_probs, node_child1, node_child2, node_parent, max_ancestor_depth,
-    pibar_row_max, item_idx,
-    d_rhs, d_grad_pD, d_grad_pS, d_grad_mt, d_grad_col,
+    log_pD_param, log_pS_param, dlog_pD_param, dlog_pS_param,
+    max_transfer, d_max_transfer,
+    receiver_log_probs, species_child1, species_child2, pibar_row_max, family_idx,
+    d_rhs, d_grad_pD, d_grad_pS, d_grad_max_transfer,
+    d_grad_receiver_log_probs,
     *, compact_level_ptr=None, compact_level_parents=None,
     compact_level_child1=None, compact_level_child2=None,
-    use_col_weights=False, dcol=None,
+    use_receiver_weights=False, dreceiver_log_probs=None, pi_offset, pibar_offset,
 ):
-    """Second-order contraction of the dts backward + pibar tree at fixed adjoint v.
-
-    Accumulates into d_rhs [C,S] (tangent of the cross-wave rhs scatters and tree contribs) and
-    the d_grad_* buffers in-place. ``meta`` is the wave's layout dict (sl, sr, reduce_idx, ...).
-
-    ``dcol`` [S] is the alpha (receiver_log_probs) tangent seed; with ``use_col_weights=True`` it
-    enters the tree kernel's ``p'`` via ``dp' = ln2 p' (dpi + dcol)`` (mirrors S5 wave_so), so the
-    col-derivative ``+ln2 p' dcol`` lands in BOTH the d_rhs and d_grad_col scatters. When
-    ``use_col_weights=False`` the col path is dead: ``dcol`` is ignored (bit-for-bit legacy).
-    """
-    sl, sr = meta["sl"], meta["sr"]
-    N = int(sl.numel())
-    if N == 0:
+    """Accumulate the DTS second-order contraction documented in LaTeX."""
+    split_left_rows = meta["sl"]
+    split_right_rows = meta["sr"]
+    n_splits = int(split_left_rows.numel())
+    device, dtype = Pi.device, Pi.dtype
+    split_log_priors = _select_log_split_probs(meta, Pi.dtype)
+    _validate_residual_tensors(
+        Pi,
+        dPi=dPi,
+        Pibar=Pibar,
+        dPibar=dPibar,
+        v=v,
+        log_pD_param=log_pD_param,
+        log_pS_param=log_pS_param,
+        dlog_pD_param=dlog_pD_param,
+        dlog_pS_param=dlog_pS_param,
+        max_transfer=max_transfer,
+        d_max_transfer=d_max_transfer,
+        receiver_log_probs=receiver_log_probs,
+        pibar_row_max=pibar_row_max,
+        d_rhs=d_rhs,
+        d_grad_pD=d_grad_pD,
+        d_grad_pS=d_grad_pS,
+        d_grad_max_transfer=d_grad_max_transfer,
+        d_grad_receiver_log_probs=d_grad_receiver_log_probs,
+        dreceiver_log_probs=dreceiver_log_probs,
+        log_split_probs=split_log_priors,
+    )
+    expected_rows = int(Pi.shape[0])
+    pi_offset = _validate_offset_tensor(
+        "pi_offset",
+        pi_offset,
+        rows=expected_rows,
+        device=device,
+        residual_dtype=Pi.dtype,
+    )
+    pibar_offset = _validate_offset_tensor(
+        "pibar_offset",
+        pibar_offset,
+        rows=expected_rows,
+        device=device,
+        dtype=pi_offset.dtype,
+    )
+    if n_splits == 0:
         return
-    lsp = meta.get("log_split_probs")
-    if lsp is None:
-        lsp = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
+    if split_log_priors is None:
+        split_log_priors = torch.zeros(
+            (n_splits,), device=Pi.device, dtype=Pi.dtype
+        )
     else:
-        # float64 batch static -> compute dtype at the boundary (see dts_fused.compute_dts_forward).
-        lsp = lsp.reshape(N).to(Pi.dtype).contiguous()
-    by_state = log_pD_param.ndim == 2 and int(log_pD_param.shape[1]) != 1
+        split_log_priors = (
+            split_log_priors.reshape(n_splits).contiguous()
+        )
+    by_species = log_pD_param.ndim == 2 and int(log_pD_param.shape[1]) != 1
     row_stride = 0 if int(log_pD_param.shape[0]) == 1 else int(log_pD_param.stride(0))
-    mt_row_stride = 0 if int(mc_item.shape[0]) == 1 else int(mc_item.stride(0))
+    max_transfer_row_stride = 0 if int(max_transfer.shape[0]) == 1 else int(max_transfer.stride(0))
     block_s = min(512, triton.next_power_of_2(S))
-    dev, dt = Pi.device, Pi.dtype
 
     # The split kernel accumulates the second-order log_pD/log_pS cotangents per SPECIES via the
-    # d_grad_p*_ptr + item*S + s layout (identical to d_grad_mt). That matches a [rows, S] buffer,
+    # d_grad_p*_ptr + family*S + s layout (identical to d_grad_max_transfer). That matches a [rows, S] buffer,
     # but genewise/global pass a species-REDUCED d_grad_pD/pS ([G,1] / [1,1]) because the rate is a
     # per-family (or global) scalar and the first-order path reduces the species axis internally.
-    # Writing item*S+s into a [*,1] buffer runs off the end (only s==0/1 land; the rest silently
+    # Writing family*S+s into a [*,1] buffer runs off the end (only s==0/1 land; the rest silently
     # corrupt adjacent pool memory). So when the caller's buffer is species-reduced (shape[1]==1),
-    # hand the kernel a [rows, S] scratch (rows = d_grad_mt's family-row count -- the layout `item`
+    # hand the kernel a [rows, S] scratch (rows = d_grad_max_transfer's family-row count -- the layout `family`
     # indexes) and sum the species axis back into the caller's buffer afterward. Specieswise ([1,S])
     # already matches the kernel layout and writes straight through, bit-for-bit unchanged.
     pd_reduced = int(d_grad_pD.shape[1]) == 1
     ps_reduced = int(d_grad_pS.shape[1]) == 1
-    rows = int(d_grad_mt.shape[0])
-    dgpD_k = torch.zeros((rows, S), device=dev, dtype=dt) if pd_reduced else d_grad_pD
-    dgpS_k = torch.zeros((rows, S), device=dev, dtype=dt) if ps_reduced else d_grad_pS
+    rows = int(d_grad_max_transfer.shape[0])
+    d_grad_pD_kernel = (
+        torch.zeros((rows, S), device=device, dtype=dtype)
+        if pd_reduced
+        else d_grad_pD
+    )
+    d_grad_pS_kernel = (
+        torch.zeros((rows, S), device=device, dtype=dtype)
+        if ps_reduced
+        else d_grad_pS
+    )
 
-    # stacked staging: rows [0:N) = left side, [N:2N) = right side (contiguous views, so the
-    # split kernel writes them via the same n*S offsets); the tree kernel walks all 2N rows.
-    ud = torch.empty((2 * N, S), device=dev, dtype=dt)
-    dud = torch.empty((2 * N, S), device=dev, dtype=dt)
-    ud_l, ud_r = ud[:N], ud[N:]
-    dud_l, dud_r = dud[:N], dud[N:]
+    # Stacked staging: the first n_splits rows are left sides and the second
+    # n_splits rows are right sides. The tree kernel walks all split sides.
+    donor_adjoint = torch.empty(
+        (2 * n_splits, S), device=device, dtype=dtype
+    )
+    d_donor_adjoint = torch.empty(
+        (2 * n_splits, S), device=device, dtype=dtype
+    )
+    left_donor_adjoint, right_donor_adjoint = (
+        donor_adjoint[:n_splits],
+        donor_adjoint[n_splits:],
+    )
+    d_left_donor_adjoint, d_right_donor_adjoint = (
+        d_donor_adjoint[:n_splits],
+        d_donor_adjoint[n_splits:],
+    )
 
-    _dts_split_so_kernel[(N, triton.cdiv(S, block_s))](
-        Pi, dPi, Pibar, dPibar, v,
-        sl, sr, node_child1, node_child2,
-        log_pD_param, log_pS_param, dlog_pD_param, dlog_pS_param, mc_item, dmc_item,
-        lsp, meta["reduce_idx"], item_idx, int(meta["start"]), int(ws),
+    _gene_split_event_vjp_directional_derivative_kernel[(n_splits, triton.cdiv(S, block_s))](
+        Pi, dPi, Pibar, dPibar,
+        pi_offset,
+        pibar_offset,
+        v,
+        split_left_rows, split_right_rows, species_child1, species_child2,
+        log_pD_param, log_pS_param, dlog_pD_param, dlog_pS_param, max_transfer, d_max_transfer,
+        split_log_priors, meta["reduce_idx"], family_idx,
+        int(meta["start"]), int(ws),
         pibar_row_max,
-        d_rhs, ud_l, ud_r, dud_l, dud_r,
-        dgpD_k, dgpS_k, d_grad_mt,
-        S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_STATE=bool(by_state),
-        MT_ROW_STRIDE=mt_row_stride, DTYPE=_tl_float_dtype(Pi.dtype),
+        d_rhs,
+        left_donor_adjoint, right_donor_adjoint,
+        d_left_donor_adjoint, d_right_donor_adjoint,
+        d_grad_pD_kernel, d_grad_pS_kernel, d_grad_max_transfer,
+        S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_SPECIES=bool(by_species),
+        MAX_TRANSFER_ROW_STRIDE=max_transfer_row_stride,
+        DTYPE=_tl_float_dtype(Pi.dtype),
     )
     if pd_reduced:
-        d_grad_pD += dgpD_k.sum(dim=-1, keepdim=True)
+        d_grad_pD += d_grad_pD_kernel.sum(dim=-1, keepdim=True)
     if ps_reduced:
-        d_grad_pS += dgpS_k.sum(dim=-1, keepdim=True)
+        d_grad_pS += d_grad_pS_kernel.sum(dim=-1, keepdim=True)
 
-    # tree part: bottom-up subtree-or-self sums for both ud->sub and dud->dsub in one fused
-    # kernel (mirrors the primal compact level-walk), replacing the host parent-chain index_add
-    # loop (which dominated the HVP at ~30% via per-level launches + .any() host syncs).
+    # Compact level tables pack only internal species-tree nodes by bottom-up
+    # depth. They evaluate every subtree sum after its children while omitting
+    # leaves, whose initial staged values are already complete subtree sums.
     if compact_level_ptr is None:
         raise ValueError("dts_backward_so requires compact_level_* tables for the tree kernel")
     n_levels = int(compact_level_ptr.numel()) - 1
-    _dts_tree_so_kernel[(2 * N,)](
-        Pi, dPi, col_log_probs, dcol if dcol is not None else Pi,
-        ud, dud, sl, sr,
+    dreceiver_log_probs_arg = (
+        torch.zeros_like(receiver_log_probs)
+        if dreceiver_log_probs is None
+        else dreceiver_log_probs.to(device=device, dtype=dtype)
+        .reshape(S)
+        .contiguous()
+    )
+    _transfer_subtree_vjp_directional_derivative_kernel[(2 * n_splits,)](
+        Pi, dPi, receiver_log_probs, dreceiver_log_probs_arg,
+        donor_adjoint, d_donor_adjoint, split_left_rows, split_right_rows,
         pibar_row_max,
         compact_level_ptr.contiguous(), compact_level_parents.contiguous(),
         compact_level_child1.contiguous(), compact_level_child2.contiguous(),
-        d_rhs, d_grad_col,
-        n_ws=N, S=S, stride_C=int(Pi.stride(0)),
+        d_rhs, d_grad_receiver_log_probs,
+        n_ws=n_splits, S=S, stride_C=int(Pi.stride(0)),
         BLOCK_S=block_s, N_LEVELS=n_levels,
-        USE_COL_WEIGHTS=bool(use_col_weights), DTYPE=_tl_float_dtype(Pi.dtype),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights), DTYPE=_tl_float_dtype(Pi.dtype),
         # num_warps=8 trims _dts_tree_so ~8% vs 4 on 666x80 (back-to-back wall 997->989ms;
         # nsys kernel 12%->11% of HVP). Each program owns a full side-row walked in BLOCK_S
         # chunks -> more warps hide the dependent level-walk loads. split kernel unaffected (kept

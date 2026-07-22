@@ -8,20 +8,34 @@ from gpurec.core.inference.solver import (
     receiver_weights_are_uniform,
     solve_resident_e_pi,
 )
-from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
+from gpurec.core.parameters.extract_parameters import (
+    origination_log_probs_from_weights,
+    resolve_accumulator_dtype,
+)
 
 
-def _origination_log_probs(origination_weights, like):
-    """(log2-probs, probs) for non-uniform origination weights, else (None, None) — uniform fast path."""
+def _origination_log_probs(origination_weights, like, accumulator_dtype):
+    """Head probabilities, or ``(None, None)`` for the uniform fast path."""
     if origination_weights_are_uniform(origination_weights):
         return None, None
-    o_lp = origination_log_probs_from_weights(origination_weights.to(device=like.device, dtype=like.dtype))
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=like.dtype,
+    )
+    o_lp = origination_log_probs_from_weights(
+        origination_weights.to(device=like.device, dtype=accumulator_dtype),
+        accumulator_dtype=accumulator_dtype,
+    )
     return o_lp, torch.exp2(o_lp)
 
 
 class _GeneReconFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, theta: torch.Tensor, receiver_weights: torch.Tensor, origination_weights: torch.Tensor, static):
+        accumulator_dtype = resolve_accumulator_dtype(
+            getattr(static, "accumulator_dtype", None),
+            fallback=theta.dtype,
+        )
         with torch.no_grad():
             (
                 E,
@@ -40,10 +54,27 @@ class _GeneReconFunction(torch.autograd.Function):
             ) = solve_resident_e_pi(
                 static, theta, receiver_weights, warm_start_E=static.warm_E
             )
-            o_lp, o_p = _origination_log_probs(origination_weights, theta)
-            loss = nll_from_root_rows(root_rows, E, origination_log_probs=o_lp, origination_probs=o_p)
+            o_lp, o_p = _origination_log_probs(
+                origination_weights,
+                theta,
+                accumulator_dtype,
+            )
+            loss = nll_from_root_rows(
+                root_rows,
+                E,
+                origination_log_probs=o_lp,
+                origination_probs=o_p,
+                accumulator_dtype=accumulator_dtype,
+            )
 
-        ctx.centered_pi_forward = getattr(static, "centered_pi_forward_state", None) is not None
+        pi_state = getattr(static, "pi_forward_state", None)
+        if pi_state is None:
+            raise RuntimeError("Pi forward did not publish its row-offset state")
+        # Save the exact offsets used by this forward. Keeping only a pointer on
+        # ``static`` is unsafe when another forward replaces the static state
+        # before this autograd context's backward executes.
+        pi_offset = pi_state.pi_offset
+        pibar_offset = pi_state.pibar_offset
         ctx.save_for_backward(
             theta,
             receiver_weights,
@@ -61,8 +92,11 @@ class _GeneReconFunction(torch.autograd.Function):
             max_transfer_vec,
             pibar_row_max,
             receiver_log_probs,
+            pi_offset,
+            pibar_offset,
         )
         ctx.static = static
+        ctx.accumulator_dtype = accumulator_dtype
         static.warm_E = E.detach()
         return loss
 
@@ -86,15 +120,17 @@ class _GeneReconFunction(torch.autograd.Function):
             max_transfer_vec,
             uniform_pibar_row_max,
             receiver_log_probs,
+            pi_offset,
+            pibar_offset,
         ) = ctx.saved_tensors
         static = ctx.static
-        if bool(getattr(ctx, "centered_pi_forward", False)):
-            raise RuntimeError(
-                "GPUREC_CENTERED_PI_FORWARD currently supports loss evaluation only; "
-                "the offset-aware backward path has not been ported on this branch"
-            )
+        accumulator_dtype = ctx.accumulator_dtype
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
-        o_lp, o_p = _origination_log_probs(origination_weights, theta)
+        o_lp, o_p = _origination_log_probs(
+            origination_weights,
+            theta,
+            accumulator_dtype,
+        )
         grad_theta, grad_receiver_weights = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -125,13 +161,34 @@ class _GeneReconFunction(torch.autograd.Function):
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
             origination_log_probs=o_lp,
             origination_probs=o_p,
+            accumulator_dtype=accumulator_dtype,
+            pi_offset=pi_offset,
+            pibar_offset=pibar_offset,
+        )
+        # Kernels return cotangents in the primal matrix dtype. Match the
+        # configured autograd input dtype explicitly.
+        grad_theta = grad_theta.to(device=theta.device, dtype=theta.dtype)
+        grad_receiver_weights = grad_receiver_weights.to(
+            device=receiver_weights.device, dtype=receiver_weights.dtype
         )
         grad_origination = None
         if ctx.needs_input_grad[2]:
-            grad_origination = origination_grad_from_root_rows(root_rows, E_star, origination_weights) * grad_output
+            grad_origination = origination_grad_from_root_rows(
+                root_rows,
+                E_star,
+                origination_weights,
+                accumulator_dtype=accumulator_dtype,
+            )
+            grad_origination = grad_origination * grad_output.to(
+                device=grad_origination.device, dtype=grad_origination.dtype
+            )
         return (
-            grad_theta * grad_output,
-            grad_receiver_weights * grad_output,
+            grad_theta * grad_output.to(device=grad_theta.device, dtype=grad_theta.dtype),
+            grad_receiver_weights
+            * grad_output.to(
+                device=grad_receiver_weights.device,
+                dtype=grad_receiver_weights.dtype,
+            ),
             grad_origination,
             None,
         )
@@ -159,7 +216,8 @@ class _GeneReconFullLossFunction(torch.autograd.Function):
             if grad_origination is None
             else grad_origination.to(device=origination_weights.device, dtype=origination_weights.dtype)
         )
-        return loss.to(device=theta.device, dtype=theta.dtype)
+        # Preserve the configured accumulator dtype returned by streaming.
+        return loss.to(device=theta.device)
 
     @staticmethod
     @torch.autograd.function.once_differentiable

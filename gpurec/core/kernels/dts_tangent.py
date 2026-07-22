@@ -1,16 +1,4 @@
-"""Forward-mode tangent (Jvp) of the cross-wave dts reduction.
-
-Linearization of ``compute_dts_forward`` (dts_fused.py). For each split (left row ``l``, right row
-``r``) feeding parent wave row ``p = reduce_idx[n]``, the 5 terms are
-``t0=lsp+log_d+pi_l+pi_r``, ``t1=lsp+pi_l+pibar_r``, ``t2=lsp+pi_r+pibar_l``,
-``t3=lsp+log_s+Pi[l,c1]+Pi[r,c2]``, ``t4=lsp+log_s+Pi[r,c1]+Pi[l,c2]``, and
-``dts_r[p,s] = logsumexp2`` over *all* of p's splits. The tangent is
-``d(dts_r[p,s]) = Σ_{splits of p} Σ_k w_k dt_k`` with ``w_k = exp2(t_k - dts_r[p,s])`` (the
-precomputed ``dts_r`` is the normalizer, so no online-softmax pass is needed).
-
-Split-parallel with an atomic scatter into the parent row, so the eq1 (1 split / parent) and ge2
-(many splits / parent) cases are handled uniformly via the full ``reduce_idx`` map.
-"""
+"""DTS tangent kernels; see ``docs/latex/kernel_mathematics.tex``."""
 
 from __future__ import annotations
 
@@ -18,106 +6,250 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core.kernels.dts_fused import _load_rate, _tl_float_dtype
+from gpurec.core.kernels.pi_forward import (
+    _load_event_log_probability,
+    _tl_float_dtype,
+    _validate_offset_tensor,
+    _validate_residual_tensors,
+)
 
 
 @triton.jit
-def _dts_tangent_kernel(
-    Pi, Pibar, dPi, dPibar, lefts, rights, node_child1, node_child2,
+def _gene_split_reduction_jvp_kernel(
+    Pi, Pibar, dPi, dPibar, split_left_rows, split_right_rows,
+    species_child1, species_child2,
     log_pD, log_pS, dlog_pD, dlog_pS, log_split_probs, reduce_idx,
-    dts_r_ptr, d_out_ptr, item_idx, item_offset,
+    gene_split_log_likelihood_ptr,
+    d_gene_split_log_likelihood_ptr,
+    family_idx,
+    family_offset,
+    Pi_offset,
+    Pibar_offset,
+    gene_split_offset,
     S: tl.constexpr, BLOCK_S: tl.constexpr, ROW_STRIDE: tl.constexpr,
-    BY_STATE: tl.constexpr, DTYPE: tl.constexpr,
+    BY_SPECIES: tl.constexpr, DTYPE: tl.constexpr,
 ):
-    NEG = -float("inf")
+    """Evaluate the DTS JVP defined in the kernel mathematics reference."""
+    NEG_INF = -float("inf")
     n = tl.program_id(0)
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
-    parent_w = tl.load(reduce_idx + n).to(tl.int64)
-    item = tl.load(item_idx + item_offset + parent_w).to(tl.int64)
-    left = tl.load(lefts + n).to(tl.int64)
-    right = tl.load(rights + n).to(tl.int64)
-    base_l = left * S
-    base_r = right * S
+    # Split metadata is stored as int32 to reduce bandwidth. Widen only values
+    # used in flattened addresses, whose products may exceed the int32 range.
+    parent_wave_row = tl.load(reduce_idx + n).to(tl.int64)
+    family = tl.load(family_idx + family_offset + parent_wave_row).to(tl.int64)
+    left_clade_row = tl.load(split_left_rows + n).to(tl.int64)
+    right_clade_row = tl.load(split_right_rows + n).to(tl.int64)
+    left_base = left_clade_row * S
+    right_base = right_clade_row * S
 
-    pi_l = tl.load(Pi + base_l + s_offs, mask=mask, other=NEG)
-    pi_r = tl.load(Pi + base_r + s_offs, mask=mask, other=NEG)
-    pibar_l = tl.load(Pibar + base_l + s_offs, mask=mask, other=NEG)
-    pibar_r = tl.load(Pibar + base_r + s_offs, mask=mask, other=NEG)
-    dpi_l = tl.load(dPi + base_l + s_offs, mask=mask, other=0.0)
-    dpi_r = tl.load(dPi + base_r + s_offs, mask=mask, other=0.0)
-    dpibar_l = tl.load(dPibar + base_l + s_offs, mask=mask, other=0.0)
-    dpibar_r = tl.load(dPibar + base_r + s_offs, mask=mask, other=0.0)
+    left_pi = tl.load(Pi + left_base + s_offs, mask=mask, other=NEG_INF)
+    right_pi = tl.load(Pi + right_base + s_offs, mask=mask, other=NEG_INF)
+    left_pibar = tl.load(Pibar + left_base + s_offs, mask=mask, other=NEG_INF)
+    right_pibar = tl.load(Pibar + right_base + s_offs, mask=mask, other=NEG_INF)
+    d_left_pi = tl.load(dPi + left_base + s_offs, mask=mask, other=0.0)
+    d_right_pi = tl.load(dPi + right_base + s_offs, mask=mask, other=0.0)
+    d_left_pibar = tl.load(dPibar + left_base + s_offs, mask=mask, other=0.0)
+    d_right_pibar = tl.load(dPibar + right_base + s_offs, mask=mask, other=0.0)
 
-    log_d = _load_rate(log_pD, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
-    log_s = _load_rate(log_pS, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
-    dlog_d = _load_rate(dlog_pD, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
-    dlog_s = _load_rate(dlog_pS, item, s_offs, mask, S, ROW_STRIDE, BY_STATE, BLOCK_S, DTYPE)
+    duplication_log_probability = _load_event_log_probability(
+        log_pD, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE
+    )
+    speciation_log_probability = _load_event_log_probability(
+        log_pS, family, s_offs, mask, S, ROW_STRIDE, BY_SPECIES, BLOCK_S, DTYPE
+    )
+    d_duplication_log_probability = _load_event_log_probability(
+        dlog_pD,
+        family,
+        s_offs,
+        mask,
+        S,
+        ROW_STRIDE,
+        BY_SPECIES,
+        BLOCK_S,
+        DTYPE,
+    )
+    d_speciation_log_probability = _load_event_log_probability(
+        dlog_pS,
+        family,
+        s_offs,
+        mask,
+        S,
+        ROW_STRIDE,
+        BY_SPECIES,
+        BLOCK_S,
+        DTYPE,
+    )
 
-    c1 = tl.load(node_child1 + s_offs, mask=mask, other=S)
-    c2 = tl.load(node_child2 + s_offs, mask=mask, other=S)
-    c1v = mask & (c1 < S)
-    c2v = mask & (c2 < S)
-    pi_l_c1 = tl.load(Pi + base_l + c1, mask=c1v, other=NEG)
-    pi_r_c2 = tl.load(Pi + base_r + c2, mask=c2v, other=NEG)
-    pi_r_c1 = tl.load(Pi + base_r + c1, mask=c1v, other=NEG)
-    pi_l_c2 = tl.load(Pi + base_l + c2, mask=c2v, other=NEG)
-    dpi_l_c1 = tl.load(dPi + base_l + c1, mask=c1v, other=0.0)
-    dpi_r_c2 = tl.load(dPi + base_r + c2, mask=c2v, other=0.0)
-    dpi_r_c1 = tl.load(dPi + base_r + c1, mask=c1v, other=0.0)
-    dpi_l_c2 = tl.load(dPi + base_l + c2, mask=c2v, other=0.0)
-    lsp = tl.load(log_split_probs + n)
+    c1 = tl.load(species_child1 + s_offs, mask=mask, other=S)
+    c2 = tl.load(species_child2 + s_offs, mask=mask, other=S)
+    c1_valid = mask & (c1 < S)
+    c2_valid = mask & (c2 < S)
+    left_pi_child1 = tl.load(Pi + left_base + c1, mask=c1_valid, other=NEG_INF)
+    right_pi_child2 = tl.load(Pi + right_base + c2, mask=c2_valid, other=NEG_INF)
+    right_pi_child1 = tl.load(Pi + right_base + c1, mask=c1_valid, other=NEG_INF)
+    left_pi_child2 = tl.load(Pi + left_base + c2, mask=c2_valid, other=NEG_INF)
+    d_left_pi_child1 = tl.load(dPi + left_base + c1, mask=c1_valid, other=0.0)
+    d_right_pi_child2 = tl.load(dPi + right_base + c2, mask=c2_valid, other=0.0)
+    d_right_pi_child1 = tl.load(dPi + right_base + c1, mask=c1_valid, other=0.0)
+    d_left_pi_child2 = tl.load(dPi + left_base + c2, mask=c2_valid, other=0.0)
+    split_log_prior = tl.load(log_split_probs + n)
 
-    t0 = lsp + log_d + pi_l + pi_r
-    t1 = lsp + pi_l + pibar_r
-    t2 = lsp + pi_r + pibar_l
-    t3 = lsp + log_s + pi_l_c1 + pi_r_c2
-    t4 = lsp + log_s + pi_r_c1 + pi_l_c2
-    dt0 = dlog_d + dpi_l + dpi_r
-    dt1 = dpi_l + dpibar_r
-    dt2 = dpi_r + dpibar_l
-    dt3 = dlog_s + dpi_l_c1 + dpi_r_c2
-    dt4 = dlog_s + dpi_r_c1 + dpi_l_c2
+    # The split reduction is a residual in gene_split_offset[parent_wave_row]'s frame. Align
+    # each child combination to that frame before forming its softmax weight.
+    # Offsets have no tangent: dpi/dpibar differentiate the represented rows.
+    gene_split_row_offset = tl.load(gene_split_offset + parent_wave_row)
+    left_pi_offset = tl.load(Pi_offset + left_clade_row)
+    right_pi_offset = tl.load(Pi_offset + right_clade_row)
+    left_pibar_offset = tl.load(Pibar_offset + left_clade_row)
+    right_pibar_offset = tl.load(Pibar_offset + right_clade_row)
+    child_frame_shift = (left_pi_offset + right_pi_offset - gene_split_row_offset).to(DTYPE)
+    left_transfer_frame_shift = (left_pi_offset + right_pibar_offset - gene_split_row_offset).to(DTYPE)
+    right_transfer_frame_shift = (right_pi_offset + left_pibar_offset - gene_split_row_offset).to(DTYPE)
+    duplication_log_term = (
+        split_log_prior
+        + duplication_log_probability
+        + left_pi
+        + right_pi
+        + child_frame_shift
+    )
+    transfer_left_retained_log_term = (
+        split_log_prior + left_pi + right_pibar + left_transfer_frame_shift
+    )
+    transfer_right_retained_log_term = (
+        split_log_prior + right_pi + left_pibar + right_transfer_frame_shift
+    )
+    speciation_lr_log_term = (
+        split_log_prior
+        + speciation_log_probability
+        + left_pi_child1
+        + right_pi_child2
+        + child_frame_shift
+    )
+    speciation_rl_log_term = (
+        split_log_prior
+        + speciation_log_probability
+        + right_pi_child1
+        + left_pi_child2
+        + child_frame_shift
+    )
+    d_duplication_log_term = d_duplication_log_probability + d_left_pi + d_right_pi
+    d_transfer_left_retained_log_term = d_left_pi + d_right_pibar
+    d_transfer_right_retained_log_term = d_right_pi + d_left_pibar
+    d_speciation_lr_log_term = d_speciation_log_probability + d_left_pi_child1 + d_right_pi_child2
+    d_speciation_rl_log_term = d_speciation_log_probability + d_right_pi_child1 + d_left_pi_child2
 
-    dts_out = tl.load(dts_r_ptr + parent_w * S + s_offs, mask=mask, other=NEG)
-    active = mask & (dts_out != NEG)
-    w0 = tl.exp2(t0 - dts_out)
-    w1 = tl.exp2(t1 - dts_out)
-    w2 = tl.exp2(t2 - dts_out)
-    w3 = tl.exp2(t3 - dts_out)
-    w4 = tl.exp2(t4 - dts_out)
-    contrib = w0 * dt0 + w1 * dt1 + w2 * dt2 + w3 * dt3 + w4 * dt4
-    contrib = tl.where(active, contrib, zero)
-    tl.atomic_add(d_out_ptr + parent_w * S + s_offs, contrib, sem="relaxed", mask=mask)
+    gene_split_log_likelihood = tl.load(
+        gene_split_log_likelihood_ptr + parent_wave_row * S + s_offs,
+        mask=mask,
+        other=NEG_INF,
+    )
+    parent_possible = mask & (gene_split_log_likelihood != NEG_INF)
+    duplication_probability = tl.exp2(
+        duplication_log_term - gene_split_log_likelihood
+    )
+    transfer_left_retained_probability = tl.exp2(
+        transfer_left_retained_log_term - gene_split_log_likelihood
+    )
+    transfer_right_retained_probability = tl.exp2(
+        transfer_right_retained_log_term - gene_split_log_likelihood
+    )
+    speciation_lr_probability = tl.exp2(
+        speciation_lr_log_term - gene_split_log_likelihood
+    )
+    speciation_rl_probability = tl.exp2(
+        speciation_rl_log_term - gene_split_log_likelihood
+    )
+    split_tangent_contribution = (
+        duplication_probability * d_duplication_log_term
+        + transfer_left_retained_probability * d_transfer_left_retained_log_term
+        + transfer_right_retained_probability * d_transfer_right_retained_log_term
+        + speciation_lr_probability * d_speciation_lr_log_term
+        + speciation_rl_probability * d_speciation_rl_log_term
+    )
+    split_tangent_contribution = tl.where(
+        parent_possible, split_tangent_contribution, zero
+    )
+    tl.atomic_add(
+        d_gene_split_log_likelihood_ptr + parent_wave_row * S + s_offs,
+        split_tangent_contribution,
+        sem="relaxed",
+        mask=mask,
+    )
 
 
 def compute_dts_tangent(
-    Pi, Pibar, dPi, dPibar, lefts, rights, node_child1, node_child2, W, reduce_idx,
-    log_pD_vec, log_pS_vec, dlog_pD_vec, dlog_pS_vec, dts_r, item_idx,
-    *, log_split_probs=None, n_eq1=None, eq1_reduce_idx=None,
-    ge2_ptr=None, ge2_parent_ids=None, ge2_max_fanout=None, item_offset=0,
+    Pi, Pibar, dPi, dPibar, split_left_rows, split_right_rows,
+    species_child1, species_child2, W, reduce_idx,
+    log_pD_vec, log_pS_vec, dlog_pD_vec, dlog_pS_vec,
+    gene_split_log_likelihood, family_idx,
+    *, log_split_probs=None, family_offset=0,
+    pi_offset, pibar_offset, gene_split_offset,
 ):
-    """Tangent of compute_dts_forward (eq1 + ge2 via the full reduce_idx map). Returns d_dts [W, S]."""
-    N = int(lefts.shape[0])
+    """Return the DTS JVP; see ``docs/latex/kernel_mathematics.tex``."""
+    N = int(split_left_rows.shape[0])
     S = int(Pi.shape[1])
-    d_out = torch.zeros((W, S), device=Pi.device, dtype=Pi.dtype)
+    _validate_residual_tensors(
+        Pi,
+        Pibar=Pibar,
+        dPi=dPi,
+        dPibar=dPibar,
+        log_pD_vec=log_pD_vec,
+        log_pS_vec=log_pS_vec,
+        dlog_pD_vec=dlog_pD_vec,
+        dlog_pS_vec=dlog_pS_vec,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+        log_split_probs=log_split_probs,
+    )
+    d_gene_split_log_likelihood = torch.zeros(
+        (W, S), device=Pi.device, dtype=Pi.dtype
+    )
+    C = int(Pi.shape[0])
+    pi_offset = _validate_offset_tensor(
+        "pi_offset",
+        pi_offset,
+        rows=C,
+        device=Pi.device,
+        residual_dtype=Pi.dtype,
+    )
+    accumulator_dtype = pi_offset.dtype
+    pibar_offset = _validate_offset_tensor(
+        "pibar_offset",
+        pibar_offset,
+        rows=C,
+        device=Pi.device,
+        dtype=accumulator_dtype,
+    )
+    gene_split_offset = _validate_offset_tensor(
+        "gene_split_offset",
+        gene_split_offset,
+        rows=W,
+        device=Pi.device,
+        dtype=accumulator_dtype,
+    )
     if N == 0:
-        return d_out
+        return d_gene_split_log_likelihood
     if log_split_probs is None:
         log_split_probs = torch.zeros((N,), device=Pi.device, dtype=Pi.dtype)
     else:
-        # float64 batch static -> compute dtype at the boundary (see dts_fused.compute_dts_forward).
-        log_split_probs = log_split_probs.reshape(N).to(Pi.dtype).contiguous()
-    by_state = log_pD_vec.ndim == 2 and int(log_pD_vec.shape[1]) != 1
+        log_split_probs = log_split_probs.reshape(N).contiguous()
+    by_species = log_pD_vec.ndim == 2 and int(log_pD_vec.shape[1]) != 1
     row_stride = 0 if int(log_pD_vec.shape[0]) == 1 else int(log_pD_vec.stride(0))
     block_s = min(512, triton.next_power_of_2(S))
-    _dts_tangent_kernel[(N, triton.cdiv(S, block_s))](
-        Pi, Pibar, dPi, dPibar, lefts, rights, node_child1, node_child2,
+    _gene_split_reduction_jvp_kernel[(N, triton.cdiv(S, block_s))](
+        Pi, Pibar, dPi, dPibar, split_left_rows, split_right_rows,
+        species_child1, species_child2,
         log_pD_vec, log_pS_vec, dlog_pD_vec, dlog_pS_vec, log_split_probs, reduce_idx,
-        dts_r, d_out, item_idx, int(item_offset),
-        S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_STATE=bool(by_state),
+        gene_split_log_likelihood,
+        d_gene_split_log_likelihood,
+        family_idx,
+        int(family_offset),
+        pi_offset,
+        pibar_offset,
+        gene_split_offset,
+        S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_SPECIES=bool(by_species),
         DTYPE=_tl_float_dtype(Pi.dtype),
     )
-    return d_out
+    return d_gene_split_log_likelihood

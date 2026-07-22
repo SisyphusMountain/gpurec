@@ -3,12 +3,17 @@ import math
 import torch
 
 from gpurec.core.inference.forward import pi_wave_forward
-from gpurec.core.inference.logspace import logsumexp2, log2_survival
+from gpurec.core.inference.logspace import (
+    logsumexp2,
+    log2_survival,
+    survival_by_species_from_E,
+)
 from gpurec.core.kernels.e_step import e_fixed_point_triton
 from gpurec.core.parameters.extract_parameters import (
     extract_parameters_uniform,
     extract_parameters_weighted_receivers,
     origination_log_probs_from_weights,
+    resolve_accumulator_dtype,
 )
 
 
@@ -33,6 +38,10 @@ def solve_resident_e_pi(
 ):
     solver_options = static.solver_options
     solver_options.validate()
+    accumulator_dtype = resolve_accumulator_dtype(
+        getattr(static, "accumulator_dtype", None),
+        fallback=theta.dtype,
+    )
     use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
     S = int(static.species_helpers["S"])
     if use_receiver_weights:
@@ -42,6 +51,7 @@ def solve_resident_e_pi(
             static.species_helpers,
             specieswise=static.specieswise,
             genewise=static.genewise,
+            accumulator_dtype=accumulator_dtype,
         )
     else:
         log_p_s, log_p_d, log_p_l, max_transfer = extract_parameters_uniform(
@@ -49,6 +59,7 @@ def solve_resident_e_pi(
             static.species_helpers["unnorm_row_max"].to(device=theta.device, dtype=theta.dtype),
             specieswise=static.specieswise,
             genewise=static.genewise,
+            accumulator_dtype=accumulator_dtype,
         )
         receiver_log_probs = theta.new_full((S,), -math.log2(S))
     e_shape = (int(static.wave_layout["root_clade_ids"].numel()) if static.genewise else 1, S)
@@ -65,9 +76,9 @@ def solve_resident_e_pi(
         max_transfer=max_transfer,
         receiver_log_probs=receiver_log_probs,
         use_receiver_weights=use_receiver_weights,
-        sp_parent=static.species_helpers["sp_parent"],
-        sp_child1=static.species_helpers["sp_child1"],
-        sp_child2=static.species_helpers["sp_child2"],
+        species_parent=static.species_helpers["sp_parent"],
+        species_child1=static.species_helpers["sp_child1"],
+        species_child2=static.species_helpers["sp_child2"],
         max_ancestor_depth=int(static.species_helpers["max_ancestor_depth"]),
         max_iter=solver_options.e_max_iter,
         tol=solver_options.e_tol,
@@ -87,13 +98,10 @@ def solve_resident_e_pi(
         family_idx=static.rate_family_idx,
         pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
         pi_residual_out=pi_residual_out,
+        accumulator_dtype=accumulator_dtype,
     )
-    centered_pi_state = None
-    if len(pi_forward_result) == 5:
-        root_rows, pi_wave, pibar_wave, pibar_row_max, centered_pi_state = pi_forward_result
-    else:
-        root_rows, pi_wave, pibar_wave, pibar_row_max = pi_forward_result
-    static.centered_pi_forward_state = centered_pi_state
+    root_rows, pi_wave, pibar_wave, pibar_row_max, pi_state = pi_forward_result
+    static.pi_forward_state = pi_state
     return (
         E,
         E_s1,
@@ -150,6 +158,7 @@ def nll_vector_from_root_rows(
     *,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     """Per-family negative log-likelihood from the root Pi-rows and extinction E.
 
@@ -160,7 +169,25 @@ def nll_vector_from_root_rows(
     supplied, each branch ``s`` instead carries weight ``origination_probs[s]`` in BOTH the
     origination prior (numerator) and the survival normalizer. The weighted form reduces exactly to
     the uniform form when the weights are equal.
+
+    The likelihood head is evaluated in ``accumulator_dtype``. Runtime callers
+    pass the configured dtype explicitly; standalone callers default to the
+    root-row dtype.
     """
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=root_rows.dtype,
+    )
+    root_rows = root_rows.to(dtype=accumulator_dtype)
+    E = E.to(device=root_rows.device, dtype=accumulator_dtype)
+    if origination_log_probs is not None:
+        origination_log_probs = origination_log_probs.to(
+            device=root_rows.device, dtype=accumulator_dtype
+        )
+    if origination_probs is not None:
+        origination_probs = origination_probs.to(
+            device=root_rows.device, dtype=accumulator_dtype
+        )
     if origination_log_probs is None:
         return -(
             logsumexp2(root_rows, dim=-1)
@@ -179,29 +206,77 @@ def nll_from_root_rows(
     *,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     return nll_vector_from_root_rows(
-        root_rows, E, origination_log_probs=origination_log_probs, origination_probs=origination_probs
+        root_rows,
+        E,
+        origination_log_probs=origination_log_probs,
+        origination_probs=origination_probs,
+        accumulator_dtype=accumulator_dtype,
     ).sum()
 
 
 def origination_grad_from_root_rows(
-    root_rows: torch.Tensor, E: torch.Tensor, origination_weights: torch.Tensor
+    root_rows: torch.Tensor,
+    E: torch.Tensor,
+    origination_weights: torch.Tensor,
+    *,
+    accumulator_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     """``d(sum_families NLL)/d(origination_weights)`` at fixed ``root_rows``, ``E``.
 
-    Origination weights enter ONLY this aggregation (never the fixed-point solve or the kernels), so
-    their gradient is an exact, cheap autograd pass with ``root_rows`` and ``E`` held constant.
+    Origination weights enter ONLY this aggregation (never the fixed-point solve or the kernels).
+    The gradient is the closed-form difference between the survival and root responsibilities,
+    divided by ``ln(2)``. ``root_rows`` and ``E`` are held constant.
     Returns a length-S tensor in ``origination_weights``' dtype for the global/specieswise case; for
-    genewise per-family origination weights ``[G,S]``, autograd preserves that shape and this returns
-    ``[G,S]`` instead.
+    genewise per-family origination weights ``[G,S]``, this returns ``[G,S]`` instead.
     """
-    ow = origination_weights.detach().to(device=root_rows.device, dtype=root_rows.dtype).requires_grad_(True)
-    with torch.enable_grad():
-        olp = origination_log_probs_from_weights(ow)
-        op = torch.exp2(olp)
-        loss = nll_vector_from_root_rows(
-            root_rows.detach(), E.detach(), origination_log_probs=olp, origination_probs=op
-        ).sum()
-        (g,) = torch.autograd.grad(loss, ow)
-    return g.to(dtype=origination_weights.dtype)
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=root_rows.dtype,
+    )
+    # Reproduce the configured likelihood head without constructing a temporary
+    # autograd graph. The probabilities are materialized through log-softmax2,
+    # exactly as they are in the forward head.
+    root_rows = root_rows.detach().to(dtype=accumulator_dtype)
+    E = E.detach().to(device=root_rows.device, dtype=accumulator_dtype)
+    ow = origination_weights.detach().to(
+        device=root_rows.device, dtype=accumulator_dtype
+    )
+    log_probs = origination_log_probs_from_weights(
+        ow,
+        accumulator_dtype=accumulator_dtype,
+    )
+    probabilities = torch.exp2(log_probs)
+
+    # Root responsibility: p_s 2**Pi_s / sum_j p_j 2**Pi_j. Subtracting
+    # the row maximum before exp2 prevents underflow for very negative rows.
+    root_log_mass = root_rows + log_probs
+    root_row_max = root_log_mass.max(dim=-1, keepdim=True).values
+    root_row_max = torch.where(
+        root_row_max == float("-inf"),
+        torch.zeros_like(root_row_max),
+        root_row_max,
+    )
+    root_mass = torch.exp2(root_log_mass - root_row_max)
+    root_total = root_mass.sum(dim=-1, keepdim=True)
+    root_responsibility = root_mass / torch.where(
+        root_total > 0,
+        root_total,
+        torch.ones_like(root_total),
+    )
+
+    # Survival responsibility: p_s (1 - 2**E_s) / sum_j p_j
+    # (1 - 2**E_j). expm1 keeps 1 - 2**E accurate as E approaches zero.
+    survival_mass = probabilities * survival_by_species_from_E(E)
+    survival_total = survival_mass.sum(dim=-1, keepdim=True)
+    survival_responsibility = survival_mass / torch.where(
+        survival_total > 0,
+        survival_total,
+        torch.ones_like(survival_total),
+    )
+
+    per_family_grad = (survival_responsibility - root_responsibility) / math.log(2.0)
+    grad = per_family_grad.sum_to_size(ow.shape)
+    return grad.to(dtype=origination_weights.dtype)

@@ -1,8 +1,9 @@
 """Analytic exact-Hessian HVP (forward-over-reverse) — orchestrator.
 
 Per outer Newton point: ``build_point_cache`` runs the production backward ONCE (the verified
-``vjp_root_to_theta`` loop) while caching per-wave adjoints ``v_k``/``dts_r`` and the E-side
-adjoint ``wE`` — theta is fixed across all CG iterations, so the cache amortizes. Each
+``vjp_root_to_theta`` loop) while caching each wave adjoint, gene-split
+likelihood, and the E-side adjoint ``wE`` — theta is fixed across all CG
+iterations, so the cache amortizes. Each
 ``hvp(u)`` then costs one tangent-forward sweep + one tangent-adjoint sweep (same solve
 operators, modified seeds) + the second-order contraction kernels (e_step_so / wave_so / dts_so).
 
@@ -21,13 +22,17 @@ from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.kernels.dts_so import dts_backward_so
 from gpurec.core.kernels.e_step import e_step_triton_autograd
 from gpurec.core.kernels.e_step_so import e_step_backward_so
+from gpurec.core.kernels.pi_forward import _select_log_split_probs
 from gpurec.core.kernels.wave_backward import (
-    dts_cross_backward_accum_fused, uniform_cross_pibar_vjp_tree_from_ud_fused,
-    wave_backward_uniform_fused,
+    accumulate_gene_split_event_vjp, accumulate_transfer_complement_vjp_from_donor_adjoint,
+    solve_reconciliation_wave_vjp,
 )
 from gpurec.core.kernels.wave_so import wave_backward_so
 from gpurec.core.parameters.extract_parameters import (
-    as_family_param, as_family_species, extract_parameters_weighted_receivers,
+    as_family_param,
+    as_family_species,
+    extract_parameters_weighted_receivers,
+    resolve_accumulator_dtype,
 )
 from gpurec.solver.forward_tangent import jvp_root_scores, wave_step_constants
 from gpurec.solver.ggn import vjp_root_to_theta
@@ -61,23 +66,26 @@ def _warm_reserved_scratch_bytes(static):
 
 @torch.no_grad()
 def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=None,
-                      origination_probs=None):
-    """Run the production-configured backward once, caching per-wave (v_k, dts_r, active_mask)
-    and the E-side adjoint. Returns (grad_theta, grad_col, cache)."""
+                      origination_probs=None, warm_v=None):
+    """Cache each wave adjoint, split likelihood, activity mask, and the E adjoint.
+
+    Returns ``(grad_theta, grad_receiver_weights, cache)``.
+    """
     static = _single_static(static)
     cache: dict = {}
     grad_theta, grad_col = vjp_root_to_theta(
         static, sv, None, theta, col_weights, drop_norm=False, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
         reserved_scratch_bytes=_warm_reserved_scratch_bytes(static),
+        warm_v=warm_v,
     )
     return grad_theta, grad_col, cache
 
 
-def _scatter_accum(acc, item_rows_for_wave, contrib, item_rows):
+def _scatter_accum(acc, family_rows_for_wave, contrib, family_rows):
     if contrib.dtype != acc.dtype:
         contrib = contrib.to(dtype=acc.dtype)
-    if int(item_rows) == 1:
+    if int(family_rows) == 1:
         if acc.ndim == 1:
             acc[0] += contrib.sum()
         elif int(acc.shape[1]) == 1:
@@ -86,14 +94,23 @@ def _scatter_accum(acc, item_rows_for_wave, contrib, item_rows):
             acc[0] += contrib.sum(dim=0)
         return
     if acc.ndim == 1:
-        acc.index_add_(0, item_rows_for_wave, contrib.sum(dim=1))
+        acc.index_add_(0, family_rows_for_wave, contrib.sum(dim=1))
     elif int(acc.shape[1]) == 1:
-        acc[:, 0].index_add_(0, item_rows_for_wave, contrib.sum(dim=1))
+        acc[:, 0].index_add_(0, family_rows_for_wave, contrib.sum(dim=1))
     else:
-        acc.index_add_(0, item_rows_for_wave, contrib)
+        acc.index_add_(0, family_rows_for_wave, contrib)
 
 
-def _head_seed_tangents(root_Pi, E_star, omega, t_root, dE, u_omega, dtype):
+def _head_seed_tangents(
+    root_Pi,
+    E_star,
+    omega,
+    t_root,
+    dE,
+    u_omega,
+    dtype,
+    accumulator_dtype,
+):
     """Origination-weighted head-HVP seed tangents (double-backward on the small NLL aggregation head
     ``h = sum_fam nll(root_rows, E, omega)``; correct by construction and consistent with the kernels'
     seed convention -- the hand-coded uniform ``d_seed`` equals ``ds_root`` here at uniform omega).
@@ -106,15 +123,32 @@ def _head_seed_tangents(root_Pi, E_star, omega, t_root, dE, u_omega, dtype):
     from gpurec.core.inference.solver import nll_vector_from_root_rows
     from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
 
-    rP = root_Pi.detach().requires_grad_(True)
-    Ev = E_star.detach().requires_grad_(True)
-    om = omega.detach().to(device=rP.device, dtype=rP.dtype).requires_grad_(True)
+    accumulator_dtype = resolve_accumulator_dtype(
+        accumulator_dtype,
+        fallback=root_Pi.dtype,
+    )
+    rP = root_Pi.detach().to(dtype=accumulator_dtype).requires_grad_(True)
+    Ev = E_star.detach().to(dtype=accumulator_dtype).requires_grad_(True)
+    om = omega.detach().to(device=rP.device, dtype=accumulator_dtype).requires_grad_(True)
     with torch.enable_grad():
-        olp = origination_log_probs_from_weights(om)
+        olp = origination_log_probs_from_weights(
+            om,
+            accumulator_dtype=accumulator_dtype,
+        )
         op = torch.exp2(olp)
-        nll = nll_vector_from_root_rows(rP, Ev, origination_log_probs=olp, origination_probs=op).sum()
+        nll = nll_vector_from_root_rows(
+            rP,
+            Ev,
+            origination_log_probs=olp,
+            origination_probs=op,
+            accumulator_dtype=accumulator_dtype,
+        ).sum()
         s_root, s_E, s_om = torch.autograd.grad(nll, (rP, Ev, om), create_graph=True)
-        inner = ((s_root * t_root).sum() + (s_E * dE).sum() + (s_om * u_omega.to(s_om.dtype)).sum())
+        inner = (
+            (s_root * t_root.to(dtype=accumulator_dtype)).sum()
+            + (s_E * dE.to(dtype=accumulator_dtype)).sum()
+            + (s_om * u_omega.to(s_om.dtype)).sum()
+        )
         ds_root, ds_E, Hv_om = torch.autograd.grad(inner, (rP, Ev, om))
     return ds_root.to(dtype), ds_E.to(dtype), Hv_om.to(dtype)
 
@@ -197,19 +231,32 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     S = int(sh["S"])
     # S7: derive the weighted-receiver flag from the base alpha (kill the False hardcodes).
     # uniform base -> uniform_fast path (the legacy theta-only behaviour, bit-for-bit);
-    # non-uniform base -> weighted paths LIVE so the backward/cache + col-cotangent are finite.
+    # non-uniform base -> weighted paths LIVE so the backward/cache + receiver-weight
+    # cotangent are finite.
     use_receiver_weights = not receiver_weights_are_uniform(col_weights)
-    use_col_weights = use_receiver_weights
-    item_idx = static.rate_family_idx
-    c1, c2, parent = sh["sp_child1"], sh["sp_child2"], sh["sp_parent"]
-    mad = int(sh["max_ancestor_depth"])
-    leaf_state_idx = wl["leaf_species_index"].to(device=theta.device, dtype=torch.int32).contiguous()
+    family_idx = static.rate_family_idx
+    species_child1 = sh["sp_child1"]
+    species_child2 = sh["sp_child2"]
+    species_parent = sh["sp_parent"]
+    max_ancestor_depth = int(sh["max_ancestor_depth"])
+    leaf_species_idx = wl["leaf_species_index"].to(device=theta.device, dtype=torch.int32).contiguous()
     root_ids = wl["root_clade_ids"]
     n_fam = int(root_ids.numel())
     dtype = sv["pi_wave"].dtype
+    accumulator_dtype = resolve_accumulator_dtype(
+        getattr(static, "accumulator_dtype", None),
+        fallback=dtype,
+    )
     C = int(sv["pi_wave"].shape[0])
     E_star = sv["E"]
     G = int(E_star.shape[0])
+    pi_state = sv["pi_state"]
+    pi_state.validate(
+        sv["pi_wave"], sv["pibar_wave"], sv["pibar_row_max"],
+        check_values=False,
+    )
+    pi_offset = pi_state.pi_offset
+    pibar_offset = pi_state.pibar_offset
 
     # Turn ON the origination head whenever origination_weights are supplied (even UNIFORM omega=0):
     # the omega curvature at uniform omega is nonzero and is exactly what the joint gate must capture.
@@ -219,29 +266,44 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     # only enabling the head double-backward that produces Hv_omega.
     if origination_weights is not None and origination_log_probs is None:
         from gpurec.core.parameters.extract_parameters import origination_log_probs_from_weights
-        origination_log_probs = origination_log_probs_from_weights(origination_weights)
+        origination_log_probs = origination_log_probs_from_weights(
+            origination_weights.to(device=theta.device, dtype=accumulator_dtype),
+            accumulator_dtype=accumulator_dtype,
+        )
         origination_probs = torch.exp2(origination_log_probs)
 
     if cache is None:
+        if getattr(static, "warm_adjoint_ok", True) and static.solver_options.use_hvp_warm_start:
+            if static.warm_v is None:
+                static.warm_v = {}
+            _warm_v = static.warm_v
+        else:
+            _warm_v = None
         _, _, cache = build_point_cache(static, theta, col_weights, sv,
                                         origination_log_probs=origination_log_probs,
-                                        origination_probs=origination_probs)
+                                        origination_probs=origination_probs,
+                                        warm_v=_warm_v)
     acc = cache["accum"]
     wE = cache["e_side"]["wE"]
     reserved_scratch_bytes = _warm_reserved_scratch_bytes(static)
 
-    cst = wave_step_constants(sv, S)
-    prm = sv["pibar_row_max"]
-    col = sv["receiver_log_probs"]
-    item = lambda t: as_family_species(t, S, G)
-    pS_m, pD_m, pL_m = item(sv["log_pS"]), item(sv["log_pD"]), item(sv["log_pL"])
+    wave_constants = wave_step_constants(sv, S)
+    pibar_row_max = sv["pibar_row_max"]
+    receiver_log_probs = sv["receiver_log_probs"]
+    as_family_matrix = lambda tensor: as_family_species(tensor, S, G)
+    pS_m, pD_m, pL_m = (
+        as_family_matrix(sv["log_pS"]),
+        as_family_matrix(sv["log_pD"]),
+        as_family_matrix(sv["log_pL"]),
+    )
 
     # e-step autograd graph at (E*, P): reused for all linear-in-cotangent transposed products
     E_req = E_star.detach().requires_grad_(True)
     with torch.enable_grad():
         E_new_g, E_s1_g, E_s2_g, Ebar_g = e_step_triton_autograd(
-            E_req, sv["log_pS"], sv["log_pD"], sv["log_pL"], sv["max_transfer"], col,
-            parent, c1, c2, mad, use_receiver_weights=use_receiver_weights,
+            E_req, sv["log_pS"], sv["log_pD"], sv["log_pL"], sv["max_transfer"],
+            receiver_log_probs, species_parent, species_child1, species_child2,
+            max_ancestor_depth, use_receiver_weights=use_receiver_weights,
         )
 
     def jt_E(g_new):
@@ -256,7 +318,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                                          grad_outputs=(g_s1, g_s2, g_ebar), retain_graph=True)
         return out
 
-    norm = _survival_from_E(E_star, keepdim=True)  # uniform survival; consumed only in the origination-uniform tangent below
+    # Uniform survival head state, used only by the origination-uniform tangent.
+    norm = _survival_from_E(
+        E_star.to(dtype=accumulator_dtype),
+        keepdim=True,
+    )
     fam_factor = 1.0 if G == n_fam else float(n_fam)
 
     zeros_state = lambda: torch.zeros_like(E_star)
@@ -268,16 +334,27 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             pS_r = pS_m.detach().requires_grad_(True)
             pD_r = pD_m.detach().requires_grad_(True)
             pL_r = pL_m.detach().requires_grad_(True)
-            mc_r = item(sv["max_transfer"].squeeze(-1)).detach().requires_grad_(True)
-            col_r = col.detach().requires_grad_(True)
-            En, _, _, Eb = e_step_triton_autograd(
-                E_star.detach(), pS_r, pD_r, pL_r, mc_r, col_r,
-                parent, c1, c2, mad, use_receiver_weights=use_receiver_weights,
+            max_transfer_req = (
+                as_family_matrix(sv["max_transfer"].squeeze(-1))
+                .detach()
+                .requires_grad_(True)
             )
-            outs = torch.autograd.grad((En, Eb), (pS_r, pD_r, pL_r, mc_r, col_r),
+            receiver_log_probs_req = receiver_log_probs.detach().requires_grad_(True)
+            En, _, _, Eb = e_step_triton_autograd(
+                E_star.detach(), pS_r, pD_r, pL_r, max_transfer_req,
+                receiver_log_probs_req, species_parent, species_child1,
+                species_child2, max_ancestor_depth,
+                use_receiver_weights=use_receiver_weights,
+            )
+            outs = torch.autograd.grad(
+                (En, Eb),
+                (pS_r, pD_r, pL_r, max_transfer_req, receiver_log_probs_req),
                                        grad_outputs=(g_new, g_ebar), allow_unused=True)
         return tuple(torch.zeros_like(z) if o is None else o
-                     for o, z in zip(outs, (pS_m, pD_m, pL_m, pS_m, col)))
+                     for o, z in zip(
+                         outs,
+                         (pS_m, pD_m, pL_m, pS_m, receiver_log_probs),
+                     ))
 
     # ---- u-INDEPENDENT setup (theta fixed across all CG iterations): primal cotangents and the
     # smooth head graph + first-order grad g1 are built ONCE here, not per hvp(u). The head's
@@ -288,8 +365,9 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     # DTS cotangent acc[...] ([G,1]) -- otherwise the [G,1] term broadcasts over S and the head
     # contraction (pS_hp[G,1] * cot_pS).sum(), which sums the species axis, multiplies it by S (the ~Sx
     # HVP bug). Specieswise/global keep the per-species form BIT-FOR-BIT (there S IS the parameter axis;
-    # everything is [1,S]). pL has no acc term and mc's acc grad_mc is genuinely per-species [G,S], so
-    # both are correct unchanged in every mode.
+    # everything is [1,S]). pL has no accumulated term and the cached
+    # max-transfer cotangent is genuinely per-species [G,S], so both are
+    # correct unchanged in every mode.
     if static.genewise:
         cot_pS = acc["grad_log_pS"] + base_p[0].sum(dim=-1, keepdim=True)
         cot_pD = acc["grad_log_pD"] + base_p[1].sum(dim=-1, keepdim=True)
@@ -297,32 +375,51 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
         cot_pS = acc["grad_log_pS"] + as_family_param(base_p[0], G, S)
         cot_pD = acc["grad_log_pD"] + as_family_param(base_p[1], G, S)
     cot_pL = base_p[2]
-    cot_mc = acc["grad_mc"] + base_p[3]
-    cot_col = acc["grad_col"] + base_p[4]
+    cot_max_transfer = acc["grad_mc"] + base_p[3]
+    cot_receiver_log_probs = acc["grad_col"] + base_p[4]
     theta_req = theta.detach().requires_grad_(True)
-    col_req = col_weights.detach().requires_grad_(True)
+    receiver_weights_req = col_weights.detach().requires_grad_(True)
     _head_grad_ctx = torch.enable_grad()
     _head_grad_ctx.__enter__()
-    pS_h, pD_h, pL_h, mt_h, col_h = extract_parameters_weighted_receivers(
-        theta_req, col_req, sh, specieswise=static.specieswise, genewise=static.genewise,
+    (
+        pS_h,
+        pD_h,
+        pL_h,
+        max_transfer_h,
+        receiver_log_probs_h,
+    ) = extract_parameters_weighted_receivers(
+        theta_req, receiver_weights_req, sh,
+        specieswise=static.specieswise, genewise=static.genewise,
         uniform_fast=not use_receiver_weights,
+        accumulator_dtype=accumulator_dtype,
     )
     pS_hp = as_family_param(pS_h, G, S)
     pD_hp = as_family_param(pD_h, G, S)
     pL_hi = as_family_species(pL_h, S, G)
-    mt_hi = as_family_species(mt_h.squeeze(-1) if mt_h.ndim == pS_h.ndim + 1 else mt_h, S, G)
+    max_transfer_hi = as_family_species(
+        max_transfer_h.squeeze(-1)
+        if max_transfer_h.ndim == pS_h.ndim + 1
+        else max_transfer_h,
+        S,
+        G,
+    )
     phi1 = ((pS_hp * cot_pS).sum() + (pD_hp * cot_pD).sum() + (pL_hi * cot_pL).sum()
-            + (mt_hi * cot_mc).sum() + (col_h * cot_col).sum())
-    # S8: grad phi1 w.r.t. BOTH (theta_req, col_req). g1_col carries the col-row of the first-order
-    # head VJP (through col_h(col_req) = log_softmax and mt_h(col_req) via receiver_norm). Autograd
+            + (max_transfer_hi * cot_max_transfer).sum()
+            + (receiver_log_probs_h * cot_receiver_log_probs).sum())
+    # S8: grad phi1 w.r.t. BOTH theta and receiver weights.
+    # g1_receiver_weights carries the receiver-weight row of the first-order
+    # head VJP through log-softmax and the valid-receiver normalizer. Autograd
     # returns each partial independently, so g1_theta is bit-for-bit the legacy single-target grad
     # (the u_alpha=0 regression is preserved). create_graph so the second grad below can pass
-    # through the softmax/receiver_norm curvature ONCE (no double-count with the kernels' dcol-linear
-    # cotangent). col_req always requires_grad here, so allow_unused is False.
-    g1_theta, g1_col = torch.autograd.grad(phi1, (theta_req, col_req), create_graph=True)
+    # through the softmax/receiver_norm curvature ONCE (no double-count with the kernels' dreceiver_log_probs-linear
+    # cotangent). receiver_weights_req always requires grad here, so
+    # allow_unused is False.
+    g1_theta, g1_receiver_weights = torch.autograd.grad(
+        phi1, (theta_req, receiver_weights_req), create_graph=True
+    )
     _head_grad_ctx.__exit__(None, None, None)
 
-    def hvp(u_vec):
+    def hvp(u_vec, probe_id=None):
         # Joint split: u = [u_theta (theta_numel); u_alpha (S)]. The theta-milestone harness still
         # passes a length-(theta_numel) vector (u_alpha implicitly 0); accept both. theta_shape is
         # explicit (do NOT assume [S,3]).
@@ -352,8 +449,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                        else torch.zeros(S, device=theta.device, dtype=theta.dtype))
         with torch.no_grad():
             # S3/S7: at a NON-UNIFORM base the tangent forward MUST go through the weighted path
-            # (param_jvp_weighted + use_col_weights), consistent with the weighted primal fixed
-            # point, or the tangent E-adjoint diverges (1e18 / NaN). u_alpha=0 then gives dcol=0 ->
+            # (param_jvp_weighted + use_receiver_weights), consistent with the weighted primal fixed
+            # point, or the tangent E-adjoint diverges (1e18 / NaN). u_alpha=0 then gives dreceiver_log_probs=0 ->
             # the pure-theta tangent at the non-uniform base. At a UNIFORM base keep alpha=None so
             # the legacy uniform theta-only tangent is reproduced BIT-FOR-BIT (regression guard).
             _alpha = col_weights if use_receiver_weights else None
@@ -361,16 +458,23 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             t_root, full = jvp_root_scores(static, theta, u, sv, return_full=True,
                                            keep_d_dts=False, self_iters=tangent_self_iters,
                                            alpha=_alpha, u_alpha=_u_alpha)
-            dcst = full["dcst"]
+            tangent_constants = full["tangent_constants"]
             dPi, dPibar = full["dPi"], full["dPibar"]
-            dpS_m, dpD_m, dpL_m = item(full["dlog_pS"]), item(full["dlog_pD"]), item(full["dlog_pL"])
-            dmc_m = item(full["dmax_coupling"].squeeze(-1))
-            # S4: the alpha (col) tangent seed = softmax-Jacobian . u_alpha, exposed by S3's
-            # weighted jvp. At a uniform base the weighted path is off and there is no dcol key
-            # -> dcol=None (the e_step_backward_so dcol slot then zero-fills; bit-for-bit legacy).
-            dcol = full.get("dreceiver_log_probs") if use_col_weights else None
-            dE, dEbar_e = full["dE"], full["dEbar"]
-            dE_s1, dE_s2 = full["dE_s1"], full["dE_s2"]
+            dpS_m, dpD_m, dpL_m = (
+                as_family_matrix(full["dlog_pS"]),
+                as_family_matrix(full["dlog_pD"]),
+                as_family_matrix(full["dlog_pL"]),
+            )
+            d_max_transfer_m = as_family_matrix(full["d_max_transfer"].squeeze(-1))
+            # S4: the receiver-weight tangent seed = softmax-Jacobian . u_alpha,
+            # exposed by S3's
+            # weighted jvp. At a uniform base the weighted path is off and there is no dreceiver_log_probs key
+            # -> dreceiver_log_probs=None (the e_step_backward_so dreceiver_log_probs slot then zero-fills; bit-for-bit legacy).
+            dreceiver_log_probs = full.get("dreceiver_log_probs") if use_receiver_weights else None
+            dE = full["d_extinction"]
+            dEbar_e = full["d_extinction_complement"]
+            dE_s1 = full["d_extinction_child1"]
+            dE_s2 = full["d_extinction_child2"]
 
             # tangent of the loss seed -q on root rows. Uniform origination: hand-coded (bit-for-bit
             # legacy). Weighted origination: the autograd head gives the weighted root-seed tangent
@@ -378,20 +482,35 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             root_Pi = sv["pi_wave"].index_select(0, root_ids)
             Hv_omega = ds_E_surv = None
             if origination_log_probs is None:
-                q = _safe_exp2_ratio(root_Pi, _logsumexp2(root_Pi, dim=-1, keepdim=True))
-                d_seed = -_LN2 * q * (t_root - (q * t_root).sum(dim=-1, keepdim=True))
+                root_head = root_Pi.to(dtype=accumulator_dtype)
+                t_root_head = t_root.to(dtype=accumulator_dtype)
+                q = _safe_exp2_ratio(
+                    root_head,
+                    _logsumexp2(root_head, dim=-1, keepdim=True),
+                )
+                d_seed = -_LN2 * q * (
+                    t_root_head - (q * t_root_head).sum(dim=-1, keepdim=True)
+                )
             else:
                 d_seed, ds_E_surv, Hv_omega = _head_seed_tangents(
-                    root_Pi, E_star, origination_weights, t_root, dE, u_omega, dtype)
+                    root_Pi,
+                    E_star,
+                    origination_weights,
+                    t_root,
+                    dE,
+                    u_omega,
+                    dtype,
+                    accumulator_dtype,
+                )
 
             d_rhs = torch.zeros((C, S), device=theta.device, dtype=dtype)
             d_rhs.index_copy_(0, root_ids, d_seed.to(dtype))
 
-            d_gpD = torch.zeros_like(acc["grad_log_pD"])
-            d_gpS = torch.zeros_like(acc["grad_log_pS"])
-            d_gE, d_gEbar, d_gEs1, d_gEs2 = (zeros_state() for _ in range(4))
-            d_gmc = torch.zeros_like(acc["grad_mc"])
-            d_gcol = torch.zeros((S,), device=theta.device, dtype=dtype)
+            d_grad_log_pD = torch.zeros_like(acc["grad_log_pD"])
+            d_grad_log_pS = torch.zeros_like(acc["grad_log_pS"])
+            d_grad_extinction, d_grad_extinction_complement, d_grad_extinction_child1, d_grad_extinction_child2 = (zeros_state() for _ in range(4))
+            d_grad_max_transfer = torch.zeros_like(acc["grad_mc"])
+            d_grad_receiver_log_probs = torch.zeros((S,), device=theta.device, dtype=dtype)
 
             from gpurec.solver.value_and_grad import free_cuda_cache_if_tight
 
@@ -399,114 +518,232 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 if _wi % free_cache_every == 0:
                     free_cuda_cache_if_tight()
                 ws, W = wave["ws"], wave["W"]
+                _tangent_warm = (
+                    probe_id is not None
+                    and getattr(static, "warm_adjoint_ok", True)
+                    and static.solver_options.use_hvp_warm_start
+                )
+                _probe_cache = None
+                _init_v = None
+                if _tangent_warm:
+                    if static.warm_v_tangent is None:
+                        static.warm_v_tangent = {}
+                    _probe_cache = static.warm_v_tangent.setdefault(probe_id, {})
+                    _init_v = _probe_cache.get(ws)
                 meta = wave["meta"]
                 v_k = wave["v"]
-                dts_r = wave["dts_r"]
-                # recompute d_dts per wave from the cached (pruned) dts_r: storing all of them
-                # would cost another Pi-sized buffer; one tangent launch per wave is cheap
-                if dts_r is not None:
+                gene_split_log_likelihood = wave["dts_r"]
+                gene_split_offset = wave["dts_offset"]
+                # Recompute the split-likelihood tangent from the cached, pruned
+                # split likelihood. Storing every tangent would cost another
+                # Pi-sized buffer; one tangent launch per wave is cheap.
+                if gene_split_log_likelihood is not None:
                     from gpurec.core.kernels.dts_tangent import compute_dts_tangent
-                    d_dts = compute_dts_tangent(
+                    d_gene_split_log_likelihood = compute_dts_tangent(
                         sv["pi_wave"], sv["pibar_wave"], dPi, dPibar, meta["sl"], meta["sr"],
-                        c1, c2, W, meta["reduce_idx"], cst["pd_param"], cst["ps_param"],
-                        dcst["dpd_param"], dcst["dps_param"], dts_r, item_idx,
-                        log_split_probs=meta.get("log_split_probs"), n_eq1=meta.get("n_eq1"),
-                        eq1_reduce_idx=meta.get("eq1_reduce_idx"), ge2_ptr=meta.get("ge2_ptr"),
-                        ge2_parent_ids=meta.get("ge2_parent_ids"),
-                        ge2_max_fanout=meta.get("ge2_max_fanout"), item_offset=ws,
+                        species_child1, species_child2, W, meta["reduce_idx"],
+                        wave_constants["duplication_log_probability_param"],
+                        wave_constants["speciation_log_probability_param"],
+                        tangent_constants["d_duplication_log_probability_param"],
+                        tangent_constants["d_speciation_log_probability_param"],
+                        gene_split_log_likelihood, family_idx,
+                        log_split_probs=_select_log_split_probs(meta, sv["pi_wave"].dtype), family_offset=ws,
+                        pi_offset=pi_offset,
+                        pibar_offset=pibar_offset,
+                        gene_split_offset=gene_split_offset,
                     )
                 else:
-                    d_dts = None
+                    d_gene_split_log_likelihood = None
                 has_leaf = wave["has_leaf_term"]
                 # (a) second-order contraction at fixed v_k; d_rhs folds the wave's rhs cotangent
                 # into d_Av so it IS the solve seed (= d_rhs[ws:ws+W] + d_Av), no host add
-                d_Av, c_aw0, c_aw1, c_aw2, c_aw345, c_aw3, c_aw4, c_gcol = wave_backward_so(
+                (
+                    d_Av,
+                    contraction_duplication_loss_vjp,
+                    contraction_transfer_loss_vjp,
+                    contraction_transfer_vjp,
+                    contraction_speciation_leaf_vjp,
+                    contraction_speciation_child1_vjp,
+                    contraction_speciation_child2_vjp,
+                    wave_d_grad_receiver_log_probs,
+                ) = wave_backward_so(
                     sv["pi_wave"], dPi, sv["pibar_wave"], dPibar, v_k, ws, W, S,
-                    prm, cst["mc"], cst["dl"], dcst["dDL"], cst["ebar"], dcst["dEbar"],
-                    cst["e"], dcst["dE"], cst["sl1"], dcst["dSL1"], cst["sl2"], dcst["dSL2"],
-                    col, c1, c2, parent, mad, dts_r, d_dts,
-                    leaf_state_idx=leaf_state_idx, leaf_logp=cst["leaf"], dleaf_logp=dcst["dleaf"],
-                    item_idx=item_idx, has_leaf_term=has_leaf, use_col_weights=use_col_weights,
-                    d_rhs=d_rhs, dcol=dcol,
+                    pibar_row_max,
+                    wave_constants["duplication_loss_const"],
+                    tangent_constants["d_duplication_loss_const"],
+                    wave_constants["extinction_complement"],
+                    tangent_constants["d_extinction_complement"],
+                    wave_constants["extinction"], tangent_constants["d_extinction"],
+                    wave_constants["speciation_child1_const"],
+                    tangent_constants["d_speciation_child1_const"],
+                    wave_constants["speciation_child2_const"],
+                    tangent_constants["d_speciation_child2_const"],
+                    receiver_log_probs, species_child1, species_child2,
+                    species_parent, max_ancestor_depth,
+                    gene_split_log_likelihood, d_gene_split_log_likelihood,
+                    leaf_species_idx=leaf_species_idx,
+                    leaf_logp=wave_constants["leaf_log_probability"],
+                    d_leaf_logp=tangent_constants["d_leaf_log_probability"],
+                    family_idx=family_idx, has_leaf_term=has_leaf, use_receiver_weights=use_receiver_weights,
+                    d_rhs=d_rhs, dreceiver_log_probs=dreceiver_log_probs,
+                    pi_offset=pi_offset,
+                    pibar_offset=pibar_offset,
+                    gene_split_offset=gene_split_offset,
                 )
-                # S5: accumulate the wave-SO col-cotangent (tangent of the wave self-loop
-                # receiver-grad). Zero when use_col_weights is off -> bit-for-bit legacy.
-                if use_col_weights:
-                    d_gcol = d_gcol + c_gcol
+                # S5: accumulate the wave-SO receiver-log-probability cotangent
+                # (the tangent of the wave self-loop receiver gradient). It is
+                # zero when receiver weights are disabled.
+                if use_receiver_weights:
+                    d_grad_receiver_log_probs = d_grad_receiver_log_probs + wave_d_grad_receiver_log_probs
                 # (b) tangent-adjoint solve with the SAME operator and cached mask
                 seed = d_Av
-                dv, l_aw0, l_aw1, l_aw2, l_aw345, l_aw3, l_aw4 = wave_backward_uniform_fused(
-                    sv["pi_wave"], sv["pibar_wave"], ws, W, S, dts_r, seed, cst["mc"],
-                    cst["dl"], cst["ebar"], cst["e"], cst["sl1"], cst["sl2"], col,
-                    c1, c2, None, neumann_terms=int(so.neumann_terms),
-                    leaf_species_idx=leaf_state_idx, leaf_logp=cst["leaf"], has_leaf_term=has_leaf,
-                    active_mask=wave["active_mask"], sp_parent=parent, max_ancestor_depth=mad,
-                    pibar_row_max=prm, family_idx=item_idx, family_indexed_consts=True,
+                (
+                    dv,
+                    linear_duplication_loss_vjp,
+                    linear_transfer_loss_vjp,
+                    linear_transfer_vjp,
+                    linear_speciation_leaf_vjp,
+                    linear_speciation_child1_vjp,
+                    linear_speciation_child2_vjp,
+                ) = solve_reconciliation_wave_vjp(
+                    sv["pi_wave"], sv["pibar_wave"], ws, W, S,
+                    gene_split_log_likelihood, seed, wave_constants["max_transfer"],
+                    wave_constants["duplication_loss_const"],
+                    wave_constants["extinction_complement"], wave_constants["extinction"],
+                    wave_constants["speciation_child1_const"],
+                    wave_constants["speciation_child2_const"], receiver_log_probs,
+                    species_child1, species_child2, None, neumann_terms=int(so.neumann_terms),
+                    leaf_species_idx=leaf_species_idx,
+                    leaf_logp=wave_constants["leaf_log_probability"],
+                    has_leaf_term=has_leaf,
+                    active_mask=wave["active_mask"], species_parent=species_parent,
+                    max_ancestor_depth=max_ancestor_depth,
+                    pibar_row_max=pibar_row_max, family_idx=family_idx,
+                    family_indexed_consts=True,
                     compact_level_ptr=sh["compact_level_ptr"],
                     compact_level_parents=sh["compact_level_parents"],
                     compact_level_child1=sh["compact_level_child1"],
                     compact_level_child2=sh["compact_level_child2"],
-                    grad_receiver_log_probs=d_gcol, use_receiver_weights=use_receiver_weights,
+                    grad_receiver_log_probs=d_grad_receiver_log_probs, use_receiver_weights=use_receiver_weights,
+                    initial_v=_init_v,
                     return_last_increment=False,
                     reserved_scratch_bytes=reserved_scratch_bytes,
+                    pi_offset=pi_offset,
+                    pibar_offset=pibar_offset,
+                    gene_split_offset=gene_split_offset,
                 )
-                aw0 = c_aw0 + l_aw0
-                aw1 = c_aw1 + l_aw1
-                aw2 = c_aw2 + l_aw2
-                aw345 = c_aw345 + l_aw345
-                aw3 = c_aw3 + l_aw3
-                aw4 = c_aw4 + l_aw4
+                if _tangent_warm:
+                    _mask = wave.get("active_mask")
+                    if _mask is not None:
+                        _row_active = _mask.reshape(_mask.shape[0], -1).ne(0).any(dim=1)
+                        _cached_v = torch.where(
+                            _row_active.unsqueeze(-1), dv, torch.zeros((), dtype=dv.dtype, device=dv.device)
+                        )
+                    else:
+                        _cached_v = dv
+                    _probe_cache[ws] = _cached_v.detach()
+                duplication_loss_event_vjp = (
+                    contraction_duplication_loss_vjp + linear_duplication_loss_vjp
+                )
+                transfer_loss_event_vjp = contraction_transfer_loss_vjp + linear_transfer_loss_vjp
+                transfer_event_vjp = contraction_transfer_vjp + linear_transfer_vjp
+                speciation_leaf_event_vjp = contraction_speciation_leaf_vjp + linear_speciation_leaf_vjp
+                speciation_child1_event_vjp = (
+                    contraction_speciation_child1_vjp + linear_speciation_child1_vjp
+                )
+                speciation_child2_event_vjp = (
+                    contraction_speciation_child2_vjp + linear_speciation_child2_vjp
+                )
                 if debug_out is not None:
                     debug_out.setdefault("wave_trace", []).append(
                         (ws, float(d_Av.abs().max()), float(dv.abs().max()),
                          float(d_rhs.abs().max())))
-                rows_i = item_idx[ws:ws + W]
-                _scatter_accum(d_gpD, rows_i, aw0, G)
-                _scatter_accum(d_gpS, rows_i, aw345, G)
-                _scatter_accum(d_gE, rows_i, aw0 + aw2, G)
-                _scatter_accum(d_gEbar, rows_i, aw1, G)
-                _scatter_accum(d_gEs1, rows_i, aw4, G)
-                _scatter_accum(d_gEs2, rows_i, aw3, G)
-                _scatter_accum(d_gmc, rows_i, aw2, G)
-                if dts_r is not None:
+                rows_i = family_idx[ws:ws + W]
+                _scatter_accum(d_grad_log_pD, rows_i, duplication_loss_event_vjp, G)
+                _scatter_accum(d_grad_log_pS, rows_i, speciation_leaf_event_vjp, G)
+                _scatter_accum(
+                    d_grad_extinction,
+                    rows_i,
+                    duplication_loss_event_vjp + transfer_event_vjp,
+                    G,
+                )
+                _scatter_accum(d_grad_extinction_complement, rows_i, transfer_loss_event_vjp, G)
+                _scatter_accum(d_grad_extinction_child1, rows_i, speciation_child2_event_vjp, G)
+                _scatter_accum(d_grad_extinction_child2, rows_i, speciation_child1_event_vjp, G)
+                _scatter_accum(d_grad_max_transfer, rows_i, transfer_event_vjp, G)
+                if gene_split_log_likelihood is not None:
                     # C^T dv via the frozen kernels (linear in v)
-                    gl, gr, side_act, _p1, _p2 = dts_cross_backward_accum_fused(
+                    (
+                        donor_adjoint,
+                        total_donor_adjoint,
+                        active_donor_side,
+                        _duplication_parameter_vjp,
+                        _speciation_parameter_vjp,
+                    ) = accumulate_gene_split_event_vjp(
                         sv["pi_wave"], sv["pibar_wave"], dv, ws, meta["sl"], meta["sr"],
                         meta["reduce_idx"],
-                        meta.get("log_split_probs", meta["sl"].new_zeros((int(meta["sl"].numel()),), dtype=dtype)),
-                        cst["pd_param"], cst["ps_param"], c1, c2, d_rhs, S,
+                        _select_log_split_probs(meta, dtype),
+                        wave_constants["duplication_log_probability_param"],
+                        wave_constants["speciation_log_probability_param"],
+                        species_child1, species_child2, d_rhs, S,
                         active_mask=wave["active_mask"], merge_s_term=True,
-                        grad_log_pD=d_gpD, grad_log_pS=d_gpS, grad_mt=d_gmc,
-                        accum_param_reductions=True, accum_mt_reduction=True,
-                        output_pibar_ud=True, output_pibar_side_active=True,
-                        pibar_side_threshold=so.pibar_side_threshold, mt_squeezed=cst["mc"],
-                        pibar_row_max=prm,
-                        grad_mt_two_stage=bool(d_gmc.ndim == 2 and int(d_gmc.shape[0]) == 1),
-                        grad_mt_two_stage_tile_splits=128, skip_inactive_pibar_output_zero=True,
-                        family_idx=item_idx,
+                        grad_log_pD=d_grad_log_pD,
+                        grad_log_pS=d_grad_log_pS,
+                        grad_max_transfer=d_grad_max_transfer,
+                        accum_param_reductions=True,
+                        accum_max_transfer_reduction=True,
+                        output_donor_adjoint=True,
+                        output_active_donor_sides=True,
+                        pibar_side_threshold=so.pibar_side_threshold,
+                        max_transfer=wave_constants["max_transfer"],
+                        pibar_row_max=pibar_row_max,
+                        grad_max_transfer_two_stage=bool(
+                            d_grad_max_transfer.ndim == 2 and int(d_grad_max_transfer.shape[0]) == 1
+                        ),
+                        grad_max_transfer_two_stage_tile_splits=128,
+                        skip_inactive_pibar_output_zero=True,
+                        family_idx=family_idx,
+                        pi_offset=pi_offset,
+                        pibar_offset=pibar_offset,
                     )
-                    uniform_cross_pibar_vjp_tree_from_ud_fused(
-                        sv["pi_wave"], col, gl, gr, meta["sl"], meta["sr"], d_rhs, S,
+                    accumulate_transfer_complement_vjp_from_donor_adjoint(
+                        sv["pi_wave"],
+                        receiver_log_probs,
+                        donor_adjoint,
+                        total_donor_adjoint,
+                        meta["sl"],
+                        meta["sr"],
+                        d_rhs,
+                        S,
                         active_mask=wave["active_mask"], reduce_idx=meta["reduce_idx"],
-                        pibar_row_max=prm, skip_zero_sides=True, side_active=side_act,
+                        pibar_row_max=pibar_row_max,
+                        skip_zero_donor_sides=True,
+                        active_donor_side=active_donor_side,
                         compact_level_ptr=sh["compact_level_ptr"],
                         compact_level_parents=sh["compact_level_parents"],
                         compact_level_child1=sh["compact_level_child1"],
                         compact_level_child2=sh["compact_level_child2"],
-                        grad_receiver_log_probs=d_gcol, use_receiver_weights=use_receiver_weights,
+                        grad_receiver_log_probs=d_grad_receiver_log_probs, use_receiver_weights=use_receiver_weights,
                         side_active_threshold=so.pibar_side_threshold,
                     )
                     # d(C^T) v_k contraction at fixed v_k
                     dts_backward_so(
                         sv["pi_wave"], dPi, sv["pibar_wave"], dPibar, v_k, ws, meta, S,
-                        cst["pd_param"], cst["ps_param"], dcst["dpd_param"], dcst["dps_param"],
-                        cst["mc"], dcst["dMC"], col, c1, c2, parent, mad, prm, item_idx,
-                        d_rhs, d_gpD, d_gpS, d_gmc, d_gcol,
+                        wave_constants["duplication_log_probability_param"],
+                        wave_constants["speciation_log_probability_param"],
+                        tangent_constants["d_duplication_log_probability_param"],
+                        tangent_constants["d_speciation_log_probability_param"],
+                        wave_constants["max_transfer"], tangent_constants["d_max_transfer"],
+                        receiver_log_probs, species_child1, species_child2,
+                        pibar_row_max, family_idx,
+                        d_rhs, d_grad_log_pD, d_grad_log_pS, d_grad_max_transfer, d_grad_receiver_log_probs,
                         compact_level_ptr=sh["compact_level_ptr"],
                         compact_level_parents=sh["compact_level_parents"],
                         compact_level_child1=sh["compact_level_child1"],
                         compact_level_child2=sh["compact_level_child2"],
-                        use_col_weights=use_col_weights, dcol=dcol,
+                        use_receiver_weights=use_receiver_weights, dreceiver_log_probs=dreceiver_log_probs,
+                        pi_offset=pi_offset,
+                        pibar_offset=pibar_offset,
                     )
 
             # ---- E-side ---- (the big tangent buffers are no longer needed)
@@ -514,27 +751,35 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             full.clear()
             free_cuda_cache_if_tight()
             x_args = (E_star.contiguous(), E_star.contiguous(), sv["E_s1"], sv["E_s2"],
-                      sv["Ebar"], pS_m, pD_m, pL_m, col.contiguous(),
-                      parent, c1, c2, mad)
-            # S4: the 9th dx slot is dcol (e_step_backward_so signature ...,dlog_pL, dcol). Was
-            # hardcoded None (col tangent dead); thread the S3 seed so the e-step SO contraction
-            # carries the alpha->E col dependence. None at a uniform base (legacy bit-for-bit).
-            dx = (dE, dE, dE_s1, dE_s2, dEbar_e, dpS_m, dpD_m, dpL_m, dcol)
+                      sv["Ebar"], pS_m, pD_m, pL_m, receiver_log_probs.contiguous(),
+                      species_parent, species_child1, species_child2, max_ancestor_depth)
+            # S4: the 9th dx slot is dreceiver_log_probs (e_step_backward_so signature ...,dlog_pL, dreceiver_log_probs). Was
+            # formerly hardcoded None; thread the S3 seed so the E-step SO contraction
+            # carries the receiver-weight dependence. None at a uniform base preserves
+            # the legacy uniform path exactly.
+            dx = (dE, dE, dE_s1, dE_s2, dEbar_e, dpS_m, dpD_m, dpL_m, dreceiver_log_probs)
             zero_g = zeros_state()
             # tangent of aux_to_e: linear part + contraction + norm-term closed form
-            aux_lin = aux_T(d_gEs1, d_gEs2, d_gEbar)
-            so_aux = e_step_backward_so(*x_args, zero_g, acc["grad_E_s1"], acc["grad_E_s2"],
-                                        acc["grad_Ebar"], *dx, use_col_weights=use_col_weights)
+            aux_lin = aux_T(d_grad_extinction_child1, d_grad_extinction_child2, d_grad_extinction_complement)
+            so_aux = e_step_backward_so(
+                *x_args, zero_g, acc["grad_Ebar"], *dx,
+                use_receiver_weights=use_receiver_weights,
+            )
             if origination_log_probs is None:
-                e2E = torch.exp2(E_star)
-                dnorm = -_LN2 * (e2E * dE).mean(dim=-1, keepdim=True)
-                dg_norm = fam_factor * (-_LN2 * e2E * dE / (S * norm) + e2E * dnorm / (S * norm * norm))
+                e2E = torch.exp2(E_star.to(dtype=accumulator_dtype))
+                dE_head = dE.to(dtype=accumulator_dtype)
+                dnorm = -_LN2 * (e2E * dE_head).mean(dim=-1, keepdim=True)
+                dg_norm = fam_factor * (
+                    -_LN2 * e2E * dE_head / (S * norm)
+                    + e2E * dnorm / (S * norm * norm)
+                )
+                dg_norm = dg_norm.to(dtype=dtype)
             else:
                 dg_norm = ds_E_surv  # weighted + omega-coupled survival tangent (autograd head)
-            dq_E = d_gE + aux_lin + so_aux[0] + dg_norm
+            dq_E = d_grad_extinction + aux_lin + so_aux[0] + dg_norm
             # tangent E-adjoint solve: same operator, new rhs
-            so_w = e_step_backward_so(*x_args, wE, zero_g, zero_g, zero_g, *dx,
-                                      use_col_weights=use_col_weights)
+            so_w = e_step_backward_so(*x_args, wE, zero_g, *dx,
+                                      use_receiver_weights=use_receiver_weights)
             rhs_E = (dq_E + so_w[0]).reshape(-1)
             E_shape = E_star.shape
 
@@ -550,64 +795,84 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                             tol=so.bicgstab_tol).view(E_shape)
             if debug_out is not None:
                 debug_out.update(
-                    d_gE=d_gE.clone(), d_gpD=d_gpD.clone(), d_gpS=d_gpS.clone(),
-                    d_gmc=d_gmc.clone(), d_gEbar=d_gEbar.clone(), d_gEs1=d_gEs1.clone(),
-                    d_gEs2=d_gEs2.clone(), dq_E=dq_E.clone(), dwE=dwE.clone(),
-                    d_gcol=d_gcol.clone(),
+                    d_grad_extinction=d_grad_extinction.clone(), d_grad_log_pD=d_grad_log_pD.clone(), d_grad_log_pS=d_grad_log_pS.clone(),
+                    d_grad_max_transfer=d_grad_max_transfer.clone(), d_grad_extinction_complement=d_grad_extinction_complement.clone(), d_grad_extinction_child1=d_grad_extinction_child1.clone(),
+                    d_grad_extinction_child2=d_grad_extinction_child2.clone(), dq_E=dq_E.clone(), dwE=dwE.clone(),
+                    d_grad_receiver_log_probs=d_grad_receiver_log_probs.clone(),
                 )
 
             # tangent param-cotangents from the e-step head: linear (tangent cotangents,
             # g_new=dwE) + contraction at fixed cotangents (g_new=wE, g_ebar=grad_Ebar_acc).
             # e_bwd_params and the primal cotangents/head graph are hoisted (u-independent).
-            lin_p = e_bwd_params(dwE, d_gEbar)
-            so_p = e_step_backward_so(*x_args, wE, zero_g, zero_g, acc["grad_Ebar"], *dx,
-                                      use_col_weights=use_col_weights)
-            # so_p outputs: (d_grad_E, d_grad_pS, d_grad_pD, d_grad_pL, d_grad_mc, d_grad_col)
+            lin_p = e_bwd_params(dwE, d_grad_extinction_complement)
+            so_p = e_step_backward_so(*x_args, wE, acc["grad_Ebar"], *dx,
+                                      use_receiver_weights=use_receiver_weights)
+            # so_p outputs: (d_grad_E, d_grad_pS, d_grad_pD, d_grad_pL, d_grad_mc, d_grad_receiver_log_probs)
 
             if static.genewise:  # per-family log_pS/pD: sum the per-species tangent cotangents (see phi1 above)
-                d_cot_pS = d_gpS + (lin_p[0] + so_p[1]).sum(dim=-1, keepdim=True)
-                d_cot_pD = d_gpD + (lin_p[1] + so_p[2]).sum(dim=-1, keepdim=True)
+                d_cot_pS = d_grad_log_pS + (lin_p[0] + so_p[1]).sum(dim=-1, keepdim=True)
+                d_cot_pD = d_grad_log_pD + (lin_p[1] + so_p[2]).sum(dim=-1, keepdim=True)
             else:
-                d_cot_pS = d_gpS + as_family_param(lin_p[0] + so_p[1], G, S)
-                d_cot_pD = d_gpD + as_family_param(lin_p[1] + so_p[2], G, S)
+                d_cot_pS = d_grad_log_pS + as_family_param(lin_p[0] + so_p[1], G, S)
+                d_cot_pD = d_grad_log_pD + as_family_param(lin_p[1] + so_p[2], G, S)
             d_cot_pL = lin_p[2] + so_p[3]
-            d_cot_mc = d_gmc + lin_p[3] + so_p[4]
-            d_cot_col = d_gcol + lin_p[4] + so_p[5]
+            d_cot_max_transfer = d_grad_max_transfer + lin_p[3] + so_p[4]
+            d_cot_receiver_log_probs = (
+                d_grad_receiver_log_probs + lin_p[4] + so_p[5]
+            )
 
         # ---- smooth parameter head (autograd; forward graph + g1 hoisted, retained) ----
         with torch.enable_grad():
-            phi2 = ((pS_hp * d_cot_pS).sum() + (pD_hp * d_cot_pD).sum() + (pL_hi * d_cot_pL).sum()
-                    + (mt_hi * d_cot_mc).sum() + (col_h * d_cot_col).sum())
-            # S8: grad w.r.t. BOTH (theta_req, col_req) of
-            #   (g1_theta * u_theta).sum() + (g1_col * u_alpha).sum() + phi2.
+            phi2 = (
+                (pS_hp * d_cot_pS).sum()
+                + (pD_hp * d_cot_pD).sum()
+                + (pL_hi * d_cot_pL).sum()
+                + (max_transfer_hi * d_cot_max_transfer).sum()
+                + (receiver_log_probs_h * d_cot_receiver_log_probs).sum()
+            )
+            # S8: grad w.r.t. BOTH theta and receiver weights of
+            # (g1_theta * u_theta).sum()
+            # + (g1_receiver_weights * u_alpha).sum() + phi2.
             # - out_theta = H_tt u_theta + H_ta u_alpha (theta row of H u).
-            # - out_col   = H_at u_theta + H_aa u_alpha (alpha row of H u).
+            # - out_receiver_weights = H_at u_theta + H_aa u_alpha.
             # The alpha-alpha softmax curvature + receiver_norm->max_transfer curvature are captured
-            # HERE ONCE (col_h(col_req)/mt_h(col_req) differentiated twice via g1's create_graph);
-            # the kernels carry ONLY the dcol-LINEAR cotangent (d_cot_col), so no double-count.
-            # u_theta = u (the reshaped theta tangent); with u_alpha=0 the (g1_col*u_alpha) term
+            # HERE ONCE (the receiver log-probabilities and max-transfer terms
+            # are differentiated twice through g1's graph); the kernels carry
+            # only the dreceiver_log_probs-linear cotangent, so there is no
+            # double count. With u_alpha=0 the receiver-weight head term
             # vanishes and out_theta is bit-for-bit the legacy grad (regression guard). retain_graph
             # so the hoisted forward graph + g1 survive for the next hvp(u) call.
             if not joint:
                 # legacy theta-only contract: EXACT legacy graph -- grad of (g1_theta*u).sum()+phi2
-                # w.r.t. theta_req ONLY (no (g1_col*u_alpha) node, no col grad target). g1_theta is
+                # w.r.t. theta_req ONLY (no receiver-weight head term or grad target). g1_theta is
                 # autograd's independent partial of phi1, so it equals the old single-target g1
                 # bit-for-bit -> out reproduces the theta-only HVP BIT-FOR-BIT (the _verify_hvp
                 # uniform gate + the non-uniform milestone depend on this).
                 (out_theta,) = torch.autograd.grad((g1_theta * u).sum() + phi2, theta_req,
                                                    retain_graph=True)
                 return out_theta.reshape(-1)
-            # joint contract: grad of (g1_theta*u_theta).sum()+(g1_col*u_alpha).sum()+phi2 w.r.t.
-            # BOTH (theta_req, col_req) -> (out_theta=H_tt u_t+H_ta u_a, out_col=H_at u_t+H_aa u_a).
-            head = (g1_theta * u).sum() + (g1_col * u_alpha).sum() + phi2
-            out_theta, out_col = torch.autograd.grad(head, (theta_req, col_req), retain_graph=True)
+            # Joint contract: differentiate both theta and receiver-weight rows.
+            head = (
+                (g1_theta * u).sum()
+                + (g1_receiver_weights * u_alpha).sum()
+                + phi2
+            )
+            out_theta, out_receiver_weights = torch.autograd.grad(
+                head, (theta_req, receiver_weights_req), retain_graph=True
+            )
         if has_omega:
             # Full [theta; alpha; omega] contract (BASE order, alpha BEFORE omega -- matches
             # origination_curvature.py's z=[theta;alpha;omega]): the omega row is the head omega-Hessian .
             # (t_root, dE, u_omega) from _head_seed_tangents (omega is head-only -> no kernel/adjoint
             # term). Hv_omega is [G,S] genewise / [S] otherwise; flatten in place.
-            return torch.cat([out_theta.reshape(-1), out_col.reshape(-1), Hv_omega.reshape(-1)])
-        return torch.cat([out_theta.reshape(-1), out_col.reshape(-1)])
+            return torch.cat([
+                out_theta.reshape(-1),
+                out_receiver_weights.reshape(-1),
+                Hv_omega.reshape(-1),
+            ])
+        return torch.cat([
+            out_theta.reshape(-1), out_receiver_weights.reshape(-1)
+        ])
 
     return hvp
 
@@ -646,7 +911,7 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
     S = int(col_weights.numel())
     per_family_orig = (origination_weights is not None and origination_weights.ndim == 2)
 
-    def hvp(u_vec):
+    def hvp(u_vec, probe_id=None):
         u_vec = u_vec.to(device=dev, dtype=dtype)
         n_tail = int(u_vec.numel()) - theta_numel
         if not genewise:
@@ -661,7 +926,7 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
                     origination_log_probs=origination_log_probs,
                     origination_probs=origination_probs, origination_weights=origination_weights,
                 )
-                contrib = hvp_b(u_vec)
+                contrib = hvp_b(u_vec, probe_id=probe_id)
                 out = contrib if out is None else out + contrib
                 del hvp_b, sv_b
                 free_cuda_cache_if_tight()
@@ -701,7 +966,9 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
                 parts.append(u_alpha)
             if has_omega:
                 parts.append(u_omega_full.index_select(0, fam_b).reshape(-1))
-            o_b = hvp_b(torch.cat(parts) if len(parts) > 1 else u_theta_b).to(dtype=dtype)
+            o_b = hvp_b(
+                torch.cat(parts) if len(parts) > 1 else u_theta_b, probe_id=probe_id
+            ).to(dtype=dtype)
             out_theta.index_add_(0, fam_b, o_b[:3 * G_b].reshape(G_b, 3))
             if has_alpha:
                 out_alpha = out_alpha + o_b[3 * G_b:3 * G_b + S]
@@ -718,4 +985,3 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
         return result[0] if len(result) == 1 else torch.cat(result)
 
     return hvp
-

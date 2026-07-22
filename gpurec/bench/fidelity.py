@@ -42,18 +42,16 @@ def compare(gpurec_ll: dict, alerax_ll: dict) -> FidelityReport:
 
 
 def reconcile_at_alerax_rates(species, genes, rates, *, device="cuda", dtype=None,
-                              mode="global", solver_options=None) -> dict:
+                              mode="global", solver_options=None, config=None) -> dict:
     """rates: AleraxRates/(D, L, T) in AleRax order. Returns {family: logL_nats}."""
     import torch
     from gpurec.api.model import GeneReconModel
     from gpurec.bench.alerax_io import norm_family_name
 
-    if dtype is None:
-        dtype = torch.float64
     D, L, T = float(rates[0]), float(rates[1]), float(rates[2])
     gene_list = genes if isinstance(genes, list) else [genes]
     model = GeneReconModel(species, gene_list, mode=mode, device=device,
-                           dtype=dtype, solver_options=solver_options)
+                           dtype=dtype, config=config, solver_options=solver_options)
     # gpurec theta order is [log2 D, log2 L, log2 T] == AleRax (D, L, T) column order
     triple = torch.tensor([math.log2(D), math.log2(L), math.log2(T)],
                           dtype=model.theta.dtype, device=model.theta.device)
