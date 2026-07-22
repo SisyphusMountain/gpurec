@@ -104,6 +104,16 @@ def preprocess_dataset(
     return raw
 
 
+def species_name_to_index(species_tree_path: str) -> dict[str, int]:
+    """{species_name: post-order gp index}, matching preprocess_dataset's ordering.
+
+    Wraps the Rust ``species_leaf_index_map`` pyfunction. Use to resolve a
+    ``{species_name: fraction_missing}`` dict onto the model's species indices.
+    """
+    raw = json.loads(_load_native_module().species_leaf_index_map(str(species_tree_path)))
+    return {str(name): int(index) for name, index in raw.items()}
+
+
 def build_wave_layout_from_plan(
     payload,
     *,
