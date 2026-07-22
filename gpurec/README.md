@@ -10,7 +10,7 @@ Triton kernels.
 
 - `GeneReconModel`: PyTorch module for evaluating reconciliation likelihoods.
 - `SolverOptions`: mutable solver controls for fixed-point, Pi/Pibar, Neumann,
-  BiCGSTAB, and pruning behavior.
+  and pruning behavior.
 - `sample_reconciliations`: backtracking helper exposed from the Rust
   `gpurec-backtrack` extension.
 - `log2_rate_bounds`: converts natural-rate bounds to log2 parameter bounds.

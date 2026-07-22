@@ -1,0 +1,17 @@
+\contentsline {section}{\numberline {1}Scope and conclusion}{1}{section.1}%
+\contentsline {section}{\numberline {2}Clade waves and index domains}{2}{section.2}%
+\contentsline {section}{\numberline {3}How the active mask is constructed}{2}{section.3}%
+\contentsline {section}{\numberline {4}The reverse recurrence and subclade pruning}{3}{section.4}%
+\contentsline {section}{\numberline {5}What each masked stage does}{3}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Backward-only DTS recomputation: \texttt {USE\_ACTIVE}}{3}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Within-row adjoint: \texttt {USE\_ACTIVE\_MASK}}{4}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}DTS VJP and child-clade propagation}{4}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Uninitialized scratch and persistent caches}{5}{subsection.5.4}%
+\contentsline {section}{\numberline {6}The separate split-side mask}{5}{section.6}%
+\contentsline {section}{\numberline {7}Correctness theorem and proof}{5}{section.7}%
+\contentsline {paragraph}{Proposition (exact-zero active-row pruning).}{5}{section*.2}%
+\contentsline {paragraph}{Proof.}{5}{section*.3}%
+\contentsline {section}{\numberline {8}Positive thresholds, error, and Hessian--vector products}{6}{section.8}%
+\contentsline {section}{\numberline {9}Assumptions and edge cases}{6}{section.9}%
+\contentsline {section}{\numberline {10}Equation-to-kernel reference}{7}{section.10}%
+\contentsline {section}{\numberline {11}Practical interpretation}{7}{section.11}%

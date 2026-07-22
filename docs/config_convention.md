@@ -34,7 +34,7 @@ a hand-written TOML mirror of those same defaults, and the test
 update `defaults.toml` to match (or that test fails) -- the TOML file is a checked mirror, not an
 independent source.
 
-A field whose dataclass default is `None` (e.g. `SolverOptions.bicgstab_tol`,
+A field whose dataclass default is `None` (e.g. `SolverOptions.e_adjoint_tol`,
 `RateBounds.max_rate`) is simply omitted from `defaults.toml` -- TOML has no null literal, so the
 deep-merge leaves the dataclass's own `None` in place.
 
@@ -130,7 +130,7 @@ uses the same loader.
 fit recipe:
 
 - `GpurecConfig.genewise_reference()` -- `fit_genewise`'s `SolverOptions` (`e_max_iter=128,
-  e_tol=1e-8, self_loop_solver="neumann", ...`) + `RateBounds.genewise()` (floor `1e-6`, cap `2.0`).
+  e_tol=1e-8, e_adjoint_tol=1e-7, ...`) + `RateBounds.genewise()` (floor `1e-6`, cap `2.0`).
 - `GpurecConfig.map_cv_reference()` -- `map_cv`'s converged `SolverOptions` (`pi_iters=64,
   neumann_terms=64, ...`).
 - `GpurecConfig.optimize_reference()` -- `optimize()` has no separate solver recipe, so this is

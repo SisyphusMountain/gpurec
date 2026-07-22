@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import torch
 
-from gpurec.api._implicit_grad import _gmres, _neumann_e_adjoint, _safe_exp2_ratio
+from gpurec.api._implicit_grad import _neumann_e_adjoint, _safe_exp2_ratio
 from gpurec.config.memory import MemoryOptions
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, survival_from_E as _survival_from_E
 from gpurec.core.inference.solver import receiver_weights_are_uniform
@@ -787,12 +787,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 gE = jt_E(w_flat.view(E_shape))
                 return (w_flat.view(E_shape) - gE).reshape(-1)
 
-            # Same linear E-adjoint operator ``(I - J)``, new rhs. Solver is chosen from
-            # solver_options.e_adjoint_solver: "gmres" (breakdown-free) or "neumann" (avoids the
-            # fp32 GMRES orthogonalization floor at large species counts -- required at >=500 species).
-            _e_solver = _neumann_e_adjoint if str(so.e_adjoint_solver).strip().lower() == "neumann" else _gmres
-            dwE = _e_solver(AG_flat, rhs_E, max_iter=so.bicgstab_max_iter,
-                            tol=so.bicgstab_tol).view(E_shape)
+            # Same linear E-adjoint operator ``(I - J)``, new rhs. Neumann series (see
+            # _neumann_e_adjoint): no orthogonalization, so no fp32 residual floor at large
+            # species counts.
+            dwE = _neumann_e_adjoint(AG_flat, rhs_E, max_iter=so.e_adjoint_max_iter,
+                                      tol=so.e_adjoint_tol).view(E_shape)
             if debug_out is not None:
                 debug_out.update(
                     d_grad_extinction=d_grad_extinction.clone(), d_grad_log_pD=d_grad_log_pD.clone(), d_grad_log_pS=d_grad_log_pS.clone(),

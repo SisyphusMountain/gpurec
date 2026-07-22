@@ -20,11 +20,9 @@ e_max_iter = 128
 e_tol = 1e-8
 pi_iters = 64
 neumann_terms = 64
-bicgstab_max_iter = 128
-# bicgstab_tol: dataclass default is None (dtype-relative auto target) -- cannot
+e_adjoint_max_iter = 128
+# e_adjoint_tol: dataclass default is None (dtype-relative auto target) -- cannot
 # be expressed in TOML, omitted so the dataclass default is kept.
-# bicgstab_breakdown_tol: dataclass default is None (BiCGSTAB-only breakdown
-# guard, unused by the GMRES E-adjoint solve) -- omitted, dataclass default kept.
 adjoint_pruning_threshold = 1e-6
 use_adjoint_pruning = true
 use_hvp_warm_start = true

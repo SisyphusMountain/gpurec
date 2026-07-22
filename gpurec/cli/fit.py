@@ -69,7 +69,7 @@ def run_fit(args) -> int:
     # fit_specieswise/map_cv (no well-posed one-shot fit; caught below and surfaced cleanly).
     # Pass explicit solver_options only when the user actually overrode one (--config or a
     # solver flag); otherwise leave it None so fit_dtl uses its
-    # robust Neumann E-adjoint default (fp32 GMRES floors ~1e-6 mid-fit at large S).
+    # robust Neumann E-adjoint (converges to the fp32 floor with no orthogonalization residual floor).
     user_solver = (
         args.config is not None
         or args.pi_iters is not None
