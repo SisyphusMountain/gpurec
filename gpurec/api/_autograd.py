@@ -149,6 +149,7 @@ class _GeneReconFunction(torch.autograd.Function):
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
+            leaf_fm_log=static.leaf_fm_log,
             uniform_pibar_row_max=uniform_pibar_row_max,
             specieswise=static.specieswise,
             genewise=static.genewise,

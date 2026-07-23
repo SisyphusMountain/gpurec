@@ -31,7 +31,7 @@ _LN2 = 0.6931471805599453
 def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_norm=True,
                       neumann_terms=None, use_pruning=None, e_adjoint_tol=None, cache=None,
                       origination_log_probs=None, origination_probs=None,
-                      reserved_scratch_bytes=None, warm_v=None):
+                      reserved_scratch_bytes=None, warm_v=None, leaf_fm_log=None):
     """J^T applied to a root-score cotangent ``seed_root`` [n_root, S] -> ``(grad_theta [S,3], grad_col)``.
 
     Thin wrapper over the production ``implicit_grad_loglik_vjp_wave``: it unpacks ``static``/``sv``
@@ -61,6 +61,7 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         use_receiver_weights=not receiver_weights_are_uniform(receiver_weights),
         theta=theta, receiver_weights=receiver_weights,
         uniform_pibar_row_max=sv["pibar_row_max"], family_idx=static.rate_family_idx,
+        leaf_fm_log=leaf_fm_log,
         specieswise=static.specieswise, genewise=static.genewise,
         neumann_terms=int(so.neumann_terms if neumann_terms is None else neumann_terms),
         e_adjoint_max_iter=so.e_adjoint_max_iter,
@@ -109,7 +110,8 @@ def make_ggn_hvp(static, theta, receiver_weights, sv, *, self_tol=None,
         )  # B t  (PSD Fisher covariance)
         gt, _gc = vjp_root_to_theta(static, sv, u, theta, receiver_weights, drop_norm=True,
                                     neumann_terms=vjp_neumann_terms, use_pruning=vjp_use_pruning,
-                                    e_adjoint_tol=vjp_e_adjoint_tol)
+                                    e_adjoint_tol=vjp_e_adjoint_tol,
+                                    leaf_fm_log=getattr(static, "leaf_fm_log", None))
         return gt.reshape(-1)
 
     return hvp

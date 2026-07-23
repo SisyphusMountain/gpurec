@@ -160,6 +160,7 @@ def implicit_grad_loglik_vjp_wave(
     use_receiver_weights: bool,
     theta: torch.Tensor, receiver_weights: torch.Tensor, uniform_pibar_row_max: torch.Tensor,
     family_idx: torch.Tensor,
+    leaf_fm_log: torch.Tensor | None = None,
     specieswise: bool = False,
     genewise: bool = False,
     neumann_terms: int | None = None,
@@ -350,6 +351,7 @@ def implicit_grad_loglik_vjp_wave(
             neumann_terms=neumann_terms,
             leaf_species_idx=leaf_species_idx,
             leaf_logp=log_pS_family,
+            leaf_fm_log=leaf_fm_log,
             has_leaf_term=has_leaf_term,
             active_mask=active_mask,
             species_parent=species_helpers["sp_parent"],
@@ -531,6 +533,7 @@ def implicit_grad_loglik_vjp_wave(
         int(root_ids.numel()), theta, receiver_weights, species_helpers,
         specieswise=specieswise,
         genewise=genewise,
+        leaf_fm_log=leaf_fm_log,
         drop_norm=drop_norm,
         e_adjoint_max_iter=e_adjoint_max_iter,
         e_adjoint_tol=e_adjoint_tol,
@@ -545,6 +548,7 @@ def _e_adjoint_and_theta_vjp(
     grad_E, grad_Ebar, grad_E_s1, grad_E_s2,
     grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
     n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
+    leaf_fm_log: torch.Tensor | None = None,
     drop_norm: bool = False,
     e_adjoint_max_iter: int | None = None,
     e_adjoint_tol=None,
@@ -576,6 +580,7 @@ def _e_adjoint_and_theta_vjp(
             receiver_log_probs,
             *topology_args,
             use_receiver_weights=use_receiver_weights,
+            leaf_fm_log=leaf_fm_log,
         )
         # ``drop_norm`` (GGN/J^T use) skips the loss's explicit E-normalization term, which is not
         # part of d(Pi_root)/dtheta. Default False -> the full real gradient (production path).
@@ -651,6 +656,7 @@ def _e_adjoint_and_theta_vjp(
             receiver_log_probs_r,
             *topology_args,
             use_receiver_weights=use_receiver_weights,
+            leaf_fm_log=leaf_fm_log,
         )
         grad_theta, grad_receiver = torch.autograd.grad(
             (param_loss, Ebar_from_params, E_from_params),
