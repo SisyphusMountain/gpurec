@@ -224,7 +224,9 @@ def _initialize_leaf_reconciliation_likelihood_kernel(
 ):
     NEG_LARGE: tl.constexpr = -float("inf")
 
-    w = tl.program_id(0)
+    # int64: w ranges over the whole batch's clade rows, so global_row*stride
+    # below can overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
     global_row = ws + w
     family = tl.load(family_idx_ptr + global_row)
     const_base = family * CONST_ROW_STRIDE
@@ -414,7 +416,9 @@ def _update_reconciliation_likelihood_kernel(
 ):
     NEG_LARGE: tl.constexpr = -float("inf")
 
-    w = tl.program_id(0)
+    # int64: w ranges over the whole batch's clade rows, so the *stride
+    # multiplies below can overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
     pi_row = pi_ws + w
     global_row = ws + w
     pi_base = pi_row * stride
@@ -863,7 +867,9 @@ def _stage_multiple_gene_split_event_reduction_kernel(
     ACC_DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
-    group = tl.program_id(0)
+    # int64: group ranges over the batch's multi-split parent count, so
+    # partial_row*S below can overflow int32 once that count * S exceeds 2^31.
+    group = tl.program_id(0).to(tl.int64)
     tile_id = tl.program_id(1)
     s_block = tl.program_id(2)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
@@ -999,7 +1005,9 @@ def _finalize_multiple_gene_split_event_reduction_kernel(
     ACC_DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
-    group = tl.program_id(0)
+    # int64: group ranges over the batch's multi-split parent count, so
+    # partial_row*S below can overflow int32 once that count * S exceeds 2^31.
+    group = tl.program_id(0).to(tl.int64)
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
