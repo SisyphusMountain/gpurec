@@ -206,6 +206,7 @@ def _solve_reconciliation_wave_vjp_2d(
     neumann_terms,
     leaf_species_idx,
     leaf_logp,
+    leaf_fm_log,
     has_leaf_term,
     active_mask,
     species_parent,
@@ -374,6 +375,14 @@ def _solve_reconciliation_wave_vjp_2d(
     )
     leaf_species_arg = leaf_species_idx if use_leaf_index else species_child1
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    use_fraction_missing = leaf_fm_log is not None
+    # When there is no fraction-missing tensor the constexpr short-circuits the
+    # off-hit load, so a valid-but-unused 1-element placeholder is enough.
+    leaf_fm_log_arg = (
+        leaf_fm_log.to(device=device, dtype=dtype).contiguous()
+        if use_fraction_missing
+        else torch.empty(1, device=device, dtype=dtype)
+    )
     use_child_edge_self_loop = True
 
     launch_options = {"num_warps": 8}
@@ -402,6 +411,7 @@ def _solve_reconciliation_wave_vjp_2d(
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
+        leaf_fm_log_arg,
         family_idx,
         v_k,
         self_loop_diagonal,
@@ -419,6 +429,7 @@ def _solve_reconciliation_wave_vjp_2d(
         USE_LEAF_INDEX=bool(use_leaf_index),
         HAS_LEAF_TERM=bool(has_leaf_term),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
+        USE_FRACTION_MISSING=bool(use_fraction_missing),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
         CONST_LAYOUT=int(const_layout),
@@ -597,6 +608,7 @@ def _solve_reconciliation_wave_vjp_2d(
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
+        leaf_fm_log_arg,
         family_idx,
         grad_log_pD_ptr,
         grad_log_pS_ptr,
@@ -620,6 +632,7 @@ def _solve_reconciliation_wave_vjp_2d(
         USE_LEAF_INDEX=bool(use_leaf_index),
         HAS_LEAF_TERM=bool(has_leaf_term),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
+        USE_FRACTION_MISSING=bool(use_fraction_missing),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         CONST_LAYOUT=int(const_layout),
         ACCUM_GRADS=bool(accum_self_loop_grads),
@@ -660,6 +673,7 @@ def solve_reconciliation_wave_vjp(
     neumann_terms=3,
     leaf_species_idx=None,
     leaf_logp=None,
+    leaf_fm_log=None,
     has_leaf_term=True,
     active_mask=None,
     species_parent=None,
@@ -725,6 +739,15 @@ def solve_reconciliation_wave_vjp(
     leaf_logp_mode = _self_loop_leaf_log_probability_layout(
         use_leaf_index, leaf_logp, family_idx, bool(family_indexed_consts)
     )
+    if leaf_fm_log is not None and leaf_logp_mode in (1, 3):
+        # The off-hit leaf baseline is log_pS[s] + log2(fm_s), which needs a
+        # per-species log_pS column. Modes 1/3 carry only a family-scalar
+        # log_pS, so the per-column baseline is undefined there.
+        raise NotImplementedError(
+            "fraction_missing requires a per-species log_pS layout in the Pi "
+            "backward (leaf_logp_mode 0 [S] or 2 [G, S]); got mode "
+            f"{leaf_logp_mode} (family-scalar log_pS)."
+        )
     if family_idx is not None:
         family_idx = family_idx.to(device=Pi_star.device, dtype=torch.long).contiguous()
     if species_parent is None:
@@ -760,6 +783,7 @@ def solve_reconciliation_wave_vjp(
         neumann_terms=neumann_terms,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
+        leaf_fm_log=leaf_fm_log,
         has_leaf_term=requested_has_leaf_term,
         active_mask=active_mask,
         species_parent=species_parent,

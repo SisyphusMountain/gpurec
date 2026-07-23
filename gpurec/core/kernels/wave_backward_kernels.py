@@ -59,6 +59,7 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     leaf_term_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
+    leaf_fm_log_ptr,
     family_idx_ptr,
     v_k_ptr,
     self_loop_diagonal_ptr,
@@ -76,6 +77,7 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
+    USE_FRACTION_MISSING: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
@@ -197,15 +199,33 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
             leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
         elif LEAF_LOGP_MODE == 2:
-            leaf_logp = tl.load(
-                leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
-                mask=leaf_hit,
-                other=NEG_LARGE,
-            )
-            leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            if USE_FRACTION_MISSING:
+                # Off-hit leaf-species columns carry the "present-but-unobserved"
+                # baseline log_pS[s] + log2(fm_s); non-leaf/observed columns stay
+                # -inf (fm_col is -inf there). Mirrors the Pi forward.
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                    mask=mask,
+                    other=NEG_LARGE,
+                )
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
+                baseline = leaf_logp + fm_col[:, None]
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, baseline)
+            else:
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                    mask=leaf_hit,
+                    other=NEG_LARGE,
+                )
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
             leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
-            leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
+            if USE_FRACTION_MISSING:
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
+                baseline = (leaf_logp + fm_col)[:, None]
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], baseline)
+            else:
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
     elif HAS_LEAF_TERM:
         leaf_observation_log_term = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE)
     else:
@@ -616,6 +636,7 @@ def _accumulate_reconciliation_event_vjp_kernel(
     leaf_term_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
+    leaf_fm_log_ptr,
     family_idx_ptr,
     grad_log_pD_ptr,
     grad_log_pS_ptr,
@@ -639,6 +660,7 @@ def _accumulate_reconciliation_event_vjp_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
+    USE_FRACTION_MISSING: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
     ACCUM_GRADS: tl.constexpr,
@@ -744,15 +766,33 @@ def _accumulate_reconciliation_event_vjp_kernel(
             leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
         elif LEAF_LOGP_MODE == 2:
-            leaf_logp = tl.load(
-                leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
-                mask=leaf_hit,
-                other=NEG_LARGE,
-            )
-            leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            if USE_FRACTION_MISSING:
+                # Off-hit leaf-species columns carry the "present-but-unobserved"
+                # baseline log_pS[s] + log2(fm_s); non-leaf/observed columns stay
+                # -inf (fm_col is -inf there). Mirrors the Pi forward.
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                    mask=mask,
+                    other=NEG_LARGE,
+                )
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
+                baseline = leaf_logp + fm_col[:, None]
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, baseline)
+            else:
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                    mask=leaf_hit,
+                    other=NEG_LARGE,
+                )
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
             leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
-            leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
+            if USE_FRACTION_MISSING:
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
+                baseline = (leaf_logp + fm_col)[:, None]
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], baseline)
+            else:
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
     elif HAS_LEAF_TERM:
         leaf_observation_log_term = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE)
     else:
