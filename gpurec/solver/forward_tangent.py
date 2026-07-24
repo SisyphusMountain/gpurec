@@ -130,7 +130,8 @@ def _default_tol(dtype):
 
 
 def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
-                            alpha=None, u_alpha=None, use_receiver_weights=False):
+                            alpha=None, u_alpha=None, use_receiver_weights=False,
+                            leaf_fm_log=None):
     """E + parameter tangents assembled into the wave-step tangent constants.
 
     ``alpha``/``u_alpha`` (and ``use_receiver_weights``) turn on the WEIGHTED forward tangent: the
@@ -153,6 +154,7 @@ def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
         sh["sp_parent"], sh["sp_child1"], sh["sp_child2"], int(sh["max_ancestor_depth"]),
         max_iter=int(static.solver_options.e_max_iter), tol=e_tol,
         use_receiver_weights=bool(use_receiver_weights), dreceiver_log_probs=dreceiver_log_probs,
+        leaf_fm_log=leaf_fm_log,
     )
     if raw_out is not None:
         raw_out.update(
@@ -204,7 +206,7 @@ def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
 
 def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAULT_SELF_MAX_ITER, e_tol=None,
                     self_iters=None, return_full=False, keep_d_dts=True, fused_selfloop=True,
-                    alpha=None, u_alpha=None):
+                    alpha=None, u_alpha=None, leaf_fm_log=None):
     """d(Pi_root)/d[theta;alpha] . [v;u_alpha]  -> tensor [n_root_rows, S].
 
     ``self_iters`` (int): run the per-wave self-loop for a FIXED number of Jacobi steps with
@@ -219,6 +221,11 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     E-step tangent fixed point AND the wave-step tangent (use_receiver_weights=True). At a non-uniform
     base this is what makes the tangent FINITE and self-consistent with the weighted primal (the
     legacy uniform tangent NaNs there). ``alpha=None`` -> legacy uniform theta-only tangent.
+
+    ``leaf_fm_log`` ([S], log2) is the fixed fraction-missing leaf boundary threaded into the
+    E-step tangent fixed point so the PRIMAL E_s1/E_s2 recomputed there match the fraction-missing
+    forward (the tangents dE_s1/dE_s2 stay 0 -- fraction_missing is a constant input, no curvature).
+    ``None`` (default) reproduces the no-fraction-missing tangent BIT-FOR-BIT.
 
     With ``return_full=True`` returns (root_tangents, full) where ``full`` carries everything the
     exact-HVP tangent-adjoint sweep needs: dPi/dPibar [C,S] buffers, per-wave
@@ -250,6 +257,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     tangent_constants = _wave_tangent_constants(
         static, theta, v, sv, S, e_tol, raw_out=raw,
         alpha=alpha if weighted else None, u_alpha=u_alpha, use_receiver_weights=use_receiver_weights,
+        leaf_fm_log=leaf_fm_log,
     )
     dreceiver_log_probs = tangent_constants.pop("_dreceiver_log_probs")
 

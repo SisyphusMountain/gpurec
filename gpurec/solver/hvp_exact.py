@@ -78,6 +78,12 @@ def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=N
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
         reserved_scratch_bytes=_warm_reserved_scratch_bytes(static),
         warm_v=warm_v,
+        # Fraction-missing is E-only and fixed; thread it so the cached first-order
+        # adjoint (wE) + cotangents match the fraction-missing forward. Without this the
+        # HVP's point cache would be fraction-missing-wrong (its first-order gradient would
+        # not match the production autograd gradient), corrupting every second-order term
+        # built on the cache. vjp_root_to_theta already accepts leaf_fm_log (see ggn.py).
+        leaf_fm_log=getattr(static, "leaf_fm_log", None),
     )
     return grad_theta, grad_col, cache
 
@@ -234,6 +240,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     # non-uniform base -> weighted paths LIVE so the backward/cache + receiver-weight
     # cotangent are finite.
     use_receiver_weights = not receiver_weights_are_uniform(col_weights)
+    # Fixed fraction-missing leaf boundary (log2, [S]); None => no fraction-missing (fast default).
+    # It is E-ONLY: threaded into the E-step primal recomputations + the E-step tangent fixed point
+    # so the second-order theta curvature is correct with fraction_missing>0. fraction_missing is a
+    # constant input -> no gradient / curvature is accumulated with respect to it.
+    leaf_fm_log = getattr(static, "leaf_fm_log", None)
     family_idx = static.rate_family_idx
     species_child1 = sh["sp_child1"]
     species_child2 = sh["sp_child2"]
@@ -304,6 +315,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             E_req, sv["log_pS"], sv["log_pD"], sv["log_pL"], sv["max_transfer"],
             receiver_log_probs, species_parent, species_child1, species_child2,
             max_ancestor_depth, use_receiver_weights=use_receiver_weights,
+            leaf_fm_log=leaf_fm_log,
         )
 
     def jt_E(g_new):
@@ -345,6 +357,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 receiver_log_probs_req, species_parent, species_child1,
                 species_child2, max_ancestor_depth,
                 use_receiver_weights=use_receiver_weights,
+                leaf_fm_log=leaf_fm_log,
             )
             outs = torch.autograd.grad(
                 (En, Eb),
@@ -457,7 +470,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             _u_alpha = u_alpha if use_receiver_weights else None
             t_root, full = jvp_root_scores(static, theta, u, sv, return_full=True,
                                            keep_d_dts=False, self_iters=tangent_self_iters,
-                                           alpha=_alpha, u_alpha=_u_alpha)
+                                           alpha=_alpha, u_alpha=_u_alpha,
+                                           leaf_fm_log=leaf_fm_log)
             tangent_constants = full["tangent_constants"]
             dPi, dPibar = full["dPi"], full["dPibar"]
             dpS_m, dpD_m, dpL_m = (

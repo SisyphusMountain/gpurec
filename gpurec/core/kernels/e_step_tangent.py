@@ -33,11 +33,13 @@ def _update_extinction_log_probabilities_jvp_kernel(
     species_parent_ptr,
     species_child1_ptr,
     species_child2_ptr,
+    leaf_fm_log_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
+    USE_FRACTION_MISSING: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     g = tl.program_id(0)
@@ -115,6 +117,15 @@ def _update_extinction_log_probabilities_jvp_kernel(
     E_s2 = tl.load(E_ptr + base + c2, mask=c2_valid, other=neg_inf)
     dE_s1 = tl.load(dE_ptr + base + c1, mask=c1_valid, other=0.0)
     dE_s2 = tl.load(dE_ptr + base + c2, mask=c2_valid, other=0.0)
+    if USE_FRACTION_MISSING:
+        # Mirror the forward E-step (e_step.py): at a leaf species the terminal
+        # speciation term is the single factor p^S * fm_l, so the PRIMAL boundary is
+        # E_s1=log2(fm_l), E_s2=0. fm_l is a fixed input, so its tangent is 0; dE_s1/dE_s2
+        # already loaded 0.0 at the leaf child sentinels, so leave them untouched.
+        fm_log = tl.load(leaf_fm_log_ptr + offs, mask=mask, other=neg_inf)
+        is_missing_leaf = mask & (fm_log > neg_inf)
+        E_s1 = tl.where(is_missing_leaf, fm_log, E_s1)
+        E_s2 = tl.where(is_missing_leaf, tl.zeros([BLOCK_S], dtype=DTYPE), E_s2)
 
     max_transfer = tl.load(max_transfer_ptr + base + offs, mask=mask, other=0.0)
     d_max_transfer = tl.load(
@@ -223,12 +234,21 @@ def _launch_e_step_tangent_2d(
     out=None,
     max_diff_out=None,
     use_receiver_weights=True,
+    leaf_fm_log=None,
 ):
     G = int(E.shape[0])
     S = int(E.shape[1])
     block_s = int(triton.next_power_of_2(S))
     dE_new, dE_s1, dE_s2, dEbar = (
         (torch.empty_like(E) for _ in range(4)) if out is None else out
+    )
+    use_fraction_missing = leaf_fm_log is not None
+    # When there is no fraction-missing tensor the constexpr short-circuits the
+    # kernel load, so a valid-but-unused 1-element placeholder is enough (mirror e_step.py).
+    leaf_fm_log_arg = (
+        leaf_fm_log.contiguous()
+        if use_fraction_missing
+        else torch.empty(1, device=E.device, dtype=E.dtype)
     )
     _update_extinction_log_probabilities_jvp_kernel[(G,)](
         E, dE, dE_new, dE_s1, dE_s2, dEbar,
@@ -241,11 +261,13 @@ def _launch_e_step_tangent_2d(
         dreceiver_log_probs,
         dlog_pS_mat, dlog_pD_mat, dlog_pL_mat, dmax_transfer_mat,
         species_parent, species_child1, species_child2,
+        leaf_fm_log_arg,
         S,
         BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         COMPUTE_DIFF=max_diff_out is not None,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+        USE_FRACTION_MISSING=use_fraction_missing,
         DTYPE=_tl_float_dtype(E.dtype),
         num_warps=8,
     )
@@ -263,6 +285,7 @@ def e_tangent_fixed_point(
     use_receiver_weights=True,
     dE0=None,
     dreceiver_log_probs=None,
+    leaf_fm_log=None,
 ):
     """Solve the tangent fixed point documented in the LaTeX reference."""
     if max_iter is None:
@@ -309,6 +332,7 @@ def e_tangent_fixed_point(
         _launch_e_step_tangent_2d(
             E_a, dE_a, *args, out=(dE_b, dE_s1, dE_s2, dEbar),
             max_diff_out=max_diff_out, use_receiver_weights=bool(use_receiver_weights),
+            leaf_fm_log=leaf_fm_log,
         )
         dE_a, dE_b = dE_b, dE_a
         max_diff = float(max_diff_out.max().item())
@@ -318,5 +342,6 @@ def e_tangent_fixed_point(
 
     _, dE_s1, dE_s2, dEbar = _launch_e_step_tangent_2d(
         E_a, dE_a, *args, use_receiver_weights=bool(use_receiver_weights),
+        leaf_fm_log=leaf_fm_log,
     )
     return dE_a, dE_s1, dE_s2, dEbar
