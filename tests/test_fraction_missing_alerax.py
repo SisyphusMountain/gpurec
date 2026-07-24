@@ -23,17 +23,20 @@ What this establishes (see the two test functions)
   ~1e-5 nats. This externally confirms gpurec's forward reconciliation likelihood
   (rate normalization, uniform-receiver transfer, survival + origination head)
   reproduces AleRax.
-* **fm=0.3 (fraction-missing effect): the two implementations DIVERGE.** gpurec's
-  fraction-missing model enters BOTH boundaries -- the E-step extinction fixed
-  point gets an added ``p^S * fm`` leaf term, and the Pi/CLV numerator gets an
-  off-hit leaf-species baseline ``log p^S + log2(fm)`` -- whereas AleRax injects
-  fraction-missing ONLY into the extinction ``uE`` via a one-shot last-iteration
-  blend ``uE <- uE*(1-fm) + fm`` and carries NO direct fraction-missing term in
-  the numerator CLV. These are genuinely different models, so the fm effect does
-  not match: gpurec's likelihood increase is ~2.1x AleRax's. The delta comparison
-  ``Delta(fm0.3 - fm0)`` isolates exactly this fraction-missing effect; it is
-  marked ``xfail(strict=True)`` and documents the quantified gap, so the suite
-  stays green while flagging the divergence (a future reconciliation would XPASS).
+* **fm=0.3 (fraction-missing effect): NEAR agreement, small residual.** gpurec is now
+  E-only: fraction-missing enters ONLY the extinction ``E`` and carries NO term in the
+  Pi/CLV numerator (matching AleRax, which also has no numerator fm term). Removing the
+  numerator Pi term shrinks the gpurec-vs-AleRax gap at fm=0.3 from ~0.65 nats to
+  ~2.5e-4 nats (a ~2600x reduction). A small residual remains because the two E-step
+  fraction-missing FORMS still differ:
+    - AleRax (``UndatedDTLMultiModel.hpp``): a one-shot blend applied only at leaf
+      species on the LAST of 4 extinction iterations -- ``uE <- uE*(1-fm) + fm``.
+    - gpurec (``e_step.py``): an additive ``p^S * fm`` speciation term inside the leaf
+      extinction recursion, iterated to full convergence.
+  These give slightly different leaf extinction values (~2.5e-4 nats on this fixture).
+  ``test_fraction_missing_matches_alerax_fm03`` asserts the absolute match at the tight
+  1e-4 target; it does NOT pass at 2.5e-4 -- the residual is a genuine, converged E-step
+  model-form difference (the E-step is out of scope for the Pi-only change).
 """
 from __future__ import annotations
 
@@ -186,27 +189,20 @@ def test_base_model_matches_alerax_fm0(parity_numbers):
     assert abs(g - a) < 5e-3, f"fm=0 mismatch: gpurec={g:.6f} nats, alerax={a:.6f} nats"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "gpurec and AleRax implement DIFFERENT fraction-missing models. gpurec adds "
-        "p^S*fm to the E-step extinction fixed point AND an off-hit leaf baseline "
-        "log p^S + log2(fm) to the Pi/CLV numerator; AleRax injects fm only into the "
-        "extinction uE via a one-shot blend uE<-uE*(1-fm)+fm and has no numerator fm "
-        "term. Measured on this fixture: Delta_gpurec=+1.2108 vs Delta_alerax=+0.5644 "
-        "nats (gap ~0.646 nats, ratio ~2.14x). A future reconciliation would XPASS."
-    ),
-)
-def test_fraction_missing_delta_matches_alerax(parity_numbers):
-    """fm effect (delta) should match AleRax; currently a documented divergence.
+def test_fraction_missing_matches_alerax_fm03(parity_numbers):
+    """fm=0.3: gpurec's absolute forward logL vs AleRax (E-only model).
 
-    The delta Delta(fm0.3 - fm0) cancels any constant convention offset and isolates
-    the pure fraction-missing effect. gpurec and AleRax disagree here (see the xfail
-    reason for the quantified gap and mechanism).
+    With the numerator Pi fraction-missing term removed, gpurec agrees with AleRax's
+    UndatedDTL fraction-missing to ~2.5e-4 nats (down from ~0.65 nats). The comparison
+    is on the ABSOLUTE per-family log-likelihood in nats (not a delta), at fixed
+    D=L=T=0.1. The residual ~2.5e-4 is a converged, out-of-scope E-step model-form
+    difference (AleRax's leaf blend uE<-uE*(1-fm)+fm vs gpurec's additive p^S*fm); see
+    the module docstring. This asserts the tight 1e-4 target and currently does NOT pass
+    at 2.5e-4 -- kept tight and honest rather than loosened to hide the residual.
     """
-    d_gpurec = parity_numbers["gpurec_fm03"] - parity_numbers["gpurec_fm0"]
-    d_alerax = parity_numbers["alerax_fm03"] - parity_numbers["alerax_fm0"]
-    assert abs(d_gpurec - d_alerax) < 5e-3, (
-        f"fraction-missing effect differs: Delta_gpurec={d_gpurec:+.6f} nats, "
-        f"Delta_alerax={d_alerax:+.6f} nats, gap={abs(d_gpurec - d_alerax):.6f} nats"
+    g = parity_numbers["gpurec_fm03"]
+    a = parity_numbers["alerax_fm03"]
+    assert abs(g - a) < 1e-4, (
+        f"fm=0.3 mismatch: gpurec={g:.6f} nats, alerax={a:.6f} nats, "
+        f"gap={abs(g - a):.2e} nats (residual is the out-of-scope E-step form difference)"
     )

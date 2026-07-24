@@ -32,10 +32,10 @@ Math implemented (base-2 log space throughout, matching production):
   with ``Pibar[gamma, s] = lse2_{r valid}(Pi[gamma, r]) + max_transfer[s]``.
   Internal clades additionally get the gene-split (DTS) term; leaf clades
   additionally get the leaf term.
-  **Fraction-missing Pi boundary** (leaf clades only, matching the production
-  ``has_leaf_term`` waves): at a leaf-species column ``s`` a leaf clade that is
-  NOT mapped to ``s`` carries baseline ``log_pS[s] + log2(fm_s)``; the mapped
-  clade keeps ``log_pS[s]``.
+  **E-only fraction-missing (AleRax v1.4.0)**: the Pi/CLV leaf boundary carries
+  NO fraction-missing term. A leaf clade mapped to species column ``s`` keeps the
+  plain speciation ``log_pS[s]`` and every other column is -inf -- exactly the
+  standard no-missing boundary. Fraction-missing enters ONLY the E-step above.
 
 No ``clamp`` anywhere: log2 is only taken on a strictly-positive branch via the
 ``torch.where`` + ``masked_fill(1.0)`` pattern.
@@ -189,14 +189,14 @@ def oracle_nll(species_nwk: str, gene_nwk: str, D: float, L: float, T: float, fr
     sl2_const = log_pS + E_s1            # child2 retained, child1 extinct
 
     # ----- leaf-clade Pi boundary (leaf clades only) -------------------------
+    # E-only model (AleRax v1.4.0): NO fraction-missing term in the Pi/CLV leaf
+    # boundary. A leaf clade mapped to species column ``col`` keeps the plain
+    # speciation ``log_pS[col]``; every other column is -inf (standard no-missing).
     leaf_row = [int(v) for v in fam["leaf_row_index"]]
     leaf_col = [int(v) for v in fam["leaf_col_index"]]
     clade_species_map = torch.full((C, S), NEG_INF, dtype=_DT)
-    baseline_row = torch.where(missing_leaf, leaf_fm_log, torch.full((S,), NEG_INF, dtype=_DT))  # log2(fm_s) at fm-leaves
     for gamma, col in zip(leaf_row, leaf_col):
-        row = baseline_row.clone()
-        row[col] = 0.0  # mapped clade keeps log_pS[s] (i.e. + 0), overriding its own baseline
-        clade_species_map[gamma] = row
+        clade_species_map[gamma, col] = 0.0  # mapped clade keeps log_pS[col]
     leaf_term = log_pS + clade_species_map  # -inf where clade_species_map is -inf
 
     # ----- gene-tree CCP splits ---------------------------------------------

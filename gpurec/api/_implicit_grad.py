@@ -351,7 +351,11 @@ def implicit_grad_loglik_vjp_wave(
             neumann_terms=neumann_terms,
             leaf_species_idx=leaf_species_idx,
             leaf_logp=log_pS_family,
-            leaf_fm_log=leaf_fm_log,
+            # E-only fraction-missing (AleRax v1.4.0 model): the Pi backward gets
+            # NO fraction-missing leaf term, matching the Pi forward. Fraction-missing
+            # flows only through the E-step gradient (_e_adjoint_and_theta_vjp below,
+            # which forwards `leaf_fm_log` to its e_step_triton_autograd calls).
+            leaf_fm_log=None,
             has_leaf_term=has_leaf_term,
             active_mask=active_mask,
             species_parent=species_helpers["sp_parent"],
