@@ -103,7 +103,8 @@ def make_ggn_hvp(static, theta, receiver_weights, sv, *, self_tol=None,
 
     def hvp(v_vec):
         v = v_vec.reshape(S, 3).to(theta.dtype)
-        t = jvp_root_scores(static, theta, v, sv, self_tol=self_tol, self_max_iter=self_max_iter)
+        t = jvp_root_scores(static, theta, v, sv, self_tol=self_tol, self_max_iter=self_max_iter,
+                            leaf_fm_log=getattr(static, "leaf_fm_log", None))
         t_head = t.to(dtype=accumulator_dtype)
         u = _LN2 * q * (
             t_head - (q * t_head).sum(dim=-1, keepdim=True)
