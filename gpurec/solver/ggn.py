@@ -29,16 +29,16 @@ _LN2 = 0.6931471805599453
 
 @torch.no_grad()
 def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_norm=True,
-                      neumann_terms=None, use_pruning=None, bicgstab_tol=None, cache=None,
+                      neumann_terms=None, use_pruning=None, e_adjoint_tol=None, cache=None,
                       origination_log_probs=None, origination_probs=None,
-                      reserved_scratch_bytes=None, warm_v=None):
+                      reserved_scratch_bytes=None, warm_v=None, leaf_fm_log=None):
     """J^T applied to a root-score cotangent ``seed_root`` [n_root, S] -> ``(grad_theta [S,3], grad_col)``.
 
     Thin wrapper over the production ``implicit_grad_loglik_vjp_wave``: it unpacks ``static``/``sv``
     and forwards. With ``seed_root=None`` the loss seed ``-softmax2(Pi_root)`` is used and ``drop_norm``
     should be False to reproduce the real gradient (regression path); the GGN path passes a custom
     ``seed_root`` and ``drop_norm=True`` (drop the loss's explicit E-norm term, which is not part of
-    d(Pi_root)/dtheta). ``neumann_terms``/``use_pruning``/``bicgstab_tol`` override the solver options
+    d(Pi_root)/dtheta). ``neumann_terms``/``use_pruning``/``e_adjoint_tol`` override the solver options
     so the adjoint can be made convergent + unpruned to match the convergent Jvp (M = J^T B J
     symmetric). ``cache`` collects per-wave adjoint state for the exact-HVP tangent sweep.
     ``reserved_scratch_bytes`` mirrors the gradient path's memory-gate reservation (see
@@ -61,15 +61,14 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         use_receiver_weights=not receiver_weights_are_uniform(receiver_weights),
         theta=theta, receiver_weights=receiver_weights,
         uniform_pibar_row_max=sv["pibar_row_max"], family_idx=static.rate_family_idx,
+        leaf_fm_log=leaf_fm_log,
         specieswise=static.specieswise, genewise=static.genewise,
         neumann_terms=int(so.neumann_terms if neumann_terms is None else neumann_terms),
-        bicgstab_max_iter=so.bicgstab_max_iter,
-        bicgstab_tol=(so.bicgstab_tol if bicgstab_tol is None else bicgstab_tol),
-        bicgstab_breakdown_tol=so.bicgstab_breakdown_tol,
+        e_adjoint_max_iter=so.e_adjoint_max_iter,
+        e_adjoint_tol=(so.e_adjoint_tol if e_adjoint_tol is None else e_adjoint_tol),
         adjoint_pruning_threshold=so.adjoint_pruning_threshold,
         use_adjoint_pruning=bool(so.use_adjoint_pruning if use_pruning is None else use_pruning),
         pibar_side_threshold=so.pibar_side_threshold,
-        e_adjoint_solver=so.e_adjoint_solver,
         seed_root=seed_root, drop_norm=drop_norm, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
         accumulator_dtype=resolve_accumulator_dtype(
@@ -84,10 +83,10 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
 
 def make_ggn_hvp(static, theta, receiver_weights, sv, *, self_tol=None,
                  self_max_iter=DEFAULT_SELF_MAX_ITER,
-                 vjp_neumann_terms=None, vjp_use_pruning=None, vjp_bicgstab_tol=None):
+                 vjp_neumann_terms=None, vjp_use_pruning=None, vjp_e_adjoint_tol=None):
     """Return hvp(v_vec) computing the GGN/Fisher product M v in theta-space (flat 3S).
 
-    Defaults use the solver's production adjoint settings (neumann_terms, pruning, bicgstab tol);
+    Defaults use the solver's production adjoint settings (neumann_terms, pruning, E-adjoint tol);
     the wave self-loop already converges within those terms, so M is unchanged vs the convergent
     settings (pass overrides only to force a convergent/unpruned adjoint for symmetry checks).
     """
@@ -104,14 +103,16 @@ def make_ggn_hvp(static, theta, receiver_weights, sv, *, self_tol=None,
 
     def hvp(v_vec):
         v = v_vec.reshape(S, 3).to(theta.dtype)
-        t = jvp_root_scores(static, theta, v, sv, self_tol=self_tol, self_max_iter=self_max_iter)
+        t = jvp_root_scores(static, theta, v, sv, self_tol=self_tol, self_max_iter=self_max_iter,
+                            leaf_fm_log=getattr(static, "leaf_fm_log", None))
         t_head = t.to(dtype=accumulator_dtype)
         u = _LN2 * q * (
             t_head - (q * t_head).sum(dim=-1, keepdim=True)
         )  # B t  (PSD Fisher covariance)
         gt, _gc = vjp_root_to_theta(static, sv, u, theta, receiver_weights, drop_norm=True,
                                     neumann_terms=vjp_neumann_terms, use_pruning=vjp_use_pruning,
-                                    bicgstab_tol=vjp_bicgstab_tol)
+                                    e_adjoint_tol=vjp_e_adjoint_tol,
+                                    leaf_fm_log=getattr(static, "leaf_fm_log", None))
         return gt.reshape(-1)
 
     return hvp

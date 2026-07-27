@@ -224,7 +224,9 @@ def _initialize_leaf_reconciliation_likelihood_kernel(
 ):
     NEG_LARGE: tl.constexpr = -float("inf")
 
-    w = tl.program_id(0)
+    # int64: w ranges over the whole batch's clade rows, so global_row*stride
+    # below can overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
     global_row = ws + w
     family = tl.load(family_idx_ptr + global_row)
     const_base = family * CONST_ROW_STRIDE
@@ -386,6 +388,7 @@ def _update_reconciliation_likelihood_kernel(
     species_parent_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
+    leaf_fm_log_ptr,
     family_idx_ptr,
     gene_split_log_likelihood_ptr,
     gene_split_offset_ptr,
@@ -404,6 +407,7 @@ def _update_reconciliation_likelihood_kernel(
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
+    USE_FRACTION_MISSING: tl.constexpr,
     STORE_FINAL_PIBAR: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
@@ -412,7 +416,9 @@ def _update_reconciliation_likelihood_kernel(
 ):
     NEG_LARGE: tl.constexpr = -float("inf")
 
-    w = tl.program_id(0)
+    # int64: w ranges over the whole batch's clade rows, so the *stride
+    # multiplies below can overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
     pi_row = pi_ws + w
     global_row = ws + w
     pi_base = pi_row * stride
@@ -546,9 +552,16 @@ def _update_reconciliation_likelihood_kernel(
         speciation_child2_log_term = speciation_child2_const + reconciliation_child2_log_likelihood + reconciliation_frame_shift
         if USE_LEAF_INDEX:
             leaf_hit = mask & (leaf_species == s_offs)
-            leaf_observation_log_term = tl.where(
-                leaf_hit, leaf_observation_log_probability + leaf_frame_shift, NEG_LARGE
-            )
+            mapped_term = leaf_observation_log_probability + leaf_frame_shift
+            if USE_FRACTION_MISSING:
+                # Off-hit leaf-species columns carry the "present-but-unobserved"
+                # baseline log_pS[s] + log2(fm_s); non-leaf/observed columns stay -inf.
+                leaf_logp_col = tl.load(leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE)
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=mask, other=NEG_LARGE)
+                baseline = leaf_logp_col + fm_col + leaf_frame_shift  # -inf where fm_col is -inf
+                leaf_observation_log_term = tl.where(leaf_hit, mapped_term, baseline)
+            else:
+                leaf_observation_log_term = tl.where(leaf_hit, mapped_term, NEG_LARGE)
         else:
             leaf_observation_log_term = tl.full(
                 [BLOCK_S], value=NEG_LARGE, dtype=DTYPE
@@ -854,7 +867,9 @@ def _stage_multiple_gene_split_event_reduction_kernel(
     ACC_DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
-    group = tl.program_id(0)
+    # int64: group ranges over the batch's multi-split parent count, so
+    # partial_row*S below can overflow int32 once that count * S exceeds 2^31.
+    group = tl.program_id(0).to(tl.int64)
     tile_id = tl.program_id(1)
     s_block = tl.program_id(2)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
@@ -990,7 +1005,9 @@ def _finalize_multiple_gene_split_event_reduction_kernel(
     ACC_DTYPE: tl.constexpr,
 ):
     NEG_INF: tl.constexpr = -float("inf")
-    group = tl.program_id(0)
+    # int64: group ranges over the batch's multi-split parent count, so
+    # partial_row*S below can overflow int32 once that count * S exceeds 2^31.
+    group = tl.program_id(0).to(tl.int64)
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
@@ -1081,7 +1098,13 @@ def compute_leaf_initial_wave_step(
     leaf_logp,
     family_idx,
     use_receiver_weights=True,
+    leaf_fm_log=None,
 ):
+    # ``leaf_fm_log`` is accepted for signature symmetry with ``compute_wave_step``
+    # and forwarded by ``pi_wave_forward``. The leaf initializer only seeds
+    # iterate 0 of the fixed point; the per-column off-hit baseline is carried by
+    # the main wave-step recurrence, so this kwarg is intentionally unused here.
+    del leaf_fm_log
     _validate_residual_tensors(
         Pi_out,
         max_transfer_mat=max_transfer_mat,
@@ -1164,6 +1187,7 @@ def compute_wave_step(
     input_ws=None,
     use_receiver_weights=True,
     pi_residual_out=None,
+    leaf_fm_log=None,
 ):
     _validate_residual_tensors(
         Pi_in,
@@ -1246,6 +1270,14 @@ def compute_wave_step(
             "and a distinct output buffer"
         )
     compute_diff = pi_residual_out is not None
+    use_fraction_missing = leaf_fm_log is not None
+    # When there is no fraction-missing tensor the constexpr short-circuits the
+    # off-hit load, so a valid-but-unused 1-element placeholder is enough.
+    leaf_fm_log_arg = (
+        leaf_fm_log.contiguous()
+        if use_fraction_missing
+        else torch.empty(1, device=Pi_in.device, dtype=Pi_in.dtype)
+    )
     block_s, const_row_stride = _prepare_wave_launch(S, duplication_loss_const)
     _update_reconciliation_likelihood_kernel[(W,)](
         Pi_in,
@@ -1264,6 +1296,7 @@ def compute_wave_step(
         species_parent,
         leaf_species_idx,
         leaf_logp,
+        leaf_fm_log_arg,
         family_idx,
         gene_split_log_likelihood,
         gene_split_offset,
@@ -1282,6 +1315,7 @@ def compute_wave_step(
         BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=bool(has_leaf_term),
+        USE_FRACTION_MISSING=use_fraction_missing,
         STORE_FINAL_PIBAR=bool(store_final_pibar),
         COMPUTE_DIFF=compute_diff,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),

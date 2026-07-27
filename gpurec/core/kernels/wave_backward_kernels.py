@@ -20,7 +20,9 @@ def _select_active_adjoint_rows_kernel(
     STRICT_GT: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    w = tl.program_id(0)
+    # int64: w ranges over the whole batch's clade rows, so row_base below can
+    # overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
     row_base = w * stride
     row_max = tl.full([1], value=0.0, dtype=DTYPE)
 
@@ -57,6 +59,7 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     leaf_term_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
+    leaf_fm_log_ptr,
     family_idx_ptr,
     v_k_ptr,
     self_loop_diagonal_ptr,
@@ -74,6 +77,7 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
+    USE_FRACTION_MISSING: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
@@ -84,7 +88,10 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     """Precompute self-loop J^T coefficients for a block of rows and all species."""
     NEG_LARGE: tl.constexpr = -float("inf")
 
-    block = tl.program_id(0)
+    # int64: rows range over the whole batch's clade rows, so the *stride/*S
+    # address arithmetic below can overflow int32 once total_clades * S
+    # exceeds 2^31.
+    block = tl.program_id(0).to(tl.int64)
     rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
     s_offs = tl.arange(0, BLOCK_S)
     row_valid = rows < W
@@ -192,15 +199,33 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
             leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
         elif LEAF_LOGP_MODE == 2:
-            leaf_logp = tl.load(
-                leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
-                mask=leaf_hit,
-                other=NEG_LARGE,
-            )
-            leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            if USE_FRACTION_MISSING:
+                # Off-hit leaf-species columns carry the "present-but-unobserved"
+                # baseline log_pS[s] + log2(fm_s); non-leaf/observed columns stay
+                # -inf (fm_col is -inf there). Mirrors the Pi forward.
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                    mask=mask,
+                    other=NEG_LARGE,
+                )
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
+                baseline = leaf_logp + fm_col[:, None]
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, baseline)
+            else:
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                    mask=leaf_hit,
+                    other=NEG_LARGE,
+                )
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
             leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
-            leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
+            if USE_FRACTION_MISSING:
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
+                baseline = (leaf_logp + fm_col)[:, None]
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], baseline)
+            else:
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
     elif HAS_LEAF_TERM:
         leaf_observation_log_term = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE)
     else:
@@ -340,7 +365,9 @@ def _apply_reconciliation_self_loop_transpose_kernel(
     ACCUMULATE_V: tl.constexpr,
 ):
     """Apply one self-loop J^T term using in-program bottom-up tree reduction."""
-    block = tl.program_id(0)
+    # int64: rows range over the whole batch's clade rows, so the *S address
+    # arithmetic below can overflow int32 once total_clades * S exceeds 2^31.
+    block = tl.program_id(0).to(tl.int64)
     rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
     s_offs = tl.arange(0, BLOCK_S)
     row_valid = rows < W
@@ -521,7 +548,9 @@ def _accumulate_transfer_receiver_log_probability_vjp_kernel(
     USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    block = tl.program_id(0)
+    # int64: rows range over the whole batch's clade rows, so the *S address
+    # arithmetic below can overflow int32 once total_clades * S exceeds 2^31.
+    block = tl.program_id(0).to(tl.int64)
     rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
     s_offs = tl.arange(0, BLOCK_S)
     row_valid = rows < W
@@ -607,6 +636,7 @@ def _accumulate_reconciliation_event_vjp_kernel(
     leaf_term_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
+    leaf_fm_log_ptr,
     family_idx_ptr,
     grad_log_pD_ptr,
     grad_log_pS_ptr,
@@ -630,6 +660,7 @@ def _accumulate_reconciliation_event_vjp_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
+    USE_FRACTION_MISSING: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
     ACCUM_GRADS: tl.constexpr,
@@ -639,7 +670,10 @@ def _accumulate_reconciliation_event_vjp_kernel(
     """Store per-element self-loop parameter VJP contributions after Neumann."""
     NEG_LARGE: tl.constexpr = -float("inf")
 
-    block = tl.program_id(0)
+    # int64: rows range over the whole batch's clade rows, so the *stride/*S
+    # address arithmetic below can overflow int32 once total_clades * S
+    # exceeds 2^31.
+    block = tl.program_id(0).to(tl.int64)
     rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
     s_offs = tl.arange(0, BLOCK_S)
     row_valid = rows < W
@@ -732,15 +766,33 @@ def _accumulate_reconciliation_event_vjp_kernel(
             leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE)
             leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
         elif LEAF_LOGP_MODE == 2:
-            leaf_logp = tl.load(
-                leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
-                mask=leaf_hit,
-                other=NEG_LARGE,
-            )
-            leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            if USE_FRACTION_MISSING:
+                # Off-hit leaf-species columns carry the "present-but-unobserved"
+                # baseline log_pS[s] + log2(fm_s); non-leaf/observed columns stay
+                # -inf (fm_col is -inf there). Mirrors the Pi forward.
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                    mask=mask,
+                    other=NEG_LARGE,
+                )
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
+                baseline = leaf_logp + fm_col[:, None]
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, baseline)
+            else:
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                    mask=leaf_hit,
+                    other=NEG_LARGE,
+                )
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
             leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
-            leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
+            if USE_FRACTION_MISSING:
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=species_valid, other=NEG_LARGE)
+                baseline = (leaf_logp + fm_col)[:, None]
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], baseline)
+            else:
+                leaf_observation_log_term = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
     elif HAS_LEAF_TERM:
         leaf_observation_log_term = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE)
     else:
@@ -921,7 +973,9 @@ def _accumulate_gene_split_event_vjp_kernel(
     """
     NEG_LARGE: tl.constexpr = -float("inf")
 
-    split_index = tl.program_id(0)
+    # int64: split_index ranges over the whole batch's split count, so the *S
+    # address arithmetic below can overflow int32 once n_splits * S exceeds 2^31.
+    split_index = tl.program_id(0).to(tl.int64)
 
     left_clade_row = tl.load(split_left_rows_ptr + split_index).to(tl.int64)
     right_clade_row = tl.load(split_right_rows_ptr + split_index).to(tl.int64)
@@ -932,7 +986,7 @@ def _accumulate_gene_split_event_vjp_kernel(
         if parent_active == 0:
             out_base = split_index * S
             left_donor_adjoint_base = split_index * S
-            right_donor_adjoint_base = (tl.program_id(0) + 0 + tl.num_programs(0)) * S
+            right_donor_adjoint_base = (split_index + tl.num_programs(0)) * S
             zero_scalar = tl.zeros((1,), dtype=DTYPE)
             scalar_lane_offset = tl.arange(0, 1)
             if not ACCUM_PARAM_REDUCTIONS:
@@ -1393,7 +1447,9 @@ def _select_active_transfer_donor_sides_kernel(
     DTYPE: tl.constexpr,
 ):
     """Mark split-side rows whose staged donor_adjoint should run Pibar tree work."""
-    row = tl.program_id(0)
+    # int64: row ranges over 2*n_ws, so row_base below can overflow int32 once
+    # that count * S exceeds 2^31.
+    row = tl.program_id(0).to(tl.int64)
     row_base = row * S
     row_absmax = tl.full([1], value=0.0, dtype=DTYPE)
     row_abssum = tl.full([1], value=0.0, dtype=DTYPE)
@@ -1452,7 +1508,9 @@ def _accumulate_transfer_subtree_vjp_kernel(
     """Apply the transfer-complement VJP using compact subtree reductions."""
     NEG_LARGE: tl.constexpr = -float("inf")
 
-    row = tl.program_id(0)
+    # int64: row ranges over 2*n_ws, so row_base below can overflow int32 once
+    # that count * S exceeds 2^31.
+    row = tl.program_id(0).to(tl.int64)
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
     if USE_SIDE_ACTIVE:

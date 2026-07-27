@@ -31,11 +31,13 @@ def _update_extinction_log_probabilities_kernel(
     species_parent_ptr,
     species_child1_ptr,
     species_child2_ptr,
+    leaf_fm_log_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
+    USE_FRACTION_MISSING: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     g = tl.program_id(0)
@@ -73,6 +75,13 @@ def _update_extinction_log_probabilities_kernel(
     c2_valid = mask & (c2 >= 0) & (c2 < S)
     E_s1 = tl.load(E_ptr + base + c1, mask=c1_valid, other=neg_inf)
     E_s2 = tl.load(E_ptr + base + c2, mask=c2_valid, other=neg_inf)
+    if USE_FRACTION_MISSING:
+        # At a leaf species (child sentinels) with fraction_missing>0, the terminal
+        # speciation term is the single factor p^S * fm_l: E_s1=log2(fm_l), E_s2=0.
+        fm_log = tl.load(leaf_fm_log_ptr + offs, mask=mask, other=neg_inf)
+        is_missing_leaf = mask & (fm_log > neg_inf)
+        E_s1 = tl.where(is_missing_leaf, fm_log, E_s1)
+        E_s2 = tl.where(is_missing_leaf, tl.zeros([BLOCK_S], dtype=DTYPE), E_s2)
 
     max_transfer = tl.load(max_transfer_ptr + base + offs, mask=mask, other=0.0)
     valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
@@ -319,11 +328,20 @@ def _launch_e_step_forward_2d(
     max_diff_out: torch.Tensor | None = None,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
     use_receiver_weights: bool = True,
+    leaf_fm_log: torch.Tensor | None = None,
 ):
     G = int(E.shape[0])
     S = int(E.shape[1])
     block_s = int(triton.next_power_of_2(S))
     E_new, E_s1, E_s2, Ebar = (torch.empty_like(E) for _ in range(4)) if out is None else out
+    use_fraction_missing = leaf_fm_log is not None
+    # When there is no fraction-missing tensor the constexpr short-circuits the
+    # kernel load, so a valid-but-unused 1-element placeholder is enough.
+    leaf_fm_log_arg = (
+        leaf_fm_log.contiguous()
+        if use_fraction_missing
+        else torch.empty(1, device=E.device, dtype=E.dtype)
+    )
     _update_extinction_log_probabilities_kernel[(G,)](
         E,
         E_new,
@@ -339,11 +357,13 @@ def _launch_e_step_forward_2d(
         species_parent,
         species_child1,
         species_child2,
+        leaf_fm_log_arg,
         S,
         BLOCK_S=block_s,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         COMPUTE_DIFF=max_diff_out is not None,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+        USE_FRACTION_MISSING=use_fraction_missing,
         DTYPE=_tl_float_dtype(E.dtype),
         num_warps=8,
     )
@@ -364,6 +384,7 @@ class _TritonEStep2D(torch.autograd.Function):
         species_child2,
         max_ancestor_depth: int,
         use_receiver_weights: bool,
+        leaf_fm_log,
     ):
         return _launch_e_step_forward_2d(
             E,
@@ -377,6 +398,7 @@ class _TritonEStep2D(torch.autograd.Function):
             species_child2,
             int(max_ancestor_depth),
             use_receiver_weights=bool(use_receiver_weights),
+            leaf_fm_log=leaf_fm_log,
         )
 
     @staticmethod
@@ -473,11 +495,12 @@ class _TritonEStep2D(torch.autograd.Function):
             grad_log_pL,
             grad_max_transfer,
             grad_receiver_log_probs,
-            None,
-            None,
-            None,
-            None,
-            None,
+            None,  # species_parent
+            None,  # species_child1
+            None,  # species_child2
+            None,  # max_ancestor_depth
+            None,  # use_receiver_weights
+            None,  # leaf_fm_log (non-differentiable, fixed input)
         )
 
 
@@ -493,6 +516,7 @@ def e_step_triton_autograd(
     species_child2: torch.Tensor,
     max_ancestor_depth: int,
     use_receiver_weights: bool = True,
+    leaf_fm_log: torch.Tensor | None = None,
 ):
     E_arg = E.contiguous()
     return _TritonEStep2D.apply(
@@ -504,6 +528,7 @@ def e_step_triton_autograd(
         species_child2,
         int(max_ancestor_depth),
         bool(use_receiver_weights),
+        leaf_fm_log,
     )
 
 
@@ -522,6 +547,7 @@ def e_fixed_point_triton(
     max_iter: int | None = None,
     tol: float | None = None,
     use_receiver_weights: bool = True,
+    leaf_fm_log: torch.Tensor | None = None,
 ):
     if max_iter is None:
         max_iter = SolverOptions().e_max_iter
@@ -562,6 +588,7 @@ def e_fixed_point_triton(
             max_diff_out=max_diff_out,
             out=(E_b, E_s1, E_s2, Ebar),
             use_receiver_weights=bool(use_receiver_weights),
+            leaf_fm_log=leaf_fm_log,
         )
         E_a, E_b = E_b, E_a
         max_diff = float(max_diff_out.max().item())
@@ -572,6 +599,7 @@ def e_fixed_point_triton(
         E_a,
         *forward_args,
         use_receiver_weights=bool(use_receiver_weights),
+        leaf_fm_log=leaf_fm_log,
     )
 
     return E_a, E_s1, E_s2, Ebar

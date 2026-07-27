@@ -3,7 +3,7 @@ import warnings
 import torch
 
 from gpurec.api.solver_options import SolverOptions
-from gpurec.config import dtype_rel_tol_default as _bicgstab_rel_tol_default, dtype_rel_tol_floor as _bicgstab_rel_tol_floor
+from gpurec.config import dtype_rel_tol_default as _e_adjoint_rel_tol_default, dtype_rel_tol_floor as _e_adjoint_rel_tol_floor
 from gpurec.core.inference.logspace import logsumexp2 as _logsumexp2, log2_survival as _log2_survival
 from gpurec.core.kernels.pi_forward import _select_log_split_probs, compute_dts_forward
 from gpurec.core.kernels.wave_backward import (
@@ -72,282 +72,28 @@ def _likelihood_log2_survival(
     return _log2_survival(extinction.to(dtype=accumulator_dtype), probabilities)
 
 
-# `_bicgstab_rel_tol_default` / `_bicgstab_rel_tol_floor` moved to
+# `_e_adjoint_rel_tol_default` / `_e_adjoint_rel_tol_floor` moved to
 # `gpurec.config.gpurec_config` (as `dtype_rel_tol_default` / `dtype_rel_tol_floor`)
-# and re-exported above under their original names for back-compat: tests and
-# other callers still import them from here.
-
-
-@torch.no_grad()
-def _bicgstab(
-    Av,
-    b: torch.Tensor,
-    *,
-    max_iter: int | None = None,
-    tol=None,
-    breakdown_tol=None,
-):
-    """BiCGSTAB for the E-adjoint / GGN linear solve, dtype-aware and fail-safe.
-
-    ``tol`` is a RELATIVE residual target (``||r||/max(||b||,1)``). ``None`` ->
-    the dtype-matched default (:func:`_bicgstab_rel_tol_default`). A caller value
-    below the dtype floor (:func:`_bicgstab_rel_tol_floor`) is clamped up with a
-    warning -- a tighter relative residual is unreachable in that precision.
-
-    ``max_iter`` -- ``None`` -> ``SolverOptions().bicgstab_max_iter`` (the single
-    source of truth for the E-adjoint Krylov cap).
-
-    ``breakdown_tol`` is a dimensionless RELATIVE factor: each Krylov inner
-    product is tested against this factor times its operand norms, so a breakdown
-    fires only on genuine loss-of-orthogonality / a near-null direction -- never
-    on the small-but-valid inner products that occur near convergence (the old
-    absolute ``1e-30`` either never tripped in fp32, or tripped spuriously near
-    convergence and the solve then raised on an essentially-converged iterate).
-    ``None`` -> ``eps``.
-
-    On exit (max_iter or breakdown) the BEST iterate seen is returned whenever it
-    reached the working-precision floor; only a genuinely non-converged solve
-    raises ``RuntimeError``.
-    """
-    if max_iter is None:
-        max_iter = SolverOptions().bicgstab_max_iter
-    max_iter = int(max_iter)
-    if max_iter < 1:
-        raise ValueError("max_iter must be at least 1")
-
-    eps = float(torch.finfo(b.dtype).eps)
-    floor = _bicgstab_rel_tol_floor(b.dtype)
-    if tol is None:
-        target = _bicgstab_rel_tol_default(b.dtype)
-    else:
-        target = float(tol)
-        if target <= 0.0:
-            raise ValueError("tol must be positive")
-        if target < floor:
-            warnings.warn(
-                f"bicgstab tol={target:.2e} is below the {b.dtype} finite-precision "
-                f"residual floor {floor:.2e}; clamping to the floor. A tighter "
-                f"relative residual is unreachable in this precision -- use fp64.",
-                RuntimeWarning, stacklevel=2,
-            )
-            target = floor
-    # Accept any iterate that reaches the dtype's natural floor as 'converged to
-    # working precision', so a near-floor stall/breakdown is success, not a crash.
-    accept = max(target, _bicgstab_rel_tol_default(b.dtype))
-    bd = eps if breakdown_tol is None else float(breakdown_tol)
-    if bd <= 0.0:
-        raise ValueError("breakdown_tol must be positive")
-
-    x = torch.zeros_like(b)
-    # x0 = 0 and A is linear, so r0 = b - Av(0) = b exactly; skip the wasted
-    # operator apply on the zero vector.
-    r = b.clone()
-    bnorm = max(float(torch.linalg.vector_norm(b).detach().cpu()), 1.0)
-    rhat_norm = float(torch.linalg.vector_norm(r).detach().cpu())
-    r_norm = rhat_norm
-    rel_res = r_norm / bnorm
-    if rel_res <= target:
-        return x
-
-    best_x = x
-    best_res = rel_res
-
-    r_hat = r.clone()
-    rho_old = torch.ones((), dtype=b.dtype, device=b.device)
-    alpha = torch.ones((), dtype=b.dtype, device=b.device)
-    omega = torch.ones((), dtype=b.dtype, device=b.device)
-    v = torch.zeros_like(b)
-    p = torch.zeros_like(b)
-
-    broke = False
-    for k in range(1, max_iter + 1):
-        rho = torch.dot(r_hat, r)
-        # Relative breakdown: r_hat and r have lost their inner product (cosine
-        # below machine precision) -> classic BiCGSTAB breakdown.
-        if float(rho.abs().detach().cpu()) <= bd * rhat_norm * max(r_norm, eps):
-            broke = True
-            break
-
-        beta = (rho / rho_old) * (alpha / omega)
-        p = r + beta * (p - omega * v)
-        v = Av(p)
-        v_norm = float(torch.linalg.vector_norm(v).detach().cpu())
-        denom = torch.dot(r_hat, v)
-        if float(denom.abs().detach().cpu()) <= bd * rhat_norm * max(v_norm, eps):
-            broke = True
-            break
-
-        alpha = rho / denom
-        s = r - alpha * v
-        s_norm = float(torch.linalg.vector_norm(s).detach().cpu())
-        rel_s = s_norm / bnorm
-        xs = x + alpha * p
-        if rel_s < best_res:
-            best_res = rel_s
-            best_x = xs
-        if rel_s <= target:
-            return xs
-
-        t = Av(s)
-        tt = torch.dot(t, t)
-        # Relative breakdown: A s ~ 0 with s != 0 (near-null direction); also
-        # guards the omega = <t,s>/tt division below.
-        if float(tt.detach().cpu()) <= (bd * max(s_norm, eps)) ** 2:
-            broke = True
-            break
-
-        omega = torch.dot(t, s) / tt
-        x = xs + omega * s
-        r = s - omega * t
-        r_norm = float(torch.linalg.vector_norm(r).detach().cpu())
-        rel_res = r_norm / bnorm
-        if rel_res < best_res:
-            best_res = rel_res
-            best_x = x
-        if rel_res <= target:
-            return x
-        # omega is the divisor of the next iteration's beta; guard against the
-        # alpha/omega blow-up when omega collapses relative to alpha.
-        if float(omega.abs().detach().cpu()) <= bd * max(float(alpha.abs().detach().cpu()), eps):
-            broke = True
-            break
-        rho_old = rho
-
-    if best_res <= accept:
-        return best_x
-    why = "broke down" if broke else f"hit max_iter={max_iter}"
-    raise RuntimeError(
-        f"E-adjoint BiCGSTAB solve {why} at relative residual {best_res:.3e} "
-        f"(target {target:.3e}, dtype {b.dtype}); the operator is likely singular "
-        f"or too ill-conditioned to solve in this precision."
-    )
-
-
-@torch.no_grad()
-def _gmres(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
-    """Matrix-free GMRES for the E-adjoint / GGN linear solve ``(I - J_E^T) w = b``.
-
-    GMRES minimizes the residual over the growing Krylov subspace and -- unlike
-    BiCGSTAB -- CANNOT break down on a nonsingular operator: no shadow-residual
-    inner product to lose, so a well-conditioned but moderately non-symmetric
-    E-adjoint (the case that trips BiCGSTAB's biorthogonality guard and makes it
-    raise a spurious "singular/ill-conditioned" error) is solved robustly. The
-    Arnoldi step uses batched classical Gram-Schmidt with one reorthogonalization
-    (CGS2) -- one ``mv`` per step -- and the small Hessenberg least-squares gives
-    the true minimal residual for early stopping.
-
-    ``tol`` is a RELATIVE residual target (``||r|| / max(||b||, 1)``); ``None`` ->
-    the dtype-matched default (:func:`_bicgstab_rel_tol_default`, fp32 1e-6 /
-    fp64 1e-12). A value below the dtype floor (:func:`_bicgstab_rel_tol_floor`)
-    is clamped up with a warning -- unreachable in that precision. Returns the
-    minimal-residual iterate; raises ``RuntimeError`` only if the residual never
-    reaches the acceptance floor within ``max_iter`` Arnoldi steps -- a genuinely
-    singular operator, never a solver artefact.
-    """
-    max_iter = int(max_iter)
-    if max_iter < 1:
-        raise ValueError("max_iter must be at least 1")
-
-    dtype = b.dtype
-    device = b.device
-    floor = _bicgstab_rel_tol_floor(dtype)
-    default = _bicgstab_rel_tol_default(dtype)
-    if tol is None:
-        target = default
-    else:
-        target = float(tol)
-        if target <= 0.0:
-            raise ValueError("tol must be positive")
-        if target < floor:
-            warnings.warn(
-                f"gmres tol={target:.2e} is below the {dtype} finite-precision "
-                f"residual floor {floor:.2e}; clamping to the floor. A tighter "
-                f"relative residual is unreachable in this precision -- use fp64.",
-                RuntimeWarning, stacklevel=2,
-            )
-            target = floor
-    # Any iterate reaching the dtype's natural floor counts as converged-to-precision.
-    accept = max(target, default)
-
-    b_flat = b.reshape(-1)
-    n = int(b_flat.numel())
-    b_norm_t = torch.linalg.vector_norm(b_flat)
-    b_norm = float(b_norm_t.detach().cpu())
-    if b_norm == 0.0:
-        return torch.zeros_like(b)
-    scale = max(b_norm, 1.0)
-
-    m = min(max_iter, n)  # the Krylov dimension cannot exceed the space dimension
-    eps = float(torch.finfo(dtype).eps)
-    tiny = float(torch.finfo(dtype).tiny)
-
-    basis = torch.empty((m + 1, n), dtype=dtype, device=device)
-    basis[0].copy_(b_flat / b_norm_t)          # x0 = 0  ->  r0 = b
-    H = torch.zeros((m + 1, m), dtype=dtype, device=device)
-    e1 = torch.zeros((m + 1,), dtype=dtype, device=device)
-    e1[0] = b_norm_t
-    coeff = torch.empty((m,), dtype=dtype, device=device)
-    coeff2 = torch.empty((m,), dtype=dtype, device=device)
-
-    best_res = b_norm / scale  # relative residual of x = 0
-    y_best = None
-    k_best = 0
-    for j in range(m):
-        w = Av(basis[j].view(b.shape)).reshape(-1)
-        q = basis[: j + 1]
-        c = coeff[: j + 1]
-        torch.mv(q, w, out=c)
-        H[: j + 1, j].copy_(c)
-        w = torch.addmv(w, q.t(), c, beta=1.0, alpha=-1.0)   # CGS pass 1
-        c2 = coeff2[: j + 1]
-        torch.mv(q, w, out=c2)
-        H[: j + 1, j].add_(c2)
-        w = torch.addmv(w, q.t(), c2, beta=1.0, alpha=-1.0)  # CGS pass 2 (reorthogonalize)
-        h_next_t = torch.linalg.vector_norm(w)
-        H[j + 1, j] = h_next_t
-
-        # Minimal residual of the current Krylov iterate via the (j+2, j+1) Hessenberg LS.
-        y = torch.linalg.lstsq(H[: j + 2, : j + 1], e1[: j + 2]).solution
-        res = float(torch.linalg.vector_norm(e1[: j + 2] - H[: j + 2, : j + 1] @ y).detach().cpu())
-        rel = res / scale
-        if rel <= best_res:
-            best_res = rel
-            y_best = y
-            k_best = j + 1
-
-        h_next = float(h_next_t.detach().cpu())
-        if rel <= target or h_next <= eps * scale:  # converged, or happy breakdown (exact)
-            break
-        if j + 1 < m:
-            basis[j + 1].copy_(w / max(h_next, tiny))
-
-    if y_best is not None and best_res <= accept:
-        return torch.mv(basis[:k_best].t(), y_best).view(b.shape)
-    raise RuntimeError(
-        f"E-adjoint GMRES failed to converge at relative residual {best_res:.3e} "
-        f"after {m} Arnoldi steps (target {target:.3e}, dtype {dtype}); the "
-        f"operator is singular or needs more than {m} iterations to solve."
-    )
+# and re-exported above under these names: tests and other callers still import
+# them from here.
 
 
 @torch.no_grad()
 def _neumann_e_adjoint(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
     """Solve ``(I - J) x = b`` by Neumann series ``x = sum_k J^k b``, where ``J w = w - Av(w)``.
 
-    Alternative to :func:`_gmres` for the E-adjoint / GGN linear solve. No orthogonalization
-    -> no fp32 Arnoldi residual floor (unlike GMRES, which stalls at a theta-dependent ~1e-6 to
-    5.5e-6 relative residual at large species counts). Valid because the E-step self-map
-    Jacobian ``J`` is a contraction (the forward E fixed point converges), so
-    ``(I-J)^{-1} = sum_k J^k`` converges.
+    The E-adjoint / GGN linear solve. No orthogonalization -> no fp32 Arnoldi-style residual
+    floor. Valid because the E-step self-map Jacobian ``J`` is a contraction (the forward E
+    fixed point converges), so ``(I-J)^{-1} = sum_k J^k`` converges.
 
     By telescoping, the true relative residual after summing terms ``k=0..N`` is
     ``||J^{N+1} b|| / ||b||``; since ``||J|| < 1`` this is bounded above by
     ``||J^N b|| / ||b||`` -- the quantity actually tracked below (``rel``) -- so ``rel`` is a
     conservative (upper-bound) proxy for the true residual, off by one power of ``J``.
 
-    ``tol`` is a RELATIVE residual target, matching :func:`_gmres` exactly: ``None`` -> the
-    dtype-matched default (:func:`_bicgstab_rel_tol_default`); a value below the dtype floor
-    (:func:`_bicgstab_rel_tol_floor`) is clamped up with a warning. Returns the best (smallest
+    ``tol`` is a RELATIVE residual target: ``None`` -> the dtype-matched default
+    (:func:`_e_adjoint_rel_tol_default`); a value below the dtype floor
+    (:func:`_e_adjoint_rel_tol_floor`) is clamped up with a warning. Returns the best (smallest
     conservative-residual) iterate; raises ``RuntimeError`` only if that residual never reaches
     the acceptance floor within ``max_iter`` terms -- a genuinely non-contractive operator, never
     a solver artefact.
@@ -357,8 +103,8 @@ def _neumann_e_adjoint(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
         raise ValueError("max_iter must be at least 1")
 
     dtype = b.dtype
-    floor = _bicgstab_rel_tol_floor(dtype)
-    default = _bicgstab_rel_tol_default(dtype)
+    floor = _e_adjoint_rel_tol_floor(dtype)
+    default = _e_adjoint_rel_tol_default(dtype)
     if tol is None:
         target = default
     else:
@@ -414,13 +160,12 @@ def implicit_grad_loglik_vjp_wave(
     use_receiver_weights: bool,
     theta: torch.Tensor, receiver_weights: torch.Tensor, uniform_pibar_row_max: torch.Tensor,
     family_idx: torch.Tensor,
+    leaf_fm_log: torch.Tensor | None = None,
     specieswise: bool = False,
     genewise: bool = False,
     neumann_terms: int | None = None,
-    bicgstab_max_iter: int | None = None,
-    bicgstab_tol=None,
-    bicgstab_breakdown_tol=None,
-    e_adjoint_solver: str | None = None,
+    e_adjoint_max_iter: int | None = None,
+    e_adjoint_tol=None,
     adjoint_pruning_threshold: float | None = None,
     use_adjoint_pruning: bool = True,
     pibar_side_threshold: float | None = None,
@@ -441,13 +186,8 @@ def implicit_grad_loglik_vjp_wave(
     neumann_terms = int(neumann_terms)
     if neumann_terms < 0:
         raise ValueError("neumann_terms must be non-negative")
-    if bicgstab_max_iter is None:
-        bicgstab_max_iter = SolverOptions().bicgstab_max_iter
-    if e_adjoint_solver is None:
-        e_adjoint_solver = SolverOptions().e_adjoint_solver
-    e_adjoint_solver = str(e_adjoint_solver).strip().lower()
-    if e_adjoint_solver not in ("gmres", "neumann"):
-        raise ValueError("e_adjoint_solver must be one of: gmres, neumann")
+    if e_adjoint_max_iter is None:
+        e_adjoint_max_iter = SolverOptions().e_adjoint_max_iter
     if adjoint_pruning_threshold is None:
         adjoint_pruning_threshold = SolverOptions().adjoint_pruning_threshold
     adjoint_pruning_threshold = float(adjoint_pruning_threshold)
@@ -611,6 +351,11 @@ def implicit_grad_loglik_vjp_wave(
             neumann_terms=neumann_terms,
             leaf_species_idx=leaf_species_idx,
             leaf_logp=log_pS_family,
+            # E-only fraction-missing (AleRax v1.4.0 model): the Pi backward gets
+            # NO fraction-missing leaf term, matching the Pi forward. Fraction-missing
+            # flows only through the E-step gradient (_e_adjoint_and_theta_vjp below,
+            # which forwards `leaf_fm_log` to its e_step_triton_autograd calls).
+            leaf_fm_log=None,
             has_leaf_term=has_leaf_term,
             active_mask=active_mask,
             species_parent=species_helpers["sp_parent"],
@@ -792,11 +537,10 @@ def implicit_grad_loglik_vjp_wave(
         int(root_ids.numel()), theta, receiver_weights, species_helpers,
         specieswise=specieswise,
         genewise=genewise,
+        leaf_fm_log=leaf_fm_log,
         drop_norm=drop_norm,
-        bicgstab_max_iter=bicgstab_max_iter,
-        bicgstab_tol=bicgstab_tol,
-        bicgstab_breakdown_tol=bicgstab_breakdown_tol,
-        e_adjoint_solver=e_adjoint_solver,
+        e_adjoint_max_iter=e_adjoint_max_iter,
+        e_adjoint_tol=e_adjoint_tol,
         cache=cache,
         origination_probs=origination_probs,
         accumulator_dtype=accumulator_dtype,
@@ -808,22 +552,16 @@ def _e_adjoint_and_theta_vjp(
     grad_E, grad_Ebar, grad_E_s1, grad_E_s2,
     grad_log_pD, grad_log_pS, grad_max_transfer_mat, grad_receiver_log_probs,
     n_fam, theta, receiver_weights, species_helpers, *, specieswise, genewise,
+    leaf_fm_log: torch.Tensor | None = None,
     drop_norm: bool = False,
-    bicgstab_max_iter: int | None = None,
-    bicgstab_tol=None,
-    bicgstab_breakdown_tol=None,
-    e_adjoint_solver: str | None = None,
+    e_adjoint_max_iter: int | None = None,
+    e_adjoint_tol=None,
     cache=None,
     origination_probs=None,
     accumulator_dtype: torch.dtype | None = None,
 ):
-    if bicgstab_max_iter is None:
-        bicgstab_max_iter = SolverOptions().bicgstab_max_iter
-    if e_adjoint_solver is None:
-        e_adjoint_solver = SolverOptions().e_adjoint_solver
-    e_adjoint_solver = str(e_adjoint_solver).strip().lower()
-    if e_adjoint_solver not in ("gmres", "neumann"):
-        raise ValueError("e_adjoint_solver must be one of: gmres, neumann")
+    if e_adjoint_max_iter is None:
+        e_adjoint_max_iter = SolverOptions().e_adjoint_max_iter
     accumulator_dtype = resolve_accumulator_dtype(
         accumulator_dtype,
         fallback=E_star.dtype,
@@ -846,6 +584,7 @@ def _e_adjoint_and_theta_vjp(
             receiver_log_probs,
             *topology_args,
             use_receiver_weights=use_receiver_weights,
+            leaf_fm_log=leaf_fm_log,
         )
         # ``drop_norm`` (GGN/J^T use) skips the loss's explicit E-normalization term, which is not
         # part of d(Pi_root)/dtheta. Default False -> the full real gradient (production path).
@@ -880,16 +619,12 @@ def _e_adjoint_and_theta_vjp(
             )
         return (wE - gE).reshape(-1)
 
-    # Linear E-adjoint solve ``(I - J) wE = q``. ``bicgstab_breakdown_tol`` is a
-    # BiCGSTAB-only guard and has no analogue in GMRES/Neumann, so it is not threaded here.
-    # Default "gmres" (breakdown-free); "neumann" avoids GMRES's fp32 Arnoldi
-    # orthogonalization floor at large species counts (see _neumann_e_adjoint).
-    solver = _neumann_e_adjoint if e_adjoint_solver == "neumann" else _gmres
-    wE = solver(
+    # Linear E-adjoint solve ``(I - J) wE = q`` via Neumann series (see _neumann_e_adjoint).
+    wE = _neumann_e_adjoint(
         AG_flat,
         q_flat,
-        max_iter=bicgstab_max_iter,
-        tol=bicgstab_tol,
+        max_iter=e_adjoint_max_iter,
+        tol=e_adjoint_tol,
     ).view(E_shape)
     if cache is not None:
         cache["e_side"] = dict(q_E=q_E, wE=wE, aux_to_e=aux_to_e)
@@ -925,6 +660,7 @@ def _e_adjoint_and_theta_vjp(
             receiver_log_probs_r,
             *topology_args,
             use_receiver_weights=use_receiver_weights,
+            leaf_fm_log=leaf_fm_log,
         )
         grad_theta, grad_receiver = torch.autograd.grad(
             (param_loss, Ebar_from_params, E_from_params),

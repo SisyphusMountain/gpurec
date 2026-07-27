@@ -35,8 +35,8 @@ The high-level execution path is:
 4. Solve the resident `E` fixed point with Triton kernels.
 5. Propagate `Pi` and `Pibar` reconciliation quantities wave by wave.
 6. Read root rows to produce the negative log-likelihood.
-7. Compute gradients with an implicit adjoint solve using Neumann terms and
-   BiCGSTAB refinement.
+7. Compute gradients with an implicit adjoint solve using a matrix-free
+   Neumann-series solve for the E-adjoint linear system.
 
 The Python layer owns the PyTorch module and optimization interface.  The Rust
 crates own CPU preprocessing and backtracking helpers.  The CUDA-critical
@@ -57,7 +57,7 @@ model = GeneReconModel(
         e_tol=1e-8,
         pi_iters=6,
         neumann_terms=3,
-        bicgstab_max_iter=500,
+        e_adjoint_max_iter=500,
     ),
 )
 
@@ -102,7 +102,7 @@ optimizer.zero_grad(set_to_none=True)
 changed in place while optimizing:
 
 ```python
-model.configure_solver(pi_iters=10, neumann_terms=6, bicgstab_max_iter=1000)
+model.configure_solver(pi_iters=10, neumann_terms=6, e_adjoint_max_iter=1000)
 model.solver_options.e_tol = 1e-10
 ```
 
@@ -111,9 +111,9 @@ The most important controls are:
 - `e_max_iter`, `e_tol`, `e_init`: resident `E` fixed-point solve.
 - `pi_iters`: number of Pi/Pibar wave iterations.  It must be an even integer
   at least 2.
-- `neumann_terms`: number of Neumann-series terms used before BiCGSTAB.
-- `bicgstab_max_iter`, `bicgstab_tol`, `bicgstab_breakdown_tol`: implicit
-  adjoint linear-solve controls.
+- `neumann_terms`: number of Neumann-series terms used in the wave self-loop.
+- `e_adjoint_max_iter`, `e_adjoint_tol`: implicit E-adjoint linear-solve
+  controls (Neumann series).
 - `use_adjoint_pruning`, `adjoint_pruning_threshold`: skip low-signal adjoint
   rows in approximate gradient computations.
 - `pibar_side_threshold`: threshold for side-term work in Pibar adjoints.

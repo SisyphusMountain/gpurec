@@ -33,7 +33,7 @@ TODO/FIXME/HACK markers — the code is mature and comment-clean.
 **`api/` — the public surface (1,703 LOC).** `GeneReconModel` (nn.Module) is
 what users touch: `loss = model()` → `_execution.stream_batches` runs the forward
 solve, then `loss.backward()` fires the implicit VJP in `_implicit_grad.py` (the
-adjoint core, with a matrix-free BiCGSTAB). `_autograd.py` bridges the
+adjoint core, with a matrix-free Neumann-series E-adjoint solve). `_autograd.py` bridges the
 hand-written gradient into torch. Clean, well-factored.
 
 **`core/inference/` — the solver (366 LOC).** `solve_resident_e_pi` = E fixed

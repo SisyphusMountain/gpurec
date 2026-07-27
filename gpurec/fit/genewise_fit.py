@@ -50,7 +50,7 @@ _BASE_SOLVER = {
     k: getattr(GpurecConfig.genewise_reference().solver, k)
     for k in (
         "e_max_iter", "e_tol",
-        "bicgstab_max_iter", "bicgstab_tol", "bicgstab_breakdown_tol",
+        "e_adjoint_max_iter", "e_adjoint_tol",
         "adjoint_pruning_threshold", "use_adjoint_pruning", "pibar_side_threshold",
     )
 }
@@ -157,7 +157,7 @@ def fit_genewise(
     IMPORTANT -- ``config`` is AUTHORITATIVE, not a partial overlay. Because ``config.solver`` is
     taken wholesale and ``config.rates`` substitutes each field, passing ANY non-default ``config``
     (even one that only tweaks ``e_max_iter``) replaces this recipe's genewise-tuned defaults
-    (``bicgstab_tol=1e-7``, ``bicgstab_breakdown_tol=1e-30``, rate box ``1e-6``/``2.0``) with
+    (``e_adjoint_tol=1e-7``, rate box ``1e-6``/``2.0``) with
     ``config``'s values -- which default to the GLOBAL ``SolverOptions()``/``RateBounds()`` defaults.
     To keep the genewise tuning and change only a few knobs, START FROM THE RECIPE FACTORY and modify
     it: ``cfg = GpurecConfig.genewise_reference(); cfg.solver.e_max_iter = 999; fit_genewise(..., config=cfg)``.

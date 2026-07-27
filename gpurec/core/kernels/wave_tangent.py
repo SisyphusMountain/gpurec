@@ -56,7 +56,9 @@ def _update_reconciliation_likelihood_jvp_kernel(
     DTYPE: tl.constexpr,
 ):
     NEG = -float("inf")
-    w = tl.program_id(0)
+    # int64: w ranges over the whole batch's clade rows, so the *stride
+    # multiplies below can overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
     pi_base = (pi_ws + w) * stride
     out_base = w * stride
     global_base = (ws + w) * stride
@@ -304,7 +306,9 @@ def _apply_reconciliation_self_loop_jvp_iterations_kernel(
 ):
     """Fuse fixed-count wave-tangent self-loop iterations."""
     NEG = -float("inf")
-    w = tl.program_id(0)
+    # int64: w ranges over the whole batch's clade rows, so the *stride
+    # multiplies below can overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
     pi_base = (pi_ws + w) * stride
     out_base = w * stride
     global_base = (ws + w) * stride

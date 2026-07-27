@@ -47,6 +47,7 @@ class GeneReconModel(torch.nn.Module):
         config: GpurecConfig | None = None,
         dtype: torch.dtype | str | None = None,
         per_family_origination: bool = False,
+        fraction_missing=None,
     ):
         super().__init__()
         device = torch.device(device)
@@ -108,6 +109,19 @@ class GeneReconModel(torch.nn.Module):
         )
         self.per_family_origination = per_family_origination
         self.species_helpers = species_helpers
+        from gpurec.core.parameters.fraction_missing import build_fraction_missing_tensors
+        from gpurec.core.scheduling.batching import species_name_to_index as _species_name_to_index
+        name_to_index = (
+            _species_name_to_index(str(species_tree))
+            if isinstance(fraction_missing, dict) else None
+        )
+        self.leaf_fm_log = build_fraction_missing_tensors(
+            species_helpers,
+            fraction_missing=fraction_missing,
+            species_name_to_index=name_to_index,
+            device=device,
+            dtype=dtype,
+        )
         self.mode = mode
         self.genewise = genewise
         self.specieswise = specieswise
@@ -180,6 +194,7 @@ class GeneReconModel(torch.nn.Module):
             accumulator_dtype=self.accumulator_dtype,
             device=device,
             max_wave_size=max_wave_size,
+            leaf_fm_log=self.leaf_fm_log,
         )
 
     @property

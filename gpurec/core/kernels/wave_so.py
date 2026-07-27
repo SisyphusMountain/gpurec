@@ -51,7 +51,9 @@ def _reconciliation_vjp_directional_derivative_kernel(
 ):
     LN2 = 0.6931471805599453
     NEG = -float("inf")
-    w = tl.program_id(0)
+    # int64: w ranges over the whole batch's clade rows, so (ws+w)*stride can
+    # overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
     pi_base = (ws + w) * stride
     out_base = w * stride
     family = tl.load(family_idx_ptr + ws + w)

@@ -27,6 +27,7 @@ def pi_wave_forward(
     pi_iters: int = 6,
     pi_residual_out: torch.Tensor | None = None,
     accumulator_dtype: torch.dtype | None = None,
+    leaf_fm_log: torch.Tensor | None = None,
 ):
     pi_iters = int(pi_iters)
     if pi_iters < 2 or pi_iters % 2 != 0:
@@ -138,6 +139,7 @@ def pi_wave_forward(
                     log_p_s_family,
                     family_idx=family_idx,
                     use_receiver_weights=use_receiver_weights,
+                    leaf_fm_log=leaf_fm_log,
                 )
             else:
                 step_input_ws = 0 if local_iter == 1 and not has_leaf_term else None
@@ -176,6 +178,7 @@ def pi_wave_forward(
                     pi_residual_out=(
                         pi_residual_out if local_iter == pi_iters - 1 else None
                     ),
+                    leaf_fm_log=leaf_fm_log,
                 )
 
     state = PiState(

@@ -50,7 +50,7 @@ def dtype_rel_tol_default(dtype) -> float:
     unit roundoff ``eps``) yet stay BELOW the ~2e-4 downstream gradient atomic-noise
     floor, so the solve is as tight as the working precision *reliably* allows
     without wasting iterations. These are exactly the values used elsewhere in
-    the codebase for the same purpose (e.g. the E-adjoint BiCGSTAB/GMRES solve
+    the codebase for the same purpose (e.g. the E-adjoint Neumann-series solve
     and ``gpurec.solver.forward_tangent._default_tol``):
 
       * fp32: ``1e-6`` (~8.4x fp32 eps 1.19e-7).
@@ -159,7 +159,7 @@ class GpurecConfig:
         return cls(
             solver=SolverOptions(
                 e_max_iter=128, e_tol=1e-8,
-                bicgstab_max_iter=128, bicgstab_tol=1e-7, bicgstab_breakdown_tol=1e-30,
+                e_adjoint_max_iter=128, e_adjoint_tol=1e-7,
                 adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0,
             ),
             rates=RateBounds.genewise(),
@@ -174,8 +174,8 @@ class GpurecConfig:
         return cls(
             solver=SolverOptions(
                 e_max_iter=128, e_tol=1e-8, pi_iters=64, neumann_terms=64,
-                bicgstab_max_iter=128, bicgstab_tol=None,
-                bicgstab_breakdown_tol=None, adjoint_pruning_threshold=1e-6,
+                e_adjoint_max_iter=128, e_adjoint_tol=None,
+                adjoint_pruning_threshold=1e-6,
                 use_adjoint_pruning=True, pibar_side_threshold=0.0,
             ),
         )

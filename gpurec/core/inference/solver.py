@@ -82,6 +82,7 @@ def solve_resident_e_pi(
         max_ancestor_depth=int(static.species_helpers["max_ancestor_depth"]),
         max_iter=solver_options.e_max_iter,
         tol=solver_options.e_tol,
+        leaf_fm_log=getattr(static, "leaf_fm_log", None),
     )
     pi_forward_result = pi_wave_forward(
         wave_layout=static.wave_layout,
@@ -99,6 +100,10 @@ def solve_resident_e_pi(
         pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
         pi_residual_out=pi_residual_out,
         accumulator_dtype=accumulator_dtype,
+        # E-only fraction-missing (AleRax v1.4.0 model): fraction-missing enters
+        # ONLY the extinction E-step above; the Pi/reconciliation numerator gets
+        # no fraction-missing leaf term, so None here (never `static.leaf_fm_log`).
+        leaf_fm_log=None,
     )
     root_rows, pi_wave, pibar_wave, pibar_row_max, pi_state = pi_forward_result
     static.pi_forward_state = pi_state

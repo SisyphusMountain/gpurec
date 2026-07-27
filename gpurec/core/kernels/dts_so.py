@@ -32,7 +32,9 @@ def _gene_split_event_vjp_directional_derivative_kernel(
 ):
     LN2 = 0.6931471805599453
     NEG_INF = -float("inf")
-    n = tl.program_id(0)
+    # int64: n ranges over the batch's split count, so the raw n*S stores below
+    # (left/right donor adjoint) can overflow int32 once n_splits * S exceeds 2^31.
+    n = tl.program_id(0).to(tl.int64)
     s_block = tl.program_id(1)
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
@@ -296,7 +298,9 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
     """Evaluate the DTS transfer-tree curvature term documented in LaTeX."""
     LN2 = 0.6931471805599453
     NEG = -float("inf")
-    row = tl.program_id(0)
+    # int64: row ranges over 2*n_splits, so row_base below can overflow int32
+    # once that count * S exceeds 2^31.
+    row = tl.program_id(0).to(tl.int64)
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
     child_l = tl.load(split_left_rows_ptr + split_i).to(tl.int64)

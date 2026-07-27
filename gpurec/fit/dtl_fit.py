@@ -45,9 +45,9 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
     coupled modes; ``genewise_result`` -- the full ``fit_genewise`` dict -- for genewise).
 
     ``init_rate`` (a rate, not log2) seeds theta for the coupled modes; ignored for genewise (which has
-    its own box-projected warm start). ``solver_options`` overrides the E/adjoint solver; the default
-    uses the Neumann E-adjoint, which -- unlike fp32 GMRES, whose orthogonalization residual floors
-    ~1e-6 and fails mid-fit at large S -- converges to the fp32 floor in a handful of terms.
+    its own box-projected warm start). ``solver_options`` overrides solver knobs (iteration caps,
+    tolerances, pruning); the E-adjoint linear solve always uses a Neumann series, which converges
+    to the fp32 floor in a handful of terms with no orthogonalization residual floor.
     """
     if mode not in _MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {_MODES}")
