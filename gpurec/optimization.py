@@ -3,7 +3,6 @@ import math
 
 import torch
 
-from gpurec.batched_lbfgs import BatchedLBFGS as BatchedLBFGS
 from gpurec.config.rates import RateBounds
 
 _UNSET = object()  # distinguishes "kwarg not passed" from max_rate's legitimate None ("no cap")

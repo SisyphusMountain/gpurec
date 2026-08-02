@@ -261,11 +261,12 @@ class GeneReconModel(torch.nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """Return per-family NLLs and optional independent genewise gradients.
 
-        This is the closure helper for row-wise optimizers such as
-        :class:`gpurec.optimization.BatchedLBFGS`. It is only valid in genewise
-        mode because shared-theta modes do not have independent per-family
-        parameter rows. Warm starts are not updated by default so line-search
-        probes stay deterministic even when trial points are rejected.
+        This is the closure helper for row-wise optimizers that keep one
+        independent state per family (e.g. a batched L-BFGS). It is only valid
+        in genewise mode because shared-theta modes do not have independent
+        per-family parameter rows. Warm starts are not updated by default so
+        line-search probes stay deterministic even when trial points are
+        rejected.
         """
         if not self.genewise:
             raise ValueError("genewise_loss_vector_and_grad() requires genewise mode")
