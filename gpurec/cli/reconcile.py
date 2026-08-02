@@ -6,6 +6,17 @@ import sys
 
 from . import _common
 
+_SUFFIXES = (".ale", ".txt", ".ufboot", ".newick", ".nwk", ".treelist")
+
+
+def _norm_family_name(name: str) -> str:
+    """Strip a known extension and directory so output family names align with AleRax's."""
+    base = str(name).strip().rsplit("/", 1)[-1]
+    for suf in _SUFFIXES:
+        if base.endswith(suf):
+            return base[: -len(suf)]
+    return base
+
 
 def add_args(parser) -> None:
     _common.add_common_args(parser)
@@ -29,7 +40,6 @@ def _set_rates(model, D, T, L):
 
 def run_reconcile(args) -> int:
     import torch
-    from gpurec.bench.alerax_io import norm_family_name
 
     model, genes = _common.build_model(args)
     _set_rates(model, args.delta, args.tau, args.lambda_)
@@ -39,10 +49,10 @@ def run_reconcile(args) -> int:
         if args.mode == "genewise":
             loss_vec = model.genewise_loss_vector()          # [F] NLL bits
             for path, loss_bits in zip(genes, loss_vec.tolist()):
-                rows.append((norm_family_name(path), -_common.bits_to_nats(loss_bits)))
+                rows.append((_norm_family_name(path), -_common.bits_to_nats(loss_bits)))
         else:
             loss_bits = float(model())                        # summed NLL bits
-            fam = norm_family_name(genes[0]) if len(genes) == 1 else "all"
+            fam = _norm_family_name(genes[0]) if len(genes) == 1 else "all"
             rows.append((fam, -_common.bits_to_nats(loss_bits)))
 
     for fam, ll in rows:
