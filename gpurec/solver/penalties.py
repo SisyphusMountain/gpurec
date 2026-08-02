@@ -1,14 +1,5 @@
-# examples/specieswise_penalties.py
-"""Reference regularizers for specieswise DTL fits -- NOT a wired-in recipe.
-
-Specieswise optimization (theta[S,3], one rate triple per species) has no
-one-size-fits-all regularization choice: gpurec.fit.specieswise_fit uses a
-plain ridge prior via make_value_and_grad(..., prior=(lam, theta_ref)), and
-that is the canonical/production path. The functions below are alternative
-regularizers (total-variation on adjacent species-tree rates, origination
-penalties, grouped-parameter reduction) kept as reference code for anyone
-building a custom specieswise recipe -- copy/adapt into your own script
-rather than importing this module as a library dependency.
+# gpurec/optim/penalties.py
+"""Pure-torch regularization primitives for the first-order optimizer.
 
 All quantities are in log2 (bits) units. Every function is a byte-identical
 no-op at its disabled default (lam=0 / None). No Triton/CUDA dependency: this
