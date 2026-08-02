@@ -34,9 +34,9 @@ import torch
 
 from gpurec.config.newton import NewtonOptions
 from gpurec.core.inference.solver import receiver_weights_are_uniform
-from gpurec.solver import curvature as _curv
-from gpurec.solver.cg import cg_solve
-from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp
+from gpurec.solver.curvature import gauge as _curv
+from gpurec.solver.krylov import cg_solve
+from gpurec.solver.hvp.exact import build_point_cache, make_exact_hvp
 from gpurec.solver.value_and_grad import (
     forward_solve, free_cuda_cache_if_tight, make_value_and_grad,
 )

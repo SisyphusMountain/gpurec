@@ -40,7 +40,7 @@ from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.parameters.extract_parameters import (
     extract_parameters_weighted_receivers, receiver_log_probs_from_weights,
 )
-from gpurec.solver.forward_tangent import jvp_root_scores
+from gpurec.solver.hvp.forward_tangent import jvp_root_scores
 from gpurec.solver.value_and_grad import forward_solve
 from gates._verify_hvp_recv import (
     _static_theta_alpha_from_live, _valid_mass_min, proj_alpha,

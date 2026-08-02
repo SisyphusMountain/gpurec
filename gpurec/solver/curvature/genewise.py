@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import torch
-from gpurec.solver.hvp_exact import make_exact_hvp
+from gpurec.solver.hvp.exact import make_exact_hvp
 
 from gpurec.api._execution import evaluate_static_loss_grad, stream_batches
 from gpurec.config.newton import NewtonOptions
-from gpurec.solver import curvature as _curv
-from gpurec.solver.origination_curvature import build_joint_hvp
+from gpurec.solver.curvature import gauge as _curv
+from gpurec.solver.curvature.origination import build_joint_hvp
 from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight
 
 
@@ -146,11 +146,11 @@ def newton_step_joint(blocks, g_theta, g_omega, g_alpha, mu):
 # Matrix-free gauge-projected joint Newton-CG over the GENEWISE parameter
 #   z = [theta.reshape(-1) (3G); alpha (S); omega.reshape(-1) (G*S)],   p_dim = 3G + S + G*S.
 #
-# Genewise analog of gpurec.solver.origination_curvature (which handles the specieswise / global-omega
+# Genewise analog of gpurec.solver.curvature.origination (which handles the specieswise / global-omega
 # case). It reuses the validated joint analytic HVP (build_joint_hvp -> make_exact_hvp, FD-verified
-# genewise in Tasks 4/5) and the operator-based CG/Lanczos primitives (gpurec.solver.cg) verbatim.
+# genewise in Tasks 4/5) and the operator-based CG/Lanczos primitives (gpurec.solver.krylov) verbatim.
 #
-# The ONLY genewise deltas vs origination_curvature are (i) the gauge projector: genewise omega has a
+# The ONLY genewise deltas vs origination.py are (i) the gauge projector: genewise omega has a
 # softmax gauge PER FAMILY, so there are G omega-nulls plus 1 alpha-null (proj_z_genewise below kills
 # all G+1); (ii) the joint value-and-grad is built directly from evaluate_static_loss_grad because
 # make_value_and_grad's joint layout assumes a GLOBAL omega [S]; (iii) sizes/layout carry G. The
@@ -226,7 +226,7 @@ def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=None, sigma_f
                           seed=None, cert_m=120, verbose=True, newton: NewtonOptions | None = None):
     """Gauge-projected LM-damped Newton-CG on the genewise joint ``z = [theta (3G); alpha (S); omega (G*S)]``.
 
-    Mirrors ``origination_curvature.newton_joint`` with three genewise deltas: (i) ``proj_z_genewise``
+    Mirrors ``origination.newton_joint`` with three genewise deltas: (i) ``proj_z_genewise``
     (G+1 gauge nulls -- one alpha null plus one softmax null per family); (ii) loss/grad come from
     ``evaluate_static_loss_grad`` (genewise theta ``[G,3]``, omega ``[G,S]``; g_alpha is the receiver
     grad); (iii) the joint analytic HVP is ``build_joint_hvp`` (genewise-correct as-is). Each Newton

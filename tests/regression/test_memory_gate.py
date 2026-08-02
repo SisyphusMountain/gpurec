@@ -146,11 +146,11 @@ def test_hvp_path_threads_reserved_scratch_bytes_when_warm_active(monkeypatch, t
     import tempfile
 
     import gpurec.api._implicit_grad as _implicit_grad_mod
-    import gpurec.solver.hvp_exact as _hvp_mod
+    import gpurec.solver.hvp.exact as _hvp_mod
     from gpurec.api.model import GeneReconModel
     from gpurec.api.solver_options import SolverOptions
     from gpurec.bench.simulate import simulate_dataset
-    from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp_single
+    from gpurec.solver.hvp.exact import build_point_cache, make_exact_hvp_single
     from gpurec.solver.value_and_grad import forward_solve
 
     so = SolverOptions(neumann_terms=16, pi_iters=32,

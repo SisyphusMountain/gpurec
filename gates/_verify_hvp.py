@@ -19,7 +19,7 @@ import sys
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp
+from gpurec.solver.hvp.exact import build_point_cache, make_exact_hvp
 from gpurec.fit.newton_cg import _fd_hessian_hvp
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 

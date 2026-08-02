@@ -1,6 +1,6 @@
 """``MemoryOptions`` pins the memory/infra knobs scattered across ``gpurec/core/memory_policy.py``,
-``gpurec/solver/value_and_grad.py``, ``gpurec/solver/curvature.py``, and
-``gpurec/solver/hvp_exact.py``. See task-6 brief. No numeric/gradient value depends on these
+``gpurec/solver/value_and_grad.py``, ``gpurec/solver/curvature/gauge.py``, and
+``gpurec/solver/hvp/exact.py``. See task-6 brief. No numeric/gradient value depends on these
 knobs -- they only gate memory-budget/cache-empty decisions.
 """
 import inspect
@@ -57,7 +57,7 @@ def test_curvature_hvp_rebuild_gate_wired_to_memory_options():
     MemoryOptions().min_free_gib_hvp rather than a bare `min_free_gib=8.0` literal."""
     from gpurec.solver import curvature
 
-    src = inspect.getsource(curvature.newton_min)
+    src = inspect.getsource(curvature.gauge.newton_min)
     assert "MemoryOptions" in src
     assert "min_free_gib=8.0" not in src
 
@@ -66,7 +66,7 @@ def test_hvp_exact_free_cache_every_wired_to_memory_options():
     """make_exact_hvp_single's NEWTON_FREE_CACHE_EVERY env-var fallback must be MemoryOptions()'s
     free_cache_every rather than a bare `32` literal. (The reverse-sweep body lives in
     make_exact_hvp_single since make_exact_hvp became a single/multi-batch dispatcher.)"""
-    from gpurec.solver import hvp_exact
+    from gpurec.solver.hvp import exact as hvp_exact
 
     src = inspect.getsource(hvp_exact.make_exact_hvp_single)
     assert "MemoryOptions" in src

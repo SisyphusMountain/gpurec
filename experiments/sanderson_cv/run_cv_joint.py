@@ -24,7 +24,7 @@ from converge_bounded_joint_archaea import build_joint_hvp_multibatch, make_tree
 from gpurec import SolverOptions
 from gpurec.solver.value_and_grad import make_value_and_grad
 from gpurec.fit.optimize import Schedule
-from gpurec.solver.receiver_curvature import certify_joint_min
+from gpurec.solver.curvature.receiver import certify_joint_min
 
 DEV = "cuda"
 

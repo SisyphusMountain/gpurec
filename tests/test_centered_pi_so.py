@@ -8,7 +8,7 @@ from gpurec.api._execution import evaluate_static_loss_grad
 from gpurec.config import GpurecConfig, PrecisionOptions
 from gpurec.core.kernels.dts_so import dts_backward_so
 from gpurec.core.kernels.wave_so import wave_backward_so
-from gpurec.solver.hvp_exact import make_exact_hvp
+from gpurec.solver.hvp.exact import make_exact_hvp
 from gpurec.solver.value_and_grad import forward_solve
 
 

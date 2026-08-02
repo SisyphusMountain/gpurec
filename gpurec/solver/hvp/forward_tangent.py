@@ -9,7 +9,7 @@ through the whole forward solve, mirroring ``solve_e_pi`` + ``pi_wave_forward``:
      self-loop tangent solved to convergence (the same true fixed point the adjoint differentiates).
 
 This is the ``J`` of the Gauss-Newton operator ``M = J^T B J``; the matching ``J^T`` reuses the
-existing backward (see ``ggn.py``).
+existing backward (see ``gauss_newton.py``).
 """
 
 from __future__ import annotations

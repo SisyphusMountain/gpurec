@@ -19,7 +19,7 @@ DT = torch.float64
 
 
 def test_origination_information_mixed_accumulator_and_curvature_dtypes():
-    from gpurec.solver.origination_curvature import origination_information
+    from gpurec.solver.curvature.origination import origination_information
 
     static = SimpleNamespace(accumulator_dtype=torch.float32)
     info = origination_information(
@@ -68,7 +68,7 @@ def _tiny(tmp_path, device):
 
 def test_joint_hvp_symmetric_and_gauge_null(tmp_path: Path):
     device = _require_cuda_triton()
-    from gpurec.solver.origination_curvature import build_joint_hvp
+    from gpurec.solver.curvature.origination import build_joint_hvp
     torch.manual_seed(0)
     m = _tiny(tmp_path, device)
     S = int(m.species_helpers["S"]); tn = 3 * S; p = tn + 2 * S
@@ -86,7 +86,7 @@ def test_joint_hvp_symmetric_and_gauge_null(tmp_path: Path):
 
 def test_certify_matches_dense_and_fisher_converges(tmp_path: Path):
     device = _require_cuda_triton()
-    from gpurec.solver.origination_curvature import (
+    from gpurec.solver.curvature.origination import (
         build_joint_hvp, certify_joint_min, origination_information)
     torch.manual_seed(0)
     m = _tiny(tmp_path, device)
@@ -119,7 +119,7 @@ def test_certify_matches_dense_and_fisher_converges(tmp_path: Path):
 
 def test_newton_joint_descends_and_holds_gauge(tmp_path: Path):
     device = _require_cuda_triton()
-    from gpurec.solver.origination_curvature import newton_joint
+    from gpurec.solver.curvature.origination import newton_joint
     torch.manual_seed(0)
     m = _tiny(tmp_path, device)
     S = int(m.species_helpers["S"])

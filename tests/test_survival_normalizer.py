@@ -20,7 +20,7 @@ from gpurec.api._implicit_grad import (
     _likelihood_log2_survival,
     _likelihood_root_seed,
 )
-from gpurec.solver import ggn
+from gpurec.solver.hvp import gauss_newton as ggn
 
 LN2 = math.log(2.0)
 

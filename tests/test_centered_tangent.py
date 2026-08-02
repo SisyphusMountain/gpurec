@@ -7,7 +7,7 @@ from gpurec import GeneReconModel, SolverOptions
 from gpurec.core.kernels.pi_forward import compute_dts_forward
 from gpurec.core.kernels.dts_tangent import compute_dts_tangent
 from gpurec.core.scheduling import batching
-from gpurec.solver.forward_tangent import jvp_root_scores
+from gpurec.solver.hvp.forward_tangent import jvp_root_scores
 from gpurec.solver.value_and_grad import forward_solve
 
 

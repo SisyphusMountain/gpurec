@@ -51,7 +51,7 @@ def dtype_rel_tol_default(dtype) -> float:
     floor, so the solve is as tight as the working precision *reliably* allows
     without wasting iterations. These are exactly the values used elsewhere in
     the codebase for the same purpose (e.g. the E-adjoint Neumann-series solve
-    and ``gpurec.solver.forward_tangent._default_tol``):
+    and ``gpurec.solver.hvp.forward_tangent._default_tol``):
 
       * fp32: ``1e-6`` (~8.4x fp32 eps 1.19e-7).
       * fp64: ``1e-12`` (~4.5e3x fp64 eps 2.2e-16; tight but trivially reachable).

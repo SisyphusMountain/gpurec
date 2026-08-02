@@ -24,7 +24,7 @@ pytestmark = pytest.mark.gpu
 
 from gpurec.api.model import GeneReconModel
 from gpurec.solver.value_and_grad import forward_solve
-from gpurec.solver.hvp_exact import make_exact_hvp
+from gpurec.solver.hvp.exact import make_exact_hvp
 
 _SPECIES = "((A:1,B:1)AB:1,C:1)Root;"
 _GENE_DUP = "(((A_1:1,B_1:1)x:1,C_1:1)y:1,A_2:1)GeneRoot;"  # nonzero, fm-sensitive Hessian

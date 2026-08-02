@@ -44,7 +44,7 @@ import torch
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.core.parameters.extract_parameters import receiver_log_probs_from_weights
-from gpurec.solver.hvp_exact import build_point_cache, make_exact_hvp
+from gpurec.solver.hvp.exact import build_point_cache, make_exact_hvp
 from gpurec.fit.newton_cg import _fd_hessian_hvp
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 

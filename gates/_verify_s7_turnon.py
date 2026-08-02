@@ -25,7 +25,7 @@ from __future__ import annotations
 import torch
 
 from gpurec.core.inference.solver import receiver_weights_are_uniform
-from gpurec.solver.hvp_exact import build_point_cache
+from gpurec.solver.hvp.exact import build_point_cache
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 from gates._verify_hvp_recv import (
     _static_theta_alpha_from_live, _valid_mass_min, proj_alpha,

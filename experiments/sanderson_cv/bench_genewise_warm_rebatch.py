@@ -32,7 +32,7 @@ from gpurec import GeneReconModel, SolverOptions
 from gpurec.optimization import clamp_log_rate_, project_rate_gradient_, log2_rate_bounds
 from gpurec.core.inference.solver import solve_forward_residual
 from gpurec.solver.value_and_grad import forward_solve
-from gpurec.solver.hvp_exact import make_exact_hvp
+from gpurec.solver.hvp.exact import make_exact_hvp
 
 DEV = "cuda"; DT = torch.float32
 DATASET = os.environ.get("DATASET", "hogenom")

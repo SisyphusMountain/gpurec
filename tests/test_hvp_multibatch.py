@@ -26,7 +26,7 @@ from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
 from gpurec.bench.simulate import simulate_dataset
 from gpurec.fit.newton_cg import _fd_hessian_hvp
-from gpurec.solver.hvp_exact import make_exact_hvp, make_exact_hvp_single
+from gpurec.solver.hvp.exact import make_exact_hvp, make_exact_hvp_single
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 
 _TSI = 128

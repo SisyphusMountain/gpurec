@@ -67,7 +67,10 @@ def test_newton_wired_into_curvature_functions():
     override, with the previously copy-pasted individual kwargs turned into None sentinels
     (deprecation shim) that resolve to NewtonOptions() defaults -- so existing callers passing
     e.g. `max_newton=4` explicitly keep working unchanged."""
-    from gpurec.solver import curvature, genewise_curvature, origination_curvature, receiver_curvature
+    from gpurec.solver.curvature import gauge as curvature
+    from gpurec.solver.curvature import genewise as genewise_curvature
+    from gpurec.solver.curvature import origination as origination_curvature
+    from gpurec.solver.curvature import receiver as receiver_curvature
 
     sig = inspect.signature(curvature.newton_min).parameters
     assert "newton" in sig and sig["newton"].default is None

@@ -13,7 +13,7 @@ def test_dtype_tol_single_source():
 
 
 def test_forward_tangent_uses_shared_helper():
-    from gpurec.solver.forward_tangent import _default_tol
+    from gpurec.solver.hvp.forward_tangent import _default_tol
     assert _default_tol(torch.float64) == dtype_rel_tol_default(torch.float64)
 
 
@@ -67,8 +67,8 @@ def test_tv_eps_single_source():
 def test_self_max_iter_single_source():
     """``DEFAULT_SELF_MAX_ITER`` is defined once in ``forward_tangent.py``; ``ggn`` must import
     (not re-literal) it."""
-    from gpurec.solver import forward_tangent, ggn
-    from gpurec.solver.forward_tangent import DEFAULT_SELF_MAX_ITER
+    from gpurec.solver.hvp import forward_tangent, gauss_newton as ggn
+    from gpurec.solver.hvp.forward_tangent import DEFAULT_SELF_MAX_ITER
 
     assert DEFAULT_SELF_MAX_ITER == 200
     fwd_params = inspect.signature(forward_tangent.jvp_root_scores).parameters

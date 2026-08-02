@@ -17,8 +17,8 @@ the only ACTIVE box constraints are the theta coords -- the joint free subspace 
 GAUGE: alpha enters the NLL only via a full log_softmax (w = softmax(alpha)), so the loss is exactly
 invariant under alpha -> alpha + c*1; the joint Hessian is singular along [0; 1_S]. The solver/cert
 work in the gauge-fixed subspace via P_free = blockdiag(free_theta_mask, I_S - 11^T/S) (active-set
-mask on theta AND mean-subtract on alpha), reusing the verified S9 consumers (gpurec.solver.
-receiver_curvature) with their proj= hook. The joint analytic exact HVP (make_exact_hvp) is summed
+mask on theta AND mean-subtract on alpha), reusing the verified S9 consumers
+(gpurec.solver.curvature.receiver) with their proj= hook. The joint analytic exact HVP (make_exact_hvp) is summed
 across batches (multi-batch full archaea).
 
 Pipeline: warm theta (certified theta-only min) -> short joint Adam warmup (alpha off uniform) ->
@@ -50,10 +50,10 @@ DTYPE = torch.float32 if os.environ["SADDLE_DTYPE"] == "float32" else torch.floa
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.fit.optimize import first_order
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad, free_cuda_cache_if_tight
-from gpurec.solver.hvp_exact import make_exact_hvp
-from gpurec.solver.cg import cg_witness, lanczos_extremes
+from gpurec.solver.hvp.exact import make_exact_hvp
+from gpurec.solver.krylov import cg_witness, lanczos_extremes
 from gpurec.optimization import clamp_log_rate_, project_rate_gradient_, log2_rate_bounds
-from gpurec.solver.receiver_curvature import (
+from gpurec.solver.curvature.receiver import (
     certify_joint_min, proj_alpha, receiver_information,
 )
 

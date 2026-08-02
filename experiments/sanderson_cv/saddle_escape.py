@@ -17,8 +17,8 @@ import numpy as np
 import torch
 from scipy.optimize import minimize
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
-from gpurec.solver.hvp_exact import make_exact_hvp
-from gpurec.solver.cg import lanczos_min_eigpair
+from gpurec.solver.hvp.exact import make_exact_hvp
+from gpurec.solver.krylov import lanczos_min_eigpair
 from gpurec.api._execution import stream_batches
 
 DEV = "cuda"
@@ -72,7 +72,7 @@ def newton_polish(th0, bs, rw, lap, p, S, grad, full, max_iter=10, tol=1e-3, ver
     the largest alpha in {1,1/2,1/4,...} that DECREASES ||g|| (d=-H^-1 g is a descent direction for
     1/2||g||^2). Iterates until ||g||<tol or no alpha helps. Returns (theta, gnorm, lam_min, info,
     n_iter, total_step)."""
-    from gpurec.solver.cg import cg_solve
+    from gpurec.solver.krylov import cg_solve
     th = th0.clone().reshape(-1); total = 0.0; n_done = 0
     g = grad(th); gn = float(g.norm())
     for n in range(1, max_iter + 1):

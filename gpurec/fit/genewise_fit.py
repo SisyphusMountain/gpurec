@@ -37,7 +37,7 @@ from gpurec.config.rates import RateBounds
 from gpurec.core.inference.solver import solve_forward_residual
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
 from gpurec.solver.value_and_grad import forward_solve
-from gpurec.solver.hvp_exact import make_exact_hvp
+from gpurec.solver.hvp.exact import make_exact_hvp
 
 # The genewise rate-bounds preset (floor 1e-6, cap 2.0) -- tighter than the global (1e-10, None)
 # floor in gpurec.optimization / GeneReconModel's theta init. Single source for the fit_genewise

@@ -34,8 +34,8 @@ from gpurec.core.parameters.extract_parameters import (
     extract_parameters_weighted_receivers,
     resolve_accumulator_dtype,
 )
-from gpurec.solver.forward_tangent import jvp_root_scores, wave_step_constants
-from gpurec.solver.ggn import vjp_root_to_theta
+from gpurec.solver.hvp.forward_tangent import jvp_root_scores, wave_step_constants
+from gpurec.solver.hvp.gauss_newton import vjp_root_to_theta
 
 _LN2 = 0.6931471805599453
 
@@ -82,7 +82,7 @@ def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=N
         # adjoint (wE) + cotangents match the fraction-missing forward. Without this the
         # HVP's point cache would be fraction-missing-wrong (its first-order gradient would
         # not match the production autograd gradient), corrupting every second-order term
-        # built on the cache. vjp_root_to_theta already accepts leaf_fm_log (see ggn.py).
+        # built on the cache. vjp_root_to_theta already accepts leaf_fm_log (see gauss_newton.py).
         leaf_fm_log=getattr(static, "leaf_fm_log", None),
     )
     return grad_theta, grad_col, cache
@@ -440,7 +440,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
         theta_numel = theta.numel()
         u = u_vec[:theta_numel].reshape(theta.shape)
         # BASE layout: [u_theta (theta_numel); u_alpha (S)?; u_omega (omega_numel)?]. Alpha BEFORE omega
-        # -- the codebase convention (origination_curvature.py consumes z=[theta;alpha;omega]). The omega
+        # -- the codebase convention (curvature/origination.py consumes z=[theta;alpha;omega]). The omega
         # size is keyed off the origination parameter, so this is uniform across modes: genewise
         # omega_numel=G*S -> u_omega reshapes to [G,S]; specieswise/global omega_numel=S -> [S].
         #   n_tail == 0                 -> theta-only, returns theta_numel BIT-FOR-BIT (_verify_hvp gate);
@@ -875,7 +875,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             )
         if has_omega:
             # Full [theta; alpha; omega] contract (BASE order, alpha BEFORE omega -- matches
-            # origination_curvature.py's z=[theta;alpha;omega]): the omega row is the head omega-Hessian .
+            # curvature/origination.py's z=[theta;alpha;omega]): the omega row is the head omega-Hessian .
             # (t_root, dE, u_omega) from _head_seed_tangents (omega is head-only -> no kernel/adjoint
             # term). Hv_omega is [G,S] genewise / [S] otherwise; flatten in place.
             return torch.cat([

@@ -12,7 +12,7 @@ projector ``proj = P_z``:
   * ``certify_min``     -- deflated gauge-projected Lanczos smallest reduced-Hessian eigenpair.
   * ``newton_min``      -- gauge-projected LM-damped Newton loop on ``z``.
 
-``receiver_curvature`` and ``origination_curvature`` are thin wrappers that supply ``proj`` +
+``receiver.py`` and ``origination.py`` are thin wrappers that supply ``proj`` +
 the HVP builder + the value/grad closure and keep their own public signatures. Run in fp64.
 """
 
@@ -24,7 +24,7 @@ import torch
 
 from gpurec.config.memory import MemoryOptions
 from gpurec.config.newton import NewtonOptions
-from gpurec.solver.cg import cg_witness, lanczos_extremes, lanczos_min_eigpair
+from gpurec.solver.krylov import cg_witness, lanczos_extremes, lanczos_min_eigpair
 from gpurec.solver.value_and_grad import free_cuda_cache_if_tight
 
 

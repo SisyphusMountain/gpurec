@@ -95,7 +95,7 @@ def test_small_softmax_default_derives_from_input_dtype():
 def test_weighted_exact_hvp_promotes_head_logits_before_small_softmax(monkeypatch):
     """The exact-HVP orchestration must not round a configured fp64 head back to fp32."""
     from gpurec.core.parameters import extract_parameters as parameter_module
-    from gpurec.solver.hvp_exact import make_exact_hvp_single
+    from gpurec.solver.hvp.exact import make_exact_hvp_single
 
     class _HeadObserved(RuntimeError):
         pass

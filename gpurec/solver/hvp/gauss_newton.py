@@ -22,7 +22,7 @@ from gpurec.core.inference.solver import receiver_weights_are_uniform
 from gpurec.api._implicit_grad import _safe_exp2_ratio, implicit_grad_loglik_vjp_wave
 from gpurec.core.parameters.extract_parameters import resolve_accumulator_dtype
 
-from gpurec.solver.forward_tangent import jvp_root_scores, DEFAULT_SELF_MAX_ITER
+from gpurec.solver.hvp.forward_tangent import jvp_root_scores, DEFAULT_SELF_MAX_ITER
 
 _LN2 = 0.6931471805599453
 

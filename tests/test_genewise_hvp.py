@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from gpurec import GeneReconModel, SolverOptions
-from gpurec.solver.hvp_exact import make_exact_hvp
+from gpurec.solver.hvp.exact import make_exact_hvp
 from gpurec.fit.newton_cg import _fd_hessian_hvp
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 
@@ -41,7 +41,7 @@ def test_batch_static_warm_v_tangent_defaults_to_none():
 
 @pytest.mark.gpu
 def test_build_point_cache_accepts_and_forwards_warm_v():
-    from gpurec.solver.hvp_exact import build_point_cache
+    from gpurec.solver.hvp.exact import build_point_cache
 
     m = build_genewise_model()
     static = m.batch_statics[0]
@@ -69,7 +69,7 @@ def test_build_point_cache_warm_v_poisoned_seed_changes_result():
     production neumann_terms=64 default where A^64 would shrink any perturbation
     below detectable tolerance regardless of whether warm_v is truly consumed.
     """
-    from gpurec.solver.hvp_exact import build_point_cache
+    from gpurec.solver.hvp.exact import build_point_cache
 
     so = SolverOptions(**{**_SO, "neumann_terms": 1})
     so.validate()
@@ -133,7 +133,7 @@ def genewise_hessian_blocks(static, theta, receiver_weights, sv, *, omega=None, 
     """Theta-only per-family curvature ``[G,3,3]``, built from 3 broadcast HVP probes (one per theta
     component) against the joint analytic HVP (``make_exact_hvp``).
 
-    TEST-ONLY fixture (moved here from gpurec.solver.genewise_curvature): the production genewise fit
+    TEST-ONLY fixture (moved here from gpurec.solver.curvature.genewise): the production genewise fit
     never assembles blocks -- it runs matrix-free CG directly on the analytic HVP
     (``newton_joint_genewise``). Feeds the fp32-vs-fp64 golden comparison below.
     """
@@ -267,7 +267,7 @@ def test_joint_theta_omega_alpha_hvp_matches_fd():
 
 @pytest.mark.gpu
 def test_newton_step_matches_dense():
-    from gpurec.solver.genewise_curvature import newton_step_joint, _assemble_dense_arrowhead
+    from gpurec.solver.curvature.genewise import newton_step_joint, _assemble_dense_arrowhead
     torch.manual_seed(0); G, S, r, mu = 2, 5, 2, 1e-2
     dev, dt = "cuda", torch.float64
     def spd(n):
@@ -312,7 +312,7 @@ def test_origination_grad_matches_fd():
 
 @pytest.mark.gpu
 def test_genewise_joint_newton_reduces_grad():
-    from gpurec.solver.genewise_curvature import newton_joint_genewise, proj_z_genewise
+    from gpurec.solver.curvature.genewise import newton_joint_genewise, proj_z_genewise
     torch.manual_seed(0)
     m = build_genewise_model(per_family_origination=True); st = m.batch_statics[0]
     G, S = len(m.families), int(m.species_helpers["S"])
@@ -330,7 +330,7 @@ def test_multibatch_joint_hvp_matches_fd():
     # gather/scatter) must match the FD Hessian of the multi-batch summed gradient. Forces >=2
     # batches via family_chunk_size so the disjoint-family scatter + shared-alpha sum are exercised.
     from gpurec.fit.newton_cg import _fd_hessian_hvp
-    from gpurec.solver.genewise_curvature import make_multibatch_joint_hvp_genewise, multibatch_joint_vg_genewise
+    from gpurec.solver.curvature.genewise import make_multibatch_joint_hvp_genewise, multibatch_joint_vg_genewise
     torch.manual_seed(0)
     m = build_genewise_model(n_fam=4, per_family_origination=True, family_chunk_size=2)
     assert len(m.batch_statics) >= 2, f"need multi-batch, got {len(m.batch_statics)}"
@@ -363,7 +363,7 @@ def test_genewise_joint_newton_multibatch():
     # Multi-batch genewise joint Newton-CG fit: newton_joint_genewise must accept a batch_statics
     # LIST (len>=2), drive the multi-batch HVP + multi-batch joint value-and-grad, and reduce the
     # gauge-projected gradient. max_newton=3 keeps the several per-batch HVP rebuilds/step bounded.
-    from gpurec.solver.genewise_curvature import newton_joint_genewise
+    from gpurec.solver.curvature.genewise import newton_joint_genewise
     torch.manual_seed(0)
     m = build_genewise_model(n_fam=4, per_family_origination=True, family_chunk_size=2)
     assert len(m.batch_statics) >= 2, f"need multi-batch, got {len(m.batch_statics)}"
