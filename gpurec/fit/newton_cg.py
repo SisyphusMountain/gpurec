@@ -13,8 +13,8 @@ import math
 import torch
 
 from gpurec.solver.value_and_grad import make_value_and_grad, forward_solve
-from gpurec.solver.ggn import make_ggn_hvp
-from gpurec.solver.cg import cg_solve, cg_witness, lanczos_extremes, steihaug_cg
+from gpurec.solver.hvp.gauss_newton import make_ggn_hvp
+from gpurec.solver.krylov import cg_solve, cg_witness, lanczos_extremes, steihaug_cg
 
 
 def _fd_hessian_hvp(vg, theta_vec, warm_E, *, eps=1e-5):
@@ -54,7 +54,7 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
     """Lanczos-initialized, witness-corrected damped Newton descent ("Newton-gradient descent").
 
     ``with_receiver=True`` runs the JOINT ``(theta, alpha)`` receiver-weight Newton: it delegates to
-    :func:`gpurec.solver.receiver_curvature.newton_joint`, which drives the gauge-projected
+    :func:`gpurec.solver.curvature.receiver.newton_joint`, which drives the gauge-projected
     ``P_z (H + lam I) P_z`` system with the analytic joint exact HVP (Newton steps on ``alpha``, not
     just ``theta``). ``alpha0`` is the starting receiver logits (defaults to ``receiver_weights``;
     must be NON-uniform or the receiver curvature is dead). The return is then ``(theta, alpha,
@@ -79,7 +79,7 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
     if with_receiver:
         # JOINT (theta, alpha) Newton: delegate to the gauge-projected solver built on the analytic
         # joint exact HVP. Returns (theta, alpha, history).
-        from gpurec.solver.receiver_curvature import newton_joint
+        from gpurec.solver.curvature.receiver import newton_joint
 
         return newton_joint(
             static, theta0, receiver_weights if alpha0 is None else alpha0,
@@ -123,7 +123,7 @@ def newton_lanczos(static, theta0, receiver_weights, *, sigma=0.01, sigma_floor=
         if hvp_mode == "exact":
             # analytic exact HVP: one forward+backward builds the per-point adjoint cache,
             # then every CG iteration costs ~1 tangent-forward + 1 tangent-adjoint sweep
-            from gpurec.solver.hvp_exact import make_exact_hvp
+            from gpurec.solver.hvp.exact import make_exact_hvp
 
             theta_m = x_vec.reshape(theta_shape)
             _, sv_pt = forward_solve(static, theta_m, receiver_weights, warm_E=warm)
