@@ -36,6 +36,7 @@ from gpurec.solver.curvature import gauge as _curv
 from gpurec.solver.krylov import cg_solve
 from gpurec.solver.hvp.exact import build_point_cache, make_exact_hvp
 from gpurec.solver.curvature.receiver import _penalty_hvp, _tree_edges
+from gpurec.solver.penalties import origination_penalty_hvp
 from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight, make_value_and_grad
 
 
@@ -212,11 +213,34 @@ def origination_information(static, theta, alpha, omega, *, hvp=None, theta_nume
                 cg_iters=cg_iters, cg_resid=cg_resid)
 
 
+def _omega_penalty_hvp(theta_numel, S, origination_penalty, sp_parent, omega_point):
+    """Closed-form-shaped Hessian-vector product (theta/alpha block = 0; omega block =
+    ``origination_penalty_hvp`` at the CURRENT omega -- unlike the theta-only ridge/tree penalties,
+    ``OriginationPenalty`` is not globally quadratic in omega, so this must be rebuilt at every new
+    Newton point, exactly like the raw joint HVP itself."""
+    def Hp(v):
+        out = torch.zeros_like(v)
+        out[theta_numel + S:] = origination_penalty_hvp(
+            omega_point, origination_penalty, v[theta_numel + S:], sp_parent=sp_parent)
+        return out
+    return Hp
+
+
+def _sum_penalty_hvps(hvp_a, hvp_b):
+    """Combine two penalty HVPs (either may be ``None``) into one, summed over disjoint blocks."""
+    if hvp_a is None:
+        return hvp_b
+    if hvp_b is None:
+        return hvp_a
+    return lambda v: hvp_a(v) + hvp_b(v)
+
+
 # --------------------------------------------------------------- Newton on (theta, alpha, omega)
 def newton_joint(static, theta0, alpha0, omega0, *, sigma=None, sigma_floor=None, lanczos_m=None,
                  nu=None, decrease=None, max_bumps=None, max_cg=None, c1=None, ls_max=None, gtol=None,
                  max_newton=None, tangent_self_iters=None, lam=0.0, theta_ref=None, lam_tree=0.0,
-                 sp_parent=None, ftol=None, seed=None, verbose=True, newton: NewtonOptions | None = None):
+                 sp_parent=None, origination_penalty=None, ftol=None, seed=None, verbose=True,
+                 newton: NewtonOptions | None = None):
     """Gauge-projected LM-damped Newton on the joint ``z = [theta.reshape(-1); alpha; omega]``.
 
     The Newton system is the gauge-projected ``P_z (H + penalty + lam_damp I) P_z dz = -P_z g_z``,
@@ -224,8 +248,13 @@ def newton_joint(static, theta0, alpha0, omega0, *, sigma=None, sigma_floor=None
     globalized by Armijo backtracking on the joint forward loss; after each accepted step BOTH the
     alpha and omega blocks are re-centered to the gauge slice (``P_z``). The joint analytic HVP is
     rebuilt at each new point. Optional ridge (``lam``/``theta_ref``) and GBM tree-Laplacian
-    (``lam_tree``/``sp_parent``) penalties act on the theta block only. Run in fp64. Returns
-    ``(theta, alpha, omega, history)``. REQUIRES non-uniform ``alpha0`` and ``omega0``.
+    (``lam_tree``/``sp_parent``) penalties act on the theta block only; optional ``origination_penalty``
+    (an ``OriginationPenalty`` from ``gpurec.solver.penalties``) acts on the omega block only, with
+    BOTH its value/gradient (via ``make_value_and_grad``) and its exact curvature (via
+    ``origination_penalty_hvp``, rebuilt at each point since it is not globally quadratic) included --
+    every one of its terms (l2/depth/root/dirichlet) is smooth in omega, unlike the non-smooth TV
+    prior, so its Hessian is well-defined everywhere the same way the ridge/tree penalties' are. Run
+    in fp64. Returns ``(theta, alpha, omega, history)``. REQUIRES non-uniform ``alpha0`` and ``omega0``.
 
     All the LM/Lanczos/CG/line-search knobs (``sigma``, ``sigma_floor``, ``lanczos_m``, ``nu``,
     ``decrease``, ``max_bumps``, ``max_cg``, ``c1``, ``ls_max``, ``gtol``, ``max_newton``, ``ftol``,
@@ -251,12 +280,13 @@ def newton_joint(static, theta0, alpha0, omega0, *, sigma=None, sigma_floor=None
         float(lam_tree), sp_parent.detach().reshape(-1).long())
     vg = make_value_and_grad(static, alpha0, theta_shape=theta_shape, optimize_receiver=True,
                              optimize_origination=True, origination_weights=omega0,
-                             prior=prior, tree_penalty=tree_penalty)
+                             prior=prior, tree_penalty=tree_penalty,
+                             origination_penalty=origination_penalty)
 
     tp_child = tp_parent = None
     if tree_penalty is not None:
         tp_child, tp_parent = _tree_edges(sp_parent)
-    pen_hvp = None if (prior is None and tree_penalty is None) else _penalty_hvp(
+    theta_pen_hvp = None if (prior is None and tree_penalty is None) else _penalty_hvp(
         theta_numel, theta_shape, lam=(prior[0] if prior else 0.0),
         lam_tree=(tree_penalty[0] if tree_penalty else 0.0), tp_child=tp_child, tp_parent=tp_parent)
 
@@ -267,6 +297,10 @@ def newton_joint(static, theta0, alpha0, omega0, *, sigma=None, sigma_floor=None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         hvp, _l, _sv, _c = build_joint_hvp(static, th, al, om, tangent_self_iters=tangent_self_iters)
+        pen_hvp = theta_pen_hvp
+        if origination_penalty is not None:
+            pen_hvp = _sum_penalty_hvps(
+                pen_hvp, _omega_penalty_hvp(theta_numel, S, origination_penalty, sp_parent, om))
         return make_gauge_operator(hvp, theta_numel, S, penalty_hvp=pen_hvp)
 
     opts = _curv.resolve_newton(

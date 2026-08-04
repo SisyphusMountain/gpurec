@@ -131,3 +131,34 @@ def test_newton_joint_descends_and_holds_gauge(tmp_path: Path):
     assert hist[-1]["F"] <= hist[0]["F"] + 1e-9          # Armijo => loss non-increasing
     assert torch.isfinite(th_o).all() and torch.isfinite(al_o).all() and torch.isfinite(om_o).all()
     assert abs(float(al_o.mean())) < 1e-9 and abs(float(om_o.mean())) < 1e-9   # gauge-fixed outputs
+
+
+def test_newton_joint_wires_in_origination_penalty(tmp_path: Path):
+    """``origination_penalty`` must actually move the fit: an l2 ridge pulling omega toward 0 makes
+    the fitted omega's norm smaller than an unpenalized fit from the same start, and F (the quantity
+    Armijo enforces non-increasing) must include the penalty term, not just the NLL."""
+    device = _require_cuda_triton()
+    from gpurec.solver.curvature.origination import newton_joint
+    from gpurec.solver.penalties import OriginationPenalty, origination_penalty_and_grad
+    torch.manual_seed(0)
+    m = _tiny(tmp_path, device)
+    S = int(m.species_helpers["S"])
+    th = 0.2 * torch.randn(S, 3, dtype=DT, device=device)
+    al = (lambda a: a - a.mean())(0.3 * torch.randn(S, dtype=DT, device=device))
+    om = (lambda a: a - a.mean())(0.5 * torch.randn(S, dtype=DT, device=device))
+
+    cfg = OriginationPenalty(l2=5.0)
+    th_p, al_p, om_p, hist_p = newton_joint(m.batch_statics[0], th, al, om, max_newton=4, max_cg=20,
+                                            tangent_self_iters=200, origination_penalty=cfg,
+                                            verbose=False)
+    th_u, al_u, om_u, hist_u = newton_joint(m.batch_statics[0], th, al, om, max_newton=4, max_cg=20,
+                                            tangent_self_iters=200, verbose=False)
+
+    assert hist_p[-1]["F"] <= hist_p[0]["F"] + 1e-9      # Armijo still holds with the penalty active
+    assert torch.isfinite(om_p).all()
+    assert abs(float(om_p.mean())) < 1e-9                # still gauge-fixed
+    assert float(om_p.norm()) < float(om_u.norm())        # the l2 ridge actually pulled omega in
+
+    # F at the (penalized) start must equal NLL + penalty, not just NLL.
+    pen0, _ = origination_penalty_and_grad(om - om.mean(), cfg)
+    assert abs(hist_p[0]["F"] - (hist_u[0]["F"] + float(pen0))) < 1e-6
