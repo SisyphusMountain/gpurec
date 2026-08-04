@@ -190,6 +190,31 @@ def origination_penalty_and_grad(omega: torch.Tensor, cfg: OriginationPenalty, *
     return pen.detach(), g
 
 
+def origination_penalty_hvp(omega: torch.Tensor, cfg: OriginationPenalty, v: torch.Tensor, *,
+                            sp_parent=None) -> torch.Tensor:
+    """Exact d^2(penalty)/d(omega)^2 @ v (a Hessian-vector product), via double-backward autograd.
+
+    Every term in ``cfg`` (l2, depth, root, the three ``dirichlet`` barrier kinds, the floor mixture)
+    is a SMOOTH function of omega -- unlike the pseudo-Huber TV prior in ``tv_prior_and_grad``, which
+    has a non-smooth kink structure and is deliberately excluded from any Newton-curvature step
+    elsewhere in this codebase (see ``fit/optimize.py``'s ``tv_penalty`` guard). Because it is smooth,
+    its exact Hessian action is well-defined everywhere and cheap to get right by differentiating the
+    already-verified gradient a second time, along ``v``, instead of hand-deriving one Hessian formula
+    per barrier kind: build the value graph once (``create_graph=True``), take its gradient, then take
+    THAT gradient's directional derivative along ``v`` (``torch.autograd.grad(g, w, grad_outputs=v)``
+    -- for a scalar-valued ``pen``, this is ``J^T v`` where ``J = d(g)/d(w)``; since ``g`` is itself a
+    gradient, ``J`` is the Hessian and it is symmetric, so ``J^T v == H v`` exactly).
+    """
+    if not cfg.any_active():
+        return torch.zeros_like(omega)
+    with torch.enable_grad():
+        w = omega.detach().requires_grad_(True)
+        pen = origination_penalty_value(w, cfg, sp_parent=sp_parent)
+        (g,) = torch.autograd.grad(pen, w, create_graph=True)
+        (hv,) = torch.autograd.grad(g, w, grad_outputs=v.detach())
+    return hv.detach()
+
+
 def group_expand(theta_param: torch.Tensor, group_index) -> torch.Tensor:
     """[G,K] group rows -> [S,K] per-species (identity when group_index is None)."""
     if group_index is None:
