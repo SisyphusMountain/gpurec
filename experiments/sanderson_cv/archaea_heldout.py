@@ -14,10 +14,11 @@ Recipient arg to heldout_nll is ALPHA = log-weights. Env: FAMILIES(0=all) K(5) F
 MIN_RATE(0.05) MAX_RATE(2.0) SMOKE(0) OUT.
 """
 import os, sys, time, math
+from pathlib import Path
 import numpy as np
 import torch
-RW = "/home/enzo/Documents/git/gpurec/agent-worktrees/receiver-weights-hvp"
-sys.path.insert(0, RW)
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 import run_cv
 from run_cv import DATASETS, build_model, kfold_indices, heldout_nll, _CV_SO
 from run_cv_joint import gbm_fit_joint
@@ -56,7 +57,7 @@ def main():
     adam = int(os.environ.get("ADAM", "20" if smoke else "40"))
     lbfgs = int(os.environ.get("LBFGS_ITERS", "30" if smoke else "150"))
     escape_m = int(os.environ.get("ESCAPE_M", "60" if smoke else "120"))
-    out = os.environ.get("OUT", f"{RW}/experiments/sanderson_cv/runs/archaea_heldout.pt")
+    out = os.environ.get("OUT", str(HERE / "runs" / "archaea_heldout.pt"))
     os.makedirs(os.path.dirname(out), exist_ok=True)
 
     ds = DATASETS["archaea"]; run_cv._SP_TREE = ds["species_tree"]

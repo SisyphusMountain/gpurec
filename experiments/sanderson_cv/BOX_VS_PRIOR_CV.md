@@ -75,7 +75,7 @@ exactly where fp32 had them. **fp32 CV curves are reliable** (held-out differenc
 ```
 cd <worktree>; export PYTHONNOUSERSITE=1 PYTHONPATH=$PWD \
   GPUREC_PREPROCESS_PATH=$PWD/crates/gpurec-preprocess/target/release/libgpurec_preprocess.so
-PY=/home/enzo/miniforge3/bin/python
+PY=${PYTHON:-python3}
 # loose-box CV curve (256 fam):
 $PY experiments/sanderson_cv/run_cv.py --dataset archaea --families 256 --k 5 \
    --lambdas 3 1 0.3 0.1 0.05 0.03 0.02 0.01 0 --min-rate 1e-4 --max-rate 16 --no-wandb \

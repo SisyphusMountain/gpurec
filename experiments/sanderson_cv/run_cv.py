@@ -38,7 +38,17 @@ from gpurec.fit.optimize import Schedule
 from gpurec.solver.value_and_grad import make_value_and_grad
 
 HERE = Path(__file__).resolve().parent
-DATA = Path(os.environ.get("GPUREC_DATA_ROOT", HERE.parents[1] / "tests" / "data"))
+DATA = Path(
+    os.environ.get(
+        "GPUREC_DATA_ROOT",
+        HERE.parents[1]
+        / "data"
+        / "external"
+        / "benchmarks"
+        / "large_dataset_capacity"
+        / "datasets",
+    )
+)
 HOGENOM_ROOT = Path(os.environ.get("GPUREC_HOGENOM_ROOT", DATA / "alerax_hogenom_core/hogenom"))
 # archaea data root is env-overridable so the same code runs on the cluster (data shipped to /work)
 ARCHAEA_ROOT = Path(os.environ.get("GPUREC_ARCHAEA_ROOT", DATA / "alerax_archaea_davin2017"))

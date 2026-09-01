@@ -29,7 +29,7 @@ It ends with PASS/FAIL assertions and writes ``results.json`` next to this file.
 
 Run
 ---
-    cd /home/enzo/Documents/git/gpurec/consolidate-release
+    cd /path/to/gpurec
     .venv/bin/python experiments/alerax_convergence/reproduce.py           # full (~4-5 min)
     .venv/bin/python experiments/alerax_convergence/reproduce.py --quick   # skip slow N=64
 
@@ -44,7 +44,6 @@ Requirements
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import math
 import os
@@ -55,30 +54,28 @@ import tempfile
 from pathlib import Path
 
 LN2 = math.log(2.0)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_FIXTURE = Path(os.environ.get(
     "FIXTURE",
-    "/home/enzo/Documents/git/gpurec/gergely_version/tests/data/test_mixed_200"))
+    REPO_ROOT / "tests" / "data" / "alerax" / "test_mixed_200"))
 
 HIGH_RATES = (1.5, 1.6, 1.7)          # D, L, T -- all distinct, all large
 FIT_RATES = (0.16103, 1e-10, 0.156391)  # test_mixed_200's AleRax-fitted D, L, T
 
 
 def find_alerax() -> str:
-    """Locate an AleRax_fixed binary (env override, else agent-worktrees glob)."""
+    """Locate an AleRax_fixed binary (environment override, then ``PATH``)."""
     env = os.environ.get("ALERAX_BIN")
     if env and Path(env).is_file():
         return env
-    cands = sorted(glob.glob(
-        "/home/enzo/Documents/git/gpurec/agent-worktrees/*/AleRax_fixed/AleRax/build/bin/alerax"))
-    for c in cands:
+    for c in filter(None, [shutil.which("alerax")]):
         # sanity: must expose the fixed-point flag (i.e. be AleRax_fixed, not stock)
         h = subprocess.run([c, "--help"], capture_output=True, text=True)
         if "fixed-point-iterations" in (h.stdout + h.stderr):
             return c
-    sys.exit("AleRax_fixed binary not found. Set ALERAX_BIN=/path/to/alerax. "
-             "Build from agent-worktrees/*/AleRax_fixed/AleRax "
-             "(cmake -DCMAKE_BUILD_TYPE=Release && make).")
+    sys.exit("AleRax_fixed binary not found. Set ALERAX_BIN=/path/to/alerax "
+             "or place the fixed-point-enabled binary on PATH.")
 
 
 def run_alerax(binpath: str, fixture: Path, rates, iters: int):

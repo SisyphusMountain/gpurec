@@ -47,8 +47,9 @@ from gpurec.core.parameters.extract_parameters import receiver_log_probs_from_we
 from gpurec.solver.hvp.exact import build_point_cache, make_exact_hvp
 from gpurec.fit.newton_cg import _fd_hessian_hvp
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
+from gates._paths import HOGENOM_ROOT
 
-_ROOT = "/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom"
+_ROOT = str(HOGENOM_ROOT)
 _SP = (f"{_ROOT}/runs/MFP/true_start_ufboot1000/"
        "run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/"
        "starting_species_tree.newick")

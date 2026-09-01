@@ -14,10 +14,11 @@ Env: FAMILIES(1055) K(5) LAMS("0.0,0.03") ADAM(40) LBFGS_ITERS(120) ESCAPE_M(120
      SEED(0) SMOKE(0) OUT.
 """
 import os, sys, math, time
+from pathlib import Path
 import numpy as np
 import torch
-RW = "/home/enzo/Documents/git/gpurec/agent-worktrees/receiver-weights-hvp"
-sys.path.insert(0, RW)
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 import run_cv
 from run_cv import DATASETS, build_model, kfold_indices, heldout_nll, _CV_SO
 from converge_bounded_joint_archaea import build_joint_hvp_multibatch, make_tree_lap
@@ -116,7 +117,7 @@ def main():
     escape_m = int(os.environ.get("ESCAPE_M", "40" if smoke else "120"))
     max_escapes = int(os.environ.get("MAX_ESCAPES", "2" if smoke else "4"))
     seed = int(os.environ.get("SEED", "0"))
-    out = os.environ.get("OUT", f"{RW}/experiments/sanderson_cv/runs/cv_joint_hogenom.pt")
+    out = os.environ.get("OUT", str(HERE / "runs" / "cv_joint_hogenom.pt"))
     os.makedirs(os.path.dirname(out), exist_ok=True)
 
     ds = DATASETS["hogenom"]; run_cv._SP_TREE = ds["species_tree"]

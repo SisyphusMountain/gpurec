@@ -10,9 +10,12 @@ also yields the exact free-subspace spectrum (lam_min) as a bonus.
 Env: SADDLE_DTYPE(float32). ~ (free_theta + S) HVP applies (~1.5-2h on the 4090).
 """
 import os, sys, time
+from pathlib import Path
 os.environ["SADDLE_DTYPE"] = "float32"; os.environ.setdefault("GPUREC_MEMORY_POLICY_RESERVE_GIB", "0")
 os.environ.setdefault("GPUREC_MEMORY_POLICY_FRACTION", "0.9")
-RW = "/home/enzo/Documents/git/gpurec/agent-worktrees/receiver-weights-hvp"; sys.path.insert(0, RW)
+HERE = Path(__file__).resolve().parent
+RUNS = Path(os.environ.get("GPUREC_SANDERSON_RUNS", HERE / "runs"))
+sys.path.insert(0, str(HERE))
 import torch
 import converge_bounded_joint_archaea as drv
 from gpurec import GeneReconModel, SolverOptions
@@ -29,7 +32,7 @@ rp = drv.make_reparam(S, floor_frac=1e-2)
 lo, hi = drv.log2_rate_bounds(0.05, 2.0)
 print(f"[build] {len(paths)} fam S={S} ({time.time()-t0:.0f}s)", flush=True)
 
-B = torch.load(f"{RW}/experiments/sanderson_cv/runs/bounded_joint_archaea_full_fp32.pt", weights_only=False, map_location=DEV)
+B = torch.load(RUNS / "bounded_joint_archaea_full_fp32.pt", weights_only=False, map_location=DEV)
 theta = B["theta"].to(DEV).double(); beta = B["beta"].to(DEV).double(); alpha = rp["alpha_of_beta"](beta)
 
 vg = drv.make_value_and_grad(bs, beta, theta_shape=(S, 3), optimize_receiver=True, tree_penalty=(lam, sp_parent))
@@ -70,7 +73,7 @@ J = rp["dw_jac"](beta)                                              # dw/dbeta [
 Sig_w = J @ Sig_bb @ J.T
 se_w_marg = Sig_w.diagonal().clamp_min(0.0).sqrt()
 
-cond = torch.load(f"{RW}/experiments/sanderson_cv/runs/receiver_se_full_fp32.pt", weights_only=False, map_location=DEV)
+cond = torch.load(RUNS / "receiver_se_full_fp32.pt", weights_only=False, map_location=DEV)
 se_w_cond = cond["se_w"].to(DEV).double(); wB = B["w"].to(DEV).double().flatten(); uni = 1.0 / S
 ratio = (se_w_marg / se_w_cond.clamp_min(1e-12))
 print(f"\n=== MARGINAL vs CONDITIONAL recipient SE ===", flush=True)
@@ -86,5 +89,5 @@ n_sig = int(((wB - uni) / se_w_marg.clamp_min(1e-12) > 2).sum())
 print(f"  sinks still significant (z_marg>2): {n_sig}/{S} above uniform", flush=True)
 torch.save(dict(se_w_marg=se_w_marg.cpu(), se_w_cond=se_w_cond.cpu(), Sigma_bb=Sig_bb.cpu(),
                 lam_min_free=float(evals[0]), evals=evals.cpu(), nft=nft, S=S),
-           f"{RW}/experiments/sanderson_cv/runs/marginal_se.pt")
+           RUNS / "marginal_se.pt")
 print(f"[saved] runs/marginal_se.pt  ({time.time()-t0:.0f}s)", flush=True)

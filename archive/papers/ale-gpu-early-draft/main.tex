@@ -1,0 +1,605 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[french]{babel}
+\usepackage[left=1.5cm, right=1.5cm]{geometry}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{tikz}
+\usepackage{tikz-cd}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{hyperref}
+\usepackage{mathtools}
+\usepackage{enumitem}
+\usepackage{csquotes}
+\usepackage{float}
+\newtheorem{theorem}{Théorème}
+\newtheorem{lemma}{Lemme}
+\newtheorem{definition}{Définition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{prop}{Proposition}
+\newtheorem{corollary}{Corollaire}
+\newtheorem{assumption}{Hypothèse}
+\newtheorem*{remarque}{Remarque}
+\newtheorem{remark}{Remark}
+\newtheorem{example}{Example}
+
+% Custom math operators for appendices
+\DeclareMathOperator{\E}{\mathbb{E}}
+\DeclareMathOperator{\supp}{supp}
+\newcommand{\TV}{\mathrm{TV}}
+\newcommand{\1}{\mathbf{1}}
+
+% Blackboard Bold Letters
+\newcommand{\Abb}{\mathbb{A}}
+\renewcommand{\Bbb}{\mathbb{B}}
+\newcommand{\Cbb}{\mathbb{C}}
+\newcommand{\Dbb}{\mathbb{D}}
+\newcommand{\Ebb}{\mathbb{E}}
+\newcommand{\Fbb}{\mathbb{F}}
+\newcommand{\Gbb}{\mathbb{G}}
+\newcommand{\Hbb}{\mathbb{H}}
+\newcommand{\Ibb}{\mathbb{I}}
+\newcommand{\Jbb}{\mathbb{J}}
+\newcommand{\Kbb}{\mathbb{K}}
+\newcommand{\Lbb}{\mathbb{L}}
+\newcommand{\Mbb}{\mathbb{M}}
+\newcommand{\Nbb}{\mathbb{N}}
+\newcommand{\Obb}{\mathbb{O}}
+\newcommand{\Pbb}{\mathbb{P}}
+\newcommand{\Qbb}{\mathbb{Q}}
+\newcommand{\Rbb}{\mathbb{R}}
+\newcommand{\Sbb}{\mathbb{S}}
+\newcommand{\Tbb}{\mathbb{T}}
+\newcommand{\Ubb}{\mathbb{U}}
+\newcommand{\Vbb}{\mathbb{V}}
+\newcommand{\Wbb}{\mathbb{W}}
+\newcommand{\Xbb}{\mathbb{X}}
+\newcommand{\Ybb}{\mathbb{Y}}
+\newcommand{\Zbb}{\mathbb{Z}}
+\newcommand{\Fr}{\mathrm{Fr}}
+\newcommand{\bip}{\mathrm{bip}}
+\newcommand{\Ebar}{\overline{E}}
+\newcommand{\Pibar}{\overline{\Pi}}
+\newcommand{\rec}{\mathrm{rec}}
+
+\title{ALE-GPU: enabling large-scale, fine-grained reconciliations on a consumer-grade GPU}
+\author{Enzo Marsot}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+In this report, I document my experience and results in performing reconciliations using my own GPU, using the Python language, PyTorch, and the Triton domain-specific language (DSL).
+By being aware of the strengths and specificities of GPU programming, I was able to benefit from tools developed for machine learning model development and training, in order to achieve a good utilization of the GPU. Different techniques allow us to obtain a simple algorithm and codebase, with a PyTorch-compatible interface that allows users to manipulate reconciliation models like regular PyTorch functions. Backward-mode auto-differentiation enables the optimization of reconciliation models with large numbers of parameters, and allow users to easily implement their own priors (MAP) and restrictions (tied or bounded parameters). Finally, the use of GPUs greatly accelerates reconciliation overall, even in the cases that are most favorable to AleRax (genewise mode). Sadly, we did not find a way to use the most powerful resource of modern NVIDIA GPUs: tensor cores. These specialized circuits allow us to perform matrix multiplication with a very high throughput, but we were unable to reformulate large operations in our models as matrix multiplication.
+
+\section{The current ALE algorithm}
+\subsection{Description}
+Let $S$ be a rooted species tree. We write its number of nodes as $|S|$. Let $\Gamma$ be a distribution of clades. For each clade, we denote the set of its splits by $\bip(\gamma)$.
+
+Let $e$ be a branch of $S$.
+Let $\Ebar_e = \sum_{f\in \rec(e)}{p^T_{e\to f}E_f}$
+As in [ALERax], we have the following recursion equations:
+
+\begin{align*}
+    E_{e} = S(E)_e + D(E)_e + T(E)_e + L(E)_e
+\end{align*}
+Where 
+\begin{align*}
+    S(E)_e &= p^S_e E_f E_g \text{ if } e \text{ is an internal branch with children } f \text{ and } g \text {, otherwise } 0\\
+    D(E)_e &= p^D_e E_e^2\\
+    T(E)_e &= E_e \Ebar_e\\
+    L(E)_e &= p^L_e\\
+    \Ebar_e &= \sum_{f\in \rec(e)}{p^T_{e\to f}E_f}
+\end{align*}
+
+\[\Pi_{\gamma, e} = S_\gamma(\Pi)_{e} + D_\gamma(\Pi)_{e} + T_\gamma(\Pi)_{e} + SL_\gamma(\Pi)_{e} + DL_\gamma(\Pi)_{e} + TL_\gamma(\Pi)_{e}\]
+Where
+\begin{align}
+    S_\gamma(\Pi)_e &= p^S_e\sum_{(\gamma',\gamma'') \in \mathcal{B}(\gamma)} p(\gamma',\gamma''\mid\gamma)\bigl(\Pi_{\gamma',f(e)}\,\Pi_{\gamma'',g(e)} + \Pi_{\gamma',g(e)}\,\Pi_{\gamma'',f(e)}\bigr) \label{eq:S} \\
+    D_\gamma(\Pi)_e &= p^D_e\sum_{(\gamma',\gamma'') \in \mathcal{B}(\gamma)} p(\gamma',\gamma''\mid\gamma)\Pi_{\gamma',e}\,\Pi_{\gamma'',e} \label{eq:D} \\
+    T_\gamma(\Pi)_e &= \sum_{(\gamma',\gamma'') \in \mathcal{B}(\gamma)} p(\gamma',\gamma''\mid\gamma)\bigl(\Pi_{\gamma',e}\,\bar{\Pi}_{\gamma'',e} + \Pi_{\gamma'',e}\,\bar{\Pi}_{\gamma',e}\bigr) \label{eq:T} \\
+    SL_\gamma(\Pi)_e &= p^S_e(\Pi_{\gamma,f(e)}\,E_{g(e)} + \Pi_{\gamma,g(e)}\,E_{f(e)}) \label{eq:SL} \\
+    DL_\gamma(\Pi)_e &= 2p^D_e\Pi_{\gamma,e}\,E_e \label{eq:DL} \\
+    TL_\gamma(\Pi)_e &= \Pi_{\gamma,e}\,\bar{E}_e + E_e\,\bar{\Pi}_{\gamma,e} \label{eq:TL}\\
+    \bar{\Pi}_{\gamma,e} &= \sum_{f\in \rec(e)}{p^T_{e\to f}\Pi_{\gamma,f}} \label{eq:PiBar}
+\end{align}
+\begin{remark}
+    The transfer probability is contained in the $\Ebar$ term and the $\Pibar$ term.
+\end{remark}
+
+The fixed point equation for $E$ can be solved by iterating the map $E \mapsto S(E) + D(E) + T(E) + L(E)$ until convergence, starting from a $0$ vector and the converged value of $E$. Similarly, the fixed point equation for $\Pi$ can be solved by iterating the map $\Pi \mapsto S_\gamma(\Pi) + D_\gamma(\Pi) + T_\gamma(\Pi) + SL_\gamma(\Pi) + DL_\gamma(\Pi) + TL_\gamma(\Pi)$ until convergence, starting from a $0$ vector and the converged value of $E$. We derive the expressions for the different terms and prove convergence and contraction properties of these maps in the appendix.
+
+\subsection{Limitations of the current model}
+\subsubsection{The ALE Undated model}
+\paragraph{No branch length utilization}
+\begin{itemize}
+    \item Even if imprecise or blurry, branch lengths for both the species trees and the gene trees are informative. 
+\end{itemize}
+\paragraph{No gene family interdependence}
+\begin{itemize}
+    \item Events that affect several gene families at once are not explicitly modeled.
+\end{itemize}
+\paragraph{A model of evolution that is hard to extend}
+\begin{itemize}
+    \item Both the ALE Dated and Undated models rest on the assumption that daughter lineages of a given gene copy evolve independently. I do not know if this assumption can have a large impact on the inferred gene tree probabilities: in the article by Larget (2013), the authors say they construct a distribution of gene trees by MCMC using the "HKY85" model of evolution, which assumes independent evolution between gene copies. They then compare the simple relative frequencies of gene trees from the sample, and the probabilities obtained using CCPs and obtain good agreement. However, this does not help us know how important the independence assumption is. Efficiently computing the likelihood of a gene tree under the ALE models \textbf{requires this independence assumption.}
+\end{itemize}
+\paragraph{No modelling of extinct lineages}
+The ALE dated model incorporates extinct lineages, as an outgroup branch, and the ALE undated model does not model extinct lineages at all. Using a single extinct lineage is a crude approximation: we can show that under a perfect molecular clock, it is feasible to reconstruct the complete species tree, which is much more informative than a outgroup representing all extinct lineages together. Integrating extinct lineages into a reconciliation model would require a complicated extension of the current models in order to simultaneously leverage species tree branch lengths, uncertain gene tree branch lengths, and use this information to construct the unobserved part of the species tree. After a discussion with Nicolas Lartillot, optimizing over this set of complete species trees seems technically difficult, and I don't know whether it is possible or if I can do it.
+
+\paragraph{A fixed number of iterations}
+AleRax relies on a fixed, limited number of fixed-point iterations to compute the $E$ and the $\Pi$ vectors. According to the AleRax paper, the value of $4$ was chosen because it usually seemed sufficient to reach convergence. However, we have observed that in a considerable number of cases, $4$ iterations are insufficient and can lead to a bad estimation of the likelihood and hence the parameters. (Demonstrate this)
+\paragraph{Numerical instability}
+In order to handle the very small probabilities that appear in the $\Pi$ vector, AleRax uses a bucketization strategy, whereby the real line is subdivided in the buckets $0, 1, ...$ based on a number belonging to $\left[2^{-256}, 1\right], \left[2^{-512}, 2^{-256}\right), ...$. This strategy cause numerical issues: when two numbers on either side of a bucket boundary, such as $2^{-256}+\epsilon$ and $2^{-256}-\epsilon$, are added together, the smaller one is ignored. This can result in the computation $1.01+0.99 = 1.01$, which defeats the purpose of arbitrary precision numerics. In practice, this case can be shown to occur in the $\Pi$ computation for some trees of the HOGENOM dataset. This 
+
+\section{Ill-conditioning and weak identifiability in the specieswise model}
+Explain our struggles with optimizing at the end on HOGENOM: non positive definite hessian, maybe need for a strong prior, etc.
+
+
+
+\section{Optimization opportunities}
+We can start by noticing that the fixed-point map $F_\gamma$ decomposes as a sum of terms which are fixed and obtained by the previous iterations, and self-dependent terms. Obtaining the $S, D, T$ terms therefore amounts to gather/scatter operations which will be done only once per clade, while the $SL, DL, TL$ terms will need to be recomputed for each iteration.
+\subsection{Parallelization opportunities}
+I have observed that there exist many opportunities for parallelization in the ALE undated algorithm (I am not certain about the dated model, but I expect it to be similar).
+
+\paragraph{ALE Undated}
+Let us focus on the $\Pi$ matrix. This matrix has shape $[G, S]$ where $G$ is the total number of clades in all gene families, and $S$ is the number of species tree branches. We notice that the computation of $\Pi_{\gamma, \cdot}$ only depends on $\Pi_{\gamma, \cdot}$ and $\Pi_{\delta, \cdot}$ for subclades $\delta$ of $\gamma$. This means that the computation of $\Pi$ has to be scheduled in waves that follow the DAG defined by the splits $\gamma \to (\gamma', \gamma'')$. The different gene families each give one DAG, and we can schedule clades from different gene families in the same wave. We can set a wave size that maximizes GPU occupancy, and not have to worry about underutilization: mixing different DAGs together ensures the small waves that cause underutilization will rarely happen.
+
+The ALE algorithm is often used to reconcile a large number of gene families with a given species tree. We specifically aim our implementation at this use case. 
+
+\paragraph{Optimization opportunities in ALE Dated}
+\begin{enumerate}
+    \item Solving the differential equations for the propagators.
+    \item Taking ideas from the undated model implementation and transposing them directly. A well-guided AI tool with good unit tests and safeguards should allow fast iteration and a low delay to get a first prototype.
+\end{enumerate}
+\subsection{Computing the fixed strict-subclade terms}
+For each clade $\gamma$, the terms $S_\gamma$, $D_\gamma$, and $T_\gamma$ only depend on strict subclades of $\gamma$. They should therefore be computed once, before the fixed-point loop for $\Pi_{\gamma,\cdot}$, and stored in the constant vector $A_\gamma$. Assuming that $\Pibar$ has already been computed for every strict subclade, the best implementation is a fused segmented reduction over the CCP splits of $\gamma$.
+
+Let a split record $r\in\bip(\gamma)$ contain
+\[
+    \ell_r,\quad r_r,\quad q_r=p(\ell_r,r_r\mid\gamma),
+\]
+where $\ell_r$ and $r_r$ are the two daughter clades. For every species branch $e$, compute
+\[
+    A_{\gamma,e}
+    =
+    \sum_{r\in\bip(\gamma)} q_r
+    \left[
+        p^D_e\Pi_{\ell_r,e}\Pi_{r_r,e}
+        +
+        \Pi_{\ell_r,e}\Pibar_{r_r,e}
+        +
+        \Pi_{r_r,e}\Pibar_{\ell_r,e}
+        +
+        \1_{\{e\text{ internal}\}}p^S_e
+        \left(
+            \Pi_{\ell_r,f(e)}\Pi_{r_r,g(e)}
+            +
+            \Pi_{\ell_r,g(e)}\Pi_{r_r,f(e)}
+        \right)
+    \right].
+\]
+This writes the full fixed contribution
+\[
+    A_\gamma=S_\gamma+D_\gamma+T_\gamma
+\]
+without materializing separate $S$, $D$, and $T$ buffers.
+
+In a GPU implementation, the natural custom kernel owns one output pair $(\gamma,e)$, or one small cooperative group owns it when the number of splits is large. The kernel loops over the split segment of $\gamma$, gathers the two daughter clades and their CCP weight, accumulates the $D$, $T$, and $S$ contributions, and writes exactly one value $A_{\gamma,e}$:
+\[
+\begin{array}{l}
+\texttt{acc = 0}\\
+\texttt{for split in splits[gamma]:}\\
+\quad \texttt{l, r, q = split.left, split.right, split.weight}\\
+\quad \texttt{acc += q * pD[e] * Pi[l,e] * Pi[r,e]}\\
+\quad \texttt{acc += q * (Pi[l,e] * Pibar[r,e] + Pi[r,e] * Pibar[l,e])}\\
+\quad \texttt{if e is internal:}\\
+\quad\quad \texttt{f, g = child1[e], child2[e]}\\
+\quad\quad \texttt{acc += q * pS[e] * (Pi[l,f] * Pi[r,g] + Pi[l,g] * Pi[r,f])}\\
+\texttt{A[gamma,e] = acc.}
+\end{array}
+\]
+
+For this kernel, clade-major storage,
+\[
+    \Pi,\Pibar,A\in\Rbb^{|\mathcal{G}|\times B},
+\]
+is attractive because a warp processing consecutive branches for a fixed split reads contiguous rows $\Pi_{\ell_r,\cdot}$, $\Pi_{r_r,\cdot}$, $\Pibar_{\ell_r,\cdot}$, and $\Pibar_{r_r,\cdot}$. The $S$ term still performs indirect reads at $f(e)$ and $g(e)$, but those are only two branch-index gathers per branch. The important point is to avoid forming a temporary tensor of shape \texttt{(parents, splits, branches)}; that tensor would multiply memory traffic and would likely dominate the runtime.
+
+The kernel granularity should depend on the split distribution. If most clades have few splits, one thread per $(\gamma,e)$ is simple and avoids synchronization. If some clades have many splits, a warp or block can cooperate on one $(\gamma,e)$ and reduce over the split segment. If branch count is small or moderate, a block per $\gamma$ with branch tiling is also viable. In all cases, this is conceptually one fused kernel for $S+D+T$ once $\Pibar$ is available.
+
+\subsection{Global and Specieswise modes}
+The expensive part of each fixed-point iteration is the same-clade linear operator
+\[
+    SL_\gamma(\Pi)+DL_\gamma(\Pi)+TL_\gamma(\Pi).
+\]
+In the global and specieswise modes, the transfer probability only depends on the donor branch $e$, not on the receiver branch $h$. We can therefore write
+\[
+    p^T_{e\to h}=\alpha_e=\frac{p^T_e}{|\rec(e)|}
+    \qquad\text{for }h\in\rec(e).
+\]
+For a fixed clade $\gamma$,
+\[
+    \Pibar_{\gamma,e}
+    =
+    \alpha_e\sum_{h\in\rec(e)}\Pi_{\gamma,h}
+    =
+    \alpha_e\left(\sum_{h\in\mathsf{Br}(S)}\Pi_{\gamma,h}
+    -
+    \sum_{h\notin\rec(e)}\Pi_{\gamma,h}\right).
+\]
+Thus the dense-looking receiver sum is a rank-one operation plus a sparse correction over the branches that are not legal receivers.
+
+Let $B=|\mathsf{Br}(S)|$ and let $\mathcal{C}$ be a batch of clades whose strict subclades have already been computed. We use the branch-major convention
+\[
+    \Pi\in\Rbb^{B\times |\mathcal{C}|},
+    \qquad
+    \Pi_{e,\gamma}=\Pi_{\gamma,e}.
+\]
+With this convention, left multiplication by a branch matrix is written $M\Pi$. The column sum vector is
+\[
+    s=\mathbf{1}_B^\top\Pi\in\Rbb^{1\times |\mathcal{C}|},
+\]
+which corresponds to \texttt{Pi.sum(dim=0)} in PyTorch. If the implementation stores the transpose, i.e. clade-major tensors of shape \texttt{(clades, branches)}, then the same operation appears as \texttt{Pi.sum(dim=1)} and the sparse multiplication is written $\Pi M^\top$ instead.
+
+The same-clade update for the whole batch can be written
+\begin{equation}
+    \label{eq:uniform-transfer-spmm}
+    \Pi^{(k+1)}
+    =
+    A_{\mathcal{C}}
+    +
+    V s
+    +
+    M\Pi^{(k)}.
+\end{equation}
+Here $A_{\mathcal{C}}$ contains the terms that do not depend on the current clade values being iterated: the strict-subclade contributions from $S_\gamma$, $D_\gamma$, $T_\gamma$, and the terminal leaf-boundary contributions. It is computed once per clade batch, before the fixed-point loop. The vector $V\in\Rbb^B$ is
+\[
+    V_e=E_e\alpha_e,
+\]
+and $Vs$ denotes the outer product $(Vs)_{e,\gamma}=V_e s_\gamma$. This is the vectorized part of $E_e\Pibar_{\gamma,e}$ that uses the sum over all branches.
+
+The sparse correction matrix $M\in\Rbb^{B\times B}$ contains all same-clade terms except the global receiver sum. Its entries are accumulated as follows:
+\begin{align*}
+    M_{e,e} &\mathrel{+}= 2p^D_eE_e+\Ebar_e, \\
+    M_{e,f(e)} &\mathrel{+}= p^S_eE_{g(e)}
+        \qquad\text{for internal branches }e,\\
+    M_{e,g(e)} &\mathrel{+}= p^S_eE_{f(e)}
+        \qquad\text{for internal branches }e,\\
+    M_{e,h} &\mathrel{+}= -E_e\alpha_e
+        \qquad\text{for every }h\notin\rec(e).
+\end{align*}
+The first line is the sum of the $DL$ term and the $\Pi_{\gamma,e}\Ebar_e$ part of $TL$. The next two lines are the $SL$ child contributions. The last line subtracts the illegal receivers that were included in the global branch sum $s_\gamma$. If several rules contribute to the same entry, the coefficients are simply added. Since the illegal receiver set is typically the ancestors of $e$ plus any convention-specific excluded branches, this correction is sparse.
+
+Equation~\eqref{eq:uniform-transfer-spmm} is useful because $V$ and $M$ depend only on the species tree, the DTL parameters, and the already-computed extinction vector $E$, not on $\gamma$. They can therefore be reused for all clades and all fixed-point iterations until the parameters change.
+
+\paragraph{Kernel count.}
+With standard GPU primitives, the update can be implemented in three kernels: one reduction for $s=\mathbf{1}^\top\Pi$, one sparse-dense matrix multiplication for $M\Pi$, and one fused elementwise kernel computing $A_{\mathcal{C}}+Vs+M\Pi$. With a custom sparse kernel whose epilogue adds $A_{\mathcal{C}}$ and $Vs$, this becomes two kernels: reduction, then fused SpMM plus epilogue. A single kernel is possible only if each clade column can be handled by one cooperative block or persistent work unit that first computes its branch sum and then applies the sparse rows of $M$; this is plausible when $B$ is small enough, but it is less compatible with generic cuSPARSE-style SpMM because the column sum requires a synchronization before the row updates.
+\subsection{Pairwise mode}
+This mode has not yet been implemented. It would consist in having different transfer parameters for each possible pair of donor-receiver. This would help us screen for transfer highway candidates for example. There would therefore be two different ways of implementing this more flexible mode: either we have a set of candidate highways, in which case we set specific transfer probabilities for some specific pairs of species. This would simply entail adding a specific transfer term to the already existing transfer rates, and correspondingly add this term in the softmax sum giving the probabilities of events for the donor species.
+
+The other possibility is to encode the transfer coefficients into a dense matrix representing pairwise transfer probabilities between all donors and receivers. The largest operation 
+
+\section{Auto-differentiation for efficient optimization}
+The current version of AleRax optimizes input parameters by finite differences. This is inefficient, as it implies having to do as many forward passes as there are parameters. This quickly becomes intractable, for example when optimizing three parameters per branch of the species tree. Using backward differentiation instead allows us to compute the gradient of the likelihood with respect to all parameters at once, in a single backward pass, which has comparable runtime to a single forward pass.
+\subsection{The analytic formulas: implicit differentiation through the fixed point solution}
+Let
+\begin{align*}
+    F: [0,1]^n \times \Rbb^m &\to [0,1]^n\\
+    (x,\theta) &\mapsto F(x,\theta)
+\end{align*}
+be a contracting map of class $\mathcal{C}^1$. We can write
+\[
+    dF_{(x,\theta)} =
+    \begin{bmatrix}
+    \frac{\partial F}{\partial x} & \frac{\partial F}{\partial \theta}
+    \end{bmatrix}.
+\]
+
+Let $\theta\in \Rbb^m$, and let $x^\star_\theta$ be the unique fixed point of $F(\cdot, \theta)$. Let
+\begin{align*}
+L:& [0,1]^n \times \Rbb^m \to \Rbb\\
+(\Pi, E) &\mapsto L(\Pi, E)
+\end{align*}
+
+be the likelihood function.
+
+We want to compute the gradient of the function $\theta \mapsto L(x^\star_\theta, \theta)$, with respect to $\theta$. First, notice that $x^\star(\theta) = F(x^\star(\theta), \theta)$. Differentiate the equality with respect to $\theta$:
+\begin{align*}
+    \frac{dx^\star_\theta}{d\theta} &= \frac{\partial F}{\partial x}(x^\star_\theta, \theta) \cdot \frac{dx^\star_\theta}{d\theta} + \frac{\partial F}{\partial \theta}(x^\star_\theta, \theta)\\
+    (I - \frac{\partial F}{\partial x}(x^\star_\theta, \theta))\cdot \frac{dx^\star_\theta}{d\theta} &= \frac{\partial F}{\partial \theta}(x^\star_\theta, \theta)\\
+    \frac{dx^\star_\theta}{d\theta} &= (I - \frac{\partial F}{\partial x}(x^\star_\theta, \theta))^{-1} \cdot \frac{\partial F}{\partial \theta}(x^\star_\theta, \theta).
+\end{align*} 
+
+\begin{align*}
+    \nabla_\theta L(x^\star_\theta, \theta)
+    &=
+    \frac{\partial L}{\partial x}(x^\star_\theta, \theta) \cdot \frac{dx^\star_\theta}{d\theta} + \frac{\partial L}{\partial \theta}(x^\star_\theta, \theta)\\
+    &=
+    \frac{\partial L}{\partial x}(x^\star_\theta, \theta) \cdot (I - \frac{\partial F}{\partial x}(x^\star_\theta, \theta))^{-1} \cdot \frac{\partial F}{\partial \theta}(x^\star_\theta, \theta) + \frac{\partial L}{\partial \theta}(x^\star_\theta, \theta).
+\end{align*}
+
+The inverse $(I - \frac{\partial F}{\partial x}(x^\star_\theta, \theta))^{-1}$ can be computed by the Neumann series expansion
+\[
+    (I - \frac{\partial F}{\partial x}(x^\star_\theta, \theta))^{-1} = \sum_{k=0}^{\infty} (\frac{\partial F}{\partial x}(x^\star_\theta, \theta))^k.   
+\]
+The map $F$ is contracting, so its spectral radius is therefore strictly less than $1$. This implies convergence of the above series. The number of terms required to obtain a good approximation can be computed by an appropriate choice of norm on the $\Pi$ space.
+
+
+\subsection{Computing the gradient in practice}
+We use automatic differentiation, in backward mode. We implement the backward pass of the $F$ function, which allows us to obtain the gradient of the likelihood with respect to the parameters using the Neumann series. Once this gradient is obtained, we can easily use any PyTorch optimizer to update the parameters $\theta$, which can have any shape and constraints.
+\subsubsection{VJP iteration}
+It is possible and easy to implement the gradient computation as a Neumann series. However, we have found that some gene families (say which ones) required many terms for the likelihood and gradient to converge. Therefore, we look for solutions using GMRES. This algorithm enables much faster convergence towards the gradient, which can result in a much smaller number of VJP iterations (by how much?). We therefore
+\subsubsection{Unrolling}
+VJP iteration is equivalent to unrolling.
+\subsubsection{Scheduling gradient computations}
+We only compute the gradient for batches of trees at a time. This allows us to control the memory usage and be able to process large trees, while achieving good efficiency on smaller trees.
+We can compute gradients corresponding to groups of gene trees at once, and accumulate gradients. 
+\section{Scheduling the computations on a GPU}
+\subsection{Adaptive rebatching}
+To make the best use of the GPU, we maximize utilization of both memory and compute. This implies batching different gene trees together. However, empirical datasets contain CCPs that are very different from each other in size and shape. As a consequence, obtaining the correct likelihood and gradient for them requires different numbers of fixed-point iterations. For example, in genewise mode, we find that most families in a batch have already converged, while a small fraction of them haven't, leading us to waste compute on already converged families.
+
+To avoid this cost, we developed strategies of adaptive rebatching.
+\section{Computing the different terms}
+Explain here what the difficulties are for computing the different terms: memory-intensive terms, hard to coalesce memory accesses, etc.
+\subsection{Scheduling waves}
+\subsubsection{Forward}
+The set of clades forms a DAG, defined by the splits $\gamma \to (\gamma',\gamma'')$. We can schedule computations in waves, where each wave corresponds to a set of clades which can be computed in parallel. Our goal is to maximize GPU occupancy, in order to hide the latency of launching kernels and accessing memory. So we want to maximize wave size, under the constraint that all the necessary data fits in GPU memory.
+
+The list of operations we will need to perform is as follows:
+\begin{itemize}
+    \item Compute $E$. This will not be a problem, we can do it in parallel over branches and gene families.
+    \item Compute $\Pi$. We consider $n$ gene families, which we will process in parallel.
+\end{itemize}
+
+At any time, the GPU will have to store the following data:
+\begin{itemize}
+    \item The 
+\end{itemize}
+\subsubsection{Backward}
+\section{Second order gradients}
+It is possible to compute the gradient of the likelihood with respect to the input parameters, but it is also possible to compute second order information.
+\subsection{Second order information in genewise mode}
+The hessians are 3*3. We can do finite differences to compute these hessians, or we could compute explicitly hessians, insofar as it is possible.
+\subsection{Second order information in specieswise mode}
+The hessians are much larger in this case. This makes it complicated to actually compute the full hessian. We can still do Newton-Raphson however, using VJP and HVP.
+\section{Numerics}
+\subsection{Floating point formats}
+On CUDA GPUs, it is easiest to work with the float32 format. We can use even lower precision formats such as float16 or bfloat16, but we will have to be careful about numerical stability when doing so. It is easy to start parameter optimization in some format, then continue in another format. bfloat16 is probably better for our use case. For the early stages of optimization, we can accept the lower precision of bfloat16, but we cannot accept underflow or overflow, which is likely to happen in float16.
+
+\paragraph{Early experiments with bf16}
+The few experiments I have done with bfloat16 did not show a significant improvement in performance: some operations were autocasted to fp32 by the GPU, which defeated the purpose of a low-precision format. The bf16 format may be most promising for the computation of a pairwise transfer matrix. In the case where we have coefficients $p^T_{e\to h}$ that depend on both the donor and the receiver, we can write the transfer term as a matrix multiplication, which can be efficiently computed on tensor cores in bf16 format ($312$ TFLOPS on an NVIDIA A100). In the case where we have uniform transfer probabilities, we can write the transfer term as a rank-one update, which is also efficiently computed on tensor cores in bf16 format. Thanks to the very high throughput of tensor cores, it may become feasible to study highways on a large scale.
+
+\subsection{GPU resources}
+The GPU has the following resources:
+\begin{itemize}
+    \item SFU (Special Function Units): used for exp, log, etc.
+    \item CUDA cores: used for arithmetic operations (e.g. addition, multiplication)
+    \item Tensor cores: used for matrix multiplications, in either TF32, float16, or bfloat16 formats. 
+\end{itemize}
+The tensor cores have the highest throughput, especially on modern CUDA GPUs. We would like to use them as much as possible, but it seems only the transfer term can be written as a true matrix multiplication, and it only seems suitable to express it as a dense matrix multiplication in the pairwise mode. We will therefore have to rely on CUDA cores, and carefully managing memory accesses.
+
+At OIST, A100 GPUs are available. However, I have noticed that they are specified to have $19.5$ TFLOPS of fp32 tensor core throughput, as compared to my own RTX 4090, which has $82.58$ TFLOPS of fp32 CUDA core throughput. This means that a performance regression on an A100 for modes uniform, specieswise and genewise may be expected. However, the A100 may still be much faster for the pairwise mode, where the transfer term can be expressed as a dense matrix multiplication and computed on tensor cores.
+
+\subsection{Working in log-space}
+As is frequent with the sum-product algorithm, the probabilities we are computing can become very small. Furthermore, working with high precision formats on GPUs (above fp64) is complicated and inefficient. We will therefore work in log space, and use the $\log \circ \sum \circ \exp$ sequence of operations to compute sums. We will have to experimentally verify that this does not cause too much numerical instability. Experiments on A100 GPUs with fp32 vs fp64 should help us understand the real impact of lower precision on final results.
+
+\subsection{Optimization in finite precision}
+In modes specieswise and uniform, it is 
+
+\section{New possibilities}
+\begin{enumerate}
+    \item MAP with arbitrary differentiable priors.
+    \item Parameter tying
+    \item Removed the constraint of families having more than $4$ leaves.
+\end{enumerate}
+
+\section{Methodology}
+Our goal is to minimize the runtime of the reconciliation likelihood optimization. To do that, the following steps will be taken:
+\begin{itemize}
+    \item Minimize the runtime of the forward pass
+    \item Minimize the runtime of the backward pass
+    \item Hide the latency of memory-intensive operations.
+\end{itemize}
+\subsection{Approximations and optimizations}
+\begin{itemize}
+    \item Instead of updating parameters using exact gradients, we can use stochastic gradient descent, by only computing the gradient on a subset of gene families: this is mini-batch SGD. We can use LBFGS to do that, and use a schedule for the batch size.
+    \item We can try different optimizers, such as pseudo-Newton methods, plain SGD, Adam, etc. This will be \textbf{more easily done if we make the likelihood and gradient computation PyTorch-compatible}. To make the likelihood computation PyTorch-compatible, we can create custom backward and forward functions, specifying some subset of gene families and other parameters such as wave size. We will pass the parameters as PyTorch tensors, such as the transfer matrix, or the dtl parameters. We will therefore be able to easily use any PyTorch optimizer, and do our testing within a simple Jupyter notebook.
+\end{itemize}
+\subsection{Tools}
+\begin{itemize}
+    \item We will use regular PyTorch code as a baseline for the forward and backward passes. Since we are working in log-space, it is essential to cleanly handle $-\infty$ values (which inevitably appear as representants of impossible events), so that we will often need to write custom backward functions.
+    \item Production code will either use CUDA kernels, or use an open-source GPU library, or some DSL such as Triton/Gluon/CuTe DSL.
+\end{itemize}
+
+
+\section{Experimental results}
+\subsection{Numerical accuracy results}
+- Comparison with AleRax and its 6 iterations. Report on the fixed bugs in AleRax. Show that we get the same likelihood for high iterations.
+- Compare fp32 with fp64 computation.
+
+\subsection{Runtime comparison}
+\paragraph{Uniform and genewise mode}
+
+\subsection{Runtime for new operations}
+
+\subsection{Maximal dataset size}
+
+\subsection{Diagnosis tools}
+\paragraph{Reconciliation entropy}
+
+\paragraph{Gradient value}
+
+\paragraph{}
+
+\subsection{Archaeal dataset}
+
+\subsection{HOGENOM Dataset}
+
+\appendix
+
+\section{Derivation of the fixed-point equations}
+We will state the evolutionary process as a Markov branching process, by analogy with the Doob h-transform to condition on the observed gene tree. First, let us define the Doob h-transform. Let $(X_t)_{t\ge0}$ be a Markov process. Let $T$ be a stopping time. Let $x$ be a state. The Doob h-transform of $X$ with respect to $T$ and $x$ is the process $X^h$ defined by
+\[
+    \Pbb(X^h_t\in A)
+    =
+    \Pbb(X_t\in A\mid T<\infty, X_T=x).
+\]
+
+Our goal instead is to compute the transition probabilities $P(X_{t+1}|X_t, X_T=x)$. We can directly write:
+\begin{align*}
+    P(X_{t+1}|X_t, X_T=x) &= \frac{P(X_{t+1}, X_T=x, X_t)}{P(X_T=x, X_t)}\\
+    &= \frac{P(X_T=x|X_{t+1})}{P(X_T=x|X_t)}P(X_{t+1}|X_t)\\
+\end{align*}
+\section{Proof of convergence}
+In this proof we use the notation of AleRaxSupp.pdf: $\bar x_e$ denotes the average of $x_h$ over receiver branches $h\in\rec(e)$, and the scalar transfer probability $p^T_e$ is written outside the barred term. Equivalently, one may absorb $p^T_e/|\rec(e)|$ into the coefficients $p^T_{e\to h}$ used above.
+
+\begin{assumption}[Interior event probabilities and complete observation]
+    We assume $p_l^{\mathrm{obs}}=1$ for every species-tree leaf $l$, and
+    \[
+        p_e^S,p_e^D,p_e^T,p_e^L>0
+    \]
+    for every species-tree branch $e$. The strict positivity of $p_e^S$ is the key condition for the argument below; the full interior assumption is sufficient but stronger than necessary.
+\end{assumption}
+
+Let $F$ be the extinction fixed-point map defined by equations (12)--(17) of the supplement, and let $E$ be its fixed point. Define the survival vector
+\[
+    w_e=1-E_e .
+\]
+Because $p_l^{\mathrm{obs}}=1$, terminal leaves have $E_l=0$. Since $p_e^S>0$, every terminal branch has positive survival probability. Inducting upward over the species tree gives
+\[
+    w_e>0
+\]
+for every branch $e$.
+
+Define
+\[
+    L:=DF(E).
+\]
+For an internal branch $e$ with children $f,g$,
+\[
+    (Lu)_e
+    =
+    p_e^S(E_gu_f+E_fu_g)
+    +2p_e^DE_eu_e
+    +p_e^T(\bar E_eu_e+E_e\bar u_e).
+\]
+For a terminal branch $e$,
+\[
+    (Lu)_e
+    =
+    2p_e^DE_eu_e
+    +p_e^T(\bar E_eu_e+E_e\bar u_e).
+\]
+
+We now compare $Lw$ with $w$. For an internal branch $e$,
+\[
+    w_e-(Lw)_e
+    =
+    p_e^S w_f w_g+p_e^D w_e^2+p_e^T w_e\bar w_e>0.
+\]
+For a terminal branch $e$,
+\[
+    w_e-(Lw)_e
+    =
+    p_e^S+p_e^D w_e^2+p_e^T w_e\bar w_e>0.
+\]
+Thus
+\[
+    Lw<w
+\]
+componentwise.
+
+Define the weighted sup norm
+\[
+    \|u\|_{w,\infty}:=\max_e\frac{|u_e|}{w_e}.
+\]
+Since $L$ has nonnegative coefficients,
+\[
+    \|Lu\|_{w,\infty}
+    \le
+    c\|u\|_{w,\infty},
+    \qquad
+    c:=\max_e\frac{(Lw)_e}{w_e}<1.
+\]
+Therefore
+\[
+    \|DF(E)\|_{w,\infty}<1.
+\]
+
+Since the extinction map $F$ is polynomial, $DF(x)$ depends continuously on $x$. Hence there exists a neighbourhood $U$ of $E$ and a constant $r<1$ such that
+\[
+    \|DF(x)\|_{w,\infty}\le r
+    \qquad\text{for all }x\in U.
+\]
+Then for all $x,y\in U$, the mean-value formula gives
+\[
+    F(x)-F(y)
+    =
+    \int_0^1 DF(y+t(x-y))(x-y)\,dt,
+\]
+and therefore
+\[
+    \|F(x)-F(y)\|_{w,\infty}
+    \le r\|x-y\|_{w,\infty}.
+\]
+Thus the extinction fixed-point map is contracting in a neighbourhood of $E$.
+
+Moreover, if $U$ is chosen as a small closed ball around $E$, then it is stable under $F$, because
+\[
+    \|F(x)-E\|_{w,\infty}
+    =
+    \|F(x)-F(E)\|_{w,\infty}
+    \le r\|x-E\|_{w,\infty}.
+\]
+Banach's fixed-point theorem therefore applies locally.
+
+For the $\Pi$-map, fix a clade $\gamma$, and suppose all proper subclades have already been computed. Then the fixed-point map has the affine form
+\[
+    \Phi_\gamma(z)=C_\gamma+Lz,
+\]
+where $z_e=\Pi_{e,\gamma}$, $C_\gamma\ge0$ contains only already-known lower-clade terms, and the same linear operator $L=DF(E)$ appears on the same-clade terms $SL_\gamma$, $DL_\gamma$, and $TL_\gamma$. Therefore
+\[
+    \|\Phi_\gamma(z)-\Phi_\gamma(z')\|_{w,\infty}
+    =
+    \|L(z-z')\|_{w,\infty}
+    \le c\|z-z'\|_{w,\infty}.
+\]
+So each bottom-up $\Pi_{\cdot,\gamma}$ map is not merely locally contracting: it is globally contracting in the same weighted norm.
+
+If instead one views all $\Pi_{\cdot,\gamma}$ values for all clades as one large simultaneous fixed-point map, then the derivative at the fixed point is block triangular when clades are ordered by size. Each diagonal block is the same operator $L$. Hence all eigenvalues of the full derivative come from $L$, so its spectral radius is smaller than $1$. In finite dimension, this implies that there exists an equivalent norm in which the full derivative has operator norm smaller than $1$; by continuity, the simultaneous $\Pi$-map is also contracting in a sufficiently small neighbourhood of the fixed point.
+
+In summary, with $p_l^{\mathrm{obs}}=1$ and $p_e^S>0$ for all $e$, the $E$-map is locally contracting at $E$. Each bottom-up $\Pi_{\cdot,\gamma}$ map is globally contracting in the same weighted norm. The full interior assumption on $p_e^S,p_e^D,p_e^T,p_e^L$ is sufficient, but stronger than necessary.
+
+\section{Proof of termination of stochastic backtracking}
+
+\section{Convergence and numeric issues with AleRax}
+\begin{itemize}
+    \item We discovered that the fixed $4$ iterations in AleRax were not sufficient for convergence on some gene trees. Show on which gene trees it happened, and the impact it had on both the likelihood and the inferred parameters.
+    \item We discovered that the handling of arbitrary precision numerics was incorrect: numbers were bucketized in such a way that $1 + 0.9 = 1$
+\end{itemize} 
+
+I suppose that the $4$ iterations were fixed to avoid having to check for convergence at every iteration. We would like to explore the following solution instead:
+\paragraph{Convergence properties of the fixed point}
+Explain here that the fixed point operation is contracting, and we can hence compute an upper bound on the number of iterations needed to reach convergence. Also explain that we proved the map was contracting in some norm, and how it allows us to obtain bounds in classical max norm.
+
+We are not yet sure which fix we will use for the arbitrary precision numerics: we could use smaller buckets and only skip sums if the numbers are separated by more than 1 bucket. $2^128$ has $38$ digits, so we have some margin to reduce bucket sizes.
+
+\section{Theoretical properties of the ALE fixed point maps}
+\begin{itemize}
+    \item Convergence and uniqueness of the fixed point
+    \item Contraction properties. Using tight inequalities, we can bound the number of iterations we will have to do.
+    \item Implicit gradient. Computation, and pruning strategy.
+\end{itemize}
+\section{Other properties of the ALE model}
+\begin{itemize}
+    \item Conditional mappings. Computing the conditional mapping/event probabilities.
+    \item Mutual information between different mappings/events.
+\end{itemize}
+
+\end{document}

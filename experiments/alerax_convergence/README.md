@@ -82,13 +82,13 @@ Generate AleRax reference likelihoods with a **high `--fixed-point-iterations` (
 ## Reproduce
 
 ```bash
-cd /home/enzo/Documents/git/gpurec/consolidate-release
+cd /path/to/gpurec
 .venv/bin/python experiments/alerax_convergence/reproduce.py            # full (~4–5 min)
 .venv/bin/python experiments/alerax_convergence/reproduce.py --quick    # skip slow N=64
 ```
 
-`reproduce.py` locates an `AleRax_fixed` binary (auto under `agent-worktrees/`, or set
-`ALERAX_BIN`), runs both engines at both rate sets, prints the tables above, writes `results.json`,
+`reproduce.py` locates an `AleRax_fixed` binary on `PATH` or through
+`ALERAX_BIN`, runs both engines at both rate sets, prints the tables above, writes `results.json`,
 and ends with PASS/FAIL self-checks (converged agreement, gpurec self-convergence, the 87-nat
 default gap, and the `ln(2S−1)` convention identity). Requirements: a CUDA GPU + the base env, an
 `AleRax_fixed` binary, and the fixture (override with `FIXTURE=...`).

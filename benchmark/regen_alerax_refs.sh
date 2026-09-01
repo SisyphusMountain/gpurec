@@ -12,13 +12,13 @@ set -euo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
 DATA="$REPO/tests/data/alerax"
-ALERAX_SRC="${ALERAX_SRC:-$(ls -d /home/enzo/Documents/git/gpurec/agent-worktrees/*/AleRax_fixed/AleRax 2>/dev/null | head -1)}"
-ALERAX_DST="${ALERAX_DST:-/home/enzo/Documents/git/gpurec/tools/AleRax_fixed}"
+ALERAX_SRC="${ALERAX_SRC:-}"
+ALERAX_DST="${ALERAX_DST:-$REPO/.local-tools/AleRax_fixed}"
 BIN="$ALERAX_DST/build/bin/alerax"
 
 # 1) copy + build (idempotent; build lives OUTSIDE the tracked repo)
 if [ ! -x "$BIN" ]; then
-  [ -n "$ALERAX_SRC" ] || { echo "AleRax_fixed source not found; set ALERAX_SRC"; exit 1; }
+  [ -n "$ALERAX_SRC" ] || { echo "AleRax_fixed source not configured; set ALERAX_SRC"; exit 1; }
   mkdir -p "$ALERAX_DST"
   rsync -a --exclude build --exclude .git "$ALERAX_SRC/" "$ALERAX_DST/"
   # full-precision patch: emit 17 significant digits for per-family likelihoods + global rates

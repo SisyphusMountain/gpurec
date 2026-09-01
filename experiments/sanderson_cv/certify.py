@@ -11,7 +11,7 @@ certified lam_min/residual back into state.pt and prints the table.
   python experiments/sanderson_cv/certify.py --selftest 256   # exact-multibatch HVP == FD HVP check
 """
 from __future__ import annotations
-import argparse, time
+import argparse, os, time
 from pathlib import Path
 import torch
 
@@ -21,7 +21,19 @@ from gpurec.solver.hvp.exact import make_exact_hvp
 from gpurec.solver.krylov import lanczos_min_eigpair
 
 HERE = Path(__file__).resolve().parent
-ROOT = Path("/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom")
+REPO = HERE.parents[1]
+DATA = Path(
+    os.environ.get(
+        "GPUREC_DATA_ROOT",
+        REPO
+        / "data"
+        / "external"
+        / "benchmarks"
+        / "large_dataset_capacity"
+        / "datasets",
+    )
+)
+ROOT = DATA / "alerax_hogenom_core" / "hogenom"
 SP = ROOT/"runs/MFP/true_start_ufboot1000/run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/starting_species_tree.newick"
 SO = dict(e_max_iter=2000,e_tol=1e-8,pi_iters=64,neumann_terms=64,
    bicgstab_max_iter=500,bicgstab_tol=1e-7,bicgstab_breakdown_tol=1e-30,

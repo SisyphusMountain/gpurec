@@ -18,6 +18,8 @@ all families at ``lambda*``.
 from __future__ import annotations
 
 import math
+import os
+from pathlib import Path
 
 import torch
 
@@ -170,7 +172,12 @@ def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 100
 def _smoke(n_families=120, k=3, device="cuda"):
     """Small live-hogenom smoke: CV curve finite + a regularized lambda generalizes <= lambda=0."""
     import glob
-    root = "/home/enzo/Documents/git/gpurec/gpurec/tests/data/alerax_hogenom_core/hogenom"
+    repo_root = Path(__file__).resolve().parents[2]
+    data_root = Path(os.environ.get(
+        "GPUREC_DATA_ROOT",
+        repo_root / "data" / "external" / "benchmarks" / "large_dataset_capacity" / "datasets",
+    ))
+    root = str(data_root / "alerax_hogenom_core" / "hogenom")
     sp = (f"{root}/runs/MFP/true_start_ufboot1000/"
           "run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/"
           "starting_species_tree.newick")

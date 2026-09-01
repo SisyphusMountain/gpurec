@@ -132,6 +132,14 @@ The most important controls are:
 - `examples/tiny/`: minimal Newick/map/family inputs for smoke tests and small
   experiments.
 - `notebooks/`: end-to-end optimization notebook.
+- `docs/`: user, architecture, numerical, mathematical, and internal-review
+  documentation. Start at [`docs/README.md`](docs/README.md); command-line and
+  input rules are in [`docs/cli.md`](docs/cli.md) and
+  [`docs/input-contract.md`](docs/input-contract.md).
+- `papers/`: maintained manuscripts and their publication-input figures.
+- `benchmarks/`: reproducible benchmark recipes and compact reported results.
+- `data/`: the tracked index for the ignored local empirical-data store.
+- `archive/`: the tracked index for ignored recovery/history material.
 
 ## Requirements
 

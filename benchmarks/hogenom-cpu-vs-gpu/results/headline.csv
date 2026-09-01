@@ -1,0 +1,5 @@
+tool,subset,families,fit_seconds,cert_seconds,total_seconds,converged,nll_bits,nll_nats,hardware
+gpurec,Hogenom-512,506,119,33,152,500/506,324261.8,,1 RTX 4090
+gpurec,Hogenom-1055,1042,219,62,282,1037/1042,577592.8,,1 RTX 4090
+gpurec,Hogenom-full,10869,758,213,970,10853/10869,1906463.5,1321460,1 RTX 4090
+AleRax,Hogenom-full,10869,17682,,,,,1326051,24 CPU cores

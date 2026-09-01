@@ -30,13 +30,14 @@ import sys
 import time
 from pathlib import Path
 
-REPO = Path("/home/enzo/Documents/git/gpurec/consolidate-release")
-GL = REPO / "experiments" / "ghost_lineages"
-FT = "/home/enzo/miniforge3/envs/phylo/bin/FastTree"
-GENERAX = str(GL / "tools" / "GeneRax" / "build" / "bin" / "generax")
-SP = str(GL / "results" / "sim_allgenes" / "species_tree.newick")
-GENES = GL / "results" / "sim_allgenes" / "genes"
-FAMILIES_LIST = GL / "results" / "sim_inferred_L1000" / "families.txt"
+REPO = Path(os.environ.get("GPUREC_ROOT", Path(__file__).resolve().parents[2])).resolve()
+GHOST_REPO = Path(os.environ.get("GHOST_REPO_ROOT", REPO / "papers" / "ghost-lineages")).resolve()
+GHOST_RESULTS = Path(os.environ.get("GHOST_RESULTS_ROOT", GHOST_REPO / "results")).resolve()
+FT = os.environ.get("FASTTREE_BIN", "FastTree")
+GENERAX = os.environ.get("GENERAX_BIN", "generax")
+SP = str(GHOST_RESULTS / "sim_allgenes" / "species_tree.newick")
+GENES = GHOST_RESULTS / "sim_allgenes" / "genes"
+FAMILIES_LIST = GHOST_RESULTS / "sim_inferred_L1000" / "families.txt"
 OUT = REPO / "experiments" / "gpurax_vs_generax" / "results"
 
 

@@ -18,6 +18,31 @@ output_*/
 tmp_*/
 wandb/
 *.log
+
+# LaTeX intermediates. Publication-input figures remain trackable.
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+docs/**/*.out
+papers/**/*.out
+docs/mathematics/**/*.pdf
+docs/internal-reviews/**/*.pdf
+papers/**/main.pdf
+
+# Consolidated local stores. Their tracked README files document provenance,
+# but large datasets, worktree rescues, bundles, and historical outputs stay
+# outside ordinary Git objects.
+/data/external/
+/archive/storage/
+
+# Independent research repository mounted inside the consolidated workspace.
+# It has its own Git history and is intentionally not part of gpurec commits.
+/papers/ghost-lineages/
+/.local-tools/
 uv.lock
 
 crates/*/target/

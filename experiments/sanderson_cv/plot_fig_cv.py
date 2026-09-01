@@ -1,19 +1,24 @@
 """Figure for paper S4.5: held-out NLL vs tree-smoothing prior strength kappa, Hogenom-1055 species-wise,
 K=5-fold CV. Pure CPU: reads the two existing run_cv state.pt grids (coarse + refined), merges them
 (refined overrides on shared kappa), marks kappa*=argmin, and the kappa=0 unpenalized-MLE baseline.
-No GPU, no gpurec import. Run: PYTHONNOUSERSITE=1 /home/enzo/miniforge3/bin/python plot_fig_cv.py
+No GPU and no gpurec import are required.
 """
 import os
+from pathlib import Path
 import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = "/home/enzo/Documents/git/gpurec/kernel-bench/paper/figures/fig_cv.pdf"
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[1]
+PAPER = REPO / "papers" / "gpu-reconciliation"
+OUT = Path(os.environ.get("OUT", PAPER / "figures" / "fig_cv.pdf"))
+COARSE = Path(os.environ.get("CV_COARSE", PAPER / "reproduction" / "cv" / "coarse_state.pt"))
+REFINED = Path(os.environ.get("CV_REFINED", PAPER / "reproduction" / "cv" / "refined_state.pt"))
 
-coarse = torch.load(f"{HERE}/runs/cv_1055/state.pt", weights_only=False, map_location="cpu")["cv"]
-refined = torch.load(f"{HERE}/runs/cv_1055_refined/state.pt", weights_only=False, map_location="cpu")["cv"]
+coarse = torch.load(COARSE, weights_only=False, map_location="cpu")["cv"]
+refined = torch.load(REFINED, weights_only=False, map_location="cpu")["cv"]
 cv = {**coarse, **refined}            # refined overrides coarse on shared kappa {1, 0.1, 0}
 
 mle = cv[0.0]                          # unpenalized MLE (kappa = 0)
@@ -42,6 +47,6 @@ ax.set_ylabel("held-out NLL (mean over 5 folds)")
 ax.grid(True, which="both", alpha=0.25)
 ax.legend(frameon=False, loc="upper center")
 fig.tight_layout()
-os.makedirs(os.path.dirname(OUT), exist_ok=True)
+OUT.parent.mkdir(parents=True, exist_ok=True)
 fig.savefig(OUT)
 print(f"saved -> {OUT}")

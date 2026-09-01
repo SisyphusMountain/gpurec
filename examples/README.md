@@ -9,6 +9,9 @@ preprocessing and reconciliation workflow.
   `tiny_family`; points to the starting gene tree and gene-to-species mapping.
 - `tiny/species.nwk`: two-species Newick species tree with root `Root` and
   leaves `A` and `B`.
-- `tiny/gene.nwk`: two-leaf Newick gene tree with leaves `a` and `b`.
-- `tiny/gene.map`: gene-to-species mapping, assigning gene `a` to species `A`
-  and gene `b` to species `B`.
+- `tiny/gene.nwk`: two-leaf Newick gene tree with leaves `A_a` and `B_b`.
+- `tiny/gene.map`: corresponding AleRax mapping metadata. gpurec itself derives
+  species names from gene-leaf prefixes rather than reading this file.
+
+See [`docs/input-contract.md`](../docs/input-contract.md) for the complete
+naming and manifest-path rules.

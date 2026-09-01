@@ -1,0 +1,24 @@
+[xcheck-all] 8 chunks; gpurec-own NLL (paper) = 1321460 nats
+[gpurec] warm-adjoint disabled (running cold): cache 2.8 GiB + scratch 19.2 GiB > budget 20.0 GiB [559,573 clades x 1331 species, 5 batches]
+  chunk_00: 1359 fam  gpurec-alerax mean=+0.3565 nat/fam  (running n=1359)
+[gpurec] warm-adjoint disabled (running cold): cache 3.3 GiB + scratch 24.6 GiB > budget 20.0 GiB [663,427 clades x 1331 species, 5 batches]
+  chunk_01: 1359 fam  gpurec-alerax mean=+0.4094 nat/fam  (running n=2718)
+  chunk_02: 1359 fam  gpurec-alerax mean=+0.1093 nat/fam  (running n=4077)
+  chunk_03: 1359 fam  gpurec-alerax mean=+0.1372 nat/fam  (running n=5436)
+  chunk_04: 1359 fam  gpurec-alerax mean=+0.1577 nat/fam  (running n=6795)
+  chunk_05: 1359 fam  gpurec-alerax mean=+0.1307 nat/fam  (running n=8154)
+  chunk_06: 1359 fam  gpurec-alerax mean=+0.1450 nat/fam  (running n=9513)
+  chunk_07: 1356 fam  gpurec-alerax mean=+0.1720 nat/fam  (running n=10869)
+
+================================================================
+=== FULL-SET apples-to-apples headline (10869 families, nats) ===
+================================================================
+  gpurec @ gpurec rates (paper)        NLL =     1321460
+  AleRax  @ AleRax rates (reported)    NLL =     1326051   <- current headline baseline
+  gpurec  @ AleRax rates (apples)      NLL =     1323853   <- consistent-likelihood baseline
+
+  REPORTED margin  (gpurec vs AleRax-reported) =     4591 nats = +0.422 /fam
+  APPLES-TO-APPLES margin (both in gpurec)     =     2393 nats = +0.220 /fam
+  eval discrepancy (AleRax under-reports)      =     2198 nats = +0.202 /fam (median +0.0018)
+
+  -> gpurec lower NLL: REPORTED by 0.422/fam, APPLES-TO-APPLES by 0.220/fam (STILL WINS)

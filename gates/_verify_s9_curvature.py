@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import glob
 import math
+import os
 import sys
 
 import torch
@@ -241,17 +242,13 @@ def run_live(n_families=8, device="cuda", seed=0, tangent_self_iters=128, warmup
 
 
 # ============================================================================= C. PRIMATES dense (opt)
-_PRIM_CANDIDATES = [
-    "/home/enzo/Documents/git/gpurec/agent-worktrees/core-audit-common/AleRax_oliver/data/primates",
-]
+_PRIM_CANDIDATES = [os.environ["GPUREC_PRIMATES_ROOT"]] if os.environ.get("GPUREC_PRIMATES_ROOT") else []
 
 
 def run_primates_dense(device="cuda", seed=3, tangent_self_iters=64):
     """Best-effort: build the tiny primates model, form the DENSE gauge-projected joint Hessian via
     the real analytic HVP (4S applies), cross-check cert + Fisher vs dense eigh/pinv. Returns
     True/False/None (None = fixture unavailable, not a failure)."""
-    import os
-
     prim = next((d for d in _PRIM_CANDIDATES if os.path.isdir(d)), None)
     if prim is None:
         print("\n[C primates] fixture not found -> skipped")

@@ -83,7 +83,7 @@ A full k=5 CV over the λ-grid is a ~3–5 h job; memory stays ~7 GB (batched), 
 ## Running
 
 ```bash
-export GPUREC_PREPROCESS_PATH=/home/enzo/Documents/git/gpurec/gpurec/crates/gpurec-preprocess/target/release/libgpurec_preprocess.so
+export GPUREC_PREPROCESS_PATH="$PWD/crates/gpurec-preprocess/target/release/libgpurec_preprocess.so"
 export PYTHONPATH=$PWD                      # the worktree root
 # smoke first (minutes):
 python experiments/sanderson_cv/run_cv.py --smoke 48 --k 2 --lambdas 10 1 0 --no-wandb \

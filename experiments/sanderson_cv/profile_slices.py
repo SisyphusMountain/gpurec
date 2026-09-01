@@ -11,10 +11,12 @@ both GLOBALLY (all branches together) and for a few representative branches, ove
 Env: FAMILIES(0=all) THETA(<path>|CERTIFIED) NPTS(21) TMAX(1.5) OUT(figures/fig_profile.pdf).
 """
 import os, sys, math
+from pathlib import Path
 import numpy as np
 import torch
-RW = "/home/enzo/Documents/git/gpurec/agent-worktrees/receiver-weights-hvp"
-sys.path.insert(0, RW)
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[1]
+sys.path.insert(0, str(HERE))
 import run_cv
 from run_cv import DATASETS, build_model, _CV_SO
 from gpurec import SolverOptions
@@ -22,19 +24,29 @@ from gpurec.solver.value_and_grad import make_value_and_grad
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 DEV = "cuda"
-CERT = "/home/enzo/Documents/git/gpurec/agent-worktrees/kernel-bench-mapcv-merge/experiments/sanderson_cv/runs/bounded_archaea_full_lam0.03_fp64_CERTIFIED.pt"
+CERT = os.environ.get(
+    "THETA",
+    str(HERE / "_artifacts" / "certified_v2" / "archaea_lam0.03_certified.pt"),
+)
 
 
 def main():
     n_fam = int(os.environ.get("FAMILIES", "0"))
     npts = int(os.environ.get("NPTS", "21")); tmax = float(os.environ.get("TMAX", "1.5"))
-    out = os.environ.get("OUT", "/home/enzo/Documents/git/gpurec/kernel-bench/paper/figures/fig_profile.pdf")
+    out = os.environ.get(
+        "OUT",
+        str(REPO / "papers" / "gpu-reconciliation" / "figures" / "fig_profile.pdf"),
+    )
     ds = DATASETS["archaea"]; run_cv._SP_TREE = ds["species_tree"]
     so = SolverOptions(**_CV_SO); so.validate()
     paths = ds["families"](None if n_fam <= 0 else n_fam)
     model = build_model(paths, so); bs = model.batch_statics
     S = int(model.species_helpers["S"]); rw = model.receiver_weights.detach().clone()
-    th = torch.load(CERT, weights_only=False, map_location=DEV)["theta"].to(DEV).float().reshape(S, 3)
+    saved = torch.load(CERT, weights_only=False, map_location=DEV)
+    theta_saved = saved.get("theta", saved.get("theta_newton"))
+    if theta_saved is None:
+        raise KeyError(f"{CERT} contains neither 'theta' nor 'theta_newton'")
+    th = theta_saved.to(DEV).float().reshape(S, 3)
     f = make_value_and_grad(bs, rw, theta_shape=(S, 3))                 # data NLL (no penalty), receiver uniform
     def loss(theta): return float(f(theta.reshape(-1))[0])
     L0 = loss(th)

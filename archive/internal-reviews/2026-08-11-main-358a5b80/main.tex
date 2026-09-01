@@ -1,0 +1,1329 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=25mm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,array}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+% Long identifiers such as \texttt{_accumulate_gene_split_event_vjp_kernel} do
+% not fit on one line; [htt] lets them hyphenate inside typewriter text.
+\usepackage[htt]{hyphenat}
+\usepackage{listings}
+
+\setlength{\emergencystretch}{3em}
+\captionsetup[table]{skip=4pt,font=small}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  columns=fullflexible,
+  keepspaces=true,
+}
+
+% A source location: file and line, rendered without hyphenation.
+\newcommand{\loc}[1]{\nolinkurl{#1}}
+% A directory or path.
+\newcommand{\dir}[1]{\nolinkurl{#1}}
+
+\title{Code Review of the \texttt{main} Branch of \texttt{gpurec}}
+\author{Review carried out with four parallel review agents}
+\date{11 August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This is a review of the \texttt{main} branch of \texttt{gpurec} as of commit
+\texttt{358a5b80}.  It answers six questions: how much code there is, whether
+any files are bloated, whether the code is clean, whether the documentation is
+good, whether the naming conventions are consistent, and whether the directory
+tree is well organised.  Every count and every file-and-line reference was
+produced by reading or running the code.  Nothing in the repository was
+modified.  Section~\ref{sec:summary} is a summary and a list of what to fix, in
+order; a reader who reads only that page will have the actionable content.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{Summary and what to fix}
+\label{sec:summary}
+
+\subsection*{Verdict}
+
+\textbf{This branch is not yet fit to be handed to an outside user, and the
+reason is not the code --- it is everything around the code.}  The discipline
+inside the source files is unusually good: no leftover markers, no
+commented-out blocks, no stray debug output, no unsafe Rust, and naming
+conventions that hold across 358 functions.  What fails is the surface a new
+user touches.  The one shipped example does not run, the rule needed to make it
+run is written down nowhere, there are no tests, and sixteen places in the
+source point at documentation files that were deleted.
+
+For reading and for small local fixes, this is a comfortable codebase.  For any
+change that moves a number, it is not, because there is nothing on this branch
+that can tell you whether you changed an answer.
+
+\subsection*{The five findings that matter}
+
+\begin{enumerate}
+  \item \textbf{The shipped example does not run, and the rule it breaks is
+        undocumented.}  A gene leaf must be named \texttt{SPECIES\_gene}; the
+        code splits on the first underscore.  That rule appears in no README,
+        docstring or comment.  The shipped example uses leaves called
+        \texttt{a} and \texttt{b}, so the headline snippet in the README fails.
+        A second file, \dir{examples/tiny/gene.map}, is presented by two
+        READMEs as the thing that maps genes to species and is read by nothing.
+        (Section~\ref{sec:docs-example}.)
+  \item \textbf{There are no tests and no automated checks, and three files
+        claim otherwise.}  The most damaging is a comment naming a ``permanent
+        guard test'' that would catch the settings file drifting out of step
+        with the Python code it mirrors.  That test is not on this branch, so
+        the two copies are free to disagree silently.
+        (Section~\ref{sec:no-tests}.)
+  \item \textbf{One stale default is wrong by a factor of 21.}  A function
+        declares \texttt{neumann\_terms=3} where the configured value is 64.
+        Production callers always pass it explicitly, so it never fires in
+        normal use --- it fires for whoever calls that function by hand.
+        (Section~\ref{sec:stale-default}.)
+  \item \textbf{The same settings live in three or four places, and six files
+        take settings from shell environment variables.}  Two of those
+        environment variables are read \emph{before} the argument the caller
+        explicitly passed, so a deliberate choice in code is silently
+        overridden by something invisible.  (Sections~\ref{sec:config-mirrors}
+        and~\ref{sec:envvars}.)
+  \item \textbf{986 lines have no caller, and two settings classes sit in the
+        wrong package.}  The misplaced settings classes are why the settings
+        package imports the model package, why the lowest-level kernels import
+        the model package, and why one import had to be deferred inside a
+        function with a nineteen-line comment apologising for it.
+        (Sections~\ref{sec:dead-code} and~\ref{sec:imports}.)
+\end{enumerate}
+
+\subsection*{What to fix, in order}
+
+Effort is a rough order of magnitude for one engineer who knows the code.
+
+\begin{center}
+\captionof{table}{Recommended order of work.  ``Owner'' marks items that need a
+decision from whoever owns the branch rather than a code change.}
+\begin{longtable}{@{}rp{0.60\textwidth}ll@{}}
+\toprule
+\# & What to do & Effort & Owner? \\
+\midrule
+\endhead
+1 & Make the shipped example run: rename the example leaves to \texttt{A\_a}
+    and \texttt{B\_b}, delete \dir{examples/tiny/gene.map}, write the
+    underscore rule into \dir{README.md} and
+    \dir{examples/tiny/README.md}, and fix the family-listing path bug at
+    \loc{gpurec/fit/genewise\_fit.py:79-80} so the command-line route works
+    too.  Not closed until the README snippet runs end to end.
+  & hours & \\
+2 & Fix \texttt{neumann\_terms=3} at
+    \loc{gpurec/core/kernels/wave\_backward.py:673}.
+  & minutes & \\
+3 & Replace the three \texttt{.unwrap()}/\texttt{.expect()} calls in the Rust
+    with the crate's own typed error, so a malformed input file raises a normal
+    Python exception instead of one that \texttt{except Exception} cannot catch.
+  & hours & \\
+4 & \textbf{Decide the test story.}  Bring \dir{tests/} onto this branch.  The
+    alternative --- deleting the three false claims --- is cheaper but leaves
+    every item below unverifiable, so it is not recommended.
+  & --- & yes \\
+5 & Move \texttt{SolverOptions} out of \dir{gpurec/api/} and
+    \texttt{PenaltyOptions} out of \dir{gpurec/solver/}, both into
+    \dir{gpurec/config/}.  Removes the deferred-import workaround and both
+    layering inversions.  Do this \emph{before} adding any
+    \texttt{\_\_init\_\_.py} to \dir{api/} --- see
+    Section~\ref{sec:init-trap}.
+  & hours & \\
+6 & Replace the two \texttt{clamp} calls at
+    \loc{gpurec/fit/genewise\_fit.py:328} and \loc{:335} with the
+    \texttt{torch.maximum} form already used at
+    \loc{gpurec/fit/global\_fit.py:128} and \loc{:136}.
+  & minutes & \\
+7 & Make \dir{gpurec/fit/newton\_cg.py} read \texttt{NewtonOptions} the way
+    \loc{gpurec/fit/genewise\_fit.py:49-56} reads its settings.  Removes 31
+    duplicated literals and closes two drifts the code already admits to.
+  & hours & \\
+8 & Move the six environment variables into settings objects, and give the four
+    batch-planning knobs a dataclass alongside \texttt{SolverOptions}.  One of
+    them is read at import time to set a GPU launch parameter, so this is not
+    purely mechanical.
+  & days & \\
+9 & Triage the 986 dead lines \emph{with the author}.  456 of them are research
+    code that says in a comment it is deliberately not wired in; that is not a
+    reviewer's call.
+  & hours & yes \\
+10 & Restore \dir{docs/latex/kernel\_mathematics.tex}.  Deleting the 16 dangling
+    pointers instead is cheaper, but that file is the only thing that ever
+    explained the recurrences and eight kernel modules still send readers to it.
+  & --- & yes \\
+11 & Write a class docstring for \texttt{GeneReconModel} covering its twelve
+    constructor arguments, the rate order (duplication, loss, transfer), the
+    base-2 logarithm convention, and that the returned loss is in bits.
+  & hours & \\
+12 & Add READMEs for \dir{solver/}, \dir{fit/}, \dir{config/} and \dir{cli/},
+    and add those four directories to the root repository map.
+  & hours & \\
+13 & Extract the 109-line duplicated Triton block in
+    \dir{wave\_backward\_kernels.py} into a device helper, following the
+    existing \texttt{\_load\_event\_log\_probability} precedent.
+  & hours & \\
+14 & Split the three bloated files along the boundaries in
+    Section~\ref{sec:bloat}.  Purely structural, nothing depends on it, and
+    therefore last.
+  & days & \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection*{The one thing behind most of this}
+\label{sec:rootcause}
+
+\texttt{main} is produced by hand-deleting things from \texttt{dev}.  The recent
+history reads ``Remove all docs from main'', ``Remove more non-essential docs
+from main'', ``Remove planning docs from main'', ``Remove \dir{gpurec/bench}
+from main'', ``Remove \dir{gpurec/solver/\_golden} test fixture from main''.
+
+Most of the defects in this review are debris from that process rather than
+independent mistakes: the sixteen pointers to deleted documents, the three
+false claims that tests exist, the settings guard that cannot fire, the
+\dir{notebooks/} directory the README advertises, the pytest configuration with
+nothing to configure.  Fixing them one by one leaves the process intact, and the
+next strip will produce a fresh set.
+
+\textbf{The durable fix is to generate \texttt{main} from \texttt{dev} with a
+script, and to have that script fail when it leaves a reference dangling.}  That
+recommendation is not on the numbered list above because it is a change to how
+the project is released, not to the code --- but it is worth more than items 10
+through 14 combined.
+
+%======================================================================
+\section{What \texttt{gpurec} is, and how to read this review}
+
+\subsection{What the software does}
+
+\texttt{gpurec} takes one fixed \emph{species tree} --- the family tree of a set
+of organisms --- together with many \emph{gene families}, each being the set of
+copies of one gene across those organisms.  For each family it computes how
+likely that family's history is, given rates at which genes are duplicated
+within a lineage, lost, and transferred sideways from one lineage into another.
+Fitting those three rates to the data is what the package is for.  The
+arithmetic runs on a graphics card.
+
+The project's own summary, at \loc{README.md:1-8}, calls it ``an experimental
+GPU-accelerated likelihood engine for gene-tree/species-tree reconciliation
+under a DTL-style model'', which returns ``a scalar negative log-likelihood in
+bits''.
+
+Rates can be shared three ways, selected by a \texttt{mode} setting: one set of
+rates for everything (\texttt{global}), one per species (\texttt{specieswise}),
+or one per gene family (\texttt{genewise}).
+
+\subsection{What this branch is for}
+
+\texttt{main} is the stripped branch.  It carries 96 files; \texttt{dev} carries
+those plus 252 more, including 63 test files and 75 documentation files.  The
+review assumes \texttt{main} is what an outside user would install, because that
+is the only role a branch in this state could serve --- but that assumption is
+the reviewer's, not something the repository states, and it is the single
+biggest lever on how severe the documentation findings are.  If \texttt{main} is
+instead an internal artefact that nobody clones, findings 1 and 2 drop sharply
+in importance and little else changes.
+
+\subsection{Words used throughout}
+
+Defining these is not decoration.  One of this review's own findings is that the
+codebase uses short names nobody has written down, so the review had better not
+do the same thing.
+
+\begin{center}
+\captionof{table}{Terms used in this document.  ``Where it comes from'' says
+whether the meaning is stated in the repository or was inferred from the code.}
+\begin{longtable}{@{}p{0.20\textwidth}p{0.52\textwidth}p{0.20\textwidth}@{}}
+\toprule
+Term & Meaning & Where it comes from \\
+\midrule
+\endhead
+reconciliation
+  & Explaining a gene family's tree as a history inside the species tree: at
+    each point, saying whether a gene duplicated, was lost, was transferred, or
+    simply followed a speciation.
+  & standard usage; the README uses it undefined \\
+clade
+  & A group of gene copies that could form one subtree.  \texttt{gpurec} works
+    over a distribution across possible clades rather than one fixed gene tree.
+  & \loc{README.md:15-16} \\
+wave
+  & One level of the species tree, processed as a batch.  The Rust preprocessor
+    groups work into waves so a whole level runs in one kernel launch.
+  & \loc{README.md:32-33} \\
+the wave step
+  & The kernel that advances the per-clade, per-species quantities by one level
+    of the species tree.
+  & inferred from the code \\
+the gene-split reduction
+  & Combining the two children of a gene node into their parent, summing over
+    the event that joined them.  ``DTS'' in file names.
+  & \loc{core/inference/README.md:7} \\
+the extinction step
+  & Computing, for each species, the probability that a lineage there leaves no
+    observed descendants.  Called \texttt{E}; it is a fixed point, solved by
+    iterating to convergence.
+  & \loc{README.md:35} \\
+\texttt{DTS}
+  & Duplication, transfer, speciation --- the events combined in a gene-split
+    reduction.  Written out in exactly one place in the repository.
+  & \loc{core/inference/README.md:7} \\
+\texttt{Pi}, \texttt{Pibar}
+  & The reconciliation likelihood per clade and species, and its
+    transfer-weighted counterpart, propagated wave by wave.
+  & \loc{README.md:36}, informally \\
+\texttt{E}, \texttt{Ebar}
+  & The extinction probabilities above, and their transfer-weighted counterpart.
+  & \loc{README.md:35}, informally \\
+\texttt{theta}
+  & The fitted parameters: base-2 logarithms of the three rates, in the order
+    duplication, loss, transfer.
+  & \loc{cli/reconcile.py:31} \\
+bits vs.\ nats
+  & Two units for a log-likelihood: base-2 logarithm versus natural logarithm.
+    The library works in bits; the command-line tool prints nats.
+  & \loc{cli/\_common.py:8-10} \\
+\texttt{vjp}
+  & Vector-Jacobian product: the reverse-mode derivative step, i.e.\ what a
+    gradient pass computes.  Never expanded in the repository.
+  & inferred \\
+\texttt{jvp}
+  & Jacobian-vector product: the forward-mode derivative.  Never expanded.
+  & inferred \\
+\texttt{hvp}
+  & Hessian-vector product: the second-derivative step.
+  & \loc{solver/hvp/\_\_init\_\_.py:1} \\
+Newick, ALE
+  & Two text formats for trees that the Rust preprocessor reads.
+  & \loc{crates/\ldots/lib.rs} \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\paragraph{The four passes.}  Each of the three pieces of work above exists in
+four versions, and the file suffixes encode which: a \emph{value} pass (no
+suffix) computes the likelihood; a \emph{gradient} pass
+(\texttt{\_backward}) computes its first derivative in reverse mode; a
+\emph{forward-derivative} pass (\texttt{\_tangent}) computes a first derivative
+in forward mode; and a \emph{second-derivative} pass (\texttt{\_so}, for
+``second order'') computes curvature.  All four exist because the package
+offers Newton-type fitting, which needs second derivatives, and computing those
+efficiently needs the forward-mode pass as an ingredient.  This
+three-by-four grid is used later as an argument for how to split two files.
+
+\subsection{Where the three rules come from}
+\label{sec:rules}
+
+Three rules are used below to judge the code:
+
+\begin{enumerate}
+  \item no default values on function parameters;
+  \item no environment variables for configuration;
+  \item never clamp a value.
+\end{enumerate}
+
+\textbf{These are the project owner's stated working rules, given to the
+reviewer directly.  They are not written down anywhere in this repository.}  That
+is worth saying plainly, because every other claim in this document carries a
+file and a line number and these three cannot.  A reader who does not accept
+these rules should read Sections~\ref{sec:stale-default},
+\ref{sec:envvars} and~\ref{sec:clamp} as observations rather than as findings
+--- although the first of them, the stale default, is a correctness hazard on
+any standard.
+
+The reasoning the owner gives for rules 1 and 2 is the same in both cases: one
+value should live in one place.  A default is a second home for a number, and it
+drifts from the settings file that is supposed to own it, silently, because the
+caller that always passes the real value hides the stale default.
+Section~\ref{sec:stale-default} is that failure, already happened.
+
+\subsection{What was not reviewed}
+
+This review covers structure, cleanliness, documentation and naming.  It does
+\textbf{not} cover: whether the mathematics is correct; whether the numerical
+results are accurate; performance; input validation beyond the three Rust
+crash sites noted; dependency pinning; or licensing.  No benchmark was run and
+no likelihood was checked against a reference implementation.
+
+\subsection{Method}
+
+The branch was checked out into a separate git worktree so the working copy on
+\texttt{dev} was untouched.  Four review agents worked in parallel on disjoint
+parts of the tree: the GPU kernels and the public model wrapper; the solver,
+fitting, command-line and settings code together with the Rust crates; the
+documentation; and the naming and layout.
+
+Their findings were then re-checked directly rather than taken on trust.  Every
+claim reproduced in Section~\ref{sec:summary}, plus the file and line counts,
+the dead-module list, the environment variables, the clamp sites and the import
+graph, was verified by re-running the search or the program.  The shipped
+example was run through the real Rust preprocessor.  That re-check overturned
+two agent claims, both corrected here: the Rust crash sites do not abort the
+process (Section~\ref{sec:rust}), and the deferred-import workaround is caused
+by \texttt{PenaltyOptions}, not by \texttt{SolverOptions}
+(Section~\ref{sec:imports}).  Counts that were not re-derived --- the
+duplication measurements and the docstring percentages --- are marked where
+they appear.
+
+%======================================================================
+\section{How much code is there?}
+
+The branch holds \textbf{24,829 lines across 93 files}, in a tree of 96 tracked
+files.  The three not counted are \dir{.gitignore} and the two
+\dir{Cargo.lock} files.
+
+\begin{center}
+\captionof{table}{Size of the branch.  Line counts are raw lines including
+blanks and comments.}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+& Files & Lines \\
+\midrule
+Python                            & 64 & 18{,}007 \\
+Rust                              &  5 &  6{,}149 \\
+Markdown (all READMEs)            & 16 &     506 \\
+Settings and example data         &  8 &     167 \\
+\midrule
+\textbf{Counted}                  & \textbf{93} & \textbf{24{,}829} \\
+Not counted (\dir{.gitignore}, two \dir{Cargo.lock}) & 3 & --- \\
+\midrule
+\textbf{Tracked on the branch}    & \textbf{96} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The Python figure of 64 files is 63 under \dir{gpurec/} plus \dir{setup.py} at
+the root.  Later sections that scan only the package report 63; both numbers are
+used below and are labelled where they appear.
+
+\subsection{There are no tests and no continuous integration}
+\label{sec:no-tests}
+
+There is no \dir{tests/} directory, no \texttt{conftest.py}, no \dir{.github/}
+directory and no YAML file of any kind on this branch.  Three files say
+otherwise.
+
+\begin{center}
+\captionof{table}{Claims on this branch that tests exist.}
+\begin{tabular}{@{}lp{0.52\textwidth}@{}}
+\toprule
+Location & Claim \\
+\midrule
+\loc{pyproject.toml:36}  & \texttt{testpaths = ["tests"]}, plus three test markers \\
+\loc{README.md:162}      & tells the reader to run \texttt{pytest} \\
+\loc{gpurec/config/defaults.toml:5} & names a ``permanent guard test'' \texttt{tests/test\_config\_toml.py} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The third is the damaging one.  That guard is meant to fail if
+\dir{defaults.toml} drifts from the Python dataclass it mirrors.  It is not
+here, so it cannot fire, and Section~\ref{sec:config-mirrors} shows the drift
+it was supposed to catch.
+
+%======================================================================
+\section{Are there bloated files?}
+\label{sec:bloat}
+
+Three files are bloated in the sense that one file is doing several unrelated
+jobs.  Two more are long but cohesive and should be left alone.
+
+\subsection{\texorpdfstring{\dir{crates/gpurec-preprocess/src/lib.rs}}{lib.rs} --- 2{,}401 lines}
+
+Five separate jobs, each already in a contiguous block, so the split is
+mechanical.
+
+\begin{center}
+\captionof{table}{Proposed split of the largest Rust file.  ``Current lines''
+are line ranges in the file as it stands.}
+\begin{tabular}{@{}llr p{0.34\textwidth}@{}}
+\toprule
+Proposed file & Current lines & Size & What it does \\
+\midrule
+\texttt{ale\_format.rs}   & 922--1480              & 559 & reads the ALE file format \\
+\texttt{family\_ccp.rs}   & 1870--2297             & 428 & the \texttt{FamilyCcp} Python class \\
+\texttt{amalgamation.rs}  & 757--921, 1678--1869   & 357 & builds clade distributions from gene trees \\
+\texttt{newick.rs}        & 153--409               & 257 & parses gene trees in Newick format \\
+\texttt{bitset.rs}        & 1580--1677             &  98 & 15 small bit-vector helpers \\
+\midrule
+\texttt{lib.rs} remainder & ---                    & $\sim$620 & the 4 Python entry points and orchestration \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+There is independent evidence this file was left behind when its siblings were
+cleaned up.  The three sibling modules use the crate's typed error type
+\textbf{37 times between them and plain string errors zero times}.  This file
+still uses plain string errors \textbf{27 times} and the typed error twice.
+
+\subsection{\texorpdfstring{\dir{gpurec/core/kernels/pi\_forward.py}}{pi\_forward.py} --- 1{,}485 lines}
+
+Two jobs: the wave step (lines 91--695 and 1080--1325) and the gene-split
+reduction (lines 699--1078 and 1328--1485, about 530 lines).
+
+The codebase itself argues for the split.  In the three-by-four grid described
+earlier, the derivative versions of exactly this code are \emph{already}
+separated --- \dir{dts\_tangent.py} and \dir{dts\_so.py} hold the gene-split
+reduction, \dir{wave\_tangent.py} and \dir{wave\_so.py} hold the wave step.
+Only the value pass and the gradient pass keep the two merged.
+
+\subsection{\texorpdfstring{\dir{gpurec/core/kernels/wave\_backward\_kernels.py}}{wave\_backward\_kernels.py} --- 1{,}583 lines}
+
+Three jobs.  The grouping is unambiguous because one can read off which wrapper
+in \dir{wave\_backward.py} launches which kernel.
+
+\begin{center}
+\captionof{table}{Proposed split of the largest gradient file.  ``Kernel starts
+at'' gives the line number where each kernel is defined.}
+\begin{tabular}{@{}lrl@{}}
+\toprule
+Group & Lines & Kernel starts at \\
+\midrule
+wave-step gradient           & $\sim$883 & 12, 45, 334, 531, 624 \\
+gene-split gradient          & $\sim$495 & 906 (one kernel, running to 1400) \\
+transfer-complement gradient & $\sim$178 & 1404, 1440, 1480 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Long but justified --- leave alone}
+
+\dir{crates/gpurec-preprocess/src/scheduler.rs} (1{,}361 lines, 44 functions)
+and \dir{batch\_planning.rs} (768 lines, 20 functions) are cohesive: every
+function serves one job, wave scheduling and batch packing respectively.
+
+The individual Triton kernels being long is also not a defect.  Triton offers no
+cheap function call inside a kernel body, so a 500-line kernel is inherent to
+the tool.  The three longest are 495, 458 and 322 lines.
+
+\subsection{The worst single function is not in a bloated file}
+
+\texttt{make\_exact\_hvp\_single} in \loc{gpurec/solver/hvp/exact.py} runs from
+line 191 to line 892 --- \textbf{702 lines} --- of which the returned inner
+function is \textbf{458 lines in one body} (lines 435--892).  The other four
+top-level functions in that 1,000-line file total 148 lines, so the file is
+fine and this one function is not.  It already carries three internal section
+markers, at lines 372, 817 and 891, at natural split points.  As written it
+cannot be tested or profiled piecewise.
+
+Two other Python functions exceed 250 lines: \loc{wave\_backward.py:198} (466
+lines) and \loc{api/\_implicit\_grad.py:154} (394 lines).
+
+%======================================================================
+\section{Is the code clean?}
+
+Inside the source files, yes.  The problems are in how settings and dead code
+are managed, not in how the code is written.
+
+\subsection{What came back clean}
+
+Zero \texttt{TODO}, \texttt{FIXME}, \texttt{XXX} or \texttt{HACK} markers
+anywhere; zero bare \texttt{except:} clauses; zero mutable default arguments;
+zero commented-out code; zero stray debug prints (all 55 \texttt{print()} calls
+are behind a verbosity flag, are a command-line message, or go to standard
+error); and in the Rust, zero \texttt{unsafe} blocks and zero explicit
+\texttt{panic!}, \texttt{unreachable!}, \texttt{todo!} or
+\texttt{unimplemented!} macros across 6{,}149 lines.  Nesting nowhere exceeds
+five levels.
+
+That is a better result than most codebases return, and it is why the verdict
+separates the code from its surroundings.
+
+\subsection{Three Rust call sites raise an exception nobody can catch}
+\label{sec:rust}
+
+Three places in the Rust use \texttt{.unwrap()} or \texttt{.expect()} on a value
+that a malformed input file can make absent:
+
+\begin{lstlisting}
+crates/gpurec-preprocess/src/lib.rs:1109
+    let observations = ale.observations.expect("validated observations");
+crates/gpurec-preprocess/src/lib.rs:1806
+    let idx = *split_index_map.get(&canon).unwrap();
+crates/gpurec-backtrack/src/lib.rs:413
+    let sampler = self.recipient_cache[clade].as_ref().unwrap();
+\end{lstlisting}
+
+All three are reachable from Python.  \textbf{What happens is not a crash of the
+process}, and an earlier draft of this review said it was.  Neither
+\dir{Cargo.toml} sets \texttt{panic = "abort"}, so the default unwinding
+behaviour applies and the Python binding layer catches the panic at the
+boundary.  The user sees \texttt{pyo3\_runtime.PanicException}.
+
+That is still a real defect, for two reasons.  First, that exception derives
+from Python's \texttt{BaseException} rather than \texttt{Exception}, so an
+ordinary \texttt{try/except Exception} around a file-loading call will not catch
+it --- a caller processing a thousand families cannot skip the one bad file and
+continue.  Second, it bypasses the crate's own well-built typed error, which
+already knows how to turn a failure into the right Python exception class.  The
+fix is to use that error type, and it is item 3 on the list.
+
+\subsection{986 lines have no caller}
+\label{sec:dead-code}
+
+Each was checked by searching the whole tree --- Python, Rust, Markdown and
+plain text --- for any reference outside the defining file.
+
+\begin{center}
+\captionof{table}{Code with no caller anywhere in the repository.}
+\begin{tabular}{@{}lr@{}}
+\toprule
+Item & Lines \\
+\midrule
+\dir{gpurec/solver/curvature/genewise.py} --- the whole file & 456 \\
+\dir{gpurec/distributed.py} --- the whole file               & 112 \\
+\dir{gpurec/fit/baselines.py} --- the whole file             &  62 \\
+\texttt{newton\_tr} and \texttt{newton\_cg}, \loc{fit/newton\_cg.py:274-435} & 162 \\
+\texttt{receiver\_information}, \loc{solver/curvature/receiver.py:195}       &  75 \\
+\texttt{origination\_information}, \loc{solver/curvature/origination.py:143} &  70 \\
+\texttt{plan\_family\_batches}, \loc{core/scheduling/batching.py:394}        &  49 \\
+\midrule
+\textbf{Total} & \textbf{986} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The first entry says so itself: \loc{solver/curvature/genewise.py:60} carries
+the comment ``TEST-ONLY / NOT wired into the fit \ldots do NOT wire it into the
+fit''.  That is 456 of the 986 lines, and it is why item 9 on the list says to
+triage this with the author rather than delete it.
+
+A distinction worth keeping: a further body of code is unreachable from the two
+entry points but is \emph{intentional} research surface.
+\loc{gpurec/fit/dtl\_fit.py:73} deliberately raises \texttt{NotImplementedError}
+for one fitting mode and names the hand-import entry points in the error
+message.  That is the right pattern.  What the 986 lines above lack is either a
+caller or such a pointer.
+
+\subsection{A stale default that is 21 times too small}
+\label{sec:stale-default}
+
+\loc{gpurec/core/kernels/wave\_backward.py:673} declares
+\texttt{neumann\_terms=3}.  The configured value is \textbf{64}, in two places:
+\loc{gpurec/api/solver\_options.py:12} and
+\loc{gpurec/config/defaults.toml:22}.
+
+That setting controls how many terms of a series are summed when solving for
+the gradient --- step 7 of the README's execution path, ``a matrix-free
+Neumann-series solve for the E-adjoint linear system''.  Both production callers
+pass the value explicitly, which is exactly why the stale \texttt{3} has gone
+unnoticed: it never runs in production.  It runs for whoever calls that function
+by hand and gets a gradient built from 3 terms instead of 64, with no warning.
+
+\textbf{How wrong is the answer?}  This review does not know, and that is a real
+gap.  The size of the error depends on how fast that series converges for this
+model, which was not measured --- measuring it was outside the scope stated
+above.  What can be said without measuring: the project chose 64 and wrote it
+into the settings file twice, so 3 is not a value anyone deliberately selected,
+and a silent 21-fold reduction in solver work is not something a caller should
+receive by accident.  Anyone fixing item 2 should take ten minutes to compare
+the two gradients on a small family and record the answer, because it converts
+this from a hazard into a known quantity.
+
+A second instance of the same shape: \loc{gpurec/api/\_implicit\_grad.py:82}
+hardcodes \texttt{max\_iter: int = 128}, restating a value already declared at
+\loc{gpurec/api/solver\_options.py:17}.
+
+\paragraph{The measurement.}  Across \dir{solver/}, \dir{fit/}, \dir{cli/},
+\dir{optimization.py} and \dir{distributed.py} there are \textbf{446 defaults on
+817 parameters, or 55\,\%}.  Of those 446: \textbf{219} are \texttt{None}
+sentinels, \textbf{142} are bare numeric literals, 44 are booleans, 20 are
+strings and 21 are other expressions.
+
+The 142 numeric literals are the ones that matter, because a number is what
+drifts.  The \texttt{None} sentinels are a different thing wearing the same
+clothes: most of them mean ``the caller did not supply this'', and several are
+the good pattern where the function then reads the real value from the settings
+object --- one value, one place, which is what the rule is protecting.  The
+booleans, strings and other expressions were not individually assessed.
+
+The worst offenders by numeric literal are \dir{fit/newton\_cg.py} (31),
+\dir{fit/optimize.py} (28), \dir{fit/global\_fit.py} (15) and
+\dir{fit/genewise\_fit.py} (13).
+
+The rule \emph{is} followed in one place and it works:
+\loc{gpurec/fit/specieswise\_fit.py:29} makes the regularisation weight a
+required argument and raises a clear error explaining that a weight of zero is
+the unregularised fit and is deliberately not a default.
+
+\subsection{The same settings in three or four places}
+\label{sec:config-mirrors}
+
+\dir{gpurec/config/defaults.toml} is \textbf{never read at runtime} unless the
+user passes \texttt{-{}-config}.  \loc{gpurec/config/gpurec\_config.py:210}
+returns the plain Python dataclass values with no file access.  So the file is a
+hand-maintained copy of 45 numbers with nothing checking it --- the guard test
+it names is not on this branch.
+
+The Newton solver's settings exist three times over: as 21 fields in
+\dir{gpurec/config/newton.py}; repeated at \loc{defaults.toml:39-59}; and
+re-typed as function-parameter defaults at \loc{fit/newton\_cg.py:49-52},
+\loc{:274-276} and \loc{:366-368} --- a file containing \textbf{zero} references
+to the settings class.
+
+The code already admits the drift.  \loc{gpurec/config/newton.py:35-39} says two
+fields are ``RESERVED: validated here but not yet read by
+\dir{fit/newton\_cg.py} (FD literal is inline)''.
+\loc{gpurec/fit/optimize.py:517-519} notes the same setting standing at 8 in one
+place and 40 in another.
+
+A fourth partial mirror sits at \loc{gpurec/config/gpurec\_config.py:159}
+and~\loc{:175}, re-typing solver values already identical to the dataclass
+defaults.  And four batch-planning settings have \textbf{no settings home at
+all}, appearing as defaults in five signatures:
+\texttt{family\_chunk\_size=300}, \texttt{clade\_budget=315{,}000},
+\texttt{batch\_packing="depth\_first\_fit"}, \texttt{max\_wave\_size=8192}.
+
+Credit where due: \loc{fit/genewise\_fit.py:49-56} and \loc{fit/map\_cv.py:46}
+\emph{derive} their solver settings from the factory methods instead of
+retyping them.  That is the pattern item 7 should copy.
+
+\subsection{Six files take settings from the environment}
+\label{sec:envvars}
+
+\begin{center}
+\captionof{table}{Environment variables used as settings.}
+\begin{longtable}{@{}p{0.40\textwidth}p{0.54\textwidth}@{}}
+\toprule
+Location & What it does \\
+\midrule
+\endhead
+\loc{gpurec/core/memory\_policy.py:69-70}
+  & \textbf{The worst two.}  Read as
+    \texttt{os.environ.get(NAME, str(default\_fraction))} --- the shell variable
+    is the first choice and the argument the caller explicitly passed is only
+    the fallback.  A deliberate setting is silently overridden. \\
+\loc{gpurec/fit/genewise\_fit.py:245-374}
+  & \emph{Writes} a variable before the fit, pops it mid-loop to force a cold
+    re-check, restores it in a \texttt{finally}.  Nine statements. \\
+\loc{gpurec/core/kernels/wave\_tangent.py:24}
+  & A GPU launch parameter read at import time, so it cannot appear in a
+    settings file or in the record of a run. \\
+\loc{gpurec/solver/hvp/exact.py:207, 233}
+  & Two numeric solver knobs. \\
+\loc{gpurec/api/\_execution.py:138, 310} and \loc{solver/hvp/exact.py:62}
+  & Switch a real behaviour: whether the previous call's gradient is reused as
+    a starting guess. \\
+\loc{gpurec/distributed.py:37-41}
+  & Multi-process settings.  (This file is dead; see
+    Section~\ref{sec:dead-code}.) \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+Two observations.  \loc{gpurec/api/solver\_options.py:27-34} documents a sibling
+setting and states ``config-only, no env var'' --- so this is a known migration
+that stalled partway.  And \loc{gpurec/config/memory.py:28-29} documents the
+memory variables in comments while the dataclass field beside them holds the
+same value, which is two homes for one setting.
+
+One use is \emph{not} a violation and should be kept:
+\loc{gpurec/core/native.py:15} reads a path variable to locate the compiled Rust
+library, and documents it in the error message at line 53.  That is a fact about
+where a build artefact lives, not a setting.
+
+The Rust uses no environment variables.
+
+\subsection{Clamping}
+\label{sec:clamp}
+
+Two real violations, and in both cases the compliant form already exists two
+files away:
+
+\begin{itemize}
+  \item \loc{gpurec/fit/genewise\_fit.py:328} --- \texttt{e.clamp(min=mu)} on
+        curvature eigenvalues.  \loc{gpurec/fit/global\_fit.py:128} does the
+        same job with \texttt{torch.maximum}.
+  \item \loc{gpurec/fit/genewise\_fit.py:335} ---
+        \texttt{dn.clamp(min=trust)}.  \loc{gpurec/fit/global\_fit.py:136} uses
+        \texttt{torch.maximum}.
+\end{itemize}
+
+One case needs a decision rather than a fix.  \loc{gpurec/optimization.py:95}
+(\texttt{clamp\_log\_rate\_}) clamps the fitted rates onto their allowed range.
+It is deliberate, it is public API, and five call sites depend on it.  The
+options are: keep it and record in a comment that this is the one sanctioned
+clamp; or replace it with a projection that reports when it binds, so a rate
+pinned at its bound is visible rather than silent.  The second is
+better if a bound-hitting rate would otherwise be mistaken for a converged fit.
+
+Five further uses were checked and are legitimate: an array-index bound at
+\loc{core/parameters/extract\_parameters.py:137} (whose comment records that the
+old value-clamp was deliberately removed); the denominator of a reported
+diagnostic at \loc{wave\_backward.py:535}; and three guards on a variance before
+a square root, in \dir{solver/curvature/}.
+
+\subsection{Duplication}
+
+Measured by the review agents; the two largest were re-checked directly.
+
+\paragraph{109 byte-identical lines in one file.}  In
+\dir{gpurec/core/kernels/wave\_backward\_kernels.py}, the block at lines
+156--264 and the block at lines 723--831 are byte-for-byte identical.  Counting
+shorter runs, the two kernels at lines 45 and 624 share \textbf{156 identical
+lines} across four runs; both kernels are about 280 lines, so this is over half
+of each.  The duplicated block is shared setup: loading the event constants,
+gathering the two child rows, forming the loss and transfer terms.
+
+This is clearly fixable, because the project already does it elsewhere:
+\dir{pi\_forward.py} defines shared device helpers and two other kernel files
+import one across file boundaries.
+
+\paragraph{About a third of a 476-line file is a copy of another part of it.}  In
+\dir{gpurec/api/\_execution.py}, two functions of 102 and 104 lines share
+\textbf{94 identical lines}, differing in exactly four things: the name, an extra
+flag, an up-front error check, and which of two loss functions they call.  One
+level up, two more functions share 42 of about 55 lines.  Together that is
+roughly 150 of the file's 476 lines.  The environment-variable block noted
+earlier exists in duplicate at lines 138 and 310 for this reason.
+
+\paragraph{178 near-copied lines across three curvature files.}  Counting a pair
+of lines as a copy when they are at least 70\,\% character-identical after
+normalising whitespace --- a fuzzy measure, so treat these as indicative:
+
+\begin{center}
+\captionof{table}{Near-copies within \dir{solver/curvature/}.  ``Share'' is of
+the smaller of the two function bodies.}
+\small
+\begin{tabular}{@{}p{0.56\textwidth}rr@{}}
+\toprule
+Pair & Lines & Share \\
+\midrule
+\texttt{receiver.py:273} vs \texttt{origination.py:216} & 50 & 85\,\% \\
+\texttt{receiver.py:195} vs \texttt{origination.py:143} & 45 & 73\,\% \\
+\texttt{origination.py:216} vs \texttt{genewise.py:223} & 36 & 60\,\% \\
+\texttt{receiver.py:147} vs \texttt{origination.py:108} & 26 & 87\,\% \\
+\texttt{origination.py:108} vs \texttt{genewise.py:184} & 21 & 70\,\% \\
+\midrule
+\textbf{Total} & \textbf{178} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Those three files total 1{,}083 lines, so this is about 16\,\%.  Because
+\dir{origination.py} appears in three rows, the 178 counts each \emph{pairing},
+not each distinct line --- the number of lines that could be deleted is smaller
+than 178 and was not measured.  A sixth pairing, of 9 lines, sits between
+\dir{global\_fit.py} and \dir{genewise\_fit.py} and is discussed next.
+
+Credit where due: \dir{solver/curvature/gauge.py} already holds the shared core,
+and \loc{origination.py:38} imports helpers from \dir{receiver.py} rather than
+copying them.  One round of de-duplication has happened; the wrapper layer is
+what remains.
+
+\paragraph{One of these is a behaviour difference, not repetition.}
+\loc{fit/genewise\_fit.py:326} builds the small curvature matrix analytically,
+while \loc{fit/global\_fit.py:120-125} rebuilds the same matrix by finite
+differences --- three extra forward-and-backward passes per refresh --- even
+though its own docstring says it runs ``the SAME recipe''.  Worth resolving
+independently of the duplication.
+
+\paragraph{Two more pairs in the kernels.}
+\loc{wave\_tangent.py:563-648} and \loc{:650-734} are two 85-line launchers with
+73 lines identical.  \loc{:28-272} and \loc{:276-487} share 130 identical lines,
+the second being the first wrapped in a repeat loop.
+
+\paragraph{What is \emph{not} duplicated.}  The four passes are genuinely
+different code, not variants of one thing.  The three \texttt{e\_step} files
+share only their input loading; the mathematics differs.  The real duplication
+is \emph{within} files, not across the passes.
+
+\subsection{Smaller items}
+
+\begin{itemize}
+  \item \textbf{Nine dead defensive lookups} of the form
+        \texttt{getattr(static, "field", fallback)} --- at
+        \loc{api/\_execution.py:23, 73, 138, 310}, \loc{api/\_autograd.py:36, 70},
+        \loc{core/inference/solver.py:42, 85} and
+        \loc{core/backtracking/input.py:57} --- all name fields that
+        \emph{are} declared on the dataclass at \loc{api/\_batch\_state.py:13-36}.
+        The fallback can never fire, and it is worse than nothing: a mistyped
+        field name would silently return the fallback instead of raising.
+  \item \textbf{A hardcoded personal path in library code.}
+        \loc{gpurec/fit/map\_cv.py:173} contains an absolute path under one
+        developer's home directory, inside a self-test wired to a
+        \texttt{\_\_main\_\_} block.  That directory does not exist even in this
+        checkout.
+  \item \textbf{One raw \texttt{print} to standard output} at
+        \loc{gpurec/api/model.py:177-182}.  The information is legitimate; it
+        belongs in a warning or a logger so callers can silence or capture it.
+  \item \textbf{A magic iteration count with no home}, \texttt{400} at
+        \loc{gpurec/api/model.py:366}, with no comment explaining it.
+  \item Two stale path comments: \loc{gpurec/solver/penalties.py:1} names a
+        directory that does not exist, and \loc{gpurec/config/newton.py:4}
+        points at a file that became a package in commit \texttt{5a5b0f33}.
+\end{itemize}
+
+%======================================================================
+\section{Is the documentation good?}
+
+No.  Two problems dominate: the example does not run, and sixteen pointers lead
+to deleted files.
+
+\subsection{The shipped example fails, and the rule it breaks is written nowhere}
+\label{sec:docs-example}
+
+Run against the real Rust preprocessor:
+
+\begin{lstlisting}
+preprocess_dataset(examples/tiny/species.nwk, [examples/tiny/gene.nwk])
+  -> ValueError: species "a" not found for gene leaf "a"
+\end{lstlisting}
+
+\texttt{gpurec} maps a gene to its species by splitting the leaf name on the
+\textbf{first underscore} --- \texttt{split\_once('\_')} at
+\loc{crates/gpurec-preprocess/src/lib.rs:516}, and again at line 1657.  That is
+the only mechanism and it is documented nowhere: not in a README, not in a
+docstring, not in a comment.
+
+\dir{examples/tiny/gene.nwk} contains \texttt{(a:1,b:1);} with no underscores,
+so the headline example at \loc{README.md:47-66} fails on the only dataset the
+repository ships.  Renaming the leaves to \texttt{A\_a} and \texttt{B\_b} was
+tested and gets past the leaf-mapping stage; \textbf{whether the full README
+snippet then runs to completion was not confirmed}, which is why item 1 on the
+list is not closed until someone runs it end to end.
+
+Two further problems in the same example:
+
+\begin{itemize}
+  \item \dir{examples/tiny/gene.map}, containing \texttt{A:a} and \texttt{B:b},
+        is a decoy.  Searching every Python and Rust file finds \textbf{nothing
+        that reads it}, yet \loc{examples/README.md:13-14} and
+        \loc{examples/tiny/README.md:12-13} both present it as the thing that
+        assigns genes to species.  A new user will edit that file and wonder why
+        nothing changes.
+  \item \dir{examples/tiny/families.txt} names its gene tree as
+        \texttt{gene.nwk}, and the resolver at
+        \loc{gpurec/fit/genewise\_fit.py:79-80} takes that string verbatim
+        without joining it to the listing file's own directory.  So it resolves
+        relative to the current working directory, and the command-line route
+        into the same example cannot find the file from the repository root.
+\end{itemize}
+
+\subsection{Sixteen pointers to deleted documentation}
+
+All of \dir{docs/} was removed from this branch; the references to it were not.
+
+\begin{center}
+\captionof{table}{References to documentation files that are not on this branch.}
+\begin{tabular}{@{}p{0.30\textwidth}rp{0.50\textwidth}@{}}
+\toprule
+Missing target & Refs & Referenced from \\
+\midrule
+\dir{docs/latex/kernel\_mathematics.tex} & 9
+  & \loc{core/kernels/README.md:8} (a clickable link), plus line~1 of six kernel
+    modules, \loc{dts\_tangent.py:191} and \loc{wave\_backward.py:3} \\
+\dir{docs/config\_convention.md} & 3
+  & \loc{fit/optimize.py:484}, \loc{fit/map\_cv.py:77}, \loc{fit/genewise\_fit.py:60} \\
+\dir{docs/pi\_storage.md} & 1 & \loc{api/README.md:12} \\
+\dir{docs/centered\_state\_contract.md} & 1 & \loc{core/pi\_state.py:4} \\
+\dir{docs/superpowers/\ldots} & 2
+  & \loc{core/parameters/fraction\_missing.py:6}, \loc{fit/specieswise\_fit.py:5} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The first row is why item 10 recommends restoring rather than deleting.
+\loc{gpurec/core/kernels/README.md:8-9} states: \emph{``The canonical equations
+\ldots are in [that file].  Python docstrings are intentionally limited to
+interface and launch behavior.''}  That was a sound policy while the file
+existed.  Deleting it turned the policy into a hole --- six kernel modules now
+carry one-line docstrings whose whole content is ``see this file''.
+
+Three more dead pointers sit in \dir{pyproject.toml}: a plan file at line 12, an
+experiments script at line 25, and \dir{solver/cg.py} at line 17 (the file is
+\dir{solver/krylov.py}).
+
+\subsection{Docstring coverage}
+
+Measured by a review agent over all 64 Python files.  ``Public functions'' means
+functions and methods whose name does not begin with an underscore.
+
+\begin{center}
+\captionof{table}{Docstring coverage across the branch.}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+& Documented & Share \\
+\midrule
+Module docstrings            & 43 of 64   & 67\,\% \\
+Public functions and methods & 126 of 239 & 53\,\% \\
+Private functions            & 58 of 119  & 49\,\% \\
+Classes                      & 11 of 17   & 65\,\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Coverage is sharply split and \emph{inversely} correlated with README coverage:
+the directories with no README are the best documented in code, and the
+directories with READMEs are the worst.
+
+\begin{center}
+\captionof{table}{Best and worst documented files.  Fractions count public
+functions only, so a large kernel file can show a small denominator: the Triton
+kernels themselves are private, and only the Python launch wrappers are counted.}
+\begin{tabular}{@{}p{0.42\textwidth}p{0.50\textwidth}@{}}
+\toprule
+Well documented & Barely documented \\
+\midrule
+\loc{config/gpurec\_config.py} 10 of 10 &
+  \loc{core/kernels/pi\_forward.py} \textbf{0 of 3}, in 1{,}485 lines \\
+\loc{solver/curvature/receiver.py} 8 of 10 &
+  \loc{core/kernels/e\_step.py} \textbf{0 of 5}, in 605 lines \\
+\loc{solver/curvature/origination.py} 7 of 8 &
+  \loc{core/inference/forward.py} \textbf{0 of 1} --- the forward pass itself \\
+\loc{solver/penalties.py} 8 of 10 &
+  \loc{api/\_implicit\_grad.py} \textbf{0 of 2}, in 670 lines \\
+\loc{fit/optimize.py} 5 of 6 &
+  \loc{api/\_autograd.py} \textbf{0 of 4} functions, 0 of 2 classes \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{The main public class has no docstring at all.}
+\texttt{GeneReconModel} at \loc{gpurec/api/model.py:34} --- the one object the
+README tells the reader to use --- has no class docstring, no constructor
+docstring, no \texttt{forward} docstring, and its module has none either.  Its
+constructor takes twelve keyword arguments, three of which are unexplained
+magic numbers.  The three methods the README advertises are all undocumented.
+That is item 11.
+
+\paragraph{A concrete bad example.}  \loc{core/kernels/pi\_forward.py:1156} is a
+public launch wrapper with \textbf{24 parameters}, no docstring, no type hints
+and no shape annotations.  A reader cannot tell what any tensor's shape is
+without tracing a caller.  Two neighbouring wrappers have 21 and 22 parameters.
+
+\paragraph{Two good examples worth copying.}  \loc{fit/global\_fit.py:1-19}
+states the parameter vector and its shape, the objective, the recipe, \emph{why}
+families are never dropped in that mode, and the measured speedup.
+\loc{solver/curvature/receiver.py:1-30} states the invariance, why it makes the
+curvature matrix singular, and what projection removes it.
+
+\subsection{Comments in the kernels explain the wrong layer}
+
+Comment density in \dir{core/kernels/} runs 0--6\,\%, against 13\,\% in
+\dir{solver/hvp/exact.py}.  The bare numbers are less interesting than the
+pattern, so the table is omitted; what matters is \emph{what} is commented.
+
+The comments that exist are good, and they cover numerical and hardware
+concerns: why an index is widened to 64-bit to avoid overflow
+(\loc{pi\_forward.py:227-228} and two others), why a row offset is absorbed
+lazily (\loc{pi\_forward.py:441-443}), and an excellent five-line explanation of
+a cross-thread lost-update race at \loc{e\_step.py:216-220}.
+
+What is absent is the model.  Nowhere in the kernel directory is there a
+statement of what the extinction probability or the reconciliation quantities
+are, or what the recurrence computes.  The fixed point at the heart of the
+model, \loc{e\_step.py:19}, has no docstring and two comments, neither about the
+recurrence.
+
+Two mitigations: the names are unusually self-documenting, and
+\loc{wave\_backward\_kernels.py:912-945} annotates each of about 30 pointer
+arguments inline with its shape and meaning.  That block is the best tensor
+documentation on the branch and is the right template for the
+\dir{pi\_forward.py} wrappers.
+
+Note that density alone is not the standard here.  \dir{solver/hvp/exact.py} has
+the highest density on the branch and also contains the 702-line function
+criticised in Section~\ref{sec:bloat}; good comments do not excuse structure,
+and the point is that the kernels lack the \emph{kind} of comment that would
+help, not that they lack volume.
+
+\subsection{The READMEs}
+
+Sixteen files, 506 lines.  Five are genuine and useful: the root one,
+\dir{crates/README.md}, \dir{crates/gpurec-preprocess/src/README.md},
+\dir{gpurec/core/README.md}, and \dir{gpurec/core/kernels/README.md} --- the
+best of them.  Four are nine-line stubs that restate the directory name and end
+with the same filler sentence about \texttt{\_\_pycache\_\_} being an
+interpreter artefact.
+
+\begin{center}
+\captionof{table}{README coverage against size.  Line counts are Python only.}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Directory & Files & Lines & READMEs \\
+\midrule
+\dir{gpurec/core/}   & 21 & 9{,}554 & 6 \\
+\dir{gpurec/solver/} & 13 & 3{,}572 & \textbf{none} \\
+\dir{gpurec/fit/}    &  9 & 1{,}942 & \textbf{none} \\
+\dir{gpurec/api/}    &  6 & 1{,}942 & 1 \\
+\dir{gpurec/config/} &  6 &   470 & \textbf{none} \\
+\dir{gpurec/cli/}    &  5 &   291 & \textbf{none} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The root README's repository map at \loc{README.md:121-134} never mentions
+\dir{fit/}, \dir{solver/}, \dir{cli/} or \dir{config/}.
+
+\paragraph{Stale claims in the root README.}  The headline example fails
+(lines 47--66); a solver setting \texttt{e\_init} is documented (line 111) that
+does not exist; a \dir{notebooks/} directory is advertised (line 134) that is
+not here; the dependency list (line 138) omits scipy, which
+\loc{pyproject.toml:20} requires; external reference projects are described
+(lines 158--160) that do not exist; and the \texttt{pytest} advice
+(lines 162--164) concerns tests and vendored directories that are both absent.
+Separately \loc{gpurec/README.md:9-20} lists six public exports where there are
+seven.
+
+\subsection{The command-line tool is undocumented}
+
+\loc{pyproject.toml:29} installs a \texttt{gpurec} command with two
+subcommands, \texttt{reconcile} and \texttt{fit}.  No README mentions it.  Its
+input formats --- a directory, a glob, or a family listing file --- and its
+output format are findable only by reading source, as is the fact that it prints
+in nats while the library works in bits.
+
+\subsection{What a new user cannot work out}
+
+In rough order of how badly it blocks them: the gene leaf naming rule; that
+\dir{gene.map} does nothing; the order of the three rates (duplication, loss,
+transfer --- stated exactly twice in the whole repository, at
+\loc{cli/reconcile.py:31} and \loc{fit/global\_fit.py:3}, so anyone reading the
+parameters directly will guess wrong five times in six); that the parameters are
+base-2 logarithms; that the loss is in bits; the entire command-line surface;
+that a \texttt{-{}-config} file exists at all; the three undocumented
+environment variables; and the vocabulary, for which this document's own
+glossary is offered as a starting point.
+
+%======================================================================
+\section{Are the naming conventions consistent?}
+
+\textbf{Yes, mechanically --- this is not a problem area.}  A syntax-tree scan
+over the 63 Python files under \dir{gpurec/} found zero classes not in CapWords,
+zero module-level constants not in upper case, and only 15 of 358 functions not
+in lower-case-with-underscores --- 13 of those being deliberate mathematical
+shorthand for small local closures.  Cross-file naming for the same concept is
+consistent: the species tree is called \texttt{species\_tree} in all 18 places
+and never anything else.
+
+There is one real problem, and it is the same one the review's own glossary
+exists to answer.
+
+\subsection{Short names nobody has written down}
+
+\begin{center}
+\captionof{table}{Frequently-used short names and where, if anywhere, the
+repository defines them.}
+\begin{tabular}{@{}p{0.16\textwidth}p{0.28\textwidth}rp{0.34\textwidth}@{}}
+\toprule
+Name & Meaning & Uses & Defined in the repository \\
+\midrule
+\texttt{S}  & number of species        & 114 & once, \loc{wave\_backward.py:706} \\
+\texttt{W}  & wave width               &  22 & \textbf{nowhere} \\
+\texttt{G}  & number of families       &  17 & \textbf{nowhere} \\
+\texttt{C}  & number of clades         &  11 & \textbf{nowhere} \\
+\texttt{sv} & forward-solve results    &  41 & \textbf{nowhere} (called \texttt{saved} in one docstring) \\
+\texttt{Pi}, \texttt{Pibar}, \texttt{E}, \texttt{Ebar} & see glossary & 700+ & informally, in the README's prose \\
+\texttt{DTS} & duplication, transfer, speciation & 35 & once, \loc{core/inference/README.md:7} \\
+\texttt{vjp}, \texttt{jvp} & see glossary & many & \textbf{nowhere} \\
+\texttt{th}, \texttt{al}, \texttt{gp}, \texttt{c1}, \texttt{c2}, \texttt{lam} & --- & 110 & \textbf{nowhere} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+On top of these are invented step labels with no key: \texttt{S3} through
+\texttt{S9} appear in ten comments across \dir{solver/hvp/}, and
+\loc{solver/curvature/receiver.py:1} opens with ``S9: gauge-projected
+joint\ldots''.  None is defined anywhere.  Likewise
+\texttt{proposal0\_memory\_gate}, exported from \dir{core/memory\_policy.py} ---
+``proposal0'' appears nowhere else.
+
+Three abbreviations are handled correctly and show the authors know how:
+``second order'' is spelled out in line 1 of each \texttt{\_so} file,
+``Hessian-vector product'' in \loc{solver/hvp/\_\_init\_\_.py:1}, and
+``Gauss-Newton'' in \loc{solver/hvp/gauss\_newton.py:1}.
+
+One collision: \texttt{so} means ``second order'' in file names but is a local
+variable holding a settings object in three files.
+
+\subsection{Two names that mislead}
+
+\dir{gpurec/optimization.py} versus \dir{gpurec/fit/optimize.py}: the first is
+rate-bound projection (96 lines), the second is the optimiser loop (561 lines),
+and nothing in either name distinguishes them.
+
+The \texttt{*\_fit.py} suffix covers four of the eight fitting modules but not
+\dir{baselines.py}, \dir{map\_cv.py}, \dir{newton\_cg.py} or
+\dir{optimize.py} --- and \dir{dtl\_fit.py} breaks the pattern's reading, being
+the dispatcher across modes rather than a mode.
+
+%======================================================================
+\section{Is the directory tree well organised?}
+\label{sec:imports}
+
+The shape is good.  Two settings classes are in the wrong package, and that
+alone explains every layering problem below.
+
+\subsection{The intended layering, and where it is violated}
+
+Reading the package descriptions, the intended stack is:
+
+\begin{center}
+\texttt{config} $\;\rightarrow\;$ \texttt{core} $\;\rightarrow\;$
+\texttt{solver} $\;\rightarrow\;$ \texttt{api} $\;\rightarrow\;$
+\texttt{fit} $\;\rightarrow\;$ \texttt{cli}
+\end{center}
+
+reading left to right as ``may be imported by''.  Settings sit at the bottom and
+know about nothing; the command-line tool sits at the top and may use anything.
+An arrow pointing right-to-left is a violation.
+
+\begin{center}
+\captionof{table}{Imports between packages.  Numbers are counts of import
+statements; imports within a package are excluded.  A dagger marks a direction
+that violates the layering above.}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Package & Imports from \\
+\midrule
+\texttt{api}    & \texttt{core} 15, \texttt{config} 4 \\
+\texttt{cli}    & \texttt{config} 4, \texttt{fit} 2, \texttt{api} 1 \\
+\texttt{config} & \texttt{solver} 4$^\dagger$, \texttt{api} 2$^\dagger$ \\
+\texttt{core}   & \texttt{config} 2, \texttt{api} 2$^\dagger$ \\
+\texttt{fit}    & \texttt{solver} 17, \texttt{config} 7, \texttt{api} 5, \texttt{core} 1 \\
+\texttt{solver} & \texttt{core} 26, \texttt{config} 8, \texttt{api} 5$^\dagger$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every violating edge is one of two imports:
+
+\begin{itemize}
+  \item \texttt{config} $\rightarrow$ \texttt{api} (2 statements) and
+        \texttt{core} $\rightarrow$ \texttt{api} (2 statements) are
+        \emph{all four} the same import: \texttt{SolverOptions} from
+        \dir{gpurec/api/solver\_options.py}.  That file is 58 lines --- one
+        dataclass and a validation method --- with \textbf{zero} imports from
+        \texttt{gpurec}.  It is pure settings sitting in the model package.
+  \item \texttt{config} $\rightarrow$ \texttt{solver} (4 statements, two of
+        them comments) is entirely \texttt{PenaltyOptions} from
+        \dir{gpurec/solver/penalties.py} --- again a settings dataclass, this
+        time in the solver package.
+\end{itemize}
+
+Moving both into \dir{gpurec/config/} removes every violating edge on the
+branch.  That is item 5.
+
+\subsection{The workaround, and a trap in removing it}
+\label{sec:init-trap}
+
+\texttt{PenaltyOptions} causes a genuine circular import.  The settings module
+cannot import it at the top of the file, because doing so pulls in the solver
+package, which pulls in the model package, which imports the settings module
+again while it is still half-built.  The workaround is to defer the import
+inside a function, and it carries a nineteen-line comment at
+\loc{gpurec/config/gpurec\_config.py:21-39} explaining exactly this.
+
+\textbf{An earlier draft of this review attributed that comment to
+\texttt{SolverOptions}.  That was wrong, and the comment itself says so}, ending:
+``\texttt{SolverOptions} has no such cycle (\texttt{gpurec.api} is a plain
+namespace package with no \texttt{\_\_init\_\_.py}, and \texttt{solver\_options.py}
+has no gpurec imports of its own), so it stays a normal top-level import.''
+
+That sentence is worth reading twice, because it sets a trap.
+Section~\ref{sec:init} notes that six package directories have no
+\texttt{\_\_init\_\_.py} and calls it an inconsistency.  But the missing
+\texttt{\_\_init\_\_.py} in \dir{api/} is precisely what stops the
+\texttt{SolverOptions} edge from becoming a real cycle.  \textbf{Adding an
+\texttt{\_\_init\_\_.py} to \dir{api/} --- exactly the tidying that
+Section~\ref{sec:init} invites --- would create a second circular import},
+unless \texttt{SolverOptions} is moved out first.  Hence the ordering note on
+item 5.
+
+\subsection{Six package directories have no \texttt{\_\_init\_\_.py}}
+\label{sec:init}
+
+They are \dir{gpurec/api/}, \dir{gpurec/core/}, and the four \dir{core/}
+subpackages.
+
+This is \textbf{not} a packaging break.  A wheel was built to check: all six
+subpackages ship (68 entries) and both
+\texttt{import gpurec.api.model} and
+\texttt{import gpurec.core.kernels.pi\_forward} succeed, because the packaging
+tool discovers namespace packages by default.
+
+The cost is intent.  \dir{solver/} and \dir{config/} each declare an export
+list; \dir{api/}, which the root README calls ``the stable interface'', declares
+nothing, so there is no single place saying what it offers.  Given
+Section~\ref{sec:init-trap}, the right response is not to add the files but to
+move the settings classes first and then decide.
+
+\subsection{The private-module convention is not enforced}
+
+\dir{gpurec/api/} marks four modules private with a leading underscore.  Six
+files outside \dir{api/} import from them:
+
+\begin{lstlisting}
+gpurec/solver/value_and_grad.py:24    from gpurec.api._batch_state   import _BatchStatic
+gpurec/solver/value_and_grad.py:25    from gpurec.api._execution     import stream_batches
+gpurec/solver/curvature/genewise.py:6 from gpurec.api._execution     import evaluate_static_loss_grad, stream_batches
+gpurec/solver/hvp/exact.py:18         from gpurec.api._implicit_grad import _neumann_e_adjoint, _safe_exp2_ratio
+gpurec/solver/hvp/gauss_newton.py:22  from gpurec.api._implicit_grad import _safe_exp2_ratio, implicit_grad_loglik_vjp_wave
+gpurec/fit/map_cv.py:25               from gpurec.api._execution     import stream_batches
+\end{lstlisting}
+
+Two of these import a private function inside a private module, from another
+package.  \texttt{stream\_batches} is used by three packages, so it is shared
+infrastructure living in a file marked private.  Either the underscore comes off
+and the file moves somewhere shared, or the convention is dropped; as it stands
+it tells the reader something untrue.
+
+\subsection{\texorpdfstring{\dir{fit/} and \dir{solver/} overlap}{fit/ and solver/ overlap}}
+
+The stated split --- \dir{solver/} is reusable mathematics, \dir{fit/} is
+per-mode recipes --- reads well but is not held:
+
+\begin{itemize}
+  \item A mode-specific recipe lives in \dir{solver/}:
+        \dir{solver/curvature/genewise.py}, 456 lines named after a fitting
+        mode, alongside \dir{fit/genewise\_fit.py}.
+  \item Newton drivers live in both, and \loc{fit/newton\_cg.py:82} imports one
+        from \dir{solver/curvature/receiver.py}, so a fitting driver calls a
+        solver driver.
+  \item Generic machinery lives in \dir{fit/}: \dir{fit/optimize.py} describes
+        itself as ``dataset-agnostic''.
+\end{itemize}
+
+\dir{fit/dtl\_fit.py} is the exception and the model to follow --- its docstring
+claims to be ``the ONLY place that choice is made'', which is the right idea.
+
+\dir{api/} versus \dir{core/} is defensible: 6 files of model wiring against 21
+files of kernels and scheduling.  The only blur was the two imports resolved in
+Section~\ref{sec:imports}.
+
+\subsection{The two loose files at the package root}
+
+\dir{gpurec/optimization.py} (96 lines) is load-bearing but homeless: it is
+imported by \loc{gpurec/\_\_init\_\_.py:4-6} and two fitting modules, and it
+pairs with \dir{gpurec/config/rates.py}, whose own docstring names it.  It
+belongs beside that file.
+
+\dir{gpurec/distributed.py} (112 lines) has zero importers anywhere and is
+already counted in Section~\ref{sec:dead-code}.
+
+\subsection{The public surface, and one packaging gap}
+
+\dir{gpurec/\_\_init\_\_.py} is 7 lines exporting 7 names.  One of them,
+\texttt{sample\_reconciliations}, is pulled straight from a \dir{core} internal
+with no intermediate export point.
+
+\dir{gpurec/config/defaults.toml} is \textbf{not shipped in the wheel} --- there
+is no packaging entry for it, confirmed by building one.  The practical impact
+is small, since that file is never read at runtime anyway, but it means the
+drift check described at \loc{gpurec/config/gpurec\_config.py:200-202} cannot be
+run against an installed copy.
+
+\end{document}

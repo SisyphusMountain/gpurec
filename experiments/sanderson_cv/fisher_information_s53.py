@@ -19,17 +19,23 @@ Run (GPU; needs the gpurec native ext + archaea data; archaea root defaults to t
   GPUREC_PREPROCESS_PATH=<.../libgpurec_preprocess.so> PYTHONPATH=<worktree> \
   python fisher_information_s53.py [--families 256] [--dtype float64] [--lambdas 0.03,0.1,0.3,1.0,3.0,10.0]
 
-Writes _artifacts/fisher_s53/ (cached Hessians + results.pt + console log) and paper-ready figures to
-both _artifacts/fisher_s53/ and ../../../kernel-bench/paper/figures/.
+Writes _artifacts/fisher_s53/ (cached Hessians + results.pt + console log) and
+paper-ready figures to both the artifact directory and
+papers/gpu-reconciliation/figures/. Override the latter with
+GPUREC_PAPER_FIG_DIR.
 """
 from __future__ import annotations
 import os, sys, time, argparse, json
 import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, HERE)
 OUTDIR = os.path.join(HERE, "_artifacts", "fisher_s53")
-PAPER_FIG = "/home/enzo/Documents/git/gpurec/kernel-bench/paper/figures"
+PAPER_FIG = os.environ.get(
+    "GPUREC_PAPER_FIG_DIR",
+    os.path.join(REPO, "papers", "gpu-reconciliation", "figures"),
+)
 CERT_DIR = os.path.join(HERE, "_artifacts", "certified_v2")
 NM = ["D", "L", "T"]   # theta[:,0]=Duplication, [:,1]=Loss, [:,2]=Transfer (log2-odds vs speciation)
 DEV = "cuda"

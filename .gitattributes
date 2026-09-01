@@ -1,0 +1,3 @@
+# Preserve the historical thesis snapshot byte-for-byte, including its original
+# line endings and trailing spaces. It is verified by the hash in its README.
+archive/papers/ale-gpu-early-draft/main.tex -text whitespace=-trailing-space

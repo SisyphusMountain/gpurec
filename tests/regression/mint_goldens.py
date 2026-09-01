@@ -2,7 +2,7 @@
 Run ONCE on the target GPU (RTX 4090). Re-run to re-mint if rustree/gpurec change."""
 from __future__ import annotations
 
-import argparse, json, subprocess, time
+import argparse, json, os, subprocess, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +18,8 @@ GOLDENS = Path(__file__).parent / "goldens"
 
 
 def _git_rev(cwd):
+    if not cwd:
+        return "unknown"
     try:
         return subprocess.check_output(["git", "-C", str(cwd), "rev-parse", "HEAD"], text=True).strip()
     except Exception:
@@ -77,7 +79,7 @@ def mint(mode, repeats=5, verbose=False):
     golden = {
         "mode": mode,
         "provenance": {
-            "rustree_commit": _git_rev("/home/enzo/Documents/git/rustree"),
+            "rustree_commit": _git_rev(os.environ.get("RUSTREE_ROOT")),
             "gpurec_commit": _git_rev(Path(__file__).resolve().parents[2]),
             "seed": p["seed"], "n_species": p["n_species"], "n_families": p["n_families"],
             "dtl": p["dtl"], "device": torch.cuda.get_device_name(0), "dtype": "float32",

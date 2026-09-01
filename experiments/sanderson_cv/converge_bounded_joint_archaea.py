@@ -42,6 +42,7 @@ import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 DEV = "cuda"
 os.environ.setdefault("SADDLE_DTYPE", "float64")
 os.environ.setdefault("GPUREC_MEMORY_POLICY_RESERVE_GIB", "0")
@@ -58,7 +59,17 @@ from gpurec.solver.curvature.receiver import (
 )
 
 # ------------------------------------------------------------------------------- archaea fixture
-DATA = "/home/enzo/Documents/git/gpurec/gpurec/tests/data"
+DATA = os.environ.get(
+    "GPUREC_DATA_ROOT",
+    os.path.join(
+        REPO,
+        "data",
+        "external",
+        "benchmarks",
+        "large_dataset_capacity",
+        "datasets",
+    ),
+)
 ARCHAEA_ROOT = os.environ.get("GPUREC_ARCHAEA_ROOT", f"{DATA}/alerax_archaea_davin2017")
 _SP_TREE = f"{ARCHAEA_ROOT}/species_reference/reference_species_tree.newick"
 # converged solver (matches the CV / bounded-theta runs)
