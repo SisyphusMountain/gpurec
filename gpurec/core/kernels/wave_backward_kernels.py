@@ -882,6 +882,391 @@ def _reconciliation_self_loop_transpose_series_kernel(
 
 
 
+@triton.jit
+def _adjoint_node_elimination(
+    rhs_ptr,
+    self_loop_diagonal_ptr,
+    receiver_mass_ptr,
+    parent_to_child_probability_ptr,
+    subtree_donor_gain_ptr,
+    subtree_donor_constant_ptr,
+    subtree_donor_weight_ptr,
+    addr,
+    valid,
+    DTYPE: tl.constexpr,
+):
+    """One node's solved row of the transposed self-loop, as an affine function of what is above it.
+
+    Returns ``(a, b, c, pivot)`` such that
+
+        v[t] = a[t] + b[t] * v[parent(t)] + c[t] * G
+
+    where ``G`` is the row's TOTAL donor adjoint (see the kernel docstring). The three coefficients
+    are rebuilt here rather than stored, from the node's own inputs plus the three per-node numbers
+    the bottom-up walk did store:
+
+        K[t]    (``subtree_donor_weight``)   how much of its subtree's donor adjoint one unit of
+                                             v[t] is worth: g[t] plus the children's own weights
+        Psum[t] (``subtree_donor_constant``) the children's subtrees' donor adjoint, v-free part
+        Rsum[t] (``subtree_donor_gain``)     the same, per unit of G
+
+    Reading three numbers and recomputing three is what keeps this solve inside the scratch the
+    Neumann series already allocates. For a masked-off lane every load is zero, so ``pivot`` is
+    exactly 1.0 and the divisions below are safe.
+    """
+    weight = tl.load(subtree_donor_weight_ptr + addr, mask=valid, other=0.0)
+    subtree_constant = tl.load(subtree_donor_constant_ptr + addr, mask=valid, other=0.0)
+    subtree_gain = tl.load(subtree_donor_gain_ptr + addr, mask=valid, other=0.0)
+    diagonal = tl.load(self_loop_diagonal_ptr + addr, mask=valid, other=0.0)
+    mass = tl.load(receiver_mass_ptr + addr, mask=valid, other=0.0)
+    parent_probability = tl.load(parent_to_child_probability_ptr + addr, mask=valid, other=0.0)
+    right_hand_side = tl.load(rhs_ptr + addr, mask=valid, other=0.0)
+
+    pivot = 1.0 - diagonal + mass * weight
+    a = (right_hand_side - mass * subtree_constant) / pivot
+    b = parent_probability / pivot
+    c = mass * (1.0 - subtree_gain) / pivot
+    return a, b, c, pivot
+
+
+@triton.jit(do_not_specialize=["W"], do_not_specialize_on_alignment=["rhs_ptr"])
+def _exact_tree_self_loop_transpose_kernel(
+    rhs_ptr,
+    active_mask_ptr,
+    self_loop_diagonal_ptr,
+    donor_adjoint_coefficient_ptr,
+    receiver_mass_ptr,
+    parent_to_child_probability_ptr,
+    species_parent_ptr,
+    compact_level_ptr,
+    compact_level_parent_ptr,
+    compact_level_child1_ptr,
+    compact_level_child2_ptr,
+    subtree_donor_gain_ptr,
+    subtree_donor_constant_ptr,
+    subtree_donor_weight_ptr,
+    v_k_ptr,
+    guard_trips_ptr,
+    W,
+    S: tl.constexpr,
+    BLOCK_W: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    BLOCK_NODES: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    WRITE_GUARD_TRIPS: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Solve the transposed self-loop EXACTLY, by elimination on the species tree.
+
+    Replaces the Neumann series (:func:`_reconciliation_self_loop_transpose_series_kernel`) with a
+    direct solve of the same system. Same entry and exit contract: ``rhs`` in, the solution of
+
+        (I - J^T) v = rhs
+
+    written into ``v_k``. The series reaches that by summing ``(J^T)^k rhs`` (cold) or by iterating
+    ``v <- rhs + J^T v`` (warm); both converge to the same v, so the exact solve makes the warm and
+    cold branches identical and ``initial_v`` irrelevant.
+
+    THE SYSTEM. ``J`` is the wave update's Jacobian, whose transpose the series applies term by
+    term in :func:`_reconciliation_self_loop_transpose_term`. Per species ``t``, with
+
+        d[t]  self_loop_diagonal          -- stay in t (duplicate-and-lose, or transfer-and-lose)
+        g[t]  donor_adjoint_coefficient   -- t's transfer term per unit of donor mass reaching it
+        m[t]  receiver_mass               -- t's own weight as a transfer donor
+        sp[t] parent_to_child_probability -- speciate at parent(t), follow the edge into t
+
+    that transpose reads
+
+        v[t] = rhs[t] + d[t] v[t] + m[t] (G - D[t]) + sp[t] v[parent(t)]
+        D[t] = sum of g[s] v[s] over s in subtree(t)          G = D[root]
+
+    -- the mirror image of the forward system. The forward's children terms became the single
+    parent term ``sp[t] v[parent(t)]``; the forward's ancestor-path exclusion became the subtree
+    sum ``D[t]``; the forward's row-total transfer mass became the scalar ``G``, which enters as a
+    rank-one term. Rearranged:
+
+        (1 - d[t]) v[t] - m[t] G + m[t] D[t] - sp[t] v[parent(t)] = rhs[t]
+
+    So ``t`` couples upward only through ``v[parent(t)]``, downward only through ``D[t]``, and to
+    the row as a whole only through ``G``. Two O(S) walks and one scalar solve it.
+
+    1. Bottom-up (the ``compact_level_*`` tables, shallowest subtree first). Each node's subtree
+       donor adjoint becomes an affine function of what is above it,
+
+           D[t] = P[t] + Q[t] v[parent(t)] + R[t] G,
+
+       carried as the three stored numbers ``K[t] = g[t] + sum_c Q[c]`` (the weight one unit of
+       v[t] carries into its subtree), ``Psum[t] = sum_c P[c]`` and ``Rsum[t] = sum_c R[c]``. A
+       leaf has no children, so it starts at ``K = g``, ``Psum = Rsum = 0``. At every node the
+       equation above then gives, with ``pivot[t] = 1 - d[t] + m[t] K[t]``,
+
+           v[t] = a[t] + b[t] v[parent(t)] + c[t] G
+           a[t] = (rhs[t] - m[t] Psum[t]) / pivot      b[t] = sp[t] / pivot
+           c[t] = m[t] (1 - Rsum[t])     / pivot
+
+       and, substituting that into ``D[t] = K[t] v[t] + Psum[t] + Rsum[t] G``,
+
+           P[t] = K[t] a[t] + Psum[t]   Q[t] = K[t] b[t]   R[t] = K[t] c[t] + Rsum[t].
+
+       ``d[t] < 1``, ``m``, ``g`` and ``sp`` are non-negative, so ``K`` is non-negative by
+       induction and ``pivot >= 1 - d[t] > 0``: like the forward elimination, the pivot is the
+       diagonal PLUS the children's feedback, never minus it.
+
+    2. The root closes the loop. It has no parent, and ``D[root]`` IS ``G``, so
+       ``G = P[root] + R[root] G``, i.e. ``G = P[root] / (1 - R[root])`` -- one scalar equation,
+       with ``R[root]`` the total gain of the transfer feedback, well below 1. Then
+       ``v[root] = a[root] + c[root] G``.
+
+    3. Top-down (the same levels reversed): each child of ``t`` reads the settled ``v[t]`` and
+       finishes as ``v[c] = a[c] + b[c] v[t] + c[c] G``.
+
+    Unlike the forward solve there is no sign structure to exploit: ``rhs`` is a gradient, so
+    ``a``, ``P`` and ``v`` carry signs and a subtree whose adjoint changes sign cancels. That
+    cancellation is in the system, not in this method -- the series sums the same signed terms.
+
+    SCRATCH. Three per-row species arrays, which is exactly what the series path already holds
+    (its ``[2, W, S]`` term pair plus the subtree accumulator), so the exact path allocates no
+    more than the series it replaces:
+
+        subtree_donor_weight     K[t]
+        subtree_donor_constant   Psum[t]
+        subtree_donor_gain       Rsum[t]
+
+    ``a``, ``b``, ``c``, ``P``, ``Q`` and ``R`` are rebuilt on the fly by
+    :func:`_adjoint_node_elimination` instead of being stored.
+
+    ``guard_trips_ptr`` is an optional ``[W, 2]`` int32 diagnostic: column 0 counts a row's
+    non-positive pivots, column 1 flags a non-positive ``1 - R[root]``. Neither is substituted or
+    clipped -- a non-positive one divides through to an infinity or a NaN.
+    """
+    # int64: rows range over the whole batch's clade rows, so the *S address
+    # arithmetic below can overflow int32 once total_clades * S exceeds 2^31.
+    block = tl.program_id(0).to(tl.int64)
+    rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
+    s_offs = tl.arange(0, BLOCK_S)
+    row_valid = rows < W
+    species_valid = s_offs < S
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    else:
+        row_active = row_valid
+    row_mask = row_valid & row_active
+    mask = species_valid[:, None] & row_mask[None, :]
+    offsets = rows[None, :] * S + s_offs[:, None]
+    row_base = rows[None, :] * S
+    zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
+
+    # ---- seed every species with the leaf case: K = g, Psum = Rsum = 0. Internal nodes are
+    # overwritten by the walk below, which reads their g fresh rather than this seed.
+    donor_adjoint_coefficient = tl.load(
+        donor_adjoint_coefficient_ptr + offsets, mask=mask, other=0.0
+    )
+    tl.store(
+        subtree_donor_weight_ptr + offsets,
+        tl.where(mask, donor_adjoint_coefficient, zero),
+        mask=mask,
+    )
+    tl.store(subtree_donor_constant_ptr + offsets, zero, mask=mask)
+    tl.store(subtree_donor_gain_ptr + offsets, zero, mask=mask)
+    tl.debug_barrier()
+
+    # ---- walk 1: bottom-up. Every node in level ``level`` has both children at strictly lower
+    # levels (or at leaves), so their three numbers are already final when this level reads them.
+    for level in range(0, N_LEVELS):
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=0)
+            child1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            child2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            reduce_mask = node_mask[:, None] & row_mask[None, :]
+            child1_mask = reduce_mask & (child1 < S)[:, None]
+            child2_mask = reduce_mask & (child2 < S)[:, None]
+            parent_addr = row_base + parent[:, None]
+            child1_addr = row_base + child1[:, None]
+            child2_addr = row_base + child2[:, None]
+
+            child1_weight = tl.load(
+                subtree_donor_weight_ptr + child1_addr, mask=child1_mask, other=0.0
+            )
+            child1_constant = tl.load(
+                subtree_donor_constant_ptr + child1_addr, mask=child1_mask, other=0.0
+            )
+            child1_gain = tl.load(
+                subtree_donor_gain_ptr + child1_addr, mask=child1_mask, other=0.0
+            )
+            child1_a, child1_b, child1_c, _child1_pivot = _adjoint_node_elimination(
+                rhs_ptr,
+                self_loop_diagonal_ptr,
+                receiver_mass_ptr,
+                parent_to_child_probability_ptr,
+                subtree_donor_gain_ptr,
+                subtree_donor_constant_ptr,
+                subtree_donor_weight_ptr,
+                child1_addr,
+                child1_mask,
+                DTYPE,
+            )
+            child2_weight = tl.load(
+                subtree_donor_weight_ptr + child2_addr, mask=child2_mask, other=0.0
+            )
+            child2_constant = tl.load(
+                subtree_donor_constant_ptr + child2_addr, mask=child2_mask, other=0.0
+            )
+            child2_gain = tl.load(
+                subtree_donor_gain_ptr + child2_addr, mask=child2_mask, other=0.0
+            )
+            child2_a, child2_b, child2_c, _child2_pivot = _adjoint_node_elimination(
+                rhs_ptr,
+                self_loop_diagonal_ptr,
+                receiver_mass_ptr,
+                parent_to_child_probability_ptr,
+                subtree_donor_gain_ptr,
+                subtree_donor_constant_ptr,
+                subtree_donor_weight_ptr,
+                child2_addr,
+                child2_mask,
+                DTYPE,
+            )
+
+            # D[c] = K[c] v[c] + Psum[c] + Rsum[c] G, with v[c] substituted, split into its
+            # v[parent]-free part, its per-unit-of-v[parent] part, and its per-unit-of-G part.
+            parent_constant = (
+                child1_weight * child1_a + child1_constant
+                + child2_weight * child2_a + child2_constant
+            )
+            parent_weight_from_children = child1_weight * child1_b + child2_weight * child2_b
+            parent_gain = (
+                child1_weight * child1_c + child1_gain
+                + child2_weight * child2_c + child2_gain
+            )
+            parent_donor = tl.load(
+                donor_adjoint_coefficient_ptr + parent_addr, mask=reduce_mask, other=0.0
+            )
+            tl.store(
+                subtree_donor_weight_ptr + parent_addr,
+                parent_donor + parent_weight_from_children,
+                mask=reduce_mask,
+            )
+            tl.store(
+                subtree_donor_constant_ptr + parent_addr, parent_constant, mask=reduce_mask
+            )
+            tl.store(subtree_donor_gain_ptr + parent_addr, parent_gain, mask=reduce_mask)
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
+    # ---- the root closes the loop. Every species is evaluated as if it were the root and the two
+    # sums below pick out the one that is (the unique species whose parent index is negative),
+    # which also avoids having to carry a root index. The same pass counts every node's pivot.
+    root_a, _root_b, root_c, pivot = _adjoint_node_elimination(
+        rhs_ptr,
+        self_loop_diagonal_ptr,
+        receiver_mass_ptr,
+        # The root is nobody's child, so its parent-edge slot was never written. Read the
+        # diagonal instead of that uninitialised memory: b is unused for every lane here.
+        self_loop_diagonal_ptr,
+        subtree_donor_gain_ptr,
+        subtree_donor_constant_ptr,
+        subtree_donor_weight_ptr,
+        offsets,
+        mask,
+        DTYPE,
+    )
+    root_weight = tl.load(subtree_donor_weight_ptr + offsets, mask=mask, other=0.0)
+    root_constant = tl.load(subtree_donor_constant_ptr + offsets, mask=mask, other=0.0)
+    root_gain = tl.load(subtree_donor_gain_ptr + offsets, mask=mask, other=0.0)
+    species_parent = tl.load(species_parent_ptr + s_offs, mask=species_valid, other=0)
+    is_root = mask & (species_parent < 0)[:, None]
+    total_donor_constant = tl.sum(
+        tl.where(is_root, root_weight * root_a + root_constant, zero), axis=0
+    )
+    total_donor_gain = tl.sum(
+        tl.where(is_root, root_weight * root_c + root_gain, zero), axis=0
+    )
+    loop_denominator = 1.0 - total_donor_gain
+    total_donor_adjoint = total_donor_constant / loop_denominator
+    tl.store(
+        v_k_ptr + offsets, root_a + root_c * total_donor_adjoint[None, :], mask=is_root
+    )
+    if WRITE_GUARD_TRIPS:
+        tl.store(
+            guard_trips_ptr + rows * 2,
+            tl.sum(tl.where(mask & (pivot <= 0.0), 1, 0).to(tl.int32), axis=0),
+            mask=row_valid,
+        )
+        tl.store(
+            guard_trips_ptr + rows * 2 + 1,
+            tl.where(loop_denominator <= 0.0, 1, 0).to(tl.int32),
+            mask=row_valid,
+        )
+    tl.debug_barrier()
+
+    # ---- walk 2: top-down, the same levels reversed. A node's adjoint is written exactly once,
+    # by its parent, and the root was written just above.
+    for level_index in range(0, N_LEVELS):
+        level = N_LEVELS - 1 - level_index
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=0)
+            child1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            child2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            reduce_mask = node_mask[:, None] & row_mask[None, :]
+            child1_mask = reduce_mask & (child1 < S)[:, None]
+            child2_mask = reduce_mask & (child2 < S)[:, None]
+            parent_adjoint = tl.load(
+                v_k_ptr + row_base + parent[:, None], mask=reduce_mask, other=0.0
+            )
+
+            child1_a, child1_b, child1_c, _p1 = _adjoint_node_elimination(
+                rhs_ptr,
+                self_loop_diagonal_ptr,
+                receiver_mass_ptr,
+                parent_to_child_probability_ptr,
+                subtree_donor_gain_ptr,
+                subtree_donor_constant_ptr,
+                subtree_donor_weight_ptr,
+                row_base + child1[:, None],
+                child1_mask,
+                DTYPE,
+            )
+            tl.store(
+                v_k_ptr + row_base + child1[:, None],
+                child1_a
+                + child1_b * parent_adjoint
+                + child1_c * total_donor_adjoint[None, :],
+                mask=child1_mask,
+            )
+            child2_a, child2_b, child2_c, _p2 = _adjoint_node_elimination(
+                rhs_ptr,
+                self_loop_diagonal_ptr,
+                receiver_mass_ptr,
+                parent_to_child_probability_ptr,
+                subtree_donor_gain_ptr,
+                subtree_donor_constant_ptr,
+                subtree_donor_weight_ptr,
+                row_base + child2[:, None],
+                child2_mask,
+                DTYPE,
+            )
+            tl.store(
+                v_k_ptr + row_base + child2[:, None],
+                child2_a
+                + child2_b * parent_adjoint
+                + child2_c * total_donor_adjoint[None, :],
+                mask=child2_mask,
+            )
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
+
 # ``W`` is the wave's width and changes every launch; keeping it out of the specialization
 # key avoids one JIT compile per new "== 1" / divisible-by-16 state (see README.md).
 @triton.jit(do_not_specialize=["W"])

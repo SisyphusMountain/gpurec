@@ -65,6 +65,7 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         specieswise=static.specieswise, genewise=static.genewise,
         neumann_terms=int(so.neumann_terms if neumann_terms is None else neumann_terms),
         neumann_term_tol=float(so.neumann_term_tol),
+        adjoint_self_loop=so.adjoint_self_loop,
         e_adjoint_max_iter=so.e_adjoint_max_iter,
         e_adjoint_tol=(so.e_adjoint_tol if e_adjoint_tol is None else e_adjoint_tol),
         adjoint_pruning_threshold=so.adjoint_pruning_threshold,

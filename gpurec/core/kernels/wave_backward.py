@@ -20,6 +20,7 @@ from gpurec.core.kernels.wave_backward_kernels import (
     _prepare_reconciliation_self_loop_vjp_kernel,
     _apply_reconciliation_self_loop_transpose_kernel,
     _reconciliation_self_loop_transpose_series_kernel,
+    _exact_tree_self_loop_transpose_kernel,
     _accumulate_transfer_receiver_log_probability_vjp_kernel,
     _accumulate_reconciliation_event_vjp_kernel,
     _accumulate_gene_split_event_vjp_kernel,
@@ -51,6 +52,28 @@ _NEUMANN_TERM_COUNTS = []
 # one-launch-per-term reference loop. Only benchmark/cc/test_neumann_exit.py flips it,
 # to show the two agree bit for bit at neumann_term_tol=0.
 _USE_FUSED_NEUMANN_SERIES = True
+
+# The two adjoint self-loop implementations selectable through ``SolverOptions.adjoint_self_loop``.
+# "series": sum the Neumann terms of (I - J^T)^-1 rhs, stopping early per row block.
+# "exact":  solve (I - J^T) v = rhs directly by elimination on the species tree
+#           (``_exact_tree_self_loop_transpose_kernel``), which is what the series converges to.
+ADJOINT_SELF_LOOP_MODES = ("series", "exact")
+
+# Debug instrumentation for the exact adjoint solve, off in production. When switched on with
+# ``set_exact_adjoint_guard_trip_collection(True)`` every wave appends a [W, 2] int32 tensor to
+# ``_EXACT_ADJOINT_GUARD_TRIPS``: column 0 counts a row's non-positive elimination pivots,
+# column 1 flags a non-positive ``1 - transfer loop gain``. A module-level switch (not an
+# argument) so the production call path keeps its exact signature and costs nothing.
+_COLLECT_EXACT_ADJOINT_GUARD_TRIPS = False
+_EXACT_ADJOINT_GUARD_TRIPS = []
+
+
+def set_exact_adjoint_guard_trip_collection(enabled):
+    """Turn the exact adjoint solve's per-row pivot-guard counters on or off."""
+    global _COLLECT_EXACT_ADJOINT_GUARD_TRIPS
+    _COLLECT_EXACT_ADJOINT_GUARD_TRIPS = bool(enabled)
+    if not _COLLECT_EXACT_ADJOINT_GUARD_TRIPS:
+        _EXACT_ADJOINT_GUARD_TRIPS.clear()
 
 
 def set_fused_neumann_series(enabled):
@@ -248,6 +271,7 @@ def _solve_reconciliation_wave_vjp_2d(
     *,
     neumann_terms,
     neumann_term_tol,
+    adjoint_self_loop,
     leaf_species_idx,
     leaf_logp,
     leaf_fm_log,
@@ -293,6 +317,10 @@ def _solve_reconciliation_wave_vjp_2d(
             "2D self-loop fast path estimated scratch "
             f"{required_bytes / (1024 ** 3):.2f} GiB above memory budget "
             f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB",
+        )
+    if adjoint_self_loop not in ADJOINT_SELF_LOOP_MODES:
+        raise ValueError(
+            f"adjoint_self_loop must be one of {ADJOINT_SELF_LOOP_MODES}, got {adjoint_self_loop!r}"
         )
     if const_layout not in (0, 1, 2):
         raise RuntimeError("unsupported self-loop constant layout")
@@ -396,14 +424,26 @@ def _solve_reconciliation_wave_vjp_2d(
     )
     speciation_child1_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
     speciation_child2_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
+    use_exact_adjoint = adjoint_self_loop == "exact"
     # One [2, W, S] allocation instead of two [W, S] ones (same total bytes): the
     # fused series kernel ping-pongs the two Neumann term buffers by adding an
     # integer offset of 0 or W*S to a single base pointer, which Triton can carry
     # through a while loop (a pointer swap it cannot).
-    term_pair = torch.empty((2, W, S), device=device, dtype=dtype)
+    #
+    # The exact solve has no terms to ping-pong. It spends the same two [W, S] arrays on the two
+    # of its three per-node numbers that need their own storage; the third shares
+    # ``subtree_donor_adjoint``, which is pure scratch until the receiver-gradient kernel below
+    # rewrites it. So the exact path allocates exactly what the series path does.
+    term_pair = torch.empty(
+        (2, 1, 1) if use_exact_adjoint else (2, W, S), device=device, dtype=dtype
+    )
     spec_buf = term_pair[0]
     term_buf = term_pair[1]
     subtree_donor_adjoint = torch.empty(scratch_shape, device=device, dtype=dtype)
+    if use_exact_adjoint:
+        elimination_pair = torch.empty((2, W, S), device=device, dtype=dtype)
+        subtree_donor_weight = elimination_pair[0]
+        subtree_donor_constant = elimination_pair[1]
 
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained 2D self-loop path")
@@ -488,9 +528,10 @@ def _solve_reconciliation_wave_vjp_2d(
         num_warps=_NUM_WARPS_PREPARE_SELF_LOOP_VJP,
     )
 
-    if initial_v is not None:
+    if initial_v is not None and not use_exact_adjoint:
         # Warm start: the series then iterates the fixed point v <- rhs + J^T v
-        # from this v instead of summing Neumann terms from scratch.
+        # from this v instead of summing Neumann terms from scratch. The exact solve
+        # lands on that fixed point in one shot, so a starting point buys it nothing.
         if tuple(initial_v.shape) != scratch_shape:
             raise ValueError(
                 f"initial_v shape {tuple(initial_v.shape)} does not match "
@@ -499,7 +540,48 @@ def _solve_reconciliation_wave_vjp_2d(
         v_k.copy_(initial_v.contiguous())
 
     jt_options = {"num_warps": 2}
-    if int(neumann_terms) > 0 and not _USE_FUSED_NEUMANN_SERIES:
+    if use_exact_adjoint:
+        # One launch, no terms: solve (I - J^T) v = rhs by elimination on the species tree.
+        collect_guard_trips = _COLLECT_EXACT_ADJOINT_GUARD_TRIPS
+        guard_trips = (
+            torch.zeros((W, 2), device=device, dtype=torch.int32)
+            if collect_guard_trips
+            else compact_level_ptr
+        )
+        _exact_tree_self_loop_transpose_kernel[(n_row_blocks,)](
+            rhs,
+            active_mask if active_mask is not None else rhs,
+            self_loop_diagonal,
+            donor_adjoint_coefficient,
+            receiver_mass,
+            # In the child-edge layout the prepare kernel writes BOTH children's speciation
+            # probabilities into this one array, indexed by the child, so each entry already
+            # reads "speciate at my parent and follow the edge into me".
+            speciation_child1_probability,
+            species_parent,
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+            subtree_donor_adjoint,
+            subtree_donor_constant,
+            subtree_donor_weight,
+            v_k,
+            guard_trips,
+            W,
+            S,
+            block_w,
+            block_s,
+            block_nodes,
+            compact_level_ptr.numel() - 1,
+            USE_ACTIVE_MASK=bool(active_mask is not None),
+            WRITE_GUARD_TRIPS=bool(collect_guard_trips),
+            DTYPE=_tl_float_dtype(dtype),
+            num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
+        )
+        if collect_guard_trips:
+            _EXACT_ADJOINT_GUARD_TRIPS.append(guard_trips)
+    elif int(neumann_terms) > 0 and not _USE_FUSED_NEUMANN_SERIES:
         # Reference path: one launch per Neumann term, no early exit. Kept only so
         # benchmark/cc/test_neumann_exit.py can show the fused kernel below repro-
         # duces it bit for bit; production never takes this branch.
@@ -604,7 +686,12 @@ def _solve_reconciliation_wave_vjp_2d(
     # Per-row relative size of the last Neumann increment = validated stiffness predictor.
     # Computed before the param-store kernel runs (which may reuse scratch buffers).
     last_increment_relres = None
-    if (
+    if return_last_increment and use_exact_adjoint:
+        # There is no remaining increment: the solve is exact, so the residual it would measure
+        # is zero up to rounding. Reported as such rather than left None, which every caller of
+        # this diagnostic would then have to special-case.
+        last_increment_relres = torch.zeros(W, device=device, dtype=torch.float32)
+    elif (
         return_last_increment
         and initial_v is None
         and int(neumann_terms) > 0
@@ -775,6 +862,7 @@ def solve_reconciliation_wave_vjp(
     reserved_scratch_bytes=None,
     *,
     neumann_term_tol,
+    adjoint_self_loop,
     pi_offset,
     pibar_offset,
     gene_split_offset=None,
@@ -797,6 +885,10 @@ def solve_reconciliation_wave_vjp(
         neumann_term_tol: stop a row block's series once its largest remaining
             term is <= neumann_term_tol * (that block's max |v_k|).
             0.0 disables the early exit (full ``neumann_terms`` every row).
+        adjoint_self_loop: "series" to sum Neumann terms, "exact" to solve
+            (I - J^T) v = rhs directly by elimination on the species tree. "exact"
+            ignores ``neumann_terms``, ``neumann_term_tol`` and ``initial_v``: it
+            returns the v the series converges to.
         leaf_species_idx: optional [C] row -> species leaf index, -1 for non-leaves
         leaf_logp: optional [S], [G], or [G, S] log_pS values used with
             leaf_species_idx
@@ -868,6 +960,7 @@ def solve_reconciliation_wave_vjp(
         leaf_term_wt,
         neumann_terms=neumann_terms,
         neumann_term_tol=neumann_term_tol,
+        adjoint_self_loop=adjoint_self_loop,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
         leaf_fm_log=leaf_fm_log,

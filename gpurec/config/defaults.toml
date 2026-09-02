@@ -30,6 +30,7 @@ use_hvp_warm_start = true
 pibar_side_threshold = 0.0
 e_tangent_tol = 1e-9
 forward_self_loop = "linear"
+adjoint_self_loop = "series"
 pi_linear_tol = 1e-6
 
 [precision]

@@ -74,7 +74,7 @@ _BASE_SOLVER = {
         "adjoint_pruning_threshold", "use_adjoint_pruning", "pibar_side_threshold",
         # kernel-path knobs (fused self-loops): threaded from config so a run can select the
         # log-space forward or disable the early exits without editing the recipe.
-        "forward_self_loop", "pi_linear_tol", "neumann_term_tol",
+        "forward_self_loop", "adjoint_self_loop", "pi_linear_tol", "neumann_term_tol",
     )
 }
 

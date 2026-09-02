@@ -72,6 +72,16 @@ class SolverOptions:
     #               affect it (beyond the one- or two-step log-space prologue all three modes
     #               share) and there is nothing for `pi_linear_tol` to stop.
     forward_self_loop: str = "linear"
+    # Which adjoint self-loop the wave backward runs, per clade row
+    # (`gpurec.core.kernels.wave_backward.ADJOINT_SELF_LOOP_MODES`).
+    #   "series" -- sum the Neumann terms of (I - J^T)^-1 rhs in one fused kernel, stopping a row
+    #               block early once its largest remaining term falls under `neumann_term_tol`.
+    #   "exact"  -- solve (I - J^T) v = rhs directly. The adjoint of the forward tree operator is
+    #               the transposed tree system for the same row, so the same elimination applies:
+    #               a leaves-to-root pass, one scalar equation for the row's total donor adjoint,
+    #               and a root-to-leaves pass. Its answer is what "series" converges to, so
+    #               `neumann_terms`, `neumann_term_tol` and any warm start have no effect on it.
+    adjoint_self_loop: str = "series"
     # Stopping test for the "linear" self-loop, applied per clade row: the row stops once EVERY
     # species lane has settled relative to ITSELF, |p_new[s] - p[s]| <= pi_linear_tol * p_new[s],
     # where p is the row's linear iterate. 1e-6 is fp32's usable relative floor (~8x eps 1.19e-7),
@@ -100,5 +110,7 @@ class SolverOptions:
             raise ValueError("pibar_side_threshold must be non-negative")
         if self.forward_self_loop not in ("log", "linear", "exact"):
             raise ValueError('forward_self_loop must be "log", "linear" or "exact"')
+        if self.adjoint_self_loop not in ("series", "exact"):
+            raise ValueError('adjoint_self_loop must be "series" or "exact"')
         if float(self.pi_linear_tol) < 0.0:
             raise ValueError("pi_linear_tol must be non-negative")

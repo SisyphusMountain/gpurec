@@ -39,6 +39,8 @@ def main() -> int:
                     help="start every family at this rate for D, L and T; 'none' = fit_dtl's default start")
     ap.add_argument("--forward-self-loop", required=True, choices=("linear", "log", "exact"),
                     help="forward self-loop kernel path (SolverOptions.forward_self_loop)")
+    ap.add_argument("--adjoint-self-loop", required=True, choices=("series", "exact"),
+                    help="wave-backward adjoint self-loop path (SolverOptions.adjoint_self_loop)")
     # Optional because it is a debugging aid, not a setting: leaving it out is exactly the
     # behaviour of a build without the facility. When given, a batch whose curvature probe or
     # gradient goes non-finite is reported and written there before the run dies, so the failure
@@ -62,6 +64,7 @@ def main() -> int:
     # The recipe's own reference config (identical to passing no config) with the kernel path set.
     cfg = GpurecConfig.genewise_reference()
     cfg.solver.forward_self_loop = args.forward_self_loop
+    cfg.solver.adjoint_self_loop = args.adjoint_self_loop
 
     torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
@@ -72,7 +75,9 @@ def main() -> int:
     peak_gib = torch.cuda.max_memory_allocated() / 2**30
     g = res["genewise_result"]
     summary = {
-        "tag": args.tag, "forward_self_loop": args.forward_self_loop, "init_rate": args.init_rate, "n_families": res["n_families"], "wall_s": wall,
+        "tag": args.tag, "forward_self_loop": args.forward_self_loop,
+        "adjoint_self_loop": args.adjoint_self_loop,
+        "init_rate": args.init_rate, "n_families": res["n_families"], "wall_s": wall,
         "nll_bits": res["nll_bits"], "nll_nats": res["nll_nats"],
         "opt_seconds": g["opt_seconds"], "n_steps": g["n_steps"], "n_builds": g["n_builds"],
         # per-phase wall-clock split (see fit_genewise's result dict)
