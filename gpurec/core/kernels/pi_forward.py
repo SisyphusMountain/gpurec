@@ -24,6 +24,16 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64)
 # property of the GPU the kernel runs on, measured by benchmark/cc/sweep_num_warps.py.
 _NUM_WARPS_UPDATE_RECONCILIATION = 8
 
+# Species lanes per tile inside ``_fused_linear_pi_self_loop_kernel``. Launch-shape tuning only:
+# the tile loop covers the whole species row either way, so the same terms are summed. Not a user
+# setting -- it is a property of the GPU the kernel runs on, measured by
+# benchmark/cc/test_linear_forward.py's --fused-blocks sweep. H100 NVL, S=2013, 500 families, one
+# loss+gradient call: 256 -> 7.35 s, 512 -> 7.68 s, 1024 -> 7.98 s, 2048 -> 8.60 s. Wider tiles
+# lose because each thread then has more of the 34-deep ancestor gather in flight at once. 256
+# also keeps the row summation order closest to the log-space kernel's, which uses the same tile
+# width, so the two paths agree to fp32 rounding rather than a few times it.
+_BLOCK_SPECIES_FUSED_LINEAR = 256
+
 
 def _tl_float_dtype(dtype):
     """Map a supported PyTorch model dtype to its Triton scalar dtype."""
@@ -1880,7 +1890,8 @@ def compute_fused_linear_self_loop(
         if use_fraction_missing
         else torch.empty(1, device=Pi_in.device, dtype=Pi_in.dtype)
     )
-    block_s, const_row_stride = _prepare_wave_launch(S, duplication_loss_lin)
+    _, const_row_stride = _prepare_wave_launch(S, duplication_loss_lin)
+    block_s = min(_BLOCK_SPECIES_FUSED_LINEAR, triton.next_power_of_2(S))
     _fused_linear_pi_self_loop_kernel[(W,)](
         Pi_in,
         Pi_in_offset,

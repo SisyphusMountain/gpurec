@@ -55,7 +55,8 @@ def main() -> int:
     fp64_command = (
         "$CC_PY -u benchmark/cc/test_linear_forward.py --species $CC_SPECIES "
         "--families $CC_FAMILIES --limit-compare 8 --limit-time 8 --clade-budget 315000 "
-        "--pi-iters 16 --neumann-terms 16 --theta -6.0 --window 60 --reps 2 --dtype float64"
+        "--pi-iters 16 --neumann-terms 16 --theta -6.0 --window 60 --reps 2 --dtype float64 "
+        "--fused-blocks 1024"
     )
     if args.job == "fit40":
         command = fit_command
@@ -69,7 +70,7 @@ def main() -> int:
             f"$CC_PY -u {script} --species $CC_SPECIES --families $CC_FAMILIES "
             f"--limit-compare {compare} --limit-time {limit_time} --clade-budget 315000 "
             f"--pi-iters 16 --neumann-terms 16 --theta -6.0 --window 60 --reps {reps} "
-            f"--dtype {spec['dtype']}"
+            f"--dtype {spec['dtype']} --fused-blocks 256,512,1024,2048"
         )
     result = subprocess.run(
         ["bash", f"{repo}/benchmark/cc/sbatch_h100.sh", name, f"00:{minutes:02d}:00", command],

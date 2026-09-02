@@ -144,6 +144,10 @@ def main() -> int:
     parser.add_argument("--window", required=True, type=float)
     parser.add_argument("--reps", required=True, type=int)
     parser.add_argument("--dtype", required=True, choices=("float32", "float64"))
+    parser.add_argument(
+        "--fused-blocks", required=True,
+        help="comma-separated species-tile sizes to time the linear kernel at",
+    )
     args = parser.parse_args()
     dtype = torch.float32 if args.dtype == "float32" else torch.float64
     eps = float(torch.finfo(dtype).eps)
@@ -227,8 +231,14 @@ def main() -> int:
     # ---------------- C: timing on --limit-time families ----------------
     paths = all_paths[: args.limit_time]
     timings = {}
-    iteration_report = ""
-    for mode in ("log", "linear"):
+    from gpurec.core.kernels import pi_forward as pi_forward_kernels
+
+    block_sizes = [int(value) for value in args.fused_blocks.split(",")]
+    modes = ["log"] + [f"linear:{block}" for block in block_sizes]
+    for spec in modes:
+        mode = spec.split(":")[0]
+        if mode == "linear":
+            pi_forward_kernels._BLOCK_SPECIES_FUSED_LINEAR = int(spec.split(":")[1])
         build_start = time.perf_counter()
         model = _build(
             args.species, paths, args.clade_budget, args.pi_iters, args.neumann_terms, mode, 1e-6,
@@ -246,15 +256,15 @@ def main() -> int:
             model.genewise_loss_vector_and_grad(theta=theta, need_grad=True)
             torch.cuda.synchronize()
             samples.append(time.perf_counter() - start)
-        timings[mode] = samples
+        timings[spec] = samples
         print(
-            f"[time] {mode}: build {build_seconds:.1f}s  max_wave_rows={wave_rows} "
+            f"[time] {spec}: build {build_seconds:.1f}s  max_wave_rows={wave_rows} "
             f"linear_buffer={scratch_gib:.2f} GiB  peak={torch.cuda.max_memory_allocated() / 2**30:.1f} GiB  loss+grad "
             f"mean {statistics.mean(samples):.3f}s  min {min(samples):.3f}s  "
             f"samples {[round(x, 3) for x in samples]}",
             flush=True,
         )
-        if mode == "linear":
+        if mode == "linear" and spec == modes[1]:
             original, counts = _install_iteration_probe()
             model.genewise_loss_vector_and_grad(theta=theta, need_grad=True)
             torch.cuda.synchronize()
@@ -272,8 +282,12 @@ def main() -> int:
         del model
         torch.cuda.empty_cache()
 
-    speedup = statistics.mean(timings["log"]) / statistics.mean(timings["linear"])
-    print(f"[time] linear speedup on one loss+gradient call: {speedup:.2f}x", flush=True)
+    for spec in modes[1:]:
+        speedup = statistics.mean(timings["log"]) / statistics.mean(timings[spec])
+        print(
+            f"[time] speedup of {spec} over log on one loss+gradient call: {speedup:.2f}x",
+            flush=True,
+        )
     return 0
 
 
