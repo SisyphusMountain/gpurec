@@ -257,6 +257,19 @@ def main() -> int:
             f"(grad max|value| {float(reference_grad.abs().max().item()):.3e})",
             flush=True,
         )
+        # Which families carry the disagreement, and how stiff they are: a gradient that is huge
+        # under BOTH paths is a stiff family, not a broken solve.
+        per_family = (exact_grad - reference_grad).abs().amax(dim=1)
+        worst = torch.argsort(per_family, descending=True)[:5]
+        for rank, index in enumerate(worst.tolist()):
+            print(
+                f"[B {rate_label}] worst family {rank}: row {index} "
+                f"max|dgrad| = {float(per_family[index].item()):.4e}  "
+                f"reference grad = {[round(float(x), 4) for x in reference_grad[index].tolist()]}  "
+                f"exact grad = {[round(float(x), 4) for x in exact_grad[index].tolist()]}  "
+                f"theta = {[round(float(x), 4) for x in theta[index].tolist()]}",
+                flush=True,
+            )
 
         model.configure_solver(
             adjoint_self_loop="series", neumann_terms=args.neumann_terms,

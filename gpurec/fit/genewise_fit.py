@@ -345,6 +345,12 @@ def fit_genewise(
         pis = pis[:1]
         cert_pi = pis[0]
 
+    if base.get("adjoint_self_loop") == "exact":
+        # Same argument on the backward: the exact adjoint solve returns the converged
+        # (I - J^T)^-1 rhs whatever `neumann_terms` is, so the verification and certificate
+        # builds at `neu_cert` would recompute an identical backward. Verify at `neu_opt`.
+        neu_cert = neu_opt
+
     def sopts(pi, neu):
         return SolverOptions(**{**base, "pi_iters": pi, "neumann_terms": neu})
 
