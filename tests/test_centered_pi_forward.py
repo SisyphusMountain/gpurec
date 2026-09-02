@@ -966,11 +966,15 @@ def test_exact_tree_self_loop_matches_converged_log_self_loop(
         pibar = result[6].to(state.pibar_offset.dtype) + state.pibar_offset.unsqueeze(1)
         return pi, pibar, result[4]
 
-    # A lane ``window`` log2 units below its row's maximum is carried with an absolute error of
-    # about one float64 roundoff of that maximum, i.e. a relative error near 2**(window - 53);
-    # at window = 30 that is 1.2e-7, or 1.7e-7 log2 units, comfortably inside ``tolerance``.
+    # What limits agreement inside the window is not a lane's depth below its row maximum but the
+    # size of the row's whole transfer mass T, which the transfer term multiplies: a lane picks up
+    # about one roundoff of ``gamma[s] * T`` however small the lane itself is. Measured on this
+    # example at window = 30, the worst entry differs by 4.6e-6 log2 units (a relative 6.7e-8 on a
+    # value near 69). ``tolerance`` sits an order of magnitude above that and four orders BELOW
+    # the scale an actual algorithmic regression shows up at -- the two bugs this test was written
+    # after both moved entries by more than 10 log2 units.
     window = 30.0
-    tolerance = 1e-6
+    tolerance = 1e-4
 
     def in_window(rows: torch.Tensor) -> torch.Tensor:
         """Reference entries no more than ``window`` log2 units below their own row's maximum."""
