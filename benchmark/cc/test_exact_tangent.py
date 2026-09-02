@@ -102,6 +102,9 @@ def main() -> int:
                              "from float32's own resolution")
     parser.add_argument("--skip-timing", required=True, type=int,
                         help="1 to stop after the correctness section")
+    parser.add_argument("--time-reference", required=True, type=int,
+                        help="1 to also time the converged sweeps; at 500 families one of those "
+                             "3-probe Hessians costs 377 s, so 0 keeps a timing run short")
     args = parser.parse_args()
     dtype = torch.float32 if args.dtype == "float32" else torch.float64
 
@@ -172,11 +175,12 @@ def main() -> int:
     # ---------------- B: timing on --limit-time families ----------------
     paths = all_paths[: args.limit_time]
     timings: dict[tuple[str, str], list[float]] = {}
-    modes = (
-        (f"sweeps@{args.reference_iters}", "series", args.reference_iters),
+    modes = [
         (f"sweeps@{args.pi_iters}", "series", args.pi_iters),
         ("exact", "exact", args.pi_iters),
-    )
+    ]
+    if args.time_reference:
+        modes.insert(0, (f"sweeps@{args.reference_iters}", "series", args.reference_iters))
     for label, mode, iters in modes:
         build_start = time.perf_counter()
         model = _build(
