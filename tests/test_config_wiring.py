@@ -243,7 +243,8 @@ def _run_fit_genewise_capture(monkeypatch, **kwargs):
     monkeypatch.setattr(gf, "RateBounds", _spy_bounds)
     gf.fit_genewise(
         "sp.nwk", ["g.nwk"], device="cpu", adam_steps=0, pi_tiers=(16,),
-        max_iter=0, min_drop=32, rebuild_frac=0.25, hessian_refresh=15, certify=False,
+        max_iter=0, min_drop=32, rebuild_frac=0.25, hessian_refresh=15,
+        init_curvature="exact", certify=False,
         certify_curvature=False, verbose=False, **kwargs,
     )
     return captured["kwargs"]["solver_options"], bounds_seen[0]

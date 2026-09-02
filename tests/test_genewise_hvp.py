@@ -548,7 +548,7 @@ def test_fit_genewise_converges_on_small_fixture():
         f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 4,
         device="cuda", dtype=torch.float32,
         adam_steps=5, pi_tiers=(16,), neu_opt=16, neu_cert=16,
-        min_drop=1, rebuild_frac=0.25, hessian_refresh=5, max_iter=60,
+        min_drop=1, rebuild_frac=0.25, hessian_refresh=5, init_curvature="exact", max_iter=60,
         certify=True, certify_curvature=True, verbose=False,
     )
     assert res["n_families"] == 4
@@ -591,7 +591,8 @@ def test_fit_genewise_converges_with_multibatch_analytic_hvp():
         f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * n_fam,
         device="cuda", dtype=torch.float32,
         adam_steps=5, pi_tiers=(16,), neu_opt=16, neu_cert=16,
-        clade_budget=clade_budget, min_drop=1, rebuild_frac=0.25, hessian_refresh=5, max_iter=60,
+        clade_budget=clade_budget, min_drop=1, rebuild_frac=0.25, hessian_refresh=5,
+        init_curvature="exact", max_iter=60,
         certify=True, certify_curvature=True, verbose=False,
     )
     assert res["n_families"] == n_fam
