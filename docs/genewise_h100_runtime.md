@@ -140,6 +140,24 @@ series, i.e. a non-finite value produced upstream at a mid-fit theta; the same c
 a flat theta (all rates 2^-6) but 54 s at the fitted theta (95 % of families have a rate above 0.25):
 the early-exit loops and E fixed points take more iterations at high rates. Being profiled.
 
+**Recipe round 3 (commit c77ebb4e).** Convergence is certified at freeze time: the accurate-tier
+projected gradient computed when a family is verified and frozen is reused by the certificate, which
+now only computes the total NLL (forward pass) plus the accurate-tier gradient of the few never-frozen
+families. The initial 3x3 curvature comes from BFGS updates over the Adam warm-up's own gradient pairs
+instead of an exact 3-probe Hessian (A/B at 500 families: 392 s vs 430 s, same NLL); exact refreshes
+every 15 iterations remain. 500 families: **305 s** (Adam 48 s, curvature 25 s, Newton gradients 178 s,
+verification 19 s, re-plans 3 s, certificate 7 s), NLL 1618461.86 bits, 499/500 converged.
+
+**Triton re-specialization (commit 52bc2bec).** `do_not_specialize` on the per-launch-varying integer
+and pointer arguments of the wave kernels: a forward+gradient+Hessian over 100 families now compiles
+35 kernel variants instead of hundreds; gradient and Hessian timings unchanged.
+
+**Why gradients cost more at fitted rates.** Profile at 500 families: 8.9 s at the fitted theta vs 5.7 s
+at a flat theta of -6. At fitted rates 88 % of clade rows use the full 14 forward self-loop iterations
+(mean 13.9 vs 6.1 flat), the backward series takes 6.7 terms (vs 2.2), and the E fixed point hits its
+128-iteration cap for 12 of 13 batches (vs 6 iterations flat; the E loops themselves cost < 0.1 s).
+So the extra time is genuine iteration work at high rates, not synchronisation overhead.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
