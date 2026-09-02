@@ -124,6 +124,12 @@ Python batch statics 22 %), verification of candidates is the larger per-round c
 | recipe only | 493 s | 1618461.83 |
 | recipe + both kernel tracks | 450 s | 1618461.88 |
 
+**Full dataset, recipe only (first version 5c62ba4a, old kernels): 3166 s** (from 5353 s), NLL
+9048964.87 bits vs 9048956.57 for the first-round code: 8.3 bits higher, with 71 unconverged families
+(50 before) and a worst projected gradient of 12.3 (0.51 before) — the prompt-drop/BFGS recipe left a
+few stiff families less converged in the second tier. This is being addressed (exact curvature for the
+small second tier is cheap).
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
