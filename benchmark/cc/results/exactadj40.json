@@ -1,0 +1,128 @@
+{
+  "tag": "exactadj40",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 40,
+  "wall_s": 17.995314714033157,
+  "nll_bits": 115604.88033888729,
+  "nll_nats": 80131.19686586958,
+  "opt_seconds": 17.0515317870304,
+  "n_steps": 30,
+  "n_builds": 25,
+  "adam_seconds": 3.1797080440446734,
+  "hessian_seconds": 2.1216664211824536,
+  "n_hessians": 2,
+  "newton_grad_seconds": 6.746431234292686,
+  "n_verify_builds": 15,
+  "verify_seconds": 2.173841399140656,
+  "n_rebuilds": 8,
+  "rebuild_seconds": 0.4378099450841546,
+  "certify_seconds": 0.5162754389457405,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 4,
+        "remain": 36
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 11,
+        "remain": 24
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 3,
+        "remain": 21
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 3,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 3,
+        "remain": 14
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 1,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 2,
+        "remain": 11
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 5,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 1,
+        "remain": 5
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 2,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 2,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 1,
+        "remain": 0
+      },
+      {
+        "pi": 64,
+        "it": 2,
+        "dropped": 2,
+        "remain": 0
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 10,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 24.681177139282227
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 27.640352249145508
+      }
+    ]
+  },
+  "peak_gib": 9.63254451751709,
+  "certificate": {
+    "converged": 40,
+    "bound_active": 1,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009972184197977185
+  }
+}

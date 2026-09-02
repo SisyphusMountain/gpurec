@@ -225,6 +225,11 @@ knife-edge family that never certifies (projected gradient 2 vs 256 at the end i
 now tracks each family's best NLL over every evaluated iterate and returns that theta for the families
 that run out of iterations; certified families are unaffected.
 
+**Full dataset, exact forward, single tier (job full_v10exact): 1053 s**, NLL 9048938.38 bits, 5120/5123
+converged, 110 Newton steps (220 with two tiers), peak 26 GiB; split: warm-up 223 s (node under
+contention: 162 s in the previous run), Newton gradients 559 s, curvature 71 s (7 refreshes),
+verification 65 s, certificate 19 s, re-plans 15 s, first build 69 s (19 s uncontended).
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
