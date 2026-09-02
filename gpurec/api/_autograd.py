@@ -154,6 +154,7 @@ class _GeneReconFunction(torch.autograd.Function):
             specieswise=static.specieswise,
             genewise=static.genewise,
             neumann_terms=static.solver_options.neumann_terms,
+            neumann_term_tol=static.solver_options.neumann_term_tol,
             e_adjoint_max_iter=static.solver_options.e_adjoint_max_iter,
             e_adjoint_tol=static.solver_options.e_adjoint_tol,
             adjoint_pruning_threshold=static.solver_options.adjoint_pruning_threshold,

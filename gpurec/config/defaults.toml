@@ -20,6 +20,7 @@ e_max_iter = 128
 e_tol = 1e-8
 pi_iters = 64
 neumann_terms = 64
+neumann_term_tol = 1e-7
 e_adjoint_max_iter = 128
 # e_adjoint_tol: dataclass default is None (dtype-relative auto target) -- cannot
 # be expressed in TOML, omitted so the dataclass default is kept.

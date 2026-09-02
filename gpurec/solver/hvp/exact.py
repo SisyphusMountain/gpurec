@@ -627,6 +627,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     wave_constants["speciation_child1_const"],
                     wave_constants["speciation_child2_const"], receiver_log_probs,
                     species_child1, species_child2, None, neumann_terms=int(so.neumann_terms),
+                    neumann_term_tol=float(so.neumann_term_tol),
                     leaf_species_idx=leaf_species_idx,
                     leaf_logp=wave_constants["leaf_log_probability"],
                     has_leaf_term=has_leaf,
