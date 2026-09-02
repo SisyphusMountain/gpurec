@@ -291,7 +291,8 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
     level_offsets_ptr, level_parents_ptr,
     level_child1_ptr, level_child2_ptr,
     d_rhs_ptr, d_grad_receiver_log_probs_ptr,
-    n_ws: tl.constexpr, S: tl.constexpr, stride_C: tl.constexpr,
+    n_ws,  # runtime int (per-wave split count; constexpr caused one JIT compile per wave shape)
+    S: tl.constexpr, stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr, N_LEVELS: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr, DTYPE: tl.constexpr,
 ):

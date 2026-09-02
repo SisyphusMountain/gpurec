@@ -1404,7 +1404,7 @@ def _accumulate_gene_split_event_vjp_kernel(
 def _reduce_max_transfer_vjp_kernel(
     partial_ptr,   # [n_tiles, S]
     grad_max_transfer_ptr,   # [S]
-    n_tiles: tl.constexpr,
+    n_tiles,  # runtime int (per-wave partial-tile count; constexpr caused one JIT compile per value)
     S: tl.constexpr,
     BLOCK_TILES: tl.constexpr,
     BLOCK_S: tl.constexpr,
@@ -1494,7 +1494,9 @@ def _accumulate_transfer_subtree_vjp_kernel(
     compact_level_child2_ptr, # [total internal nodes across levels]
     accumulated_rhs_ptr,  # [C, S], updated atomically
     grad_receiver_log_probs_ptr, # optional [S], updated atomically
-    n_ws: tl.constexpr,
+    n_ws,  # runtime int, NOT constexpr: it is the wave's split count and differs for every wave; a
+           # constexpr here forced one Triton compile per distinct value (~20k cached variants,
+           # minutes of JIT per gradient at 5000 families). Only used for index arithmetic.
     S: tl.constexpr,
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,

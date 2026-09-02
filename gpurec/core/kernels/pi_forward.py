@@ -856,7 +856,7 @@ def _stage_multiple_gene_split_event_reduction_kernel(
     family_idx,
     family_offset,
     split_offset,
-    MAX_TILES: tl.constexpr,
+    MAX_TILES,  # runtime int (per-wave tile count; constexpr caused one JIT compile per value)
     S: tl.constexpr,
     TILE_SPLITS: tl.constexpr,
     BLOCK_S: tl.constexpr,
@@ -996,7 +996,7 @@ def _finalize_multiple_gene_split_event_reduction_kernel(
     partial_frame_offset_ptr,
     gene_split_log_likelihood,
     gene_split_offset,
-    MAX_TILES: tl.constexpr,
+    MAX_TILES,  # runtime int (per-wave tile count; constexpr caused one JIT compile per value)
     S: tl.constexpr,
     TILE_SPLITS: tl.constexpr,
     BLOCK_S: tl.constexpr,
