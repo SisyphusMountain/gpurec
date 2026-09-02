@@ -13,11 +13,16 @@ benchmarks; see ``kernel-bench/experiments/alerax_speed/OPTIMIZATION_PLAN.md``) 
      forward per family by a **BFGS** update built from the step and the gradient change the family
      actually took (see ``_bfgs_update``). Either way it is eigenvalue-clamped to ``mu`` -> PD before the
      step. Converges on the per-family projected gradient ``|Pg| < tol``.
-  3. **Convergence-based rebatching** -- as soon as ``min_drop`` families (or ``drop_frac`` of the active
-     batch) look converged at the cheap tier, ONLY those candidates are re-checked cold at the high
-     pi/Neumann tier -- on a temporary model built over just them -- and the ones that pass are frozen
-     and dropped; the model is then rebuilt over the survivors, so the long tail of hard families runs
-     on a small batch and the accurate-tier gradient is never paid for a non-candidate.
+  3. **Convergence-based freezing, then rebatching** -- as soon as ``min_drop`` families (or
+     ``drop_frac`` of the active batch) look converged at the cheap tier, ONLY those candidates are
+     re-checked cold at the high pi/Neumann tier -- on a temporary model built over just them -- and
+     the ones that pass are FROZEN: their fitted rates are final and they stop being stepped, but they
+     stay in the current model, so no rebuild happens yet. The model is re-planned over the survivors
+     only once the frozen families own ``rebuild_frac`` of its clades. That split matters because the
+     two costs are very different: at 5123 families a rebuild is ~30-40 s of re-planning while
+     carrying a frozen family costs only its clade share of one ~55 s gradient per iteration, so
+     rebuilding for a 5% shrink loses time and rebuilding at 25% pays for itself in a couple of
+     iterations. The accurate-tier gradient is never paid for a non-candidate.
   4. **pi-tier escalation** -- the bulk runs at a cheap forward pi (16) with the adjoint **warm-start**
      (``GPUREC_WARM_ADJOINT``, memory-gated automatically -- see ``gpurec.core.memory_policy``); only the
      forward-stiff families escalate to the accurate pi (64).
@@ -63,9 +68,9 @@ _BASE_SOLVER = {
 
 # Reference recipe tuned for the standard genewise problem. Import and clone-override per dataset:
 #   fit_genewise(sp, genes, **{**GENEWISE_REFERENCE, "tol": 5e-4},
-#                min_drop=32, hessian_refresh=15, certify_curvature=False)
-# ``min_drop`` / ``hessian_refresh`` / ``certify_curvature`` have NO signature default (every caller
-# states them), so they are not part of this dict -- pass them alongside it, as above.
+#                min_drop=32, rebuild_frac=0.25, hessian_refresh=15, certify_curvature=False)
+# ``min_drop`` / ``rebuild_frac`` / ``hessian_refresh`` / ``certify_curvature`` have NO signature
+# default (every caller states them), so they are not in this dict -- pass them alongside it.
 # Per-dataset values belong in your experiment script, NOT edited here (see docs/config_convention.md).
 GENEWISE_REFERENCE = dict(
     adam_steps=5, adam_lr=1.0, grad_clip=10.0, pi_tiers=(16, 64), neu_opt=16, neu_cert=64,
@@ -183,6 +188,7 @@ def fit_genewise(
     check_every: int = 2,
     drop_frac: float = 0.05,
     min_drop: int,
+    rebuild_frac: float,
     hessian_refresh: int,
     trust: float = 2.0,
     mu: float = 1e-2,
@@ -199,11 +205,17 @@ def fit_genewise(
 ) -> dict:
     """Fit per-family DTL rates to a converged, box-bounded optimum. See module docstring for the recipe.
 
-    Three keywords have no default and must be stated by every caller:
+    Four keywords have no default and must be stated by every caller:
 
     ``min_drop`` -- how many families must look converged at the cheap tier before the fit pays for a
-    verify-and-rebatch round (a temporary accurate-tier model over the candidates, then a rebuild over
-    the survivors). A round also triggers on ``drop_frac`` of the active batch, whichever comes first.
+    verification round (a temporary accurate-tier model over just those candidates). A round also
+    triggers on ``drop_frac`` of the still-live families, whichever comes first. Families that pass
+    are frozen where they are; the model is NOT re-planned at that moment.
+
+    ``rebuild_frac`` -- the share of the current model's clades that must belong to frozen (or
+    deferred) families before the model is actually re-planned over the survivors. Frozen families
+    still cost their clade share of every gradient, so this trades that against the fixed cost of a
+    re-plan; 0.25 is the production value.
 
     ``hessian_refresh`` -- how many Newton iterations between exact analytic-HVP Hessians. The exact
     Hessian costs about 7 gradients; in between, each family's 3x3 is carried by the BFGS update in
@@ -271,6 +283,20 @@ def fit_genewise(
     def sopts(pi, neu):
         return SolverOptions(**{**base, "pi_iters": pi, "neumann_terms": neu})
 
+    def _sync():
+        """Make the wall-clock timings below honest: GPU work is queued asynchronously."""
+        if dev.type == "cuda":
+            torch.cuda.synchronize()
+
+    def clade_counts(model):
+        """Per-family clade counts of ``model``, in its own family order (= the ``active`` order).
+
+        The clade count is what a family costs in a gradient (the solver walks its clades), so it is
+        also the right weight for deciding when the frozen families have grown expensive enough to
+        justify re-planning the model without them.
+        """
+        return torch.tensor([int(f["C"]) for f in model.families], device=dev, dtype=torch.float64)
+
     def build(indices, pi, neu):
         """Rebuild the model over ``indices`` into ``fam_paths``, reusing the parsed families.
 
@@ -314,7 +340,8 @@ def fit_genewise(
     was_dropped = torch.zeros(F_all, dtype=torch.bool, device=dev)
     pg_last = torch.full((F_all,), float("inf"), device=dev, dtype=dtype)
     rebatch_log, defer_log = [], []
-    n_steps = n_builds = n_verify_builds = 0
+    n_steps = n_builds = n_verify_builds = n_rebuilds = 0
+    verify_seconds = rebuild_seconds = 0.0
     # Curvature state, kept per GLOBAL family index so it survives every rebuild (a rebuild changes
     # which families are in the batch, never their theta): B_fam is the raw (un-convexified) 3x3
     # curvature matrix, and prev_* is the (theta, gradient, free-coordinate) triple of the last
@@ -341,6 +368,11 @@ def fit_genewise(
             carry = active[:0].clone()
             m = build(active.tolist(), pi_cur, neu_opt); n_builds += 1
             sub = theta.index_select(0, active).clone()
+            # ``settled`` marks the rows of the current model that are finished for this tier --
+            # frozen (verified converged, theta final) or deferred to the next pi tier. They are
+            # still IN the model (and so still cost gradient time) until a re-plan removes them.
+            clades = clade_counts(m); clade_total = float(clades.sum())
+            settled = torch.zeros(active.numel(), dtype=torch.bool, device=dev)
             _log(f"[fit_genewise] tier pi={pi_cur}: {active.numel()} families")
 
             if pi_idx == 0 and adam_steps > 0:   # Adam warm-up (basin entry), once
@@ -361,7 +393,8 @@ def fit_genewise(
             # computed, so a rebatch landing on a refresh iteration only postpones it by one step.
             refresh_due = True
             for it in range(max_iter):
-                if active.numel() == 0:
+                live = ~settled
+                if not bool(live.any()):
                     break
                 lv, g = lg(m, sub)
                 fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
@@ -382,14 +415,15 @@ def fit_genewise(
                 if it % check_every == 0:
                     pgm = pgmax(sub, g)
                     plateau = pgm >= improve_frac * pg_last.index_select(0, active)
-                    pg_last.index_copy_(0, active, pgm)
-                    conv = pgm < tol
-                    n_conv = int(conv.sum())
-                    _log(f"  [pi{pi_cur} it{it}] active={active.numel()} conv={n_conv} "
-                         f"|Pg|max={float(pgm.max()):.2e}")
-                    if n_conv > 0 and (n_conv >= min_drop or n_conv >= drop_frac * active.numel()):
+                    pg_last.index_copy_(0, active, torch.where(live, pgm, pg_last.index_select(0, active)))
+                    conv = live & (pgm < tol)
+                    n_conv, n_live = int(conv.sum()), int(live.sum())
+                    _log(f"  [pi{pi_cur} it{it}] live={n_live} (+{int(settled.sum())} settled in batch) "
+                         f"conv={n_conv} |Pg|max={float(pgm[live].max()):.2e}")
+                    if n_conv > 0 and (n_conv >= min_drop or n_conv >= drop_frac * n_live):
                         cert_ok = conv.clone()
                         if verify_drop:   # re-check the CANDIDATES ONLY, cold at the high tier
+                            _sync(); _t = time.perf_counter()
                             cand = conv.nonzero(as_tuple=True)[0]
                             sub_c = sub.index_select(0, cand)
                             _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
@@ -401,6 +435,7 @@ def fit_genewise(
                                 os.environ["GPUREC_WARM_ADJOINT"] = _w
                             cert_ok = torch.zeros_like(conv)
                             cert_ok.index_copy_(0, cand, ok_c)
+                            _sync(); verify_seconds += time.perf_counter() - _t
                         drop = cert_ok
                         defer = torch.zeros_like(conv)
                         reject = conv & ~cert_ok
@@ -411,21 +446,29 @@ def fit_genewise(
                             defer = reject & (resid > fwd_tol)
                             if eager_defer:
                                 defer = defer | (reject & plateau)
-                        if bool(drop.any()) or bool(defer.any()):
-                            if bool(drop.any()):
-                                theta.index_copy_(0, active[drop], sub[drop]); was_dropped[active[drop]] = True
-                                rebatch_log.append(dict(pi=pi_cur, it=it, dropped=int(drop.sum()),
-                                                        remain=int((~drop & ~defer).sum())))
-                            if bool(defer.any()):
-                                theta.index_copy_(0, active[defer], sub[defer]); carry = torch.cat([carry, active[defer]])
-                                defer_log.append(dict(pi=pi_cur, it=it, deferred=int(defer.sum()),
-                                                      to=pis[pi_idx + 1], resid_max=resid_max))
-                            active = active[~(drop | defer)]; sub = sub[~(drop | defer)].clone()
-                            if active.numel() == 0:
-                                break
+                        if bool(drop.any()):   # FREEZE in place: theta is final, no re-plan yet
+                            theta.index_copy_(0, active[drop], sub[drop]); was_dropped[active[drop]] = True
+                            rebatch_log.append(dict(pi=pi_cur, it=it, dropped=int(drop.sum()),
+                                                    remain=int((live & ~drop & ~defer).sum())))
+                        if bool(defer.any()):
+                            theta.index_copy_(0, active[defer], sub[defer]); carry = torch.cat([carry, active[defer]])
+                            defer_log.append(dict(pi=pi_cur, it=it, deferred=int(defer.sum()),
+                                                  to=pis[pi_idx + 1], resid_max=resid_max))
+                        settled = settled | drop | defer
+                        live = ~settled
+                        if not bool(live.any()):
+                            break
+                        # Re-plan only once the settled families own enough of this model's clades.
+                        if float(clades[settled].sum()) >= rebuild_frac * clade_total:
+                            _sync(); _t = time.perf_counter()
+                            active = active[live]; sub = sub[live].clone()
                             del m; torch.cuda.empty_cache()
-                            m = build(active.tolist(), pi_cur, neu_opt); n_builds += 1
-                            continue   # one rebuild per check; re-measure the gradient on the new batch
+                            m = build(active.tolist(), pi_cur, neu_opt); n_builds += 1; n_rebuilds += 1
+                            clades = clade_counts(m); clade_total = float(clades.sum())
+                            settled = torch.zeros(active.numel(), dtype=torch.bool, device=dev)
+                            _sync(); rebuild_seconds += time.perf_counter() - _t
+                            _log(f"  [pi{pi_cur} it{it}] re-planned over {active.numel()} live families")
+                            continue   # the gradient above belongs to the old batch; re-measure
                 if refresh_due:
                     B_fam.index_copy_(0, active, _analytic_hessian(m, sub, pi_cur))
                     refresh_due = False
@@ -433,12 +476,14 @@ def fit_genewise(
                 Hd = V @ torch.diag_embed(e.clamp(min=mu)) @ V.transpose(1, 2)   # convexify -> PD
                 Hred = Hd * free.unsqueeze(1) * free.unsqueeze(2) + torch.diag_embed(1.0 - free)
                 delta = -torch.linalg.solve(Hred, (g * free).unsqueeze(-1)).squeeze(-1)
+                delta = delta * live.unsqueeze(1).to(dtype)   # settled rows keep their frozen theta
                 dn = delta.norm(dim=1, keepdim=True)
                 sub = clamp_(sub + delta * (trust / dn.clamp(min=trust)))   # trust-region cap
                 n_steps += 1
-            if active.numel() > 0:
-                theta.index_copy_(0, active, sub)
-                carry = torch.cat([carry, active])
+            live = ~settled
+            if bool(live.any()):   # ran out of iterations: carry the unfinished families forward
+                theta.index_copy_(0, active[live], sub[live])
+                carry = torch.cat([carry, active[live]])
             del m; torch.cuda.empty_cache()
     finally:
         if _warm_saved is None:
@@ -449,7 +494,11 @@ def fit_genewise(
     result = dict(
         theta=theta, rates=torch.exp2(theta), n_families=F_all,
         opt_seconds=time.perf_counter() - t0, n_steps=n_steps, n_builds=n_builds,
-        n_verify_builds=n_verify_builds,   # of n_builds: the temporary candidate-only verify models
+        # Where the rebatching machinery's time went. ``verify`` = building the temporary
+        # candidate-only models and taking their accurate-tier gradient; ``rebuild`` = re-planning
+        # the model over the survivors. Tier builds and the certificate build are in neither.
+        n_verify_builds=n_verify_builds, verify_seconds=verify_seconds,
+        n_rebuilds=n_rebuilds, rebuild_seconds=rebuild_seconds,
         history=dict(rebatch=rebatch_log, defer=defer_log),
     )
     if certify:   # final cold PD certificate over ALL families at the high pi/Neumann tier

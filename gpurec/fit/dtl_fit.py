@@ -62,11 +62,11 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
 
     if mode == "genewise":
         # fit_genewise resolves its own gene-tree spec and rebuilds tiered models internally.
-        # min_drop / hessian_refresh / certify_curvature have no signature default in fit_genewise
-        # (one value, one place): the production values for this entry point are stated right here.
+        # min_drop / rebuild_frac / hessian_refresh / certify_curvature have no signature default
+        # in fit_genewise (one value, one place): the production values are stated right here.
         res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype,
-                           certify=True, certify_curvature=False, min_drop=32, hessian_refresh=15,
-                           solver_options=solver_options, config=config,
+                           certify=True, certify_curvature=False, min_drop=32, rebuild_frac=0.25,
+                           hessian_refresh=15, solver_options=solver_options, config=config,
                            verbose=verbose)
         wall_s = time.perf_counter() - t0
         nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)
