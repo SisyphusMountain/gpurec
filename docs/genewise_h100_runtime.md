@@ -236,8 +236,12 @@ certified converged (3 unconverged), 109 Newton steps, peak 24.4 GiB. Split: war
 gradients 463 s, curvature 58 s (7 exact refreshes), verification 49 s (32 rounds), re-plans 17 s,
 certificate 18 s, first build ~20 s. Fitted rates vs the original code's optimum: median difference
 1e-5 log2 units, but 43 % of families differ by more than 1e-3 and 412 families by more than one
-log2 unit — the per-family likelihood surfaces are flat or multimodal in those directions (per-family
-likelihood comparison in progress; the total is better).
+log2 unit — the per-family likelihood surfaces are flat or multimodal in those directions. Scoring both fitted theta sets under one
+common exact solver: 5060 of 5123 families agree within 0.01 bits; 63 differ by more (29 worse, 34
+better); 22 are worse by more than 0.1 bits (largest 2.4 bits) and 30 better by more than 0.1 bits
+(largest 5.3 bits); worsenings sum to 18.3 bits, improvements to 36.1 bits, net 17.8 bits better. The
+families that move are ones with two competing basins (for example a duplication rate of 2^-2.8
+versus 2^-16.6 with similar likelihoods).
 
 ## What is left
 
