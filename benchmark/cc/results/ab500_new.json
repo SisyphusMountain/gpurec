@@ -1,0 +1,93 @@
+{
+  "tag": "ab500_new",
+  "n_families": 500,
+  "wall_s": 1017.0733063793741,
+  "nll_bits": 1618463.768828887,
+  "nll_nats": 1121833.5982021661,
+  "opt_seconds": 790.2290217611007,
+  "n_steps": 231,
+  "n_builds": 11,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 167,
+        "remain": 333
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 96,
+        "remain": 234
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 138,
+        "remain": 95
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 74,
+        "remain": 21
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 15,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 3,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 56,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 64,
+        "it": 4,
+        "dropped": 4,
+        "remain": 1
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 16,
+        "deferred": 3,
+        "to": 64,
+        "resid_max": 10.065876007080078
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 7.7333831787109375
+      }
+    ]
+  },
+  "peak_gib": 44.15848159790039,
+  "certificate": {
+    "converged": 490,
+    "interior_pd": 296,
+    "bound_active": 34,
+    "unconverged": 10,
+    "premature_drops": 9,
+    "pg_max": 0.19076891243457794
+  }
+}

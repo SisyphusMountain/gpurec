@@ -73,13 +73,17 @@ default or slower; 2 warps on the tangent self-loop kernel is 6.7x slower).
 | first full-dataset gradient (includes JIT) | > 300 s | 64 s |
 | steady-state full-dataset gradient | 58 s (hidden behind JIT) | 58 s |
 | 40-family end-to-end fit | 354 s | 68 s, same NLL (115604.90 bits), same 25 steps / 4 builds |
-| 500-family end-to-end fit | PENDING (job ab500_old, warm cache forced off so it fits) | 1017 s, NLL 1618463.77 bits, 231 steps, 11 builds, 490/500 certified converged |
-| 5123-family end-to-end fit, 1 GPU | crashed after 2 h 34 min (CUDA out of memory inside the old streaming Hessian after the first rebatch; it had reached iteration 20 with 2981 active families at 143 min) | PENDING (job full_v3; reached the same point, iteration 20 with 2983 active, at 52 min, and the pi=64 tier at 62 min) |
-| 5123-family fit, 4 GPUs sharded | - | PENDING (job full_v3_4gpu, needs a free node) |
+| 500-family end-to-end fit | 2290 s (old code, warm cache forced off so it fits the H100), NLL 1618463.746 bits, 230 steps, 12 builds, 485/500 certified | 1017 s, NLL 1618463.769 bits, 231 steps, 11 builds, 490/500 certified |
+| 5123-family end-to-end fit, 1 GPU | crashed after 2 h 34 min (CUDA out of memory inside the old streaming Hessian after the first rebatch; it had reached iteration 20 with 2981 active families at 143 min) | **5353 s = 89 min**, NLL 9048956.572 bits, 226 steps, 16 builds, 5073/5123 certified converged, peak 70 GiB (reached iteration 20 with 2983 active at 52 min; first tier done at 62 min; pi=64 tier done at 67 min; certificate 22 min) |
+| 5123-family fit, 2 GPUs sharded | - | PENDING (job full_v3_2gpu) |
+| 5123-family fit, 4 GPUs sharded | - | not run: no node with 4 free H100s was available during the session (`GPUS=4 ... run_genewise_sharded.py --n-shards 4` is ready) |
 
-Per-family results are compared on the total certified NLL (bits) and on the fitted theta; the
-gradient is not bitwise reproducible (atomic accumulation), so per-family theta agree to the
-solver tolerance, not bitwise.
+The certified total NLL agrees between old and new code to 0.02 bits on 500 families (1.6M bits
+total, 1.4e-8 relative) and to 0.001 bits on 40 families; the gradient is not bitwise
+reproducible (atomic accumulation), so the per-family convergence flags in the tail differ by a
+few families between any two runs, old or new. The full-dataset fixed run followed the same
+rebatch trajectory as the crashed baseline (19 %, 43 % converged at iterations 8 and 12; 2983 vs
+2981 families active after the first drop).
 
 ## What is left
 

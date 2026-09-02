@@ -1,0 +1,113 @@
+{
+  "tag": "ab500_old",
+  "n_families": 500,
+  "wall_s": 2289.5593071207404,
+  "nll_bits": 1618463.745509671,
+  "nll_nats": 1121833.5820385173,
+  "opt_seconds": 1877.6165425651707,
+  "n_steps": 230,
+  "n_builds": 12,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 165,
+        "remain": 333
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 97,
+        "remain": 234
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 137,
+        "remain": 96
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 72,
+        "remain": 22
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 15,
+        "remain": 7
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 4,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 56,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 64,
+        "it": 4,
+        "dropped": 5,
+        "remain": 3
+      },
+      {
+        "pi": 64,
+        "it": 8,
+        "dropped": 2,
+        "remain": 1
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 12,
+        "deferred": 2,
+        "to": 64,
+        "resid_max": 0.5531082153320312
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "deferred": 2,
+        "to": 64,
+        "resid_max": 10.065887451171875
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 10.06588363647461
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "deferred": 2,
+        "to": 64,
+        "resid_max": 0.3655548095703125
+      }
+    ]
+  },
+  "peak_gib": 28.500853061676025,
+  "certificate": {
+    "converged": 485,
+    "interior_pd": 290,
+    "bound_active": 34,
+    "unconverged": 15,
+    "premature_drops": 14,
+    "pg_max": 0.2019517570734024
+  }
+}

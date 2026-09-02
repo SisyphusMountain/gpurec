@@ -1,0 +1,165 @@
+{
+  "tag": "full_v3",
+  "n_families": 5123,
+  "wall_s": 5352.743930845987,
+  "nll_bits": 9048956.571505781,
+  "nll_nats": 6272258.734548621,
+  "opt_seconds": 4027.483504293021,
+  "n_steps": 226,
+  "n_builds": 16,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 2090,
+        "remain": 2983
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 942,
+        "remain": 1980
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 877,
+        "remain": 1082
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 725,
+        "remain": 336
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 205,
+        "remain": 128
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 97,
+        "remain": 30
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 14,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 4,
+        "remain": 8
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 3,
+        "remain": 5
+      },
+      {
+        "pi": 64,
+        "it": 4,
+        "dropped": 152,
+        "remain": 14
+      },
+      {
+        "pi": 64,
+        "it": 8,
+        "dropped": 4,
+        "remain": 10
+      },
+      {
+        "pi": 64,
+        "it": 12,
+        "dropped": 3,
+        "remain": 7
+      },
+      {
+        "pi": 64,
+        "it": 40,
+        "dropped": 1,
+        "remain": 6
+      },
+      {
+        "pi": 64,
+        "it": 92,
+        "dropped": 2,
+        "remain": 4
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 12,
+        "deferred": 50,
+        "to": 64,
+        "resid_max": 6.007717132568359
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "deferred": 61,
+        "to": 64,
+        "resid_max": 9.748859405517578
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "deferred": 21,
+        "to": 64,
+        "resid_max": 13.785888671875
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "deferred": 21,
+        "to": 64,
+        "resid_max": 14.450450897216797
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "deferred": 3,
+        "to": 64,
+        "resid_max": 6.89276123046875
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 10.26669692993164
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "deferred": 3,
+        "to": 64,
+        "resid_max": 6.8927001953125
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 14.458503723144531
+      }
+    ]
+  },
+  "peak_gib": 70.28335094451904,
+  "certificate": {
+    "converged": 5073,
+    "interior_pd": 2808,
+    "bound_active": 473,
+    "unconverged": 50,
+    "premature_drops": 46,
+    "pg_max": 0.5137037634849548
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "tag": "smoke40_v3",
+  "n_families": 40,
+  "wall_s": 67.68836016021669,
+  "nll_bits": 115604.89923333713,
+  "nll_nats": 80131.20996250422,
+  "opt_seconds": 51.05122623499483,
+  "n_steps": 25,
+  "n_builds": 4,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 14,
+        "remain": 26
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 10,
+        "remain": 16
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 7,
+        "remain": 9
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 9,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 23.99976348876953,
+  "certificate": {
+    "converged": 40,
+    "interior_pd": 23,
+    "bound_active": 2,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.000987666193395853
+  }
+}
