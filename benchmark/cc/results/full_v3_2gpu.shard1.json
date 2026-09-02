@@ -1,0 +1,164 @@
+{
+  "tag": "full_v3_2gpu.shard1",
+  "n_families": 2562,
+  "wall_s": 2695.8945570816286,
+  "nll_bits": 4493380.458841046,
+  "nll_nats": 3114573.9962288244,
+  "opt_seconds": 2033.6623681560159,
+  "n_steps": 225,
+  "n_builds": 17,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 1021,
+        "remain": 1518
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 487,
+        "remain": 995
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 433,
+        "remain": 551
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 369,
+        "remain": 172
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 107,
+        "remain": 64
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 46,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 6,
+        "remain": 12
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 4,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 2,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 56,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 60,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 64,
+        "it": 4,
+        "dropped": 79,
+        "remain": 6
+      },
+      {
+        "pi": 64,
+        "it": 8,
+        "dropped": 3,
+        "remain": 3
+      },
+      {
+        "pi": 64,
+        "it": 28,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 64,
+        "it": 36,
+        "dropped": 1,
+        "remain": 1
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 12,
+        "deferred": 23,
+        "to": 64,
+        "resid_max": 1.6547966003417969
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "deferred": 36,
+        "to": 64,
+        "resid_max": 0.9735698699951172
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "deferred": 11,
+        "to": 64,
+        "resid_max": 1.0127029418945312
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "deferred": 10,
+        "to": 64,
+        "resid_max": 11.754600524902344
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 0.5386753082275391
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "deferred": 2,
+        "to": 64,
+        "resid_max": 0.22160720825195312
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 0.060855865478515625
+      }
+    ]
+  },
+  "peak_gib": 61.082520961761475,
+  "certificate": {
+    "converged": 2543,
+    "interior_pd": 1401,
+    "bound_active": 239,
+    "unconverged": 19,
+    "premature_drops": 18,
+    "pg_max": 0.006196651607751846
+  }
+}

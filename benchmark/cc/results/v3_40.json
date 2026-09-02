@@ -1,0 +1,110 @@
+{
+  "tag": "v3_40",
+  "n_families": 40,
+  "wall_s": 34.502523489296436,
+  "nll_bits": 115604.90342368369,
+  "nll_nats": 80131.21286703112,
+  "opt_seconds": 33.336286223027855,
+  "n_steps": 35,
+  "n_builds": 21,
+  "adam_seconds": 4.846414839848876,
+  "hessian_seconds": 3.086984530556947,
+  "n_hessians": 2,
+  "newton_grad_seconds": 10.710794950369745,
+  "n_verify_builds": 13,
+  "verify_seconds": 12.606801067013294,
+  "n_rebuilds": 7,
+  "rebuild_seconds": 0.3979944786988199,
+  "certify_seconds": 0.778629079926759,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 1,
+        "remain": 39
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 5,
+        "remain": 34
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 5,
+        "remain": 29
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 9,
+        "remain": 20
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 2,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 2,
+        "remain": 16
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 2,
+        "remain": 14
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 1,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 5,
+        "remain": 8
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 5,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 42,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 9.635185241699219,
+  "certificate": {
+    "converged": 40,
+    "bound_active": 2,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009610675042495131
+  }
+}

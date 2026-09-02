@@ -1,0 +1,48 @@
+{
+  "tag": "k2_tol0",
+  "n_families": 40,
+  "wall_s": 56.998076347168535,
+  "nll_bits": 115604.8996605213,
+  "nll_nats": 80131.21025860572,
+  "opt_seconds": 41.182848774362355,
+  "n_steps": 25,
+  "n_builds": 4,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 15,
+        "remain": 25
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 9,
+        "remain": 16
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 7,
+        "remain": 9
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 9,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 24.011974334716797,
+  "certificate": {
+    "converged": 40,
+    "interior_pd": 23,
+    "bound_active": 2,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009876667754724622
+  }
+}

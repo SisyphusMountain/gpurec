@@ -1,0 +1,166 @@
+{
+  "tag": "full_v3_2gpu.shard0",
+  "n_families": 2561,
+  "wall_s": 2851.1437275568023,
+  "nll_bits": 4555576.830728484,
+  "nll_nats": 3157685.23604366,
+  "opt_seconds": 2185.2598400120623,
+  "n_steps": 227,
+  "n_builds": 15,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 1066,
+        "remain": 1468
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 460,
+        "remain": 979
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 438,
+        "remain": 532
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 352,
+        "remain": 173
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 100,
+        "remain": 72
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 53,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 5,
+        "remain": 12
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 4,
+        "remain": 7
+      },
+      {
+        "pi": 16,
+        "it": 56,
+        "dropped": 1,
+        "remain": 4
+      },
+      {
+        "pi": 64,
+        "it": 4,
+        "dropped": 70,
+        "remain": 12
+      },
+      {
+        "pi": 64,
+        "it": 8,
+        "dropped": 3,
+        "remain": 9
+      },
+      {
+        "pi": 64,
+        "it": 20,
+        "dropped": 2,
+        "remain": 7
+      },
+      {
+        "pi": 64,
+        "it": 56,
+        "dropped": 1,
+        "remain": 6
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 12,
+        "deferred": 27,
+        "to": 64,
+        "resid_max": 17.488834381103516
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "deferred": 29,
+        "to": 64,
+        "resid_max": 10.065887451171875
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "deferred": 9,
+        "to": 64,
+        "resid_max": 2.8766326904296875
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "deferred": 7,
+        "to": 64,
+        "resid_max": 14.447982788085938
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 13.785751342773438
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 14.459487915039062
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 5.586799621582031
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 14.437122344970703
+      },
+      {
+        "pi": 16,
+        "it": 56,
+        "deferred": 2,
+        "to": 64,
+        "resid_max": 14.437118530273438
+      }
+    ]
+  },
+  "peak_gib": 69.22356605529785,
+  "certificate": {
+    "converged": 2537,
+    "interior_pd": 1416,
+    "bound_active": 234,
+    "unconverged": 24,
+    "premature_drops": 19,
+    "pg_max": 0.49040910601615906
+  }
+}

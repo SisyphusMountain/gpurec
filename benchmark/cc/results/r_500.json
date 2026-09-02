@@ -1,0 +1,234 @@
+{
+  "tag": "r_500",
+  "n_families": 500,
+  "wall_s": 552.4637650800869,
+  "nll_bits": 1618461.844359085,
+  "nll_nats": 1121832.2642613486,
+  "opt_seconds": 497.3417041799985,
+  "n_steps": 211,
+  "n_builds": 61,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 37,
+        "remain": 463
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 28,
+        "remain": 434
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 43,
+        "remain": 391
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 67,
+        "remain": 323
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 63,
+        "remain": 258
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 46,
+        "remain": 212
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 11,
+        "remain": 200
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 34,
+        "remain": 166
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 27,
+        "remain": 138
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 25,
+        "remain": 113
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 51,
+        "remain": 62
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 20,
+        "remain": 42
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 15,
+        "remain": 27
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 7,
+        "remain": 20
+      },
+      {
+        "pi": 16,
+        "it": 38,
+        "dropped": 3,
+        "remain": 17
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 4,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 2,
+        "remain": 11
+      },
+      {
+        "pi": 16,
+        "it": 46,
+        "dropped": 1,
+        "remain": 10
+      },
+      {
+        "pi": 16,
+        "it": 50,
+        "dropped": 1,
+        "remain": 9
+      },
+      {
+        "pi": 16,
+        "it": 62,
+        "dropped": 1,
+        "remain": 7
+      },
+      {
+        "pi": 16,
+        "it": 68,
+        "dropped": 1,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 84,
+        "dropped": 1,
+        "remain": 5
+      },
+      {
+        "pi": 16,
+        "it": 88,
+        "dropped": 1,
+        "remain": 4
+      },
+      {
+        "pi": 16,
+        "it": 94,
+        "dropped": 2,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 110,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 64,
+        "it": 0,
+        "dropped": 2,
+        "remain": 6
+      },
+      {
+        "pi": 64,
+        "it": 2,
+        "dropped": 4,
+        "remain": 2
+      },
+      {
+        "pi": 64,
+        "it": 6,
+        "dropped": 1,
+        "remain": 1
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 8,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 2.8499755859375
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 10.065887451171875
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "deferred": 2,
+        "to": 64,
+        "resid_max": 1.2229728698730469
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 1.1187057495117188
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 5.064430236816406
+      },
+      {
+        "pi": 16,
+        "it": 56,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 2.8500442504882812
+      }
+    ]
+  },
+  "peak_gib": 56.7503981590271,
+  "certificate": {
+    "converged": 479,
+    "bound_active": 34,
+    "unconverged": 21,
+    "premature_drops": 20,
+    "pg_max": 0.0934581458568573
+  }
+}

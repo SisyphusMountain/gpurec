@@ -164,6 +164,16 @@ required keyword. On 500 families with the log-space forward this gave 365 s, NL
 (the two bimodal families land on their original branch), 499/500 converged, Adam 46 s — i.e. no
 measurable warm-up saving; kept as the more sensible start, control run pending.
 
+**Full dataset, all merged tracks except the linear forward (log-space forward, job full_v7log,
+interactive H100 node): 2305 s** (from 5353 s), NLL 9048959.87 bits (+3.3 bits vs the first-round
+value; 5120 of 5123 certified converged vs 5073), 220 Newton steps. Split: warm-up 379 s (5 full
+gradients at ~76 s each on that node), Newton gradients 1059 s, candidate verification 209 s (55
+rounds at the pi=64 tier), curvature 152 s (15 exact refreshes), certificate 131 s, first build 84 s,
+re-plans 17 s. To reach 800 s the per-gradient cost at fitted rates must fall about 3x more: the
+forward self-loop (still ~40 % of a gradient, 14 iterations per row at fitted rates) and the
+pi=64 verification/certificate passes (64 iterations per row) are the levers, i.e. a converging
+per-row solve (tree-ordered sweeps or a direct solve) instead of truncated Jacobi iteration.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
