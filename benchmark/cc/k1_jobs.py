@@ -36,6 +36,10 @@ JOBS = {
     "replay": ("k1_replay", "benchmark/cc/replay_failing_batch.py", dict(minutes=30)),
     # fp64 replay of the failing batch (same model for both paths) + the easy-regime regression.
     "check": ("k1_check", None, dict(minutes=40)),
+    # float32 curvature check on the batch that crashed the fit, then the 500-family fit.
+    "verify500": ("k1_verify500", None, dict(minutes=60)),
+    # Production timing: no --debug-dump-dir, so the opt-in finiteness checks never synchronise.
+    "fits": ("k1_fits", None, dict(minutes=120)),
     "repro": ("k1_repro", "benchmark/cc/run_genewise.py", dict(minutes=120)),
     "fit500": ("k1_fit500", "benchmark/cc/run_genewise.py", dict(minutes=30)),
     "full": ("k1_full", "benchmark/cc/run_genewise.py", dict(minutes=180)),
@@ -81,7 +85,22 @@ def main() -> int:
         "--families $CC_FAMILIES --limit 0 --out-dir $CC_RUNS/results --tag k1_repro "
         f"--debug-dump-dir {debug_dir}"
     )
-    if args.job == "check":
+    if args.job == "fits":
+        command = (
+            "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit 500 --out-dir $CC_RUNS/results --tag k1_fit500; "
+            "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit 0 --out-dir $CC_RUNS/results --tag k1_full"
+        )
+    elif args.job == "verify500":
+        command = (
+            f"$CC_PY -u benchmark/cc/replay_failing_batch.py --dump {args.dump} "
+            "--clade-budget 315000 --window 60 --run-hessian 1 --dtype float32 --oracle 1; "
+            "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit 500 --out-dir $CC_RUNS/results --tag k1_fit500 "
+            f"--debug-dump-dir {debug_dir}"
+        )
+    elif args.job == "check":
         command = (
             f"$CC_PY -u benchmark/cc/replay_failing_batch.py --dump {args.dump} "
             "--clade-budget 315000 --window 60 --run-hessian 0 --dtype float64 --oracle 0; "
