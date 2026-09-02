@@ -36,8 +36,8 @@ from gpurec.config import GpurecConfig, PrecisionOptions, resolve_torch_dtype
 from gpurec.config.rates import RateBounds
 from gpurec.core.inference.solver import solve_forward_residual
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
-from gpurec.solver.value_and_grad import forward_solve
-from gpurec.solver.hvp.exact import make_exact_hvp
+from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight
+from gpurec.solver.hvp.exact import make_exact_hvp_single
 
 # The genewise rate-bounds preset (floor 1e-6, cap 2.0) -- tighter than the global (1e-10, None)
 # floor in gpurec.optimization / GeneReconModel's theta init. Single source for the fit_genewise
@@ -84,34 +84,33 @@ def _resolve_gene_trees(spec) -> list[str]:
 
 
 def _analytic_hessian(m, theta, pi_cur):
-    """Per-family [G,3,3] curvature via 3 broadcast analytic-HVP probes, warm-started via
-    probe_id. Mirrors hvp_exact.py's _make_exact_hvp_streaming genewise gather/scatter for
-    single-batch (which the top-level make_exact_hvp does NOT do for you), and lets it handle
-    multi-batch itself."""
+    """Per-family [G,3,3] curvature via 3 analytic-HVP probes (unit theta-component directions).
+
+    Batches are streamed one at a time. For each batch the forward solve and the adjoint point
+    cache are built ONCE and shared by the 3 probes; the library's multi-batch streaming HVP
+    (``make_exact_hvp`` on >1 batch) instead rebuilds both per probe, i.e. 3x the forward+backward
+    work for an identical result. Probe ``j`` of batch ``b`` is scattered into the full ``[G,3]``
+    column ``j`` on the batch's (disjoint) family rows, so the per-family 3x3 blocks are exact.
+    Single-batch models take the same path (``forward_solve`` on a length-1 list and
+    ``make_exact_hvp_single`` are what ``make_exact_hvp`` dispatched to before).
+    """
     G = theta.shape[0]
     dev, dtype = theta.device, theta.dtype
     rw = m.receiver_weights.detach()
-    if len(m.batch_statics) > 1:
-        hvp = make_exact_hvp(m.batch_statics, theta, rw, None, tangent_self_iters=pi_cur)
-        cols = []
-        for j in range(3):
-            u = torch.zeros(G, 3, device=dev, dtype=dtype); u[:, j] = 1.0
-            cols.append(hvp(u.reshape(-1), probe_id=j)[: G * 3].reshape(G, 3))
-        H = torch.stack(cols, dim=-1)
-    else:
-        static = m.batch_statics[0]
+    cols = [torch.zeros(G, 3, device=dev, dtype=dtype) for _ in range(3)]
+    for static in m.batch_statics:
         fam = static.family_index_tensor.to(dev)
+        G_b = int(fam.numel())
         theta_b = theta.index_select(0, fam).contiguous()
-        _l, sv = forward_solve(m.batch_statics, theta, rw)
-        hvp = make_exact_hvp(m.batch_statics, theta_b, rw, sv, tangent_self_iters=pi_cur)
-        cols = []
+        _l, sv = forward_solve([static], theta, rw)
+        hvp = make_exact_hvp_single(static, theta_b, rw, sv, tangent_self_iters=pi_cur)
         for j in range(3):
-            u_b = torch.zeros(G, 3, device=dev, dtype=dtype); u_b[:, j] = 1.0
-            out_b = hvp(u_b.reshape(-1), probe_id=j)[: G * 3].reshape(G, 3)
-            col = torch.zeros(G, 3, device=dev, dtype=dtype)
-            col.index_add_(0, fam, out_b)
-            cols.append(col)
-        H = torch.stack(cols, dim=-1)
+            u_b = torch.zeros(G_b, 3, device=dev, dtype=dtype); u_b[:, j] = 1.0
+            out_b = hvp(u_b.reshape(-1), probe_id=j)[: G_b * 3].reshape(G_b, 3)
+            cols[j].index_add_(0, fam, out_b)
+        del hvp, sv
+        free_cuda_cache_if_tight()
+    H = torch.stack(cols, dim=-1)
     return 0.5 * (H + H.transpose(1, 2))
 
 
