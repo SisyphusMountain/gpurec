@@ -204,8 +204,8 @@ def pi_wave_forward(
             use_receiver_weights,
             accumulator_dtype,
         )
-        # Five slots: the elimination's three affine coefficients per species plus the two
-        # ancestor-sum components (see ``_exact_tree_pi_self_loop_kernel``'s slot table).
+        # Four slots: the elimination's two affine coefficients per species plus two working
+        # arrays (see ``_exact_tree_pi_self_loop_kernel``'s slot table).
         exact_scratch = torch.empty(
             (_EXACT_TREE_SCRATCH_SLOTS, max_wave_rows, S), dtype=dtype, device=device
         )
@@ -404,6 +404,7 @@ def pi_wave_forward(
                 max_transfer_lin,
                 receiver_lin,
                 sp_child1,
+                sp_child2,
                 compact_level_ptr,
                 compact_level_parents,
                 compact_level_child1,
