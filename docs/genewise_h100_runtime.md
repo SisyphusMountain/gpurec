@@ -78,7 +78,9 @@ default or slower; 2 warps on the tangent self-loop kernel is 6.7x slower).
 | 5123-family fit, 2 GPUs sharded | - | PENDING (job full_v3_2gpu) |
 | 5123-family fit, 4 GPUs sharded | - | not run: no node with 4 free H100s was available during the session (`GPUS=4 ... run_genewise_sharded.py --n-shards 4` is ready) |
 
-The certified total NLL agrees between old and new code to 0.02 bits on 500 families (1.6M bits
+Fitted per-family log2 rates (old vs new code, 500 families): median difference 1.5e-6, 99.6 % of
+families within 1e-3, worst 0.063 on one family whose duplication rate is tiny (a flat direction of
+its likelihood); on 40 families the largest difference is 4.6e-4. The certified total NLL agrees between old and new code to 0.02 bits on 500 families (1.6M bits
 total, 1.4e-8 relative) and to 0.001 bits on 40 families; the gradient is not bitwise
 reproducible (atomic accumulation), so the per-family convergence flags in the tail differ by a
 few families between any two runs, old or new. The full-dataset fixed run followed the same
