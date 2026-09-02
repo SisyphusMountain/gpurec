@@ -23,6 +23,13 @@ from gpurec.core.kernels.pi_forward import (
 # Bit-identical (hvp FD gate unchanged); neutral on small (S=119). Override per run via env.
 _WST_NUM_WARPS = int(os.environ.get("NEWTON_WST_NUM_WARPS", "4"))
 
+# Triton warps per program for the fused self-loop JVP iteration kernel
+# (``_apply_reconciliation_self_loop_jvp_iterations_kernel``), the dominant Hessian kernel.
+# Launch-shape tuning only: BLOCK_S and every other constexpr are unchanged, so the arithmetic
+# is identical. Split out from _WST_NUM_WARPS so it can be tuned independently of the
+# single-step JVP kernel; measured by benchmark/cc/sweep_num_warps.py.
+_NUM_WARPS_SELF_LOOP_JVP_ITERS = _WST_NUM_WARPS
+
 
 @triton.jit
 def _update_reconciliation_likelihood_jvp_kernel(
@@ -643,7 +650,7 @@ def compute_wave_step_tangent_selfloop(
         STORE_PIBAR=bool(store_pibar),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
-        num_warps=_WST_NUM_WARPS,
+        num_warps=_NUM_WARPS_SELF_LOOP_JVP_ITERS,
     )
 
 

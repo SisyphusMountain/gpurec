@@ -29,6 +29,14 @@ from gpurec.core.kernels.wave_backward_kernels import (
 
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 
+# Triton warps per program for the three adjoint kernels that dominate the genewise gradient.
+# Launch-shape tuning only: block sizes and every other constexpr are unchanged, so the
+# arithmetic is identical. Not user settings -- they are properties of the GPU the kernels run
+# on, measured by benchmark/cc/sweep_num_warps.py.
+_NUM_WARPS_PREPARE_SELF_LOOP_VJP = 8
+_NUM_WARPS_SELF_LOOP_TRANSPOSE = 2
+_NUM_WARPS_TRANSFER_SUBTREE_VJP = 4
+
 
 def _tl_float_dtype(dtype):
     """Map a supported backward-state dtype to its Triton compute dtype."""
@@ -436,7 +444,7 @@ def _solve_reconciliation_wave_vjp_2d(
         DTYPE=_tl_float_dtype(dtype),
         USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
-        **launch_options,
+        num_warps=_NUM_WARPS_PREPARE_SELF_LOOP_VJP,
     )
 
     jt_options = {"num_warps": 2}
@@ -480,7 +488,7 @@ def _solve_reconciliation_wave_vjp_2d(
                 USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
                 OUTPUT_A=False,
                 ACCUMULATE_V=True,
-                **jt_options,
+                num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
             )
     else:
         for n in range(int(neumann_terms)):
@@ -518,7 +526,7 @@ def _solve_reconciliation_wave_vjp_2d(
                 USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
                 OUTPUT_A=False,
                 ACCUMULATE_V=True,
-                **jt_options,
+                num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
             )
 
     # Per-row relative size of the last Neumann increment = validated stiffness predictor.
@@ -1197,6 +1205,6 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
         ACCUM_RECEIVER_GRAD=bool(grad_receiver_log_probs is not None),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
-        **launch_options,
+        num_warps=_NUM_WARPS_TRANSFER_SUBTREE_VJP,
     )
     return active_donor_side

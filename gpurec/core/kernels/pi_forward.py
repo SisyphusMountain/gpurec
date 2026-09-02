@@ -17,6 +17,12 @@ __all__ = [
 
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64)
 
+# Triton warps per program for the reconciliation-likelihood wave update
+# (``_update_reconciliation_likelihood_kernel``). Launch-shape tuning only: BLOCK_S and every
+# other constexpr are unchanged, so the arithmetic is identical. Not a user setting -- it is a
+# property of the GPU the kernel runs on, measured by benchmark/cc/sweep_num_warps.py.
+_NUM_WARPS_UPDATE_RECONCILIATION = 8
+
 
 def _tl_float_dtype(dtype):
     """Map a supported PyTorch model dtype to its Triton scalar dtype."""
@@ -1321,7 +1327,7 @@ def compute_wave_step(
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
-        num_warps=8,
+        num_warps=_NUM_WARPS_UPDATE_RECONCILIATION,
     )
 
 
