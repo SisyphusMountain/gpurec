@@ -87,6 +87,22 @@ few families between any two runs, old or new. The full-dataset fixed run follow
 rebatch trajectory as the crashed baseline (19 %, 43 % converged at iterations 8 and 12; 2983 vs
 2981 families active after the first drop).
 
+## Second round: towards 800 s on one GPU
+
+Goal set after the first round: full 5123-family fit under 800 s on one H100 (from 5353 s).
+
+**Recipe changes (commit 5c62ba4a, `gpurec/fit/genewise_fit.py`).** Converged candidates are
+re-verified at the accurate tier on a temporary model over the candidates only (before: over the
+whole active set); the convergence check runs every 2 iterations and a drop happens as soon as 32
+families or 5 % of the active set pass (before: every 4, and only above 30 %); the exact 3-probe
+Hessian is computed at the first Newton iteration of a tier and every 15 iterations, with per-family
+BFGS updates in between (before: exact every 5); the certificate skips the Hessian (its only use was
+the positive-definite count) unless `certify_curvature=True`. Measured: 40 families 68 s to 37.5 s,
+500 families 1017 s to 552 s (211 vs 231 Newton steps: the BFGS curvature did not cost iterations).
+On 500 families, 498 families reach the same optimum (total within 0.013 bits); two bimodal families
+(`COG0210_2`, `COG0099_1`) land on the other, better branch (-1.9 bits in total), both stationary
+under the 1e-3 tolerance in both runs.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
