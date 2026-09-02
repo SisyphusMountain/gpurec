@@ -973,13 +973,16 @@ def compute_wave_step_tangent_selfloop(
     dPibar_out=None, has_leaf_term=True, use_receiver_weights=True,
     dreceiver_log_probs=None,
     pi_offset, gene_split_offset=None,
-    species_height=None, exact=False,
+    species_height=None, species_levels=None, exact=False,
 ):
     """Run the wave-tangent self-loop; see the LaTeX reference.
 
     ``exact=False`` runs ``n_iters`` fixed Jacobi sweeps. ``exact=True`` solves the same system by
-    elimination on the species tree, which needs ``species_height`` (``species_helpers["sp_height"]``)
-    and ignores ``n_iters`` -- its answer is what the sweeps converge to.
+    elimination on the species tree and ignores ``n_iters`` -- its answer is what the sweeps
+    converge to. It needs ``species_height`` (``species_helpers["sp_height"]``) and
+    ``species_levels``, the species tree's height, which is ``compact_level_ptr.numel() - 1``;
+    that is a shape, so the caller reads it without the device-to-host copy a
+    ``species_height.max()`` here would cost on every wave.
     """
     has_splits = gene_split_log_likelihood is not None
     pi_offset_arg, gene_split_offset_arg = _prepare_wave_offsets(
@@ -1023,8 +1026,10 @@ def compute_wave_step_tangent_selfloop(
     if exact:
         if species_height is None:
             raise ValueError("the exact wave-tangent self-loop needs species_height")
+        if species_levels is None:
+            raise ValueError("the exact wave-tangent self-loop needs species_levels")
         species_height = species_height.to(device=Pi_in.device, dtype=torch.int32).contiguous()
-        n_levels = int(species_height.max().item())
+        n_levels = int(species_levels)
         collect_guard_trips = _COLLECT_EXACT_TANGENT_GUARD_TRIPS
         guard_trips = (
             torch.zeros((int(W), 2), device=Pi_in.device, dtype=torch.int32)

@@ -244,6 +244,9 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     species_child2 = sh["sp_child2"]
     species_parent = sh["sp_parent"]
     species_height = sh.get("sp_height")
+    # The species tree's height. One bucket per height in the compact level tables, so this is a
+    # shape rather than a value: no device-to-host copy, unlike reducing species_height itself.
+    species_levels = int(sh["compact_level_ptr"].numel()) - 1
     max_ancestor_depth = int(sh["max_ancestor_depth"])
     # The tangent is the forward tree system with a different right-hand side, so
     # SolverOptions.adjoint_self_loop -- which already says "solve the wave's linear system
@@ -376,7 +379,8 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 family_idx=family_idx, dPibar_out=dpibar, has_leaf_term=has_leaf,
                 use_receiver_weights=use_receiver_weights, dreceiver_log_probs=dreceiver_log_probs,
                 pi_offset=pi_offset, gene_split_offset=gene_split_offset,
-                species_height=species_height, exact=exact_selfloop,
+                species_height=species_height, species_levels=species_levels,
+                exact=exact_selfloop,
             )
         elif self_iters is not None:
             # reference (unfused) fixed-count path: one launch per Jacobi step
