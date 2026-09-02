@@ -14,7 +14,9 @@ from gpurec.core.kernels.pi_forward import (
 )
 
 
-@triton.jit
+# ``ws`` is the wave's start row and changes every launch; keeping it out of the
+# specialization key avoids one JIT compile per divisibility state (see README.md).
+@triton.jit(do_not_specialize=["ws"])
 def _reconciliation_vjp_directional_derivative_kernel(
     Pi_ptr, dPi_ptr, Pibar_ptr, dPibar_ptr,
     Pi_offset_ptr, Pibar_offset_ptr,

@@ -9,7 +9,10 @@ import torch
 import triton
 import triton.language as tl
 
-@triton.jit
+# ``rhs`` is the wave's slice of the [clades, species] adjoint buffer, so its 16-byte
+# alignment changes with the wave start; specializing on it recompiles the kernel for
+# half the waves (see README.md).
+@triton.jit(do_not_specialize_on_alignment=["rhs_ptr"])
 def _select_active_adjoint_rows_kernel(
     rhs_ptr,          # [W, S]
     active_mask_ptr,  # [W] bool
@@ -41,7 +44,10 @@ def _select_active_adjoint_rows_kernel(
     tl.store(active_mask_ptr + w + lane, active)
 
 
-@triton.jit
+# ``ws``/``W`` are the wave's start row and width, and ``rhs`` is the wave's slice of the
+# [clades, species] adjoint buffer, so its 16-byte alignment changes with the wave start.
+# All three would otherwise recompile the kernel per wave (see README.md).
+@triton.jit(do_not_specialize=["ws", "W"], do_not_specialize_on_alignment=["rhs_ptr"])
 def _prepare_reconciliation_self_loop_vjp_kernel(
     Pi_star_ptr,
     Pibar_star_ptr,
@@ -600,7 +606,10 @@ def _apply_reconciliation_self_loop_transpose_kernel(
         tl.store(v_k_ptr + offsets, v_prev + self_loop_vjp, mask=mask)
 
 
-@triton.jit
+# ``W`` is the wave's width, and ``rhs`` is the wave's slice of the [clades, species]
+# adjoint buffer, so its 16-byte alignment changes with the wave start. Both would
+# otherwise recompile the kernel per wave (see README.md).
+@triton.jit(do_not_specialize=["W"], do_not_specialize_on_alignment=["rhs_ptr"])
 def _reconciliation_self_loop_transpose_series_kernel(
     rhs_ptr,
     term_pair_ptr,
@@ -873,7 +882,9 @@ def _reconciliation_self_loop_transpose_series_kernel(
 
 
 
-@triton.jit
+# ``W`` is the wave's width and changes every launch; keeping it out of the specialization
+# key avoids one JIT compile per new "== 1" / divisible-by-16 state (see README.md).
+@triton.jit(do_not_specialize=["W"])
 def _accumulate_transfer_receiver_log_probability_vjp_kernel(
     v_k_ptr,
     active_mask_ptr,
@@ -966,7 +977,10 @@ def _accumulate_transfer_receiver_log_probability_vjp_kernel(
     )
 
 
-@triton.jit
+# ``ws``/``W`` are the wave's start row and width and change every launch; keeping them
+# out of the specialization key avoids one JIT compile per new "== 1" /
+# divisible-by-16 state (see README.md).
+@triton.jit(do_not_specialize=["ws", "W"])
 def _accumulate_reconciliation_event_vjp_kernel(
     Pi_star_ptr,
     Pibar_star_ptr,
@@ -1248,7 +1262,9 @@ def _accumulate_reconciliation_event_vjp_kernel(
         tl.store(speciation_child2_event_vjp_ptr + out_offsets, tl.where(mask, speciation_child2_event_vjp, zero), mask=store_mask)
 
 
-@triton.jit
+# ``ws`` is the wave's start row and changes every launch; keeping it out of the
+# specialization key avoids one JIT compile per divisibility state (see README.md).
+@triton.jit(do_not_specialize=["ws"])
 def _accumulate_gene_split_event_vjp_kernel(
     # Converged values [C, S]
     Pi_star_ptr,
@@ -1822,7 +1838,9 @@ def _select_active_transfer_donor_sides_kernel(
         tl.store(side_active_ptr + row + lane, row_absmax != 0.0)
 
 
-@triton.jit
+# ``n_ws`` is the wave's split count and changes every launch; keeping it out of the
+# specialization key avoids one JIT compile per divisibility state (see README.md).
+@triton.jit(do_not_specialize=["n_ws"])
 def _accumulate_transfer_subtree_vjp_kernel(
     Pi_star_ptr,          # [C, S]
     receiver_log_probs_ptr, # [S]
