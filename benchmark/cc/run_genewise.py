@@ -35,6 +35,8 @@ def main() -> int:
     ap.add_argument("--limit", required=True, type=int, help="0 = all families; N = first N of the list")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--tag", required=True)
+    ap.add_argument("--init-rate", required=True,
+                    help="start every family at this rate for D, L and T; 'none' = fit_dtl's default start")
     ap.add_argument("--forward-self-loop", required=True, choices=("linear", "log"),
                     help="forward self-loop kernel path (SolverOptions.forward_self_loop)")
     args = ap.parse_args()
@@ -55,12 +57,14 @@ def main() -> int:
 
     torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
-    res = fit_dtl(args.species, paths, "genewise", device="cuda", verbose=True, config=cfg)
+    init_rate = None if args.init_rate == "none" else float(args.init_rate)
+    res = fit_dtl(args.species, paths, "genewise", device="cuda", verbose=True, config=cfg,
+                  init_rate=init_rate)
     wall = time.perf_counter() - t0
     peak_gib = torch.cuda.max_memory_allocated() / 2**30
     g = res["genewise_result"]
     summary = {
-        "tag": args.tag, "forward_self_loop": args.forward_self_loop, "n_families": res["n_families"], "wall_s": wall,
+        "tag": args.tag, "forward_self_loop": args.forward_self_loop, "init_rate": args.init_rate, "n_families": res["n_families"], "wall_s": wall,
         "nll_bits": res["nll_bits"], "nll_nats": res["nll_nats"],
         "opt_seconds": g["opt_seconds"], "n_steps": g["n_steps"], "n_builds": g["n_builds"],
         # per-phase wall-clock split (see fit_genewise's result dict)
