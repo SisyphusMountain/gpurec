@@ -387,7 +387,10 @@ def _initialize_leaf_reconciliation_likelihood_kernel(
         )
 
 
-@triton.jit
+# ``ws``/``pi_ws`` are the wave's start rows and change every launch. Triton keys its
+# compile cache on each integer's "== 1" / divisible-by-16 state, so leaving them
+# specialized recompiles this kernel for no gain (see README.md).
+@triton.jit(do_not_specialize=["ws", "pi_ws"])
 def _update_reconciliation_likelihood_kernel(
     Pi_ptr,
     Pi_offset_ptr,
@@ -712,7 +715,10 @@ def _update_reconciliation_likelihood_kernel(
         tl.store(Pibar_offset_ptr + global_row, pibar_offset)
 
 
-@triton.jit
+# ``ws`` is the wave's start row and ``slot_span`` the scratch stride; both change per
+# wave or per batch. Keeping them out of the specialization key avoids one JIT compile
+# per new "== 1" / divisible-by-16 state (see README.md).
+@triton.jit(do_not_specialize=["ws", "slot_span"])
 def _fused_linear_pi_self_loop_kernel(
     Pi_in_ptr,
     Pi_in_offset_ptr,
@@ -1128,7 +1134,9 @@ def _fused_linear_pi_self_loop_kernel(
         tl.store(pi_residual_out_ptr + global_row, max_log2_change)
 
 
-@triton.jit
+# ``family_offset`` is the wave's start row and changes every launch; keeping it out of
+# the specialization key avoids one JIT compile per divisibility state (see README.md).
+@triton.jit(do_not_specialize=["family_offset"])
 def _reduce_single_gene_split_events_kernel(
     Pi,
     Pi_offset,
@@ -1267,7 +1275,10 @@ def _reduce_single_gene_split_events_kernel(
     )
 
 
-@triton.jit
+# ``family_offset`` (wave start row), ``split_offset`` (single-split cursor) and
+# ``MAX_TILES`` all change per wave; keeping them out of the specialization key avoids
+# one JIT compile per new "== 1" / divisible-by-16 state (see README.md).
+@triton.jit(do_not_specialize=["family_offset", "split_offset", "MAX_TILES"])
 def _stage_multiple_gene_split_event_reduction_kernel(
     Pi,
     Pi_offset,
@@ -1419,7 +1430,9 @@ def _stage_multiple_gene_split_event_reduction_kernel(
     tl.store(partial_frame_offset_ptr + partial_row, tile_base_offset)
 
 
-@triton.jit
+# ``MAX_TILES`` is the wave's tile count and changes every launch; keeping it out of the
+# specialization key avoids one JIT compile per new value class (see README.md).
+@triton.jit(do_not_specialize=["MAX_TILES"])
 def _finalize_multiple_gene_split_event_reduction_kernel(
     multiple_split_group_ptr,
     multiple_split_parent_rows,

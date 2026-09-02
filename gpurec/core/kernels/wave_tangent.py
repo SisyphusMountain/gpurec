@@ -279,7 +279,10 @@ def _update_reconciliation_likelihood_jvp_kernel(
         tl.store(dPibar_out_ptr + global_base + s_offs, d_transfer_complement_log_likelihood, mask=mask)
 
 
-@triton.jit
+# ``ws``/``pi_ws`` are the wave's start rows, and ``dPi_new`` is the wave's slice of the
+# tangent buffer, so its 16-byte alignment changes with the wave start. All three would
+# otherwise recompile the kernel per wave (see README.md).
+@triton.jit(do_not_specialize=["ws", "pi_ws"], do_not_specialize_on_alignment=["dPi_new_ptr"])
 def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     Pi_ptr, dPi_ptr,
     Pi_offset_ptr,

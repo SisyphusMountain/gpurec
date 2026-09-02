@@ -37,6 +37,31 @@ model/accumulator pairs are fp32/fp32, fp32/fp64, and fp64/fp64. Fp64/fp32 is
 rejected before launch because offsets and small reductions may not be narrower
 than model state.
 
+## Why some kernels pass `do_not_specialize` to `@triton.jit`
+
+Triton keys its compiled-kernel cache on more than the kernel source and its
+`tl.constexpr` values. For every ordinary integer argument it also records
+whether the value is exactly 1 (which turns it into a compile-time constant) and
+whether it is divisible by 16; for every pointer argument it records whether the
+address is 16-byte aligned. A new combination is a new just-in-time compile of
+otherwise identical code, taking seconds each and leaving another directory in
+`TRITON_CACHE_DIR`.
+
+Wave loops hit both rules on every launch: `ws`, `W`, `n_ws`, `family_offset`,
+`split_offset` and the tile counts change with each wave, and a wave's slice of a
+`[clades, species]` buffer (`accumulated_rhs[ws : ws + W]`, the right half of the
+stacked donor-adjoint staging buffer) starts at a byte offset that is only
+sometimes a multiple of 16 because the species count is odd. Measured on one
+100-family forward + gradient + analytic Hessian with an empty cache, that cost
+93 compiles where 35 distinct kernel configurations exist.
+
+The kernels affected list those arguments in `do_not_specialize` (integers) or
+`do_not_specialize_on_alignment` (sliced pointers), which pins one compile per
+genuine configuration. Only arguments that were measured to vary are listed:
+alignment specialization is what lets Triton emit vectorized loads, so it is
+dropped only where it was already being lost half the time. `tl.constexpr`
+arguments stay compile-time -- they select which code is generated.
+
 Species-tree node ids and split-row ids are discrete layout metadata, not
 numerical model precision. Scheduling stores them as int32 to reduce memory
 traffic. Parent-chain kernels explicitly keep their loop-carried node id int32

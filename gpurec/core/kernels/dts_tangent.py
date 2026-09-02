@@ -14,7 +14,9 @@ from gpurec.core.kernels.pi_forward import (
 )
 
 
-@triton.jit
+# ``family_offset`` is the wave's start row and changes every launch; keeping it out of
+# the specialization key avoids one JIT compile per divisibility state (see README.md).
+@triton.jit(do_not_specialize=["family_offset"])
 def _gene_split_reduction_jvp_kernel(
     Pi, Pibar, dPi, dPibar, split_left_rows, split_right_rows,
     species_child1, species_child2,

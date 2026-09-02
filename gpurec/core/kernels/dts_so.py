@@ -15,7 +15,13 @@ from gpurec.core.kernels.pi_forward import (
 )
 
 
-@triton.jit
+# ``family_offset``/``ws`` are wave start rows, and the right-side staging views start at
+# row ``n_splits`` of a shared buffer, so their byte offset is only sometimes a multiple
+# of 16. Both would otherwise recompile the kernel per wave (see README.md).
+@triton.jit(
+    do_not_specialize=["family_offset", "ws"],
+    do_not_specialize_on_alignment=["right_donor_adjoint_ptr", "d_right_donor_adjoint_ptr"],
+)
 def _gene_split_event_vjp_directional_derivative_kernel(
     Pi, dPi, Pibar, dPibar, Pi_offset, Pibar_offset, v_ptr,
     split_left_rows, split_right_rows, species_child1, species_child2,
@@ -282,7 +288,9 @@ def _gene_split_event_vjp_directional_derivative_kernel(
     tl.atomic_add(d_grad_max_transfer_ptr + family * S + s_offs, d_transfer_left_retained_event_vjp + d_transfer_right_retained_event_vjp, sem="relaxed", mask=mask)
 
 
-@triton.jit
+# ``n_ws`` is the wave's split count and changes every launch; keeping it out of the
+# specialization key avoids one JIT compile per divisibility state (see README.md).
+@triton.jit(do_not_specialize=["n_ws"])
 def _transfer_subtree_vjp_directional_derivative_kernel(
     Pi_ptr, dPi_ptr, receiver_log_probs_ptr, dreceiver_log_probs_ptr,
     donor_adjoint_ptr, d_donor_adjoint_ptr,
