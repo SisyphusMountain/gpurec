@@ -913,13 +913,21 @@ def _fused_linear_pi_self_loop_kernel(
 
     A row stops as soon as EVERY lane has settled relative to itself,
     ``|p_new[s] - p[s]| <= tol * p_new[s]`` for all ``s``, otherwise after ``n_iters``
-    iterations. If a row's maximum leaves ``[2**-20, 2**20]`` the row is re-gauged by
-    an exact power of two folded into the next iteration's loads, so ``scale`` absorbs the drift
-    and no lane approaches the fp32 exponent limits.
+    iterations. After every iteration the row is re-gauged by an exact power of two folded into
+    the next iteration's loads, so ``scale`` absorbs all the drift and the row maximum stays in
+    ``[1, 2)`` -- which leaves the whole model-dtype exponent range below it for the rest of the row.
+
+    KNOWN LIMIT. One scale per row is what buys the multiply-adds, and it costs dynamic range: a
+    lane more than the model dtype's exponent range below the row maximum (about 126 binary orders
+    in fp32, 1022 in fp64) is zero here, where the log path -- one exponent per lane -- still
+    carries it. Measured with benchmark/cc/test_linear_extreme_theta.py over the genewise rate box
+    on the 1007-leaf reference tree, that only bites at one corner: the loss rate pinned at the
+    floor (1e-6) together with a high transfer rate, where a clade row's finite values span more
+    than 126 orders and its bottom lanes are lost. fp64 loses no lanes at any corner, and fitted
+    rates stay far from that corner. Work that needs the full span must use fp64 or
+    ``SolverOptions.forward_self_loop = "log"``.
     """
     NEG_LARGE: tl.constexpr = -float("inf")
-    REGAUGE_HIGH: tl.constexpr = 1048576.0  # 2**20
-    REGAUGE_LOW: tl.constexpr = 9.5367431640625e-07  # 2**-20
 
     # int64: w ranges over the whole batch's clade rows, so the *stride multiplies
     # below can overflow int32 once total_clades * S exceeds 2^31.
@@ -1098,13 +1106,14 @@ def _fused_linear_pi_self_loop_kernel(
             max_updated_value = tl.maximum(max_updated_value, tl.max(updated, axis=0))
 
         converged = tl.where(max_absolute_change <= 0.0, 1, 0).to(tl.int32)
-        # Branchless re-gauge: outside the drift band ``safe_max`` is 1.0, so the exponent is
-        # zero and both gains stay exactly 1.0.
-        needs_regauge = (max_updated_value > 0.0) & (
-            (max_updated_value > REGAUGE_HIGH) | (max_updated_value < REGAUGE_LOW)
-        )
+        # Re-gauge on EVERY iteration, not just when the row drifts out of some band: the gain is
+        # an exact power of two, so it costs nothing in accuracy, and it keeps the row maximum in
+        # [1, 2) at all times. That is what leaves the full float32 exponent range underneath the
+        # maximum for the rest of the row; letting the maximum sink to a threshold first spends
+        # that headroom, and a row whose values span more than the remainder loses its bottom
+        # lanes to zero, which the log path (one exponent per lane) never does.
         safe_max = tl.where(
-            needs_regauge, max_updated_value, tl.full((), value=1.0, dtype=DTYPE)
+            max_updated_value > 0.0, max_updated_value, tl.full((), value=1.0, dtype=DTYPE)
         )
         regauge_exponent = tl.floor(tl.log2(safe_max))
         regauge_gain = tl.exp2(-regauge_exponent)

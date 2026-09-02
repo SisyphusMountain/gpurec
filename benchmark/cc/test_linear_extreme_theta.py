@@ -67,6 +67,7 @@ def main() -> int:
     parser.add_argument("--neumann-terms", required=True, type=int)
     parser.add_argument("--window", required=True, type=float)
     parser.add_argument("--grid", required=True, help="comma-separated log2 rates to sweep")
+    parser.add_argument("--dtype", required=True, choices=("float32", "float64"))
     args = parser.parse_args()
 
     from gpurec.api.model import GeneReconModel
@@ -76,12 +77,13 @@ def main() -> int:
     paths = [
         line.strip() for line in open(args.families) if line.strip() and not line.startswith("#")
     ][: args.limit]
+    dtype = torch.float32 if args.dtype == "float32" else torch.float64
     options = SolverOptions(
         **{**_BASE_SOLVER, "pi_iters": args.pi_iters, "neumann_terms": args.neumann_terms,
            "forward_self_loop": "log"}
     )
     model = GeneReconModel(
-        args.species, paths, mode="genewise", device="cuda", dtype=torch.float32,
+        args.species, paths, mode="genewise", device="cuda", dtype=dtype,
         solver_options=options, clade_budget=args.clade_budget,
     )
     model.receiver_weights.requires_grad_(False)
@@ -93,7 +95,7 @@ def main() -> int:
     worst = []
     for duplication, transfer, loss in itertools.product(grid, repeat=3):
         theta = torch.tensor(
-            [duplication, transfer, loss], device="cuda", dtype=torch.float32
+            [duplication, transfer, loss], device="cuda", dtype=dtype
         ).expand(len(paths), 3).contiguous()
         rows = []
         for static in model.batch_statics:

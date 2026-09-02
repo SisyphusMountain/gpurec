@@ -31,6 +31,8 @@ JOBS = {
     ),
     "fit40": ("k1_smoke40", "benchmark/cc/run_genewise.py", dict(minutes=30)),
     "grid": ("k1_grid", "benchmark/cc/test_linear_extreme_theta.py", dict(minutes=30)),
+    # The one corner where whole rows died: loss rate at the box floor, transfer at the cap.
+    "corner": ("k1_corner", None, dict(minutes=30)),
     # One slot: the cheap rate-box sweep first, then the full fit that actually crashed.
     "diagnose": ("k1_diagnose", None, dict(minutes=120)),
     "replay": ("k1_replay", "benchmark/cc/replay_failing_batch.py", dict(minutes=30)),
@@ -78,14 +80,27 @@ def main() -> int:
     grid_command = (
         "$CC_PY -u benchmark/cc/test_linear_extreme_theta.py --species $CC_SPECIES "
         "--families $CC_FAMILIES --limit 40 --clade-budget 315000 --pi-iters 16 "
-        "--neumann-terms 16 --window 60 --grid=-19.9,-12.0,-6.0,-2.0,0.0,1.0"
+        "--neumann-terms 16 --window 60 --grid=-19.9,-12.0,-6.0,-2.0,0.0,1.0 --dtype float32"
     )
     repro_command = (
         "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
         "--families $CC_FAMILIES --limit 0 --out-dir $CC_RUNS/results --tag k1_repro "
         f"--debug-dump-dir {debug_dir}"
     )
-    if args.job == "fits":
+    corner = (
+        "benchmark/cc/test_linear_extreme_theta.py --species $CC_SPECIES --families $CC_FAMILIES "
+        "--limit 8 --clade-budget 315000 --pi-iters 16 --neumann-terms 16 --window 60 "
+        "--grid=-19.9,0.0"
+    )
+    if args.job == "corner":
+        command = (
+            f"$CC_PY -u {corner} --dtype float32; "
+            "$CC_PY -u benchmark/cc/test_linear_forward.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit-compare 100 --limit-time 100 --clade-budget 315000 "
+            "--pi-iters 16 --neumann-terms 16 --theta -6.0 --window 60 --reps 2 "
+            "--dtype float32 --fused-blocks 256"
+        )
+    elif args.job == "fits":
         command = (
             "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
             "--families $CC_FAMILIES --limit 500 --out-dir $CC_RUNS/results --tag k1_fit500; "
@@ -121,7 +136,7 @@ def main() -> int:
         command = (
             "$CC_PY -u benchmark/cc/test_linear_extreme_theta.py --species $CC_SPECIES "
             "--families $CC_FAMILIES --limit 40 --clade-budget 315000 --pi-iters 16 "
-            "--neumann-terms 16 --window 60 --grid=-19.9,-12.0,-6.0,-2.0,0.0,1.0"
+            "--neumann-terms 16 --window 60 --grid=-19.9,-12.0,-6.0,-2.0,0.0,1.0 --dtype float32"
         )
     elif args.job == "repro":
         command = (
