@@ -243,6 +243,21 @@ better); 22 are worse by more than 0.1 bits (largest 2.4 bits) and 30 better by 
 families that move are ones with two competing basins (for example a duplication rate of 2^-2.8
 versus 2^-16.6 with similar likelihoods).
 
+**Repeat of the full fit (job full_v12exact2): 781.6 s**, NLL 9048938.28 bits, 5120/5123 converged,
+109 Newton steps; split: warm-up 145 s, Newton gradients 462 s, curvature 55 s, verification 48 s,
+re-plans 14 s, certificate 18 s. The two runs (793.6 s, 781.6 s) bracket the run-to-run variation on
+a shared node.
+
+## Summary of the second round
+
+| full 5123-family fit, one H100 | wall | NLL bits | certified converged |
+|---|---|---|---|
+| original code (first-round reference) | 5353 s | 9048956.57 | 5073 |
+| + recipe (candidate verification, prompt freezing, BFGS curvature, freeze-time certificate) | 3166 s / 1948 s (new start) | 9048964.87 / 9048939.01 | 5052 / 5120 |
+| + fused early-exit backward series, robust linear forward | 1570 s | 9048959.32 | 5119 |
+| + exact tree-elimination forward, single tier | 1053-1101 s | 9048938.4 | 5119-5120 |
+| + exact adjoint solve | **782-794 s** | 9048938.3-9048938.4 | 5120 |
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
