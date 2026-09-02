@@ -212,6 +212,8 @@ def main() -> int:
         for meta in static.wave_layout["wave_metas"]
     )
     element_bytes = torch.finfo(dtype).bits // 8
+    from gpurec.core.kernels.pi_forward import _EXACT_TREE_SCRATCH_SLOTS
+
     n_levels = int(model.species_helpers["compact_level_ptr"].numel()) - 1
     print(
         f"[cmp] build {time.perf_counter() - build_start:.1f}s families={len(paths)} "
@@ -219,7 +221,8 @@ def main() -> int:
         f"max_ancestor_depth={int(model.species_helpers['max_ancestor_depth'])} "
         f"species_tree_levels={n_levels} dtype={args.dtype} max_wave_rows={wave_rows} "
         f"linear_buffer={2 * wave_rows * species_count * element_bytes / 2**30:.2f} GiB "
-        f"exact_buffer={5 * wave_rows * species_count * element_bytes / 2**30:.2f} GiB",
+        f"exact_buffer="
+        f"{_EXACT_TREE_SCRATCH_SLOTS * wave_rows * species_count * element_bytes / 2**30:.2f} GiB",
         flush=True,
     )
     receiver_weights = model.receiver_weights.detach()
