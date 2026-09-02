@@ -742,7 +742,7 @@ def _fused_linear_pi_self_loop_kernel(
     gene_split_offset_ptr,
     gene_split_center_offset_ptr,
     ws,
-    slot_rows,
+    slot_span,
     n_iters,
     tol,
     S: tl.constexpr,
@@ -818,9 +818,6 @@ def _fused_linear_pi_self_loop_kernel(
     global_row = ws + w
     global_base = global_row * stride
     row_base = w * stride
-    # int64 comes from the slot index below; ``slot_rows`` stays a plain runtime scalar so
-    # Triton never specializes it into a constexpr with no ``.to()`` method.
-    slot_span = slot_rows * stride
     family_const = tl.load(family_idx_ptr + global_row)
     const_base = family_const * CONST_ROW_STRIDE
 
@@ -1808,7 +1805,8 @@ def compute_fused_linear_self_loop(
     exactly as the final log-space iteration would.
 
     ``scratch`` is the two-slot linear working buffer, shape ``[2, rows, S]`` with
-    ``rows >= W``; ``rows`` sets the slot stride, so the same allocation serves every wave.
+    ``rows >= W``; ``rows`` sets the slot stride (passed in as ``rows * S`` so the offset is
+    built in Python rather than in int32 device arithmetic), so one allocation serves every wave.
     """
     if int(n_iters) < 1:
         raise ValueError("fused linear self-loop needs at least one iteration")
@@ -1921,7 +1919,7 @@ def compute_fused_linear_self_loop(
         gene_split_offset,
         gene_split_center_offset,
         ws,
-        slot_rows,
+        slot_rows * int(S),
         int(n_iters),
         float(tol),
         S,
