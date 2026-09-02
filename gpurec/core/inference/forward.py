@@ -288,6 +288,7 @@ def pi_wave_forward(
                 sp_parent,
                 max_ancestor_depth,
                 dts_r,
+                dts_offset,
                 dts_center_offset,
                 leaf_species_idx=wave_layout["leaf_species_index"],
                 leaf_logp=log_p_s_family,

@@ -46,11 +46,11 @@ class SolverOptions:
     #   "log"    -- the original one-launch-per-iteration log2-space path, kept selectable so
     #               the two can be compared on identical inputs.
     forward_self_loop: str = "linear"
-    # Relative stopping test for the "linear" self-loop, applied per clade row:
-    # stop once max_s |p_new[s] - p[s]| <= pi_linear_tol * max_s p_new[s], where p is the row's
-    # linear iterate. 1e-6 is fp32's usable relative floor (~8x eps 1.19e-7), the same target
-    # `dtype_rel_tol_default` uses for the other fp32 solves. 0.0 disables the early exit, so
-    # every row runs the full `pi_iters` count.
+    # Stopping test for the "linear" self-loop, applied per clade row: the row stops once EVERY
+    # species lane has settled relative to ITSELF, |p_new[s] - p[s]| <= pi_linear_tol * p_new[s],
+    # where p is the row's linear iterate. 1e-6 is fp32's usable relative floor (~8x eps 1.19e-7),
+    # the same target `dtype_rel_tol_default` uses for the other fp32 solves. 0.0 disables the
+    # early exit, so every row runs the full `pi_iters` count.
     pi_linear_tol: float = 1e-6
 
     def validate(self) -> None:

@@ -729,6 +729,7 @@ def _fused_linear_pi_self_loop_kernel(
     leaf_fm_log_ptr,
     family_idx_ptr,
     gene_split_log_likelihood_ptr,
+    gene_split_offset_ptr,
     gene_split_center_offset_ptr,
     ws,
     slot_rows,
@@ -791,8 +792,9 @@ def _fused_linear_pi_self_loop_kernel(
     log kernel's ``-inf``, i.e. linear zero). ``leaf_lin`` is the leaf-observation source and
     ``dts_lin`` the gene-split (DTS) source, each shifted into this row's ``scale`` frame.
 
-    A row stops as soon as ``max_s |p_new[s] - p[s]| <= tol * max_s p_new[s]``, otherwise after
-    ``n_iters`` iterations. If a row's maximum leaves ``[2**-20, 2**20]`` the row is re-gauged by
+    A row stops as soon as EVERY lane has settled relative to itself,
+    ``|p_new[s] - p[s]| <= tol * p_new[s]`` for all ``s``, otherwise after ``n_iters``
+    iterations. If a row's maximum leaves ``[2**-20, 2**20]`` the row is re-gauged by
     an exact power of two folded into the next iteration's loads, so ``scale`` absorbs the drift
     and no lane approaches the fp32 exponent limits.
     """
@@ -828,6 +830,10 @@ def _fused_linear_pi_self_loop_kernel(
         tl.full((), value=NEG_LARGE, dtype=ACC_DTYPE),
     )
     if HAS_SPLITS:
+        # Two different gauges, exactly as in the log-space kernel: the DTS row is STORED
+        # against ``gene_split_offset`` (the sum of its two child gauges), while
+        # ``gene_split_center_offset`` is that row's absolute maximum and only picks the frame.
+        gene_split_row_offset = tl.load(gene_split_offset_ptr + w)
         gene_split_center_offset = tl.load(gene_split_center_offset_ptr + w)
         scale = tl.maximum(scale, gene_split_center_offset)
     if USE_LEAF_INDEX:
@@ -971,20 +977,29 @@ def _fused_linear_pi_self_loop_kernel(
                     other=NEG_LARGE,
                 )
                 updated += tl.exp2(
-                    gene_split_log_likelihood + (gene_split_center_offset - scale).to(DTYPE)
+                    gene_split_log_likelihood + (gene_split_row_offset - scale).to(DTYPE)
                 )
 
             updated = tl.where(mask, updated, tl.zeros([BLOCK_S], dtype=DTYPE))
             tl.store(scratch_ptr + destination_base + s_offs, updated, mask=mask)
+            # Per-lane RELATIVE stopping test, written without a division: a lane is settled
+            # once |change| <= tol * its own new value. Testing the change against the row
+            # maximum instead would call a row converged while lanes a few orders of magnitude
+            # below the maximum were still moving by a large fraction of themselves.
             max_absolute_change = tl.maximum(
                 max_absolute_change,
                 tl.max(
-                    tl.where(mask, tl.abs(updated - reconciliation_likelihood), 0.0), axis=0
+                    tl.where(
+                        mask,
+                        tl.abs(updated - reconciliation_likelihood) - tol * updated,
+                        0.0,
+                    ),
+                    axis=0,
                 ),
             )
             max_updated_value = tl.maximum(max_updated_value, tl.max(updated, axis=0))
 
-        converged = tl.where(max_absolute_change <= tol * max_updated_value, 1, 0).to(tl.int32)
+        converged = tl.where(max_absolute_change <= 0.0, 1, 0).to(tl.int32)
         # Branchless re-gauge: outside the drift band ``safe_max`` is 1.0, so the exponent is
         # zero and both gains stay exactly 1.0.
         needs_regauge = (max_updated_value > 0.0) & (
@@ -1761,6 +1776,7 @@ def compute_fused_linear_self_loop(
     species_parent,
     max_ancestor_depth,
     gene_split_log_likelihood,
+    gene_split_offset,
     gene_split_center_offset,
     *,
     leaf_species_idx,
@@ -1831,8 +1847,17 @@ def compute_fused_linear_self_loop(
     )
     has_splits = gene_split_log_likelihood is not None
     if has_splits:
-        if gene_split_center_offset is None:
-            raise ValueError("gene_split_center_offset is required with split DTS input")
+        if gene_split_offset is None or gene_split_center_offset is None:
+            raise ValueError(
+                "gene_split_offset and gene_split_center_offset are required with split DTS input"
+            )
+        gene_split_offset = _validate_offset_tensor(
+            "gene_split_offset",
+            gene_split_offset,
+            rows=W,
+            device=Pi_in.device,
+            dtype=accumulator_dtype,
+        )
         gene_split_center_offset = _validate_offset_tensor(
             "gene_split_center_offset",
             gene_split_center_offset,
@@ -1843,6 +1868,7 @@ def compute_fused_linear_self_loop(
     else:
         # Unused behind the ``HAS_SPLITS`` constexpr; a valid pointer is still required.
         gene_split_log_likelihood = Pi_in
+        gene_split_offset = Pi_in_offset
         gene_split_center_offset = Pi_in_offset
     compute_diff = pi_residual_out is not None
     write_iterations = iterations_used is not None
@@ -1881,6 +1907,7 @@ def compute_fused_linear_self_loop(
         leaf_fm_log_arg,
         family_idx,
         gene_split_log_likelihood,
+        gene_split_offset,
         gene_split_center_offset,
         ws,
         slot_rows,

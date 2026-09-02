@@ -45,7 +45,7 @@ def _forward_abs_pi(static, theta_static, receiver_weights):
     return out
 
 
-def _compare_pi(reference: torch.Tensor, candidate: torch.Tensor, window: float) -> dict:
+def _compare_pi(reference: torch.Tensor, candidate: torch.Tensor, window: float, eps: float) -> dict:
     """Row-max-windowed comparison of two absolute log2 Pi matrices."""
     finite_reference = torch.isfinite(reference)
     row_max = torch.where(finite_reference, reference, torch.full_like(reference, -float("inf")))
@@ -55,8 +55,13 @@ def _compare_pi(reference: torch.Tensor, candidate: torch.Tensor, window: float)
     difference = (candidate - reference).abs()
     windowed = in_window & both_finite
     total = reference.numel()
+    largest_magnitude = float(reference[finite_reference].abs().max().item()) if bool(finite_reference.any()) else 0.0
     return {
         "entries": total,
+        # Both paths carry the row's log2 values through fp32 frame shifts of this magnitude,
+        # so this times fp32's 2**-24 is the floor on any log-vs-linear disagreement.
+        "max_abs_log2_value": largest_magnitude,
+        "frame_resolution": largest_magnitude * eps,
         "finite_frac": float(finite_reference.sum().item()) / total,
         "in_window_frac": float(in_window.sum().item()) / total,
         "below_window_frac": float((finite_reference & ~in_window).sum().item()) / total,
@@ -73,7 +78,7 @@ def _loss_and_grad(model, theta):
     return loss_vector.detach().clone(), grad_theta.detach().clone()
 
 
-def _build(species, paths, clade_budget, pi_iters, neumann_terms, mode, tol):
+def _build(species, paths, clade_budget, pi_iters, neumann_terms, mode, tol, dtype):
     from gpurec.api.model import GeneReconModel
     from gpurec.api.solver_options import SolverOptions
     from gpurec.fit.genewise_fit import _BASE_SOLVER
@@ -88,11 +93,23 @@ def _build(species, paths, clade_budget, pi_iters, neumann_terms, mode, tol):
         }
     )
     model = GeneReconModel(
-        species, paths, mode="genewise", device="cuda", dtype=torch.float32,
+        species, paths, mode="genewise", device="cuda", dtype=dtype,
         solver_options=options, clade_budget=clade_budget,
     )
     model.receiver_weights.requires_grad_(False)
     return model
+
+
+def _wave_shape(model):
+    """Largest wave row count and the linear working buffer that implies."""
+    species_count = int(model.species_helpers["S"])
+    rows = max(
+        int(meta["W"])
+        for static in model.batch_statics
+        for meta in static.wave_layout["wave_metas"]
+    )
+    element_bytes = torch.finfo(model.theta.dtype).bits // 8
+    return rows, 2 * rows * species_count * element_bytes / 2**30
 
 
 def _install_iteration_probe():
@@ -126,7 +143,10 @@ def main() -> int:
     parser.add_argument("--theta", required=True, type=float)
     parser.add_argument("--window", required=True, type=float)
     parser.add_argument("--reps", required=True, type=int)
+    parser.add_argument("--dtype", required=True, choices=("float32", "float64"))
     args = parser.parse_args()
+    dtype = torch.float32 if args.dtype == "float32" else torch.float64
+    eps = float(torch.finfo(dtype).eps)
 
     all_paths = [
         line.strip() for line in open(args.families) if line.strip() and not line.startswith("#")
@@ -136,15 +156,18 @@ def main() -> int:
     paths = all_paths[: args.limit_compare]
     build_start = time.perf_counter()
     model = _build(
-        args.species, paths, args.clade_budget, args.pi_iters, args.neumann_terms, "log", 0.0
+        args.species, paths, args.clade_budget, args.pi_iters, args.neumann_terms, "log", 0.0,
+        dtype,
     )
+    wave_rows, scratch_gib = _wave_shape(model)
     print(
         f"[cmp] build {time.perf_counter() - build_start:.1f}s families={len(paths)} "
         f"batches={len(model.batch_statics)} S={int(model.species_helpers['S'])} "
-        f"max_ancestor_depth={int(model.species_helpers['max_ancestor_depth'])}",
+        f"max_ancestor_depth={int(model.species_helpers['max_ancestor_depth'])} "
+        f"dtype={args.dtype} max_wave_rows={wave_rows} linear_buffer={scratch_gib:.2f} GiB",
         flush=True,
     )
-    theta = torch.full((len(paths), 3), args.theta, device="cuda", dtype=torch.float32)
+    theta = torch.full((len(paths), 3), args.theta, device="cuda", dtype=dtype)
     receiver_weights = model.receiver_weights.detach()
 
     reference_rows = []
@@ -169,7 +192,7 @@ def main() -> int:
         for index, static in enumerate(model.batch_statics):
             theta_static = model._theta_for_static(static, theta)
             candidate = _forward_abs_pi(static, theta_static, receiver_weights)
-            stats = _compare_pi(reference_rows[index], candidate, args.window)
+            stats = _compare_pi(reference_rows[index], candidate, args.window, eps)
             del candidate
             torch.cuda.empty_cache()
             print(
@@ -178,7 +201,9 @@ def main() -> int:
                 f"below_window={stats['below_window_frac']:.4f} "
                 f"max|dPi| in window = {stats['max_abs_diff_in_window']:.3e} log2 "
                 f"(all finite: {stats['max_abs_diff_all_finite']:.3e}) "
-                f"finite_mismatch={stats['finite_mismatch']}",
+                f"finite_mismatch={stats['finite_mismatch']} "
+                f"| max|log2 Pi| = {stats['max_abs_log2_value']:.4g}, "
+                f"model-dtype frame resolution there = {stats['frame_resolution']:.3e}",
                 flush=True,
             )
         linear_loss, linear_grad = _loss_and_grad(model, theta)
@@ -206,10 +231,12 @@ def main() -> int:
     for mode in ("log", "linear"):
         build_start = time.perf_counter()
         model = _build(
-            args.species, paths, args.clade_budget, args.pi_iters, args.neumann_terms, mode, 1e-6
+            args.species, paths, args.clade_budget, args.pi_iters, args.neumann_terms, mode, 1e-6,
+            dtype,
         )
         build_seconds = time.perf_counter() - build_start
-        theta = torch.full((len(paths), 3), args.theta, device="cuda", dtype=torch.float32)
+        wave_rows, scratch_gib = _wave_shape(model)
+        theta = torch.full((len(paths), 3), args.theta, device="cuda", dtype=dtype)
         model.genewise_loss_vector_and_grad(theta=theta, need_grad=True)
         torch.cuda.synchronize()
         samples = []
@@ -221,7 +248,8 @@ def main() -> int:
             samples.append(time.perf_counter() - start)
         timings[mode] = samples
         print(
-            f"[time] {mode}: build {build_seconds:.1f}s  loss+grad "
+            f"[time] {mode}: build {build_seconds:.1f}s  max_wave_rows={wave_rows} "
+            f"linear_buffer={scratch_gib:.2f} GiB  peak={torch.cuda.max_memory_allocated() / 2**30:.1f} GiB  loss+grad "
             f"mean {statistics.mean(samples):.3f}s  min {min(samples):.3f}s  "
             f"samples {[round(x, 3) for x in samples]}",
             flush=True,
