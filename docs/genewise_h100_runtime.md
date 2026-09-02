@@ -208,6 +208,17 @@ Per-gradient profile at fitted rates (500 families, 6.05 s): adjoint Neumann ser
 16 %, prepare-VJP kernel 16 %, transfer-subtree VJP 12 %, gene-split VJP 7 %, DTS forward 7 %,
 index_add 6 %, log-space prologue 6 %, receiver VJP 5 %.
 
+**Single tier in exact mode (commit 5946dc89).** With the exact forward, the second (pi=64) tier
+recomputed an identical forward for the deferred families; the recipe now runs one tier when
+`forward_self_loop == "exact"`. 500 families: **184 s** (231 s two-tier; 1017 s originally), 111 Newton
+steps instead of 228, NLL 1618463.78 bits (the original code's value to 0.01 bits), 499/500 converged.
+
+**Exact adjoint solve (in progress, same agent).** The transposed tree system is solved exactly per row
+in place of the Neumann series: per-wave adjoints within ~8 float32 ulps of the series run to 256
+terms; one gradient at 500 families 5.99 s to 5.15 s at fitted rates; the pi=64/neumann=64
+verification pass costs the same as a normal gradient (series at 256 terms: 12.5 s); 40-family fit
+18 s with both exact solves.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
