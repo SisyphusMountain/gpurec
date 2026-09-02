@@ -3,11 +3,44 @@ import torch
 from ..pi_state import PiState
 from ..kernels.pi_forward import (
     compute_dts_forward,
+    compute_fused_linear_self_loop,
     compute_leaf_initial_wave_step,
     compute_wave_step,
     _select_log_split_probs,
 )
 from ..parameters.extract_parameters import as_family_param, as_family_species
+
+# The two self-loop implementations selectable through ``SolverOptions.forward_self_loop``.
+# "log": one ``compute_wave_step`` launch per fixed-point iteration, arithmetic in log2 space.
+# "linear": the same recurrence, but one ``compute_fused_linear_self_loop`` launch runs every
+# remaining iteration per row in scaled linear space with a per-row early exit.
+SELF_LOOP_MODES = ("log", "linear")
+
+
+def _linear_event_multipliers(
+    duplication_loss_const,
+    extinction_complement,
+    extinction,
+    speciation_child1_const,
+    speciation_child2_const,
+    max_transfer,
+    receiver_log_probs,
+):
+    """Linear-space copies of the per-species event constants the self-loop multiplies by.
+
+    Each is ``2**(its log2 value)``. They are gauge-free (no row offset enters them), so one
+    conversion per forward solve serves every wave and every fixed-point iteration; see
+    :func:`gpurec.core.kernels.pi_forward._fused_linear_pi_self_loop_kernel` for how they combine.
+    """
+    return (
+        torch.exp2(duplication_loss_const),
+        torch.exp2(extinction_complement),
+        torch.exp2(extinction),
+        torch.exp2(speciation_child1_const),
+        torch.exp2(speciation_child2_const),
+        torch.exp2(max_transfer),
+        torch.exp2(receiver_log_probs),
+    )
 
 
 def pi_wave_forward(
@@ -28,10 +61,18 @@ def pi_wave_forward(
     pi_residual_out: torch.Tensor | None = None,
     accumulator_dtype: torch.dtype | None = None,
     leaf_fm_log: torch.Tensor | None = None,
+    self_loop_mode: str,
+    linear_tol: float,
+    linear_iterations_out: torch.Tensor | None,
 ):
     pi_iters = int(pi_iters)
     if pi_iters < 2 or pi_iters % 2 != 0:
         raise ValueError("pi_iters must be an even integer at least 2")
+    if self_loop_mode not in SELF_LOOP_MODES:
+        raise ValueError(f"self_loop_mode must be one of {SELF_LOOP_MODES}, got {self_loop_mode!r}")
+    linear_tol = float(linear_tol)
+    if linear_tol < 0.0:
+        raise ValueError("linear_tol must be non-negative")
     if e.device.type != "cuda":
         raise RuntimeError("Pi forward requires CUDA")
     if e.dtype not in (torch.float32, torch.float64):
@@ -76,6 +117,32 @@ def pi_wave_forward(
     sl1_const = log_p_s_family + e_s2_family
     sl2_const = log_p_s_family + e_s1_family
 
+    use_linear_self_loop = self_loop_mode == "linear"
+    if use_linear_self_loop:
+        (
+            dl_lin,
+            e_bar_lin,
+            e_lin,
+            sl1_lin,
+            sl2_lin,
+            max_transfer_lin,
+            receiver_lin,
+        ) = _linear_event_multipliers(
+            dl_const,
+            e_bar_family,
+            e_family,
+            sl1_const,
+            sl2_const,
+            max_transfer_family,
+            receiver_log_probs,
+        )
+        max_wave_rows = max(
+            (int(meta["W"]) for meta in wave_layout["wave_metas"]), default=1
+        )
+        # Two slots: the update is Jacobi (it reads the whole previous row), so a source and a
+        # destination row are both live. One allocation, reused by every wave.
+        linear_scratch = torch.empty((2, max_wave_rows, S), dtype=dtype, device=device)
+
     for meta in wave_layout["wave_metas"]:
         ws = meta["start"]
         W = meta["W"]
@@ -110,7 +177,17 @@ def pi_wave_forward(
             dts_offset = None
             dts_center_offset = None
         has_leaf_term = "sl" not in meta
-        for local_iter in range(pi_iters):
+        # Log-space prologue: the leaf initializer (iteration 0) for a leaf wave, plus the
+        # gene-split-input step (iteration 1) for a split wave, which is also what publishes
+        # ``dts_center_offset``. The linear kernel takes over from there.
+        prologue_iters = pi_iters
+        fused_iters = 0
+        if use_linear_self_loop:
+            candidate_prologue = 1 if has_leaf_term else 2
+            if pi_iters - candidate_prologue >= 1:
+                prologue_iters = candidate_prologue
+                fused_iters = pi_iters - candidate_prologue
+        for local_iter in range(prologue_iters):
             pi_in = pi if (local_iter % 2 == 0) else pibar
             pi_in_offset = pi_offset if (local_iter % 2 == 0) else pibar_offset
             pi_out = pibar if (local_iter % 2 == 0) else pi
@@ -180,6 +257,49 @@ def pi_wave_forward(
                     ),
                     leaf_fm_log=leaf_fm_log,
                 )
+        if fused_iters > 0:
+            # The prologue's last write lands in ``pibar`` for a leaf wave (iteration 0) and in
+            # ``pi`` for a split wave (iteration 1); the fused kernel always publishes into
+            # ``pi``/``pibar``.
+            fused_input = pibar if has_leaf_term else pi
+            fused_input_offset = pibar_offset if has_leaf_term else pi_offset
+            compute_fused_linear_self_loop(
+                fused_input,
+                fused_input_offset,
+                pi,
+                pi_offset,
+                pibar,
+                pibar_offset,
+                linear_scratch,
+                ws,
+                W,
+                S,
+                fused_iters,
+                linear_tol,
+                dl_lin,
+                e_bar_lin,
+                e_lin,
+                sl1_lin,
+                sl2_lin,
+                max_transfer_lin,
+                receiver_lin,
+                sp_child1,
+                sp_child2,
+                sp_parent,
+                max_ancestor_depth,
+                dts_r,
+                dts_offset,
+                dts_center_offset,
+                leaf_species_idx=wave_layout["leaf_species_index"],
+                leaf_logp=log_p_s_family,
+                family_idx=family_idx,
+                pibar_row_max=uniform_pibar_row_max,
+                has_leaf_term=has_leaf_term,
+                use_receiver_weights=use_receiver_weights,
+                pi_residual_out=pi_residual_out,
+                iterations_used=linear_iterations_out,
+                leaf_fm_log=leaf_fm_log,
+            )
 
     state = PiState(
         pi_offset=pi_offset,
