@@ -780,6 +780,11 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
         + leaf_observation_mass * d_leaf_observation_log_term
         + gene_split_tangent_numerator
     ) * inverse_reconciliation_event_scaled_mass
+    # Moving s's OWN donor term to the left-hand side leaves behind the part of it that does not
+    # multiply dv[s]: the row's donor tangent counts m[s](dv[s] + drecv[s]) for s, and only the
+    # dv[s] half belongs in the diagonal. Zero whenever the receiver weights are uniform, which is
+    # why the fit never sees it, but not zero on the weighted path.
+    source = source - donor_coefficient * receiver_mass * d_receiver_log_probability
     diagonal = 1.0 - self_coefficient + donor_coefficient * receiver_mass
 
     # ---- walk 1, bottom-up. Every lane starts at the leaf case; level ``level`` then rewrites the
