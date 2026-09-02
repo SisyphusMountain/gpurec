@@ -57,7 +57,12 @@ class SolverOptions:
     #               linear space (multiply-adds, no per-lane exp2/log2) with a per-row early
     #               exit at `pi_linear_tol`. Same recurrence, same published log2 state.
     #   "log"    -- the original one-launch-per-iteration log2-space path, kept selectable so
-    #               the two can be compared on identical inputs.
+    #               the two can be compared on identical inputs, and as the escape hatch for the
+    #               one thing "linear" cannot do: hold a clade row whose values span more than the
+    #               model dtype's exponent range (about 126 binary orders in fp32), since it keeps
+    #               one scale per row rather than one exponent per lane. Only reachable with the
+    #               loss rate pinned at the box floor together with a high transfer rate; see
+    #               _fused_linear_pi_self_loop_kernel's "KNOWN LIMIT".
     forward_self_loop: str = "linear"
     # Stopping test for the "linear" self-loop, applied per clade row: the row stops once EVERY
     # species lane has settled relative to ITSELF, |p_new[s] - p[s]| <= pi_linear_tol * p_new[s],

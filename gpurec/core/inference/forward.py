@@ -43,6 +43,48 @@ def _linear_event_multipliers(
     )
 
 
+def _valid_receiver_index_tables(species_start, species_end, species_count):
+    """Index tables that let the self-loop build a donor's valid receiver mass without subtracting.
+
+    A donor ``s`` may transfer to every species that is neither ``s`` itself nor one of its
+    ancestors. Getting that mass as ``total - ancestor_mass`` cancels catastrophically once the
+    transfer rate is high enough that the row's mass sits on the donor's own lineage. With the
+    depth-first interval numbering (``sp_subtree_start`` is a permutation of ``0..S-1``; each
+    subtree owns ``[start, end)``), the ALLOWED recipients are exactly the union of two disjoint
+    groups -- those whose subtree has not opened yet (``start[a] > start[s]``) and those whose
+    subtree already closed (``end[a] <= start[s]``) -- so the mass is a sum of two running sums of
+    non-negative terms.
+
+    Returns the four tensors the kernel needs: the species order each running sum scans (shifted by
+    one position, so an inclusive scan already yields the exclusive prefix), and, per species, the
+    position in each scan where that donor's prefix ends.
+    """
+    count = int(species_count)
+    device = species_start.device
+    start = species_start.to(dtype=torch.long)
+    end = species_end.to(dtype=torch.long)
+    positions = torch.arange(count, device=device, dtype=torch.long)
+    subtree_opening_at = torch.empty(count, dtype=torch.long, device=device)
+    subtree_opening_at[start] = positions            # the species whose subtree opens at each position
+    reverse_opening_order = subtree_opening_at.flip(0)
+    closing_order = torch.argsort(end, stable=True)
+    closed_by = torch.searchsorted(
+        end.index_select(0, closing_order).contiguous(), positions, right=True
+    )
+    # ``count`` is the shift sentinel: the kernel reads it as "contributes nothing".
+    sentinel = torch.full((1,), count, dtype=torch.long, device=device)
+    not_open_source = torch.cat((sentinel, reverse_opening_order[:-1]))
+    closed_source = torch.cat((sentinel, closing_order[:-1]))
+    not_open_index = (count - 1) - start
+    closed_index = closed_by.index_select(0, start)
+    return (
+        not_open_source.to(torch.int32).contiguous(),
+        closed_source.to(torch.int32).contiguous(),
+        not_open_index.to(torch.int32).contiguous(),
+        closed_index.to(torch.int32).contiguous(),
+    )
+
+
 def pi_wave_forward(
     wave_layout,
     species_helpers,
@@ -136,12 +178,14 @@ def pi_wave_forward(
             max_transfer_family,
             receiver_log_probs,
         )
+        valid_receiver_tables = _valid_receiver_index_tables(sp_subtree_start, sp_subtree_end, S)
         max_wave_rows = max(
             (int(meta["W"]) for meta in wave_layout["wave_metas"]), default=1
         )
-        # Two slots: the update is Jacobi (it reads the whole previous row), so a source and a
-        # destination row are both live. One allocation, reused by every wave.
-        linear_scratch = torch.empty((2, max_wave_rows, S), dtype=dtype, device=device)
+        # Four slots, one allocation reused by every wave: 0 and 1 ping-pong the iterate (the
+        # update is Jacobi, so a source and a destination row are both live), 2 and 3 hold the two
+        # running sums the valid receiver mass is built from.
+        linear_scratch = torch.empty((4, max_wave_rows, S), dtype=dtype, device=device)
 
     for meta in wave_layout["wave_metas"]:
         ws = meta["start"]
@@ -285,8 +329,7 @@ def pi_wave_forward(
                 receiver_lin,
                 sp_child1,
                 sp_child2,
-                sp_parent,
-                max_ancestor_depth,
+                valid_receiver_tables,
                 dts_r,
                 dts_offset,
                 dts_center_offset,

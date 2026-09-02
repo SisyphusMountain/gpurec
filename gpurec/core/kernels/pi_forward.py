@@ -715,6 +715,103 @@ def _update_reconciliation_likelihood_kernel(
         tl.store(Pibar_offset_ptr + global_row, pibar_offset)
 
 
+@triton.jit
+def _lookup_valid_receiver_mass(
+    scratch_ptr,
+    not_open_base,
+    closed_base,
+    not_open_index_ptr,
+    closed_index_ptr,
+    s_offs,
+    mask,
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Read each donor lane's valid receiver mass out of the two running sums.
+
+    Both index tables come from
+    :func:`gpurec.core.inference.forward._valid_receiver_index_tables`: one says where this
+    donor's "not yet opened" prefix ends, the other where its "already closed" prefix ends. Adding
+    the two is the whole mass, with no subtraction anywhere.
+    """
+    not_open_index = tl.load(not_open_index_ptr + s_offs, mask=mask, other=0).to(tl.int64)
+    closed_index = tl.load(closed_index_ptr + s_offs, mask=mask, other=0).to(tl.int64)
+    not_yet_open = tl.load(scratch_ptr + not_open_base + not_open_index, mask=mask, other=0.0)
+    already_closed = tl.load(scratch_ptr + closed_base + closed_index, mask=mask, other=0.0)
+    return tl.where(mask, not_yet_open + already_closed, tl.zeros([BLOCK_S], dtype=DTYPE))
+
+
+@triton.jit
+def _write_valid_receiver_prefix_sums(
+    scratch_ptr,
+    value_base,
+    not_open_base,
+    closed_base,
+    receiver_lin_ptr,
+    not_open_source_ptr,
+    closed_source_ptr,
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Write the two running sums a donor's valid receiver mass is built from, without any subtraction.
+
+    A donor ``s`` may transfer to every species that is neither ``s`` itself nor one of its
+    ancestors. :func:`_compute_transfer_complement` gets that mass as
+    ``total_receiver_mass - excluded_ancestor_mass``, two nearly equal numbers whose difference is
+    the answer: at a high transfer rate the row's whole mass sits on the donor's own lineage, the
+    two agree to more than fp32's 24 bits, and the difference is noise -- it even changes sign, so
+    lanes flip between a finite transfer complement and ``-inf``.
+
+    With the depth-first interval numbering (``start`` is a permutation of ``0..S-1`` and each
+    subtree owns ``[start, end)``), ``a`` is an ancestor-or-self of ``s`` exactly when
+    ``start[a] <= start[s] < end[a]``. So the ALLOWED recipients split into two disjoint groups,
+
+        not yet opened   ``start[a] > start[s]``
+        already closed   ``end[a] <= start[s]``
+
+    and their masses are two running sums of non-negative terms, which cannot cancel. This writes
+    both, each as a plain forward scan over a species order the host prepared
+    (:func:`gpurec.core.inference.forward._valid_receiver_index_tables`); the sources are shifted
+    by one position, so an inclusive scan already gives the exclusive prefix the lookup wants.
+    """
+    # Both scans gather lanes of the value row at arbitrary positions, i.e. lanes other warps of
+    # this block wrote (the entry conversion, or the previous iteration's store). Only a barrier
+    # makes those writes visible here; the row-wide reductions that used to sit in front of these
+    # gathers are gone.
+    tl.debug_barrier()
+    for pass_id in tl.static_range(2):
+        if pass_id == 0:
+            source_ptr = not_open_source_ptr
+            output_base = not_open_base
+        else:
+            source_ptr = closed_source_ptr
+            output_base = closed_base
+        running_total = tl.full((), value=0.0, dtype=DTYPE)
+        for s_start in range(0, S, BLOCK_S):
+            positions = s_start + tl.arange(0, BLOCK_S)
+            mask = positions < S
+            species = tl.load(source_ptr + positions, mask=mask, other=S).to(tl.int64)
+            # ``S`` is the one-position shift's sentinel: it contributes nothing.
+            contributes = mask & (species < S)
+            value = tl.load(scratch_ptr + value_base + species, mask=contributes, other=0.0)
+            if USE_RECEIVER_WEIGHTS:
+                value = value * tl.load(
+                    receiver_lin_ptr + species, mask=contributes, other=0.0
+                )
+            value = tl.where(contributes, value, tl.zeros([BLOCK_S], dtype=DTYPE))
+            tl.store(
+                scratch_ptr + output_base + positions,
+                running_total + tl.cumsum(value, axis=0),
+                mask=mask,
+            )
+            running_total += tl.sum(value, axis=0)
+    # The lookups below read lanes other warps in this block just wrote.
+    tl.debug_barrier()
+
+
 # ``ws`` is the wave's start row and ``slot_span`` the scratch stride; both change per
 # wave or per batch. Keeping them out of the specialization key avoids one JIT compile
 # per new "== 1" / divisible-by-16 state (see README.md).
@@ -739,7 +836,10 @@ def _fused_linear_pi_self_loop_kernel(
     receiver_lin_ptr,
     species_child1_ptr,
     species_child2_ptr,
-    species_parent_ptr,
+    not_open_source_ptr,
+    closed_source_ptr,
+    not_open_index_ptr,
+    closed_index_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
     leaf_fm_log_ptr,
@@ -755,7 +855,6 @@ def _fused_linear_pi_self_loop_kernel(
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
     HAS_SPLITS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     USE_FRACTION_MISSING: tl.constexpr,
@@ -791,9 +890,8 @@ def _fused_linear_pi_self_loop_kernel(
     One iteration, for every species lane ``s``:
 
         A[s]     = recv_lin[s] * p[s]
-        T        = sum of A over the whole row
-        X[s]     = sum of A over ``s`` itself and its species-tree ancestors
-        pbar[s]  = mt_lin[s] * max(T - X[s], 0)
+        V[s]     = sum of A over every species that is neither s nor an ancestor of s
+        pbar[s]  = mt_lin[s] * V[s]
         p_new[s] = leaf_lin[s] + dts_lin[s]
                  + dl_lin[s]   * p[s]
                  + ebar_lin[s] * p[s]
@@ -802,21 +900,34 @@ def _fused_linear_pi_self_loop_kernel(
                  + sl2_lin[s]  * p[child2(s)]
 
     Term for term this is ``_update_reconciliation_likelihood_kernel``'s seven-way log-sum-exp
-    with every ``2**(a + b)`` written as ``2**a * 2**b``. ``T``, ``X`` and ``pbar`` reproduce
-    ``_compute_total_receiver_mass`` and ``_compute_transfer_complement`` exactly (the excluded
-    donor set is the lane itself plus its ancestor chain, and a non-positive remainder is the
-    log kernel's ``-inf``, i.e. linear zero). ``leaf_lin`` is the leaf-observation source and
-    ``dts_lin`` the gene-split (DTS) source, each shifted into this row's ``scale`` frame.
+    with every ``2**(a + b)`` written as ``2**a * 2**b``. ``leaf_lin`` is the leaf-observation
+    source and ``dts_lin`` the gene-split (DTS) source, each shifted into this row's ``scale``
+    frame.
+
+    ``V[s]`` -- the mass a donor at ``s`` may transfer to -- is NOT built the way
+    ``_compute_transfer_complement`` builds it. That subtracts the donor's own lineage from the
+    row total, and once the transfer rate is high the two are equal to more than fp32's 24 bits,
+    so the difference is noise that even changes sign. Here it is the sum of two disjoint groups
+    of non-negative terms instead (:func:`_write_valid_receiver_prefix_sums`), which cannot
+    cancel; the represented quantity is identical.
 
     A row stops as soon as EVERY lane has settled relative to itself,
     ``|p_new[s] - p[s]| <= tol * p_new[s]`` for all ``s``, otherwise after ``n_iters``
-    iterations. If a row's maximum leaves ``[2**-20, 2**20]`` the row is re-gauged by
-    an exact power of two folded into the next iteration's loads, so ``scale`` absorbs the drift
-    and no lane approaches the fp32 exponent limits.
+    iterations. After every iteration the row is re-gauged by an exact power of two folded into
+    the next iteration's loads, so ``scale`` absorbs all the drift and the row maximum stays in
+    ``[1, 2)`` -- which leaves the whole model-dtype exponent range below it for the rest of the row.
+
+    KNOWN LIMIT. One scale per row is what buys the multiply-adds, and it costs dynamic range: a
+    lane more than the model dtype's exponent range below the row maximum (about 126 binary orders
+    in fp32, 1022 in fp64) is zero here, where the log path -- one exponent per lane -- still
+    carries it. Measured with benchmark/cc/test_linear_extreme_theta.py over the genewise rate box
+    on the 1007-leaf reference tree, that only bites at one corner: the loss rate pinned at the
+    floor (1e-6) together with a high transfer rate, where a clade row's finite values span more
+    than 126 orders and its bottom lanes are lost. fp64 loses no lanes at any corner, and fitted
+    rates stay far from that corner. Work that needs the full span must use fp64 or
+    ``SolverOptions.forward_self_loop = "log"``.
     """
     NEG_LARGE: tl.constexpr = -float("inf")
-    REGAUGE_HIGH: tl.constexpr = 1048576.0  # 2**20
-    REGAUGE_LOW: tl.constexpr = 9.5367431640625e-07  # 2**-20
 
     # int64: w ranges over the whole batch's clade rows, so the *stride multiplies
     # below can overflow int32 once total_clades * S exceeds 2^31.
@@ -824,6 +935,10 @@ def _fused_linear_pi_self_loop_kernel(
     global_row = ws + w
     global_base = global_row * stride
     row_base = w * stride
+    # Slots 0 and 1 ping-pong the linear iterate; slots 2 and 3 hold the two running sums the
+    # valid receiver mass is built from.
+    not_open_base = 2 * slot_span + row_base
+    closed_base = 3 * slot_span + row_base
     family_const = tl.load(family_idx_ptr + global_row)
     const_base = family_const * CONST_ROW_STRIDE
 
@@ -882,15 +997,10 @@ def _fused_linear_pi_self_loop_kernel(
         source_base = current_slot.to(tl.int64) * slot_span + row_base
         destination_base = (1 - current_slot).to(tl.int64) * slot_span + row_base
 
-        total_receiver_mass = tl.full((), value=0.0, dtype=DTYPE)
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            mask = s_offs < S
-            stored = tl.load(scratch_ptr + source_base + s_offs, mask=mask, other=0.0)
-            if USE_RECEIVER_WEIGHTS:
-                receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=mask, other=0.0)
-                stored = stored * receiver_weight
-            total_receiver_mass += tl.sum(tl.where(mask, stored, 0.0), axis=0)
+        _write_valid_receiver_prefix_sums(
+            scratch_ptr, source_base, not_open_base, closed_base, receiver_lin_ptr,
+            not_open_source_ptr, closed_source_ptr, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE,
+        )
 
         max_absolute_change = tl.full((), value=0.0, dtype=DTYPE)
         max_updated_value = tl.full((), value=0.0, dtype=DTYPE)
@@ -902,27 +1012,10 @@ def _fused_linear_pi_self_loop_kernel(
                 tl.load(scratch_ptr + source_base + s_offs, mask=mask, other=0.0) * current_gain
             )
 
-            excluded_ancestor_mass = tl.zeros([BLOCK_S], dtype=DTYPE)
-            ancestor_species = s_offs.to(tl.int64)
-            for _ in range(0, MAX_ANCESTOR_DEPTH):
-                ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-                ancestor_likelihood = tl.load(
-                    scratch_ptr + source_base + ancestor_species,
-                    mask=ancestor_valid,
-                    other=0.0,
-                )
-                if USE_RECEIVER_WEIGHTS:
-                    ancestor_receiver_weight = tl.load(
-                        receiver_lin_ptr + ancestor_species, mask=ancestor_valid, other=0.0
-                    )
-                    ancestor_likelihood = ancestor_likelihood * ancestor_receiver_weight
-                excluded_ancestor_mass += tl.where(
-                    ancestor_valid, ancestor_likelihood, tl.zeros([BLOCK_S], dtype=DTYPE)
-                )
-                ancestor_species = tl.load(
-                    species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1
-                ).to(tl.int64)
-            valid_receiver_mass = (total_receiver_mass - excluded_ancestor_mass) * current_gain
+            valid_receiver_mass = _lookup_valid_receiver_mass(
+                scratch_ptr, not_open_base, closed_base, not_open_index_ptr, closed_index_ptr,
+                s_offs, mask, S, BLOCK_S, DTYPE,
+            ) * current_gain
             max_transfer = tl.load(max_transfer_lin_ptr + const_offsets, mask=mask, other=0.0)
             transfer_complement_likelihood = max_transfer * tl.where(
                 valid_receiver_mass > 0.0,
@@ -1013,13 +1106,14 @@ def _fused_linear_pi_self_loop_kernel(
             max_updated_value = tl.maximum(max_updated_value, tl.max(updated, axis=0))
 
         converged = tl.where(max_absolute_change <= 0.0, 1, 0).to(tl.int32)
-        # Branchless re-gauge: outside the drift band ``safe_max`` is 1.0, so the exponent is
-        # zero and both gains stay exactly 1.0.
-        needs_regauge = (max_updated_value > 0.0) & (
-            (max_updated_value > REGAUGE_HIGH) | (max_updated_value < REGAUGE_LOW)
-        )
+        # Re-gauge on EVERY iteration, not just when the row drifts out of some band: the gain is
+        # an exact power of two, so it costs nothing in accuracy, and it keeps the row maximum in
+        # [1, 2) at all times. That is what leaves the full float32 exponent range underneath the
+        # maximum for the rest of the row; letting the maximum sink to a threshold first spends
+        # that headroom, and a row whose values span more than the remainder loses its bottom
+        # lanes to zero, which the log path (one exponent per lane) never does.
         safe_max = tl.where(
-            needs_regauge, max_updated_value, tl.full((), value=1.0, dtype=DTYPE)
+            max_updated_value > 0.0, max_updated_value, tl.full((), value=1.0, dtype=DTYPE)
         )
         regauge_exponent = tl.floor(tl.log2(safe_max))
         regauge_gain = tl.exp2(-regauge_exponent)
@@ -1036,7 +1130,6 @@ def _fused_linear_pi_self_loop_kernel(
     final_base = current_slot.to(tl.int64) * slot_span + row_base
     previous_base = (1 - current_slot).to(tl.int64) * slot_span + row_base
 
-    final_receiver_mass = tl.full((), value=0.0, dtype=DTYPE)
     final_receiver_max = tl.full((), value=0.0, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -1045,11 +1138,14 @@ def _fused_linear_pi_self_loop_kernel(
         if USE_RECEIVER_WEIGHTS:
             receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=mask, other=0.0)
             stored = stored * receiver_weight
-        stored = tl.where(mask, stored, 0.0)
-        final_receiver_mass += tl.sum(stored, axis=0)
-        final_receiver_max = tl.maximum(final_receiver_max, tl.max(stored, axis=0))
-    final_receiver_mass = final_receiver_mass * current_gain
+        final_receiver_max = tl.maximum(
+            final_receiver_max, tl.max(tl.where(mask, stored, 0.0), axis=0)
+        )
     final_receiver_max = final_receiver_max * current_gain
+    _write_valid_receiver_prefix_sums(
+        scratch_ptr, final_base, not_open_base, closed_base, receiver_lin_ptr,
+        not_open_source_ptr, closed_source_ptr, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE,
+    )
     tl.store(
         pibar_row_max_ptr + global_row,
         tl.where(final_receiver_max > 0.0, tl.log2(final_receiver_max), NEG_LARGE),
@@ -1066,25 +1162,10 @@ def _fused_linear_pi_self_loop_kernel(
             tl.load(scratch_ptr + final_base + s_offs, mask=mask, other=0.0) * current_gain
         )
 
-        excluded_ancestor_mass = tl.zeros([BLOCK_S], dtype=DTYPE)
-        ancestor_species = s_offs.to(tl.int64)
-        for _ in range(0, MAX_ANCESTOR_DEPTH):
-            ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-            ancestor_likelihood = tl.load(
-                scratch_ptr + final_base + ancestor_species, mask=ancestor_valid, other=0.0
-            )
-            if USE_RECEIVER_WEIGHTS:
-                ancestor_receiver_weight = tl.load(
-                    receiver_lin_ptr + ancestor_species, mask=ancestor_valid, other=0.0
-                )
-                ancestor_likelihood = ancestor_likelihood * ancestor_receiver_weight
-            excluded_ancestor_mass += tl.where(
-                ancestor_valid, ancestor_likelihood, tl.zeros([BLOCK_S], dtype=DTYPE)
-            )
-            ancestor_species = tl.load(
-                species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1
-            ).to(tl.int64)
-        valid_receiver_mass = final_receiver_mass - excluded_ancestor_mass * current_gain
+        valid_receiver_mass = _lookup_valid_receiver_mass(
+            scratch_ptr, not_open_base, closed_base, not_open_index_ptr, closed_index_ptr,
+            s_offs, mask, S, BLOCK_S, DTYPE,
+        ) * current_gain
         max_transfer = tl.load(max_transfer_lin_ptr + const_offsets, mask=mask, other=0.0)
         transfer_complement_likelihood = max_transfer * tl.where(
             valid_receiver_mass > 0.0, valid_receiver_mass, tl.zeros([BLOCK_S], dtype=DTYPE)
@@ -1793,8 +1874,7 @@ def compute_fused_linear_self_loop(
     receiver_lin,
     species_child1,
     species_child2,
-    species_parent,
-    max_ancestor_depth,
+    valid_receiver_tables,
     gene_split_log_likelihood,
     gene_split_offset,
     gene_split_center_offset,
@@ -1817,9 +1897,12 @@ def compute_fused_linear_self_loop(
     published into ``Pi_out``/``Pi_out_offset`` and its Pibar into ``Pibar``/``Pibar_offset``,
     exactly as the final log-space iteration would.
 
-    ``scratch`` is the two-slot linear working buffer, shape ``[2, rows, S]`` with
-    ``rows >= W``; ``rows`` sets the slot stride (passed in as ``rows * S`` so the offset is
-    built in Python rather than in int32 device arithmetic), so one allocation serves every wave.
+    ``scratch`` is the four-slot linear working buffer, shape ``[4, rows, S]`` with
+    ``rows >= W``: slots 0 and 1 ping-pong the iterate, slots 2 and 3 hold the two running sums the
+    valid receiver mass is built from. ``rows`` sets the slot stride (passed in as ``rows * S`` so
+    the offset is built in Python rather than in int32 device arithmetic), so one allocation serves
+    every wave. ``valid_receiver_tables`` is the four-tensor tuple from
+    :func:`gpurec.core.inference.forward._valid_receiver_index_tables`.
     """
     if int(n_iters) < 1:
         raise ValueError("fused linear self-loop needs at least one iteration")
@@ -1839,8 +1922,8 @@ def compute_fused_linear_self_loop(
         pibar_row_max=pibar_row_max,
         gene_split_log_likelihood=gene_split_log_likelihood,
     )
-    if scratch.ndim != 3 or int(scratch.shape[0]) != 2 or int(scratch.shape[2]) != int(S):
-        raise ValueError("linear working buffer must have shape [2, rows, S]")
+    if scratch.ndim != 3 or int(scratch.shape[0]) != 4 or int(scratch.shape[2]) != int(S):
+        raise ValueError("linear working buffer must have shape [4, rows, S]")
     slot_rows = int(scratch.shape[1])
     if slot_rows < int(W):
         raise ValueError("linear working buffer has fewer rows than the wave")
@@ -1923,7 +2006,7 @@ def compute_fused_linear_self_loop(
         receiver_lin,
         species_child1,
         species_child2,
-        species_parent,
+        *valid_receiver_tables,
         leaf_species_idx,
         leaf_logp,
         leaf_fm_log_arg,
@@ -1939,7 +2022,6 @@ def compute_fused_linear_self_loop(
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
-        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         HAS_SPLITS=has_splits,
         USE_LEAF_INDEX=bool(has_leaf_term),
         USE_FRACTION_MISSING=use_fraction_missing,
