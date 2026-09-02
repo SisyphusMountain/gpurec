@@ -243,7 +243,19 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     species_child1 = sh["sp_child1"]
     species_child2 = sh["sp_child2"]
     species_parent = sh["sp_parent"]
+    species_height = sh.get("sp_height")
     max_ancestor_depth = int(sh["max_ancestor_depth"])
+    # The tangent is the forward tree system with a different right-hand side, so
+    # SolverOptions.adjoint_self_loop -- which already says "solve the wave's linear system
+    # exactly rather than iterating it" for the adjoint -- selects it here too.
+    exact_selfloop = getattr(static, "solver_options", None) is not None and (
+        static.solver_options.adjoint_self_loop == "exact"
+    )
+    if exact_selfloop and species_height is None:
+        raise ValueError(
+            "the exact wave-tangent self-loop needs species_helpers['sp_height']; rebuild the "
+            "model so the species payload carries it"
+        )
 
     # S3: weighted tangent iff a non-uniform base alpha is supplied (matches the primal's
     # use_receiver_weights derivation). dreceiver_log_probs is the softmax-Jacobian seed; col is the live
@@ -364,6 +376,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 family_idx=family_idx, dPibar_out=dpibar, has_leaf_term=has_leaf,
                 use_receiver_weights=use_receiver_weights, dreceiver_log_probs=dreceiver_log_probs,
                 pi_offset=pi_offset, gene_split_offset=gene_split_offset,
+                species_height=species_height, exact=exact_selfloop,
             )
         elif self_iters is not None:
             # reference (unfused) fixed-count path: one launch per Jacobi step

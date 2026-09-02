@@ -131,7 +131,27 @@ def _species_tensors(species: dict, *, accumulator_dtype: torch.dtype) -> dict:
     for key in _SPECIES_INT32_KEYS:
         species[key] = torch.tensor(species[key], dtype=torch.int32)
     species["compact_level_ptr"] = torch.tensor(species["compact_level_ptr"], dtype=torch.int64)
+    species["sp_height"] = _species_heights(species)
     return species
+
+
+def _species_heights(species: dict) -> torch.Tensor:
+    """Each species node's height: 0 at a leaf, 1 + the taller child's height above.
+
+    The same number the preprocessor used to bucket internal nodes into ``compact_level_*``, read
+    back off those tables: bucket ``i`` holds exactly the nodes of height ``i + 1``, and every node
+    absent from them is a leaf. Kernels that walk the tree level by level over a whole species row
+    at once -- rather than over one level's node list -- need the height per SPECIES to know which
+    lanes each level updates; see ``_solve_reconciliation_self_loop_jvp_exact_kernel``.
+    """
+    height = torch.zeros(int(species["S"]), dtype=torch.int32)
+    level_ptr = species["compact_level_ptr"]
+    parents = species["compact_level_parents"]
+    for level in range(int(level_ptr.numel()) - 1):
+        start = int(level_ptr[level])
+        end = int(level_ptr[level + 1])
+        height[parents[start:end].long()] = level + 1
+    return height
 
 
 def parse_families(species_path, family_paths):
