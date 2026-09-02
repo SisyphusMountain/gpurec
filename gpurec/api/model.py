@@ -13,7 +13,12 @@ from gpurec.api._execution import (
 from gpurec.api.solver_options import SolverOptions
 from gpurec.config import GpurecConfig, PrecisionOptions, torch_dtype_name
 from gpurec.config.rates import RateBounds
-from gpurec.core.scheduling.batching import plan_batch_wave_layouts, preprocess_dataset
+from gpurec.core.scheduling.batching import (
+    plan_batch_wave_layouts,
+    plan_batches_from_parsed,
+    preprocess_dataset,
+    preprocess_from_parsed,
+)
 
 
 _MODE_FLAGS = {
@@ -48,6 +53,8 @@ class GeneReconModel(torch.nn.Module):
         dtype: torch.dtype | str | None = None,
         per_family_origination: bool = False,
         fraction_missing=None,
+        parsed_families=None,
+        family_indices=None,
     ):
         super().__init__()
         device = torch.device(device)
@@ -73,15 +80,37 @@ class GeneReconModel(torch.nn.Module):
         self.accumulator_dtype = precision_options.accumulator_torch_dtype
         self.dtype = dtype
 
-        raw = preprocess_dataset(
-            str(species_tree),
-            gene_trees,
-            accumulator_dtype=self.accumulator_dtype,
-            family_chunk_size=family_chunk_size,
-            clade_budget=clade_budget,
-            batch_packing=batch_packing,
-            max_wave_size=max_wave_size,
-        )
+        # ``parsed_families`` (a gpurec.core.scheduling.batching.parse_families handle) plus the
+        # ``family_indices`` selecting a subset of it replaces re-reading and re-parsing the gene
+        # tree files: same payload, no file I/O, no JSON. ``gene_trees`` is then only bookkeeping.
+        if (parsed_families is None) != (family_indices is None):
+            raise ValueError(
+                "parsed_families and family_indices must be given together (or neither)"
+            )
+        if parsed_families is None:
+            raw = preprocess_dataset(
+                str(species_tree),
+                gene_trees,
+                accumulator_dtype=self.accumulator_dtype,
+                family_chunk_size=family_chunk_size,
+                clade_budget=clade_budget,
+                batch_packing=batch_packing,
+                max_wave_size=max_wave_size,
+            )
+        else:
+            family_indices = [int(index) for index in family_indices]
+            raw = preprocess_from_parsed(
+                parsed_families,
+                family_indices,
+                family_chunk_size=family_chunk_size,
+                clade_budget=clade_budget,
+                batch_packing=batch_packing,
+                max_wave_size=max_wave_size,
+                family_group_assignments=None,
+                accumulator_dtype=self.accumulator_dtype,
+            )
+        self.parsed_families = parsed_families
+        self.parsed_family_indices = family_indices
         species_raw = raw["species"]
         families = raw["families"]
         species_helpers = {k: v.to(device=device) if torch.is_tensor(v) else v for k, v in species_raw.items()}
@@ -314,14 +343,27 @@ class GeneReconModel(torch.nn.Module):
         self.family_group_assignments = (
             list(family_group_assignments) if family_group_assignments is not None else None
         )
-        raw_plan = plan_batch_wave_layouts(
-            self.families,
-            family_chunk_size=self.family_chunk_size,
-            clade_budget=self.clade_budget,
-            batch_packing=self.batch_packing,
-            max_wave_size=self.max_wave_size,
-            family_group_assignments=self.family_group_assignments,
-        )
+        # The parsed path re-plans in Rust over the same resident families; the legacy path
+        # round-trips the (JSON-serialisable) family payloads through plan_batch_layouts.
+        if self.parsed_families is None:
+            raw_plan = plan_batch_wave_layouts(
+                self.families,
+                family_chunk_size=self.family_chunk_size,
+                clade_budget=self.clade_budget,
+                batch_packing=self.batch_packing,
+                max_wave_size=self.max_wave_size,
+                family_group_assignments=self.family_group_assignments,
+            )
+        else:
+            raw_plan = plan_batches_from_parsed(
+                self.parsed_families,
+                self.parsed_family_indices,
+                family_chunk_size=self.family_chunk_size,
+                clade_budget=self.clade_budget,
+                batch_packing=self.batch_packing,
+                max_wave_size=self.max_wave_size,
+                family_group_assignments=self.family_group_assignments,
+            )
         self.family_batches = raw_plan["batches"]
         self.batch_wave_layouts = raw_plan["batch_wave_layouts"]
         self.batch_statics = [

@@ -1,6 +1,7 @@
 import json
 from bisect import bisect_right
 
+import numpy as np
 import torch
 
 from gpurec.config.precision import PrecisionOptions, resolve_torch_dtype, torch_dtype_name
@@ -39,10 +40,32 @@ def _normalize_batch_packing(batch_packing: str, clade_budget: int | None) -> st
     return batch_packing
 
 
+# numpy dtype for each torch index dtype the wave layout builds. The payload arrives either as
+# numpy int64 arrays (ParsedFamilies / preprocess_from_parsed) or as Python lists (the legacy JSON
+# path); narrowing in numpy first keeps the host->device copy at the tensor's final width.
+_NUMPY_FOR_TORCH_INDEX = {torch.int32: np.int32, torch.int64: np.int64}
+
+
+def _index_tensor(values, *, dtype: torch.dtype, device) -> torch.Tensor:
+    """``torch.tensor(values, dtype=dtype, device=device)`` without a per-element Python loop.
+
+    Accepts a numpy array or a plain Python sequence and produces exactly the tensor the
+    element-by-element construction produced before: same dtype, shape, values and contiguity.
+    """
+    array = np.ascontiguousarray(np.asarray(values, dtype=_NUMPY_FOR_TORCH_INDEX[dtype]))
+    return torch.from_numpy(array).to(device=device).contiguous()
+
+
+def _float64_array(values) -> np.ndarray:
+    """The payload's f64 values as a contiguous float64 numpy array (no copy when already one)."""
+    return np.ascontiguousarray(np.asarray(values, dtype=np.float64))
+
+
 def _materialize_split_probabilities(values, *, device) -> dict[torch.dtype, torch.Tensor]:
     """Create both supported dense-kernel variants directly from f64 payload values."""
+    host = torch.from_numpy(_float64_array(values))
     return {
-        dtype: torch.tensor(values, dtype=dtype, device=device).contiguous()
+        dtype: host.to(dtype=dtype, device=device).contiguous()
         for dtype in (torch.float32, torch.float64)
     }
 
@@ -87,21 +110,109 @@ def preprocess_dataset(
         )
     )
     _validate_schema_version(raw, payload_name="preprocess_dataset")
-    species = raw["species"]
-    # The Rust preprocessor returns ordinary Python floats. Preserve them at the configured
+    raw["species"] = _species_tensors(raw["species"], accumulator_dtype=accumulator_dtype)
+    raw["batches"] = [[int(index) for index in batch] for batch in raw.get("batches", [])]
+    return raw
+
+
+_SPECIES_INT32_KEYS = (
+    "sp_child1", "sp_child2", "sp_parent", "sp_subtree_start", "sp_subtree_end",
+    "compact_level_parents", "compact_level_child1", "compact_level_child2",
+)
+
+
+def _species_tensors(species: dict, *, accumulator_dtype: torch.dtype) -> dict:
+    """Convert the species payload's arrays to the tensors the model consumes (in place)."""
+    # The Rust preprocessor returns f64 row maxima. Preserve them at the configured
     # accumulation precision because this row maximum participates in the transfer softmax.
     species["unnorm_row_max"] = torch.tensor(
         species["unnorm_row_max"], dtype=accumulator_dtype
     )
-    for key in (
-        "sp_child1", "sp_child2", "sp_parent", "sp_subtree_start", "sp_subtree_end",
-        "compact_level_parents", "compact_level_child1", "compact_level_child2",
-    ):
+    for key in _SPECIES_INT32_KEYS:
         species[key] = torch.tensor(species[key], dtype=torch.int32)
     species["compact_level_ptr"] = torch.tensor(species["compact_level_ptr"], dtype=torch.int64)
+    return species
 
-    raw["batches"] = [[int(index) for index in batch] for batch in raw.get("batches", [])]
+
+def parse_families(species_path, family_paths):
+    """Parse the species tree and every gene family ONCE, returning a resident Rust handle.
+
+    The returned ``ParsedFamilies`` object keeps the parsed per-family payloads in Rust. Feed it
+    to :func:`preprocess_from_parsed` (or ``GeneReconModel(parsed_families=..., family_indices=...)``)
+    to rebuild a model over any subset of the same families without re-reading a single file and
+    without a JSON round trip.
+    """
+    return _load_native_module().ParsedFamilies.parse(
+        str(species_path), [str(path) for path in family_paths]
+    )
+
+
+def plan_batches_from_parsed(
+    parsed,
+    indices,
+    *,
+    family_chunk_size: int | None,
+    clade_budget: int | None,
+    batch_packing: str,
+    max_wave_size: int,
+    family_group_assignments: list[int] | None,
+):
+    """Re-plan batches + wave layouts over ``indices`` of an already-parsed dataset.
+
+    Returns ``{"batches", "batch_wave_layouts"}`` exactly as ``plan_batch_wave_layouts`` does,
+    except that every numeric array inside is a numpy array instead of a JSON-decoded list, and
+    ``batches`` hold positions into ``indices`` (not into the whole parsed dataset).
+    """
+    batch_packing = _normalize_batch_packing(batch_packing, clade_budget)
+    raw = parsed.plan(
+        [int(index) for index in indices],
+        family_chunk_size,
+        clade_budget,
+        batch_packing,
+        max_wave_size,
+        [int(label) for label in family_group_assignments]
+        if family_group_assignments is not None
+        else None,
+    )
+    _validate_schema_version(raw, payload_name="ParsedFamilies.plan")
+    raw["batches"] = [[int(index) for index in batch] for batch in raw["batches"]]
     return raw
+
+
+def preprocess_from_parsed(
+    parsed,
+    indices,
+    *,
+    family_chunk_size: int | None,
+    clade_budget: int | None,
+    batch_packing: str,
+    max_wave_size: int,
+    family_group_assignments: list[int] | None,
+    accumulator_dtype: torch.dtype | str | None,
+):
+    """The ``preprocess_dataset`` payload for a subset of an already-parsed dataset.
+
+    Same dict structure, same tensors, same ordering -- but no file is re-read and no JSON text
+    is produced: the numeric arrays arrive as numpy arrays straight out of Rust.
+    """
+    accumulator_dtype = _resolve_accumulator_dtype(accumulator_dtype)
+    indices = [int(index) for index in indices]
+    plan = plan_batches_from_parsed(
+        parsed,
+        indices,
+        family_chunk_size=family_chunk_size,
+        clade_budget=clade_budget,
+        batch_packing=batch_packing,
+        max_wave_size=max_wave_size,
+        family_group_assignments=family_group_assignments,
+    )
+    return {
+        "schema_version": _EXPECTED_SCHEMA_VERSION,
+        "species": _species_tensors(parsed.species(), accumulator_dtype=accumulator_dtype),
+        "families": parsed.families(indices),
+        "batches": plan["batches"],
+        "batch_wave_layouts": plan["batch_wave_layouts"],
+    }
 
 
 def species_name_to_index(species_tree_path: str) -> dict[str, int]:
@@ -124,7 +235,10 @@ def build_wave_layout_from_plan(
     model_dtype = _resolve_model_dtype(model_dtype)
     _resolve_accumulator_dtype(accumulator_dtype)
     plan = payload["plan"]
-    logp = [float(value) for value in payload["log_split_probs_sorted"]]
+    # ``log_split_probs_sorted`` is f64 in the payload -- a numpy array on the parsed path, a list
+    # of Python floats on the legacy JSON path. One vectorized gather per wave replaces the former
+    # per-split Python indexing.
+    logp = _float64_array(payload["log_split_probs_sorted"])
     index_dtype = torch.int32
     wave_metas = []
     for raw_meta in plan["wave_metas"]:
@@ -138,54 +252,49 @@ def build_wave_layout_from_plan(
             "phase": int(raw_meta.get("phase", 2 if raw_meta.get("has_splits") else 1)),
         }
         if raw_meta.get("has_splits"):
-            split_indices = [int(idx) for idx in raw_meta.get("split_indices", [])]
-            split_values = [logp[idx] for idx in split_indices]
+            split_indices = np.asarray(raw_meta.get("split_indices", []), dtype=np.int64)
             split_probabilities = _materialize_split_probabilities(
-                split_values, device=device
+                logp[split_indices], device=device
             )
-            meta["sl"] = torch.tensor(raw_meta["sl"], dtype=index_dtype, device=device).contiguous()
-            meta["sr"] = torch.tensor(raw_meta["sr"], dtype=index_dtype, device=device).contiguous()
-            meta["reduce_idx"] = torch.tensor(raw_meta["reduce_idx"], dtype=index_dtype, device=device).contiguous()
+            meta["sl"] = _index_tensor(raw_meta["sl"], dtype=index_dtype, device=device)
+            meta["sr"] = _index_tensor(raw_meta["sr"], dtype=index_dtype, device=device)
+            meta["reduce_idx"] = _index_tensor(
+                raw_meta["reduce_idx"], dtype=index_dtype, device=device
+            )
             # Rust computes and serializes these values as f64. Keep prebuilt
             # variants for both supported model dtypes so ``model.to(...)`` and
             # explicit runtime parameters never widen an fp32-quantized tensor.
             meta["_log_split_probs_by_dtype"] = split_probabilities
             meta["log_split_probs"] = split_probabilities[model_dtype]
             meta["n_eq1"] = int(raw_meta.get("n_eq1", 0))
-            if raw_meta.get("eq1_reduce_idx"):
-                meta["eq1_reduce_idx"] = torch.tensor(
-                    raw_meta["eq1_reduce_idx"],
-                    dtype=index_dtype,
-                    device=device,
-                ).contiguous()
-            if raw_meta.get("ge2_ptr"):
-                meta["ge2_ptr"] = torch.tensor(raw_meta["ge2_ptr"], dtype=torch.long, device=device).contiguous()
-                meta["ge2_parent_ids"] = torch.tensor(
-                    raw_meta["ge2_parent_ids"],
-                    dtype=index_dtype,
-                    device=device,
-                ).contiguous()
+            # ``len(...)`` rather than truthiness: a numpy array has no boolean value.
+            eq1_reduce_idx = raw_meta.get("eq1_reduce_idx")
+            if eq1_reduce_idx is not None and len(eq1_reduce_idx):
+                meta["eq1_reduce_idx"] = _index_tensor(
+                    eq1_reduce_idx, dtype=index_dtype, device=device
+                )
+            ge2_ptr = raw_meta.get("ge2_ptr")
+            if ge2_ptr is not None and len(ge2_ptr):
+                meta["ge2_ptr"] = _index_tensor(ge2_ptr, dtype=torch.long, device=device)
+                meta["ge2_parent_ids"] = _index_tensor(
+                    raw_meta["ge2_parent_ids"], dtype=index_dtype, device=device
+                )
                 meta["ge2_max_fanout"] = int(raw_meta["ge2_max_fanout"])
         wave_metas.append(meta)
 
+    family_idx = plan.get("family_idx")
+    if family_idx is None:
+        family_idx = np.zeros(int(plan["c"]), dtype=np.int64)
     return {
-        "perm": torch.tensor(plan["perm"], dtype=torch.long, device=device).contiguous(),
-        "leaf_species_index": torch.tensor(
-            plan["leaf_species_index"],
-            dtype=index_dtype,
-            device=device,
-        ).contiguous(),
-        "root_clade_ids": torch.tensor(
-            plan["root_clade_ids"],
-            dtype=torch.long,
-            device=device,
-        ).contiguous(),
+        "perm": _index_tensor(plan["perm"], dtype=torch.long, device=device),
+        "leaf_species_index": _index_tensor(
+            plan["leaf_species_index"], dtype=index_dtype, device=device
+        ),
+        "root_clade_ids": _index_tensor(
+            plan["root_clade_ids"], dtype=torch.long, device=device
+        ),
         "wave_metas": wave_metas,
-        "family_idx": torch.tensor(
-            plan.get("family_idx", [0] * int(plan["c"])),
-            dtype=torch.long,
-            device=device,
-        ).contiguous(),
+        "family_idx": _index_tensor(family_idx, dtype=torch.long, device=device),
     }
 
 
@@ -217,21 +326,25 @@ def plan_batch_wave_layouts(
 
 
 def _split_rows_for_family(family):
+    """Leaf rows and (parent, left, right, log-prior) split rows as plain Python lists.
+
+    Accepts either numpy-backed payload arrays (the parsed path) or the JSON path's Python lists.
+    """
     C = int(family["C"])
-    leaf_rows = [int(row) for row in family["leaf_row_index"]]
+    leaf_rows = np.asarray(family["leaf_row_index"], dtype=np.int64).tolist()
+    leftrights = np.asarray(family["split_leftrights_sorted"], dtype=np.int64)
     if "split_parents_sorted" in family:
-        n_splits = int(family.get("N_splits", len(family["split_parents_sorted"])))
-        leftrights = family["split_leftrights_sorted"]
-        parents = [int(parent) for parent in family["split_parents_sorted"]]
-        lefts = [int(value) for value in leftrights[:n_splits]]
-        rights = [int(value) for value in leftrights[n_splits:]]
-        logp = [float(value) for value in family["log_split_probs_sorted"]]
+        parents_array = np.asarray(family["split_parents_sorted"], dtype=np.int64)
+        n_splits = int(family.get("N_splits", len(parents_array)))
+        parents = parents_array.tolist()
+        lefts = leftrights[:n_splits].tolist()
+        rights = leftrights[n_splits:].tolist()
+        logp = _float64_array(family["log_split_probs_sorted"]).tolist()
     else:
-        leftrights = family["split_leftrights_sorted"]
         leaf_set = set(leaf_rows)
         parents = [clade for clade in range(C) if clade not in leaf_set]
-        lefts = [int(value) for value in leftrights[: len(parents)]]
-        rights = [int(value) for value in leftrights[len(parents) :]]
+        lefts = leftrights[: len(parents)].tolist()
+        rights = leftrights[len(parents) :].tolist()
         logp = [0.0] * len(parents)
     return leaf_rows, parents, lefts, rights, logp
 

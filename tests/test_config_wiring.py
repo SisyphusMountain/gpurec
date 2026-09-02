@@ -215,7 +215,9 @@ def _run_fit_genewise_capture(monkeypatch, **kwargs):
     """Run ``fit_genewise`` with a stubbed ``GeneReconModel`` (never actually touched -- adam_steps=0,
     max_iter=0, certify=False mean the tier loop builds a model but never calls into it) and a spy
     on ``RateBounds`` (a plain dataclass; wrapping its constructor just records the resolved
-    min_rate/max_rate without changing behavior). Returns ``(solver_options_used, bounds_used)``.
+    min_rate/max_rate without changing behavior). ``parse_families`` (which reads every .ale file
+    once per fit) is stubbed for the same reason as the model: these paths do not exist on disk.
+    Returns ``(solver_options_used, bounds_used)``.
     """
     import gpurec.fit.genewise_fit as gf
 
@@ -235,6 +237,7 @@ def _run_fit_genewise_capture(monkeypatch, **kwargs):
         return rb
 
     monkeypatch.setattr(gf, "GeneReconModel", _CaptureModel)
+    monkeypatch.setattr(gf, "parse_families", lambda *_a, **_k: object())
     monkeypatch.setattr(gf, "RateBounds", _spy_bounds)
     gf.fit_genewise(
         "sp.nwk", ["g.nwk"], device="cpu", adam_steps=0, pi_tiers=(16,),
