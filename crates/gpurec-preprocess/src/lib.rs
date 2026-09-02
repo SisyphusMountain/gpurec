@@ -233,7 +233,23 @@ struct AleParsed {
     dip_counts: Vec<AleDipCount>,
     last_leafset_id: Option<usize>,
     leaf_ids: BTreeMap<usize, String>,
-    set_ids: BTreeMap<usize, Vec<usize>>,
+    // `set_ids` maps an ALE clade id to the byte span, inside the file text,
+    // of that clade's leaf-id list.  The `#set-id` section holds one line per
+    // clade listing every leaf of the clade, so it is by far the largest part
+    // of an `.ale` file (clades x leaves ids).  Materialising those ids as a
+    // `Vec<usize>` per clade allocated and re-copied that whole volume for no
+    // gain: the only consumer turns each list straight into a leaf bitmask,
+    // so we remember where the list is and read it once, in place.
+    set_ids: BTreeMap<usize, AleSetIdSpan>,
+}
+
+/// Where one `#set-id` line's leaf-id list sits inside the file text, plus the
+/// line number so error messages stay identical whichever pass reports them.
+#[derive(Clone, Copy, Debug)]
+struct AleSetIdSpan {
+    start: usize,
+    end: usize,
+    line_no: usize,
 }
 
 struct GeneNewickParser<'a> {
@@ -540,25 +556,46 @@ fn preprocess_one_family(
     }))
 }
 
+/// Longest chain of splits from any single-leaf clade up to any clade.
+///
+/// Every split joins two disjoint leaf sets into their union, so a split's
+/// parent clade always holds strictly more leaves than either child.  Visiting
+/// splits in order of increasing parent clade size is therefore a topological
+/// order of the split graph, and one relaxation pass in that order reaches the
+/// same fixed point that the previous version reached by sweeping all splits
+/// over and over until nothing changed.  That sweep cost one full pass over
+/// every split per level of depth; this costs one pass plus a counting sort.
 fn clade_schedule_depth(clade_data: &CladeData) -> usize {
     let c = clade_data.clades.clades.len();
     let mut levels = vec![-1isize; c];
+    let mut max_size = 0usize;
     for (idx, clade) in clade_data.clades.clades.iter().enumerate() {
         if clade.size == 1 {
             levels[idx] = 0;
         }
+        max_size = max_size.max(clade.size);
     }
-    for _ in 0..c {
-        let mut changed = false;
-        for split in &clade_data.splits {
-            let child_level = levels[split.left].max(levels[split.right]);
-            if child_level >= 0 && levels[split.parent] < child_level + 1 {
-                levels[split.parent] = child_level + 1;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
+
+    // Counting sort of the split indices by parent clade size.
+    let mut splits_per_size = vec![0usize; max_size + 2];
+    for split in &clade_data.splits {
+        splits_per_size[clade_data.clades.clades[split.parent].size + 1] += 1;
+    }
+    for size in 1..splits_per_size.len() {
+        splits_per_size[size] += splits_per_size[size - 1];
+    }
+    let mut splits_by_parent_size = vec![0usize; clade_data.splits.len()];
+    for (idx, split) in clade_data.splits.iter().enumerate() {
+        let slot = &mut splits_per_size[clade_data.clades.clades[split.parent].size];
+        splits_by_parent_size[*slot] = idx;
+        *slot += 1;
+    }
+
+    for idx in splits_by_parent_size {
+        let split = &clade_data.splits[idx];
+        let child_level = levels[split.left].max(levels[split.right]);
+        if child_level >= 0 && levels[split.parent] < child_level + 1 {
+            levels[split.parent] = child_level + 1;
         }
     }
     levels.into_iter().max().unwrap_or(0).max(0) as usize
@@ -587,16 +624,15 @@ fn plan_batches_and_layouts(
         .iter()
         .map(|family| value_i64(family, "N_splits"))
         .collect::<Result<Vec<_>, _>>()?;
+    // Both of these only need a count, so walk the JSON arrays in place rather
+    // than allocating a full `Vec<i64>` per family just to measure it.
     let leaf_counts = families
         .iter()
-        .map(|family| value_vec_i64(family, "leaf_row_index").map(|rows| rows.len() as i64))
+        .map(|family| count_vec_i64(family, "leaf_row_index", |_| true))
         .collect::<Result<Vec<_>, _>>()?;
     let nonleaf_counts = families
         .iter()
-        .map(|family| {
-            value_vec_i64(family, "split_counts")
-                .map(|counts| counts.into_iter().filter(|count| *count > 0).count() as i64)
-        })
+        .map(|family| count_vec_i64(family, "split_counts", |count| count > 0))
         .collect::<Result<Vec<_>, _>>()?;
     let schedule_depths = families
         .iter()
@@ -627,9 +663,16 @@ fn plan_batches_and_layouts(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
+    // Batches are independent of each other, so build their wave layouts in
+    // parallel.  Results are collected per batch first and only then folded
+    // into a single `Result`, so the layouts stay in batch order and a failing
+    // batch reports the same error the sequential version reported: the one
+    // from the earliest batch.
     let layouts = batches
-        .iter()
+        .par_iter()
         .map(|batch| batch_wave_layout(families, batch, max_wave_size))
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
     Ok((batches, layouts))
 }
@@ -651,6 +694,24 @@ fn value_vec_i64(family: &Value, key: &str) -> Result<Vec<i64>, String> {
                 .ok_or_else(|| format!("family field {key:?} contains a non-integer"))
         })
         .collect()
+}
+
+/// Number of entries of an integer array field that satisfy `keep`, validating
+/// every entry exactly as `value_vec_i64` does but without building a `Vec`.
+fn count_vec_i64(family: &Value, key: &str, keep: impl Fn(i64) -> bool) -> Result<i64, String> {
+    let mut kept = 0i64;
+    for value in family[key]
+        .as_array()
+        .ok_or_else(|| format!("family field {key:?} is missing or not an array"))?
+    {
+        let value = value
+            .as_i64()
+            .ok_or_else(|| format!("family field {key:?} contains a non-integer"))?;
+        if keep(value) {
+            kept += 1;
+        }
+    }
+    Ok(kept)
 }
 
 fn value_vec_f64(family: &Value, key: &str) -> Result<Vec<f64>, String> {
@@ -697,20 +758,23 @@ fn batch_wave_layout(
 
         offsets.push(offset);
         counts.push(c);
+        // Read the split arrays through references first, so they can then be
+        // moved into the schedule item instead of cloned: at dataset scale
+        // these two clones copied every split of every family twice over.
+        parents.extend(split_parents.iter().map(|value| *value + offset));
+        lefts.extend(leftrights[..n].iter().map(|value| *value + offset));
+        rights.extend(leftrights[n..].iter().map(|value| *value + offset));
+        log_split_probs.extend(logp);
         items.push(scheduler::ScheduleItem {
             ccp: scheduler::ScheduleCcp {
                 c: c as usize,
                 n_splits: n,
                 split_counts: Some(split_counts),
-                split_parents_sorted: split_parents.clone(),
-                split_leftrights_sorted: leftrights.clone(),
+                split_parents_sorted: split_parents,
+                split_leftrights_sorted: leftrights,
                 root_clade_id: value_i64(family, "root_clade_id")?,
             },
         });
-        parents.extend(split_parents.into_iter().map(|value| value + offset));
-        lefts.extend(leftrights[..n].iter().map(|value| *value + offset));
-        rights.extend(leftrights[n..].iter().map(|value| *value + offset));
-        log_split_probs.extend(logp);
         leaf_rows.extend(
             value_vec_i64(family, "leaf_row_index")?
                 .into_iter()
@@ -931,7 +995,7 @@ fn parse_ale_clades_and_splits(
     text: &str,
 ) -> Result<(CladeData, Vec<String>), String> {
     let ale = parse_ale_sections(path, text)?;
-    build_ale_clade_data(path, ale)
+    build_ale_clade_data(path, ale, text)
 }
 
 fn parse_ale_sections(path: &Path, text: &str) -> Result<AleParsed, String> {
@@ -1063,17 +1127,24 @@ fn parse_ale_sections(path: &Path, text: &str) -> Result<AleParsed, String> {
                         path.display()
                     ));
                 }
-                let mut leaf_ids = Vec::new();
-                for token in raw_leaf_ids.split_whitespace() {
-                    leaf_ids.push(parse_ale_usize(path, line_no, token, "set leaf id")?);
-                }
-                if leaf_ids.is_empty() {
+                let mut leaf_count = 0usize;
+                for_each_ale_set_leaf_id(path, line_no, raw_leaf_ids, |_| {
+                    leaf_count += 1;
+                    Ok(())
+                })?;
+                if leaf_count == 0 {
                     return Err(format!(
                         "{}:{line_no}: set-id clade {clade_id} has no leaves",
                         path.display()
                     ));
                 }
-                if ale.set_ids.insert(clade_id, leaf_ids).is_some() {
+                let (start, end) = ale_subslice_range(text, raw_leaf_ids);
+                let span = AleSetIdSpan {
+                    start,
+                    end,
+                    line_no,
+                };
+                if ale.set_ids.insert(clade_id, span).is_some() {
                     return Err(format!(
                         "{}:{line_no}: duplicate ALE set-id clade {clade_id}",
                         path.display()
@@ -1105,7 +1176,11 @@ fn parse_ale_sections(path: &Path, text: &str) -> Result<AleParsed, String> {
     Ok(ale)
 }
 
-fn build_ale_clade_data(path: &Path, ale: AleParsed) -> Result<(CladeData, Vec<String>), String> {
+fn build_ale_clade_data(
+    path: &Path,
+    ale: AleParsed,
+    text: &str,
+) -> Result<(CladeData, Vec<String>), String> {
     let observations = ale.observations.expect("validated observations");
     let max_leaf_id = *ale
         .leaf_ids
@@ -1159,8 +1234,16 @@ fn build_ale_clade_data(path: &Path, ale: AleParsed) -> Result<(CladeData, Vec<S
     }
 
     let mut ale_to_clade_id = HashMap::new();
-    for (ale_id, leaf_ids) in &ale.set_ids {
-        let bits = ale_leaf_set_bits(path, *ale_id, leaf_ids, leaf_names.len(), num_words)?;
+    for (ale_id, span) in &ale.set_ids {
+        let raw_leaf_ids = &text[span.start..span.end];
+        let bits = ale_leaf_set_bits(
+            path,
+            *ale_id,
+            span.line_no,
+            raw_leaf_ids,
+            leaf_names.len(),
+            num_words,
+        )?;
         let clade_id = result.clades.get_or_create(bits);
         ale_to_clade_id.insert(*ale_id, clade_id);
     }
@@ -1403,28 +1486,109 @@ fn ale_bip_count_for_root(
 fn ale_leaf_set_bits(
     path: &Path,
     ale_clade_id: usize,
-    leaf_ids: &[usize],
+    line_no: usize,
+    raw_leaf_ids: &str,
     num_leaves: usize,
     num_words: usize,
 ) -> Result<Vec<u64>, String> {
-    let mut bits = vec![0; num_words];
-    for leaf_id in leaf_ids {
-        if *leaf_id == 0 || *leaf_id > num_leaves {
+    let mut bits = vec![0u64; num_words];
+    for_each_ale_set_leaf_id(path, line_no, raw_leaf_ids, |leaf_id| {
+        if leaf_id == 0 || leaf_id > num_leaves {
             return Err(format!(
                 "{}: set-id clade {ale_clade_id} references invalid leaf id {leaf_id}",
                 path.display()
             ));
         }
         let index = leaf_id - 1;
-        if bit_is_set(&bits, index) {
+        let word = &mut bits[index >> 6];
+        let mask = 1u64 << (index & 63);
+        if *word & mask != 0 {
             return Err(format!(
                 "{}: set-id clade {ale_clade_id} repeats leaf id {leaf_id}",
                 path.display()
             ));
         }
-        set_bit(&mut bits, index);
-    }
+        *word |= mask;
+        Ok(())
+    })?;
     Ok(bits)
+}
+
+// The ASCII bytes for which `char::is_whitespace` is true.
+fn is_ale_ascii_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+/// Byte offsets of `part` inside `text`.  `part` must be a sub-slice of `text`,
+/// which is how every value handed to this function is produced.
+fn ale_subslice_range(text: &str, part: &str) -> (usize, usize) {
+    let start = part.as_ptr() as usize - text.as_ptr() as usize;
+    (start, start + part.len())
+}
+
+/// Walks the leaf-id list of one `#set-id` line and hands every id to `visit`.
+///
+/// Splitting and integer parsing happen in a single pass over the raw bytes.
+/// This is the hot loop of the whole preprocessor: the `#set-id` section is
+/// almost the entire `.ale` file (about 18 million ids in a 75 MB file), and
+/// `str::split_whitespace` + `str::parse` walked those bytes twice, decoding
+/// one `char` at a time.  Behaviour is unchanged: a token of at most 19 ASCII
+/// digits is converted directly (19 nines still fit in a `u64`), and anything
+/// else - a sign, a stray character, a longer number, or a line containing any
+/// non-ASCII byte - falls back to `str::split_whitespace` / `str::parse` so the
+/// accepted inputs and the error text stay exactly the same.
+fn for_each_ale_set_leaf_id<F>(
+    path: &Path,
+    line_no: usize,
+    raw_leaf_ids: &str,
+    mut visit: F,
+) -> Result<(), String>
+where
+    F: FnMut(usize) -> Result<(), String>,
+{
+    if !raw_leaf_ids.is_ascii() {
+        for token in raw_leaf_ids.split_whitespace() {
+            visit(parse_ale_usize(path, line_no, token, "set leaf id")?)?;
+        }
+        return Ok(());
+    }
+
+    let bytes = raw_leaf_ids.as_bytes();
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        if is_ale_ascii_space(bytes[pos]) {
+            pos += 1;
+            continue;
+        }
+        let start = pos;
+        let mut value: u64 = 0;
+        while pos < bytes.len() {
+            let digit = bytes[pos].wrapping_sub(b'0');
+            if digit >= 10 {
+                break;
+            }
+            value = value.wrapping_mul(10).wrapping_add(u64::from(digit));
+            pos += 1;
+        }
+        let digit_len = pos - start;
+        let token_ended = pos == bytes.len() || is_ale_ascii_space(bytes[pos]);
+        if digit_len > 0 && digit_len <= 19 && token_ended {
+            if let Ok(leaf_id) = usize::try_from(value) {
+                visit(leaf_id)?;
+                continue;
+            }
+        }
+        while pos < bytes.len() && !is_ale_ascii_space(bytes[pos]) {
+            pos += 1;
+        }
+        visit(parse_ale_usize(
+            path,
+            line_no,
+            &raw_leaf_ids[start..pos],
+            "set leaf id",
+        )?)?;
+    }
+    Ok(())
 }
 
 fn split_ale_fields<'a>(
@@ -1583,10 +1747,6 @@ fn bitvec_num_words(num_leaves: usize) -> usize {
 
 fn set_bit(bits: &mut [u64], index: usize) {
     bits[index >> 6] |= 1u64 << (index & 63);
-}
-
-fn bit_is_set(bits: &[u64], index: usize) -> bool {
-    bits[index >> 6] & (1u64 << (index & 63)) != 0
 }
 
 fn full_leaf_bits(num_leaves: usize, num_words: usize) -> Vec<u64> {
