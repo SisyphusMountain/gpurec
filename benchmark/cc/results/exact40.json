@@ -1,0 +1,106 @@
+{
+  "tag": "exact40",
+  "forward_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 40,
+  "wall_s": 29.104140516836196,
+  "nll_bits": 115604.88023995119,
+  "nll_nats": 80131.1967972923,
+  "opt_seconds": 28.127899325918406,
+  "n_steps": 28,
+  "n_builds": 19,
+  "adam_seconds": 7.177431145682931,
+  "hessian_seconds": 2.0709863239899278,
+  "n_hessians": 1,
+  "newton_grad_seconds": 6.834233064204454,
+  "n_verify_builds": 12,
+  "verify_seconds": 4.555726766120642,
+  "n_rebuilds": 6,
+  "rebuild_seconds": 0.2547004232183099,
+  "certify_seconds": 0.5491220951080322,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 5,
+        "remain": 35
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 11,
+        "remain": 24
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 3,
+        "remain": 21
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 4,
+        "remain": 17
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 2,
+        "remain": 15
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 2,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 2,
+        "remain": 11
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 5,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 1,
+        "remain": 5
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 2,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 2,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 9.63254451751709,
+  "certificate": {
+    "converged": 40,
+    "bound_active": 1,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009967968799173832
+  }
+}

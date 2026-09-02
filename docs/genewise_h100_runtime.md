@@ -175,6 +175,29 @@ forward self-loop (still ~40 % of a gradient, 14 iterations per row at fitted ra
 pi=64 verification/certificate passes (64 iterations per row) are the levers, i.e. a converging
 per-row solve (tree-ordered sweeps or a direct solve) instead of truncated Jacobi iteration.
 
+**Linear forward made robust (commit d09445bd).** The crash was float32 cancellation in the transfer
+complement (`total mass - ancestor mass`, nearly equal at transfer rates near the cap): it is now built
+from two additive prefix scans over species orders (no subtraction), which also removes the 34-deep
+ancestor walk (linear path now 1.52x the log path); a read-write race got a barrier; the row is
+re-gauged every iteration. A float64 replay of the failing batch shows the linear path was the
+accurate one (6.6e-3 log2 from the fp64 oracle vs 129 log2 for the fp32 log path). Full fit with it:
+**1570 s**, NLL 9048959.32 bits, 5119/5123 converged.
+
+**Full fit, log forward with the new start (job full_v8log, main partition): 1948 s**, NLL 9048939.01 bits
+(17.6 bits below the first-round value), 5120/5123 converged; split: warm-up 265 s, Newton gradients
+1008 s, verification 213 s, curvature 153 s, certificate 126 s.
+
+**Exact tree-elimination forward (commit 9bf4143f, `forward_self_loop = "exact"`).** Each clade row's
+fixed point is a linear system on the species tree (the transfer-complement `max` never clips for
+non-negative likelihoods); it is solved exactly per row in four O(S) walks (leaves-to-root affine
+elimination `p = alpha + gamma * u`, one scalar equation for the row's total transfer mass, root-to-leaves
+back-substitution, with the remaining mass rebuilt from additions only). No iteration, no `pi_iters`
+dependence, zero pivot guard trips over 1.2M row solves. Against the converged log reference
+(pi_iters=256, 100 families, fitted rates): total NLL within 2.6e-3 bits (the 16-sweep linear path:
+1.8e-2), gradient inside the atomics noise. Timing, 500 families, one gradient: log 9.58 s, linear
+8.94 s, exact **5.96 s** at fitted rates (log 8.35 / linear 5.72 / exact 4.71 at a flat theta).
+500-family fit: **231 s** (linear 305 s, log 365 s), 499/500 converged. 40 families: 29 s.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
