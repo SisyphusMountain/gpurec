@@ -71,6 +71,9 @@ _BASE_SOLVER = {
         "e_max_iter", "e_tol",
         "e_adjoint_max_iter", "e_adjoint_tol",
         "adjoint_pruning_threshold", "use_adjoint_pruning", "pibar_side_threshold",
+        # kernel-path knobs (fused self-loops): threaded from config so a run can select the
+        # log-space forward or disable the early exits without editing the recipe.
+        "forward_self_loop", "pi_linear_tol", "neumann_term_tol",
     )
 }
 

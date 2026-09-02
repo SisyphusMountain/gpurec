@@ -35,6 +35,8 @@ def main() -> int:
     ap.add_argument("--limit", required=True, type=int, help="0 = all families; N = first N of the list")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--tag", required=True)
+    ap.add_argument("--forward-self-loop", required=True, choices=("linear", "log"),
+                    help="forward self-loop kernel path (SolverOptions.forward_self_loop)")
     args = ap.parse_args()
 
     paths = [ln.strip() for ln in open(args.families) if ln.strip() and not ln.startswith("#")]
@@ -44,16 +46,21 @@ def main() -> int:
     print(f"[driver] {len(paths)} families, species={args.species}, torch {torch.__version__}, "
           f"gpu={torch.cuda.get_device_name(0)}")
 
+    from gpurec.config import GpurecConfig
     from gpurec.fit.dtl_fit import fit_dtl
+
+    # The recipe's own reference config (identical to passing no config) with the kernel path set.
+    cfg = GpurecConfig.genewise_reference()
+    cfg.solver.forward_self_loop = args.forward_self_loop
 
     torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
-    res = fit_dtl(args.species, paths, "genewise", device="cuda", verbose=True)
+    res = fit_dtl(args.species, paths, "genewise", device="cuda", verbose=True, config=cfg)
     wall = time.perf_counter() - t0
     peak_gib = torch.cuda.max_memory_allocated() / 2**30
     g = res["genewise_result"]
     summary = {
-        "tag": args.tag, "n_families": res["n_families"], "wall_s": wall,
+        "tag": args.tag, "forward_self_loop": args.forward_self_loop, "n_families": res["n_families"], "wall_s": wall,
         "nll_bits": res["nll_bits"], "nll_nats": res["nll_nats"],
         "opt_seconds": g["opt_seconds"], "n_steps": g["n_steps"], "n_builds": g["n_builds"],
         # per-phase wall-clock split (see fit_genewise's result dict)
