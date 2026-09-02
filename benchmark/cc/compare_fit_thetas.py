@@ -63,6 +63,15 @@ def main() -> int:
         left_nll = model.genewise_loss_vector_and_grad(theta=left, need_grad=False)[0].detach()
         right_nll = model.genewise_loss_vector_and_grad(theta=right, need_grad=False)[0].detach()
     difference = right_nll - left_nll
+    # Distribution of the per-family differences, and the raw vectors for later inspection.
+    d = difference.detach().double().cpu()
+    for thr in (0.01, 0.1, 0.5, 1.0, 2.0):
+        print(f"[cmp] |d(NLL)| > {thr:g} bits: {int((d.abs() > thr).sum())} families "
+              f"(worse: {int((d > thr).sum())}, better: {int((d < -thr).sum())})", flush=True)
+    print(f"[cmp] sum of worsenings {float(d[d > 0].sum()):.3f} bits, sum of improvements {float(d[d < 0].sum()):.3f} bits, "
+          f"max worsening {float(d.max()):.3f}, max improvement {float(d.min()):.3f}", flush=True)
+    torch.save({"left_nll": left_nll.detach().cpu(), "right_nll": right_nll.detach().cpu(),
+                "left": args.left, "right": args.right}, args.right + ".cmp_nll.pt")
     total = float(difference.sum().item())
     order = torch.argsort(difference.abs(), descending=True)[: args.top]
     print(
