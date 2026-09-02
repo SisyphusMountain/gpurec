@@ -133,17 +133,24 @@ def warm_adjoint_fits(
     *,
     device: torch.device | int | None = None,
     max_batch_clades: int = 0,
+    resident_caches: int,
 ) -> tuple[bool, int, int, int | None]:
-    """Decide whether the warm-adjoint cache + one batch's backward scratch fit the memory budget.
+    """Decide whether the warm-adjoint cache(s) + one batch's backward scratch fit the memory budget.
 
     Returns ``(ok, cache_bytes, scratch_bytes, budget_bytes)``. ``ok`` is True (warm allowed) when the
-    resident warm-adjoint cache PLUS the largest single batch's transient backward scratch fit within
+    resident warm-adjoint caches PLUS the largest single batch's transient backward scratch fit within
     ``cuda_memory_budget_bytes`` (free - reserve, capped at a fraction of total). When it does not fit,
     the caller should run COLD -- the cache, not the clade batcher, is what exhausts memory on large
     family sets. This gates GPUREC_WARM_ADJOINT by the right quantity (clades x species x dtype) instead
     of a family count.
+
+    ``resident_caches`` is how many ``[total_clades, S]`` caches stay resident: 1 for the gradient
+    adjoint (``static.warm_v``) alone, plus one per Hessian-vector-product probe direction when the
+    HVP warm start (``static.warm_v_tangent[probe_id]``) is enabled -- each probe keeps its own cache.
+    Counting only the gradient cache let a 500-family / 13-batch run on a 94 GiB H100 pass the gate
+    (32 GiB) and then OOM at 90 GiB inside the 3-probe Hessian.
     """
-    cache = warm_adjoint_cache_bytes(total_clades, S, dtype)
+    cache = warm_adjoint_cache_bytes(total_clades, S, dtype) * _positive_int("resident_caches", resident_caches)
     scratch = proposal0_wave_scratch_bytes(max_batch_clades, S, dtype) if max_batch_clades else 0
     budget = cuda_memory_budget_bytes(device)
     if budget is None:

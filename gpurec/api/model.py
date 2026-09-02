@@ -31,6 +31,12 @@ def _mode_flags(mode: str) -> tuple[bool, bool]:
         raise ValueError(f"mode must be one of {sorted(_MODE_FLAGS)}, got {mode!r}") from exc
 
 
+# Number of Hessian-vector-product probe directions the genewise Newton recipe uses: one unit
+# direction per rate parameter (D, L, T) -- see gpurec/fit/genewise_fit.py::_analytic_hessian. A fact
+# of the 3-parameter DTL model, not a setting; used only to size the resident HVP warm-start caches.
+_HVP_PROBE_DIRECTIONS = 3
+
+
 class GeneReconModel(torch.nn.Module):
     def __init__(
         self,
@@ -161,8 +167,13 @@ class GeneReconModel(torch.nn.Module):
             sum(int(self.families[i]["C"]) for i in batch) for batch in self.family_batches
         ]
         total_clades = sum(batch_clades)
+        # Resident caches: the gradient adjoint, plus one tangent-adjoint cache per Hessian probe
+        # direction when the HVP warm start is on (gpurec/solver/hvp/exact.py keeps
+        # ``static.warm_v_tangent[probe_id]``, one [C,S] per probe id).
+        resident_caches = 1 + (_HVP_PROBE_DIRECTIONS if self.solver_options.use_hvp_warm_start else 0)
         ok, cache, scratch, budget = warm_adjoint_fits(
-            total_clades, S, self.theta.dtype, device=device, max_batch_clades=max(batch_clades, default=0)
+            total_clades, S, self.theta.dtype, device=device, max_batch_clades=max(batch_clades, default=0),
+            resident_caches=resident_caches,
         )
         for static in self.batch_statics:
             static.warm_adjoint_ok = ok

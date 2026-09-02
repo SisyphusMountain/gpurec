@@ -111,7 +111,7 @@ def test_wave_scratch_is_subset_of_warm_adjoint_reservation(monkeypatch):
         memory_policy, "cuda_memory_budget_bytes", lambda device=None: reserved * 100
     )
     ok_build, cache, scratch_reserved, budget = warm_adjoint_fits(
-        1_000_000, S, DTYPE, max_batch_clades=max_batch_clades
+        1_000_000, S, DTYPE, max_batch_clades=max_batch_clades, resident_caches=1
     )
     assert ok_build
     assert scratch_reserved == reserved
