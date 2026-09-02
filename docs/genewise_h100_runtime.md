@@ -74,7 +74,7 @@ default or slower; 2 warps on the tangent self-loop kernel is 6.7x slower).
 | steady-state full-dataset gradient | 58 s (hidden behind JIT) | 58 s |
 | 40-family end-to-end fit | 354 s | 68 s, same NLL (115604.90 bits), same 25 steps / 4 builds |
 | 500-family end-to-end fit | PENDING (job ab500_old, warm cache forced off so it fits) | 1017 s, NLL 1618463.77 bits, 231 steps, 11 builds, 490/500 certified converged |
-| 5123-family end-to-end fit, 1 GPU | PENDING (job baseline_full) | PENDING (job full_v3) |
+| 5123-family end-to-end fit, 1 GPU | crashed after 2 h 34 min (CUDA out of memory inside the old streaming Hessian after the first rebatch; it had reached iteration 20 with 2981 active families at 143 min) | PENDING (job full_v3; reached the same point, iteration 20 with 2983 active, at 52 min, and the pi=64 tier at 62 min) |
 | 5123-family fit, 4 GPUs sharded | - | PENDING (job full_v3_4gpu, needs a free node) |
 
 Per-family results are compared on the total certified NLL (bits) and on the fitted theta; the
