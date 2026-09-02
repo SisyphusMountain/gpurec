@@ -95,6 +95,7 @@ def test_pi_wave_forward_rejects_accumulator_narrower_than_residual() -> None:
             self_loop_mode="linear",
             linear_tol=1e-6,
             linear_iterations_out=None,
+            exact_guard_trips_out=None,
         )
 
 
@@ -901,3 +902,75 @@ def test_pi_forward_streams_batches_without_losing_fp64_loss(tmp_path: Path) -> 
         streamed_loss = streamed()
     assert streamed_loss.dtype == torch.float64
     torch.testing.assert_close(streamed_loss, 2.0 * single_loss, rtol=0.0, atol=1e-5)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("weighted", [False, True])
+def test_exact_tree_self_loop_matches_converged_log_self_loop(
+    tmp_path: Path,
+    weighted: bool,
+) -> None:
+    """``forward_self_loop="exact"`` solves the fixed point the log path iterates towards.
+
+    The exact solve eliminates the self-loop on the species tree instead of sweeping it, so the
+    only honest reference is the log-space path run far past convergence (``pi_iters=256`` here,
+    against the exact solve's own 8, which it ignores). Everything is fp64 so the comparison is
+    about the two algorithms, not about float32 rounding.
+    """
+    _require_native_cuda()
+    species_tree, gene_trees = _write_tiny_ale_example(tmp_path)
+
+    def build(mode: str, pi_iters: int) -> GeneReconModel:
+        return GeneReconModel(
+            species_tree,
+            gene_trees,
+            device="cuda",
+            dtype=torch.float64,
+            family_chunk_size=1,
+            clade_budget=None,
+            batch_packing="sequential",
+            max_wave_size=8,
+            solver_options=SolverOptions(
+                e_max_iter=64,
+                e_tol=1e-13,
+                pi_iters=pi_iters,
+                neumann_terms=16,
+                forward_self_loop=mode,
+            ),
+        )
+
+    reference = build("log", 256)
+    candidate = build("exact", 8)
+    with torch.no_grad():
+        candidate.theta.copy_(reference.theta)
+    receiver = torch.zeros_like(reference.receiver_weights)
+    if weighted:
+        receiver = torch.linspace(
+            -1.25, 1.75, receiver.numel(), device=receiver.device, dtype=receiver.dtype
+        )
+
+    def solved_rows(model: GeneReconModel):
+        static = model.batch_statics[0]
+        result = solve_resident_e_pi(
+            static, model.theta.detach(), receiver, warm_start_E=None
+        )
+        state = static.pi_forward_state
+        pi = result[5].to(state.pi_offset.dtype) + state.pi_offset.unsqueeze(1)
+        pibar = result[6].to(state.pibar_offset.dtype) + state.pibar_offset.unsqueeze(1)
+        return pi, pibar, result[4]
+
+    reference_pi, reference_pibar, reference_root = solved_rows(reference)
+    exact_pi, exact_pibar, exact_root = solved_rows(candidate)
+
+    # The impossible (species, clade) entries must be the same ones on both paths.
+    assert torch.equal(torch.isfinite(reference_pi), torch.isfinite(exact_pi))
+    assert torch.equal(torch.isfinite(reference_pibar), torch.isfinite(exact_pibar))
+    finite_pi = torch.isfinite(reference_pi)
+    finite_pibar = torch.isfinite(reference_pibar)
+    torch.testing.assert_close(
+        exact_pi[finite_pi], reference_pi[finite_pi], rtol=0.0, atol=1e-8
+    )
+    torch.testing.assert_close(
+        exact_pibar[finite_pibar], reference_pibar[finite_pibar], rtol=0.0, atol=1e-8
+    )
+    torch.testing.assert_close(exact_root, reference_root, rtol=0.0, atol=1e-8)

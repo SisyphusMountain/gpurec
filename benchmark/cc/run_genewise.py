@@ -37,7 +37,7 @@ def main() -> int:
     ap.add_argument("--tag", required=True)
     ap.add_argument("--init-rate", required=True,
                     help="start every family at this rate for D, L and T; 'none' = fit_dtl's default start")
-    ap.add_argument("--forward-self-loop", required=True, choices=("linear", "log"),
+    ap.add_argument("--forward-self-loop", required=True, choices=("linear", "log", "exact"),
                     help="forward self-loop kernel path (SolverOptions.forward_self_loop)")
     args = ap.parse_args()
 

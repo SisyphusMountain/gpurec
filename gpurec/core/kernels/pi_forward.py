@@ -4,6 +4,7 @@ import triton.language as tl
 
 __all__ = [
     "compute_dts_forward",
+    "compute_exact_tree_self_loop",
     "compute_fused_linear_self_loop",
     "compute_leaf_initial_wave_step",
     "compute_wave_step",
@@ -33,6 +34,18 @@ _NUM_WARPS_UPDATE_RECONCILIATION = 8
 # also keeps the row summation order closest to the log-space kernel's, which uses the same tile
 # width, so the two paths agree to fp32 rounding rather than a few times it.
 _BLOCK_SPECIES_FUSED_LINEAR = 256
+
+# Species-tree nodes per tile inside ``_exact_tree_pi_self_loop_kernel``'s two level walks, and
+# that kernel's warps per program. Launch-shape tuning only: the walks visit every node of a level
+# either way. 128 matches the backward pass's own level walk
+# (``gpurec/core/kernels/wave_backward.py``'s ``block_nodes``), which reads the same
+# ``compact_level_*`` tables.
+_BLOCK_NODES_EXACT_TREE = 128
+_NUM_WARPS_EXACT_TREE = 8
+
+# Per-row species arrays the exact tree solve keeps live at once: alpha, beta, gamma, y0, y1 (see
+# the kernel docstring's slot table; the source term and y0 share a slot).
+_EXACT_TREE_SCRATCH_SLOTS = 5
 
 
 def _tl_float_dtype(dtype):
@@ -1134,6 +1147,500 @@ def _fused_linear_pi_self_loop_kernel(
         tl.store(pi_residual_out_ptr + global_row, max_log2_change)
 
 
+@triton.jit(do_not_specialize=["ws", "slot_span", "n_levels"])
+def _exact_tree_pi_self_loop_kernel(
+    Pi_in_ptr,
+    Pi_in_offset_ptr,
+    scratch_ptr,
+    Pi_out_ptr,
+    Pi_out_offset_ptr,
+    Pibar_out_ptr,
+    Pibar_offset_ptr,
+    pibar_row_max_ptr,
+    pi_residual_out_ptr,
+    guard_trips_ptr,
+    self_diagonal_lin_ptr,
+    transfer_coefficient_lin_ptr,
+    speciation_child1_lin_ptr,
+    speciation_child2_lin_ptr,
+    max_transfer_lin_ptr,
+    receiver_lin_ptr,
+    species_child1_ptr,
+    level_ptr_ptr,
+    level_parents_ptr,
+    level_child1_ptr,
+    level_child2_ptr,
+    leaf_species_ptr,
+    leaf_logp_ptr,
+    leaf_fm_log_ptr,
+    family_idx_ptr,
+    gene_split_log_likelihood_ptr,
+    gene_split_offset_ptr,
+    gene_split_center_offset_ptr,
+    ws,
+    slot_span,
+    n_levels,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    CONST_ROW_STRIDE: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    BLOCK_NODES: tl.constexpr,
+    HAS_SPLITS: tl.constexpr,
+    USE_LEAF_INDEX: tl.constexpr,
+    USE_FRACTION_MISSING: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
+    WRITE_GUARD_TRIPS: tl.constexpr,
+    USE_RECEIVER_WEIGHTS: tl.constexpr,
+    DTYPE: tl.constexpr,
+    ACC_DTYPE: tl.constexpr,
+):
+    """Solve one clade row's Pi self-loop EXACTLY, by elimination on the species tree.
+
+    Same published state as :func:`_fused_linear_pi_self_loop_kernel` (log2 residual + row
+    offset, docs/centered_state_contract.md) and the same entry gauge, but instead of iterating
+    the fixed point it solves it. Where the fused linear kernel runs ``n_iters`` Jacobi sweeps
+    and stops early or at the cap, this kernel returns the CONVERGED row -- the fixed point the
+    log-space path approaches as ``pi_iters`` grows.
+
+    Why an exact solve is possible. In scaled linear space ``p[s] = 2**(Pi_abs[c,s] - scale)``
+    the self-loop update is
+
+        A[s]     = recv[s] * p[s]                    (recv = 1 when receiver weights are off)
+        T        = sum over all species of A
+        X[s]     = sum of A over s itself and its species-tree ancestors
+        p_new[s] = src[s] + dl[s] p[s] + ebar[s] p[s] + e[s] mt[s] max(T - X[s], 0)
+                   + sl1[s] p[child1(s)] + sl2[s] p[child2(s)]
+
+    with ``src = leaf observation + gene-split (DTS) source``. Every ``p`` is a likelihood, so
+    ``p >= 0`` and ``X[s] <= T``: the ``max`` never clips and the fixed point is a LINEAR system.
+    Writing ``y[s] = X[parent(s)]`` (the ancestor sum EXCLUDING s, zero at the root) gives
+    ``X[s] = y[s] + recv[s] p[s]`` and, per species,
+
+        diag[s] p[s] + q[s] y[s] - sl1[s] p[c1] - sl2[s] p[c2] = src[s] + q[s] T
+        q[s]    = e[s] * mt[s]                                  (``transfer_coefficient_lin``)
+        diag[s] = 1 - dl[s] - ebar[s] + q[s] recv[s]            (``self_diagonal_lin``)
+
+    So species ``s`` touches its ancestors only through the single number ``y[s]``, its
+    descendants only through ``p[c1]``, ``p[c2]``, and the rest of the tree only through the one
+    scalar ``T``. Three O(S) passes over the species tree solve it.
+
+    1. Bottom-up (leaves first, then ``compact_level_*`` level by level). Each node's solution is
+       written as an affine function of what comes from above,
+
+           p[s] = alpha[s] + beta[s] y[s] + gamma[s] T.
+
+       A species-tree leaf has no children, so dividing its equation by ``diag[s]`` gives
+       ``alpha = src/diag``, ``beta = -q/diag``, ``gamma = q/diag``. At an internal node the two
+       children already have their own affine forms and see ``y[c] = y[s] + recv[s] p[s]``;
+       substituting them and collecting the ``p[s]`` terms gives, with
+
+           Aa = sl1 alpha[c1] + sl2 alpha[c2]
+           B  = sl1 beta[c1]  + sl2 beta[c2]
+           G  = sl1 gamma[c1] + sl2 gamma[c2]
+           pivot = diag[s] - B recv[s]      (the diagonal minus the children's feedback)
+
+           alpha[s] = (src[s] + Aa) / pivot
+           beta[s]  = (B - q[s])   / pivot
+           gamma[s] = (q[s] + G)   / pivot.
+
+    2. Top-down (root first, same levels in reverse), carrying both basis directions at once:
+       ``p[s] = P0[s] + P1[s] T`` and ``y[s] = Y0[s] + Y1[s] T``. The root has ``y = 0``, so
+       ``P0[root] = alpha[root]`` and ``P1[root] = gamma[root]``; each child of ``s`` gets
+       ``Y[c] = Y[s] + recv[s] P[s]`` and then ``P0[c] = alpha[c] + beta[c] Y0[c]``,
+       ``P1[c] = gamma[c] + beta[c] Y1[c]``.
+
+    3. Close the loop on the one remaining unknown. ``T = sum_s recv[s] p[s]`` is now one scalar
+       equation ``T = T0 + T1 T`` with ``T0 = sum recv P0`` and ``T1 = sum recv P1``, so
+       ``T = T0 / (1 - T1)``; ``T1`` is the total gain of the transfer loop, well below 1.
+
+    Pivots and ``1 - T1`` are the only divisions. Both are positive for any parameter set the
+    fixed point converges for (``dl + ebar < 1`` per species, loop gain < 1), and NEITHER is
+    substituted or clipped: a non-positive one divides through to an infinity or a NaN that shows
+    up immediately in the likelihood. ``guard_trips_ptr`` counts them per row so a run can say so.
+
+    Scratch: ``[5, rows, S]`` in the model dtype, five per-row species arrays. Two are reused
+    once their first role is finished, which is why the buffer is 5 slots and not 7:
+
+        slot 0  alpha[s]  -> P0[s] -> the solved p[s]
+        slot 1  beta[s]
+        slot 2  gamma[s]  -> P1[s]
+        slot 3  src[s]    -> Y0[s]        (src is dead once the bottom-up pass has read it)
+        slot 4  Y1[s]
+
+    The species-tree walks read values written by other warps of the same program, so every level
+    ends in a ``tl.debug_barrier()``, exactly as ``_reconciliation_self_loop_transpose_term`` does
+    for the same level tables in the backward pass.
+    """
+    NEG_LARGE: tl.constexpr = -float("inf")
+
+    # int64: w ranges over the whole batch's clade rows, so the *stride multiplies
+    # below can overflow int32 once total_clades * S exceeds 2^31.
+    w = tl.program_id(0).to(tl.int64)
+    global_row = ws + w
+    global_base = global_row * stride
+    row_base = w * stride
+    family_const = tl.load(family_idx_ptr + global_row)
+    const_base = family_const * CONST_ROW_STRIDE
+    span = slot_span.to(tl.int64)
+    alpha_base = row_base
+    beta_base = span + row_base
+    gamma_base = 2 * span + row_base
+    # slot 3 holds the source term first and the T-free part of y afterwards.
+    source_base = 3 * span + row_base
+    y1_base = 4 * span + row_base
+
+    # ---- entry pass 1: exact absolute row maximum, which becomes the linear gauge.
+    # Identical to the fused linear kernel's, so the two paths publish in the same frame.
+    entry_residual_max = tl.full((), value=NEG_LARGE, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        value = tl.load(Pi_in_ptr + global_base + s_offs, mask=mask, other=NEG_LARGE)
+        entry_residual_max = tl.maximum(
+            entry_residual_max, tl.max(tl.where(mask, value, NEG_LARGE), axis=0)
+        )
+    pi_in_offset = tl.load(Pi_in_offset_ptr + global_row)
+    scale = tl.where(
+        entry_residual_max != NEG_LARGE,
+        entry_residual_max.to(ACC_DTYPE) + pi_in_offset,
+        tl.full((), value=NEG_LARGE, dtype=ACC_DTYPE),
+    )
+    if HAS_SPLITS:
+        # Two different gauges, exactly as in the log-space kernel: the DTS row is STORED
+        # against ``gene_split_offset`` (the sum of its two child gauges), while
+        # ``gene_split_center_offset`` is that row's absolute maximum and only picks the frame.
+        gene_split_row_offset = tl.load(gene_split_offset_ptr + w)
+        gene_split_center_offset = tl.load(gene_split_center_offset_ptr + w)
+        scale = tl.maximum(scale, gene_split_center_offset)
+    if USE_LEAF_INDEX:
+        leaf_species = tl.load(leaf_species_ptr + global_row)
+        leaf_observation_log_probability = tl.load(
+            leaf_logp_ptr + family_const * S + leaf_species
+        )
+        scale = tl.maximum(scale, leaf_observation_log_probability.to(ACC_DTYPE))
+    # A wholly impossible row keeps the canonical zero gauge.
+    scale = tl.where(scale != NEG_LARGE, scale, tl.zeros_like(scale))
+
+    # ---- entry pass 2: the iteration-invariant source term src[s], in this row's frame.
+    # ``scale`` is at least the maximum of every log2 term entering it, so each exponent is <= 0.
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        source = tl.zeros([BLOCK_S], dtype=DTYPE)
+        if USE_LEAF_INDEX:
+            leaf_hit = mask & (leaf_species == s_offs)
+            mapped_term = tl.exp2(
+                (leaf_observation_log_probability.to(ACC_DTYPE) - scale).to(DTYPE)
+            )
+            if USE_FRACTION_MISSING:
+                # Off-hit leaf-species columns carry the "present-but-unobserved"
+                # baseline log_pS[s] + log2(fm_s); non-leaf/observed columns stay zero.
+                leaf_logp_col = tl.load(
+                    leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE
+                )
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=mask, other=NEG_LARGE)
+                baseline = tl.exp2(leaf_logp_col + fm_col - scale.to(DTYPE))
+                source += tl.where(leaf_hit, mapped_term, baseline)
+            else:
+                source += tl.where(leaf_hit, mapped_term, tl.zeros([BLOCK_S], dtype=DTYPE))
+        if HAS_SPLITS:
+            gene_split_log_likelihood = tl.load(
+                gene_split_log_likelihood_ptr + row_base + s_offs, mask=mask, other=NEG_LARGE
+            )
+            source += tl.exp2(
+                gene_split_log_likelihood + (gene_split_row_offset - scale).to(DTYPE)
+            )
+        tl.store(
+            scratch_ptr + source_base + s_offs,
+            tl.where(mask, source, tl.zeros([BLOCK_S], dtype=DTYPE)),
+            mask=mask,
+        )
+
+    guard_trips = tl.full((), value=0, dtype=tl.int32)
+
+    # ---- bottom-up, step 1: the species-tree leaves, which have no children to fold in.
+    # They are not in the ``compact_level_*`` tables (those hold internal nodes only), so they are
+    # done in one contiguous sweep, masked to the lanes whose first child is the S sentinel.
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        const_offsets = const_base + s_offs
+        child1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
+        is_leaf = mask & (child1 >= S)
+        diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=is_leaf, other=1.0)
+        transfer_coefficient = tl.load(
+            transfer_coefficient_lin_ptr + const_offsets, mask=is_leaf, other=0.0
+        )
+        source = tl.load(scratch_ptr + source_base + s_offs, mask=is_leaf, other=0.0)
+        tl.store(scratch_ptr + alpha_base + s_offs, source / diagonal, mask=is_leaf)
+        tl.store(scratch_ptr + beta_base + s_offs, -transfer_coefficient / diagonal, mask=is_leaf)
+        tl.store(scratch_ptr + gamma_base + s_offs, transfer_coefficient / diagonal, mask=is_leaf)
+        guard_trips += tl.sum(
+            tl.where(is_leaf & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0
+        )
+    tl.debug_barrier()
+
+    # ---- bottom-up, step 2: internal nodes, shallowest-subtree level first. Every node in level
+    # ``level`` has both children at strictly lower levels (or at leaves), so their alpha / beta /
+    # gamma are already final when this level reads them.
+    for level in range(0, n_levels):
+        level_start = tl.load(level_ptr_ptr + level)
+        level_end = tl.load(level_ptr_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(level_parents_ptr + node_offs, mask=node_mask, other=0).to(tl.int64)
+            child1 = tl.load(level_child1_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
+            child2 = tl.load(level_child2_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
+            child1_mask = node_mask & (child1 < S)
+            child2_mask = node_mask & (child2 < S)
+            const_offsets = const_base + parent
+
+            speciation_child1 = tl.load(
+                speciation_child1_lin_ptr + const_offsets, mask=node_mask, other=0.0
+            )
+            speciation_child2 = tl.load(
+                speciation_child2_lin_ptr + const_offsets, mask=node_mask, other=0.0
+            )
+            alpha_child1 = tl.load(scratch_ptr + alpha_base + child1, mask=child1_mask, other=0.0)
+            beta_child1 = tl.load(scratch_ptr + beta_base + child1, mask=child1_mask, other=0.0)
+            gamma_child1 = tl.load(scratch_ptr + gamma_base + child1, mask=child1_mask, other=0.0)
+            alpha_child2 = tl.load(scratch_ptr + alpha_base + child2, mask=child2_mask, other=0.0)
+            beta_child2 = tl.load(scratch_ptr + beta_base + child2, mask=child2_mask, other=0.0)
+            gamma_child2 = tl.load(scratch_ptr + gamma_base + child2, mask=child2_mask, other=0.0)
+
+            child_constant = speciation_child1 * alpha_child1 + speciation_child2 * alpha_child2
+            child_ancestor_gain = speciation_child1 * beta_child1 + speciation_child2 * beta_child2
+            child_transfer_gain = (
+                speciation_child1 * gamma_child1 + speciation_child2 * gamma_child2
+            )
+
+            diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=node_mask, other=1.0)
+            transfer_coefficient = tl.load(
+                transfer_coefficient_lin_ptr + const_offsets, mask=node_mask, other=0.0
+            )
+            if USE_RECEIVER_WEIGHTS:
+                receiver_weight = tl.load(receiver_lin_ptr + parent, mask=node_mask, other=0.0)
+            else:
+                receiver_weight = tl.full([BLOCK_NODES], value=1.0, dtype=DTYPE)
+            source = tl.load(scratch_ptr + source_base + parent, mask=node_mask, other=0.0)
+
+            pivot = diagonal - child_ancestor_gain * receiver_weight
+            tl.store(
+                scratch_ptr + alpha_base + parent,
+                (source + child_constant) / pivot,
+                mask=node_mask,
+            )
+            tl.store(
+                scratch_ptr + beta_base + parent,
+                (child_ancestor_gain - transfer_coefficient) / pivot,
+                mask=node_mask,
+            )
+            tl.store(
+                scratch_ptr + gamma_base + parent,
+                (transfer_coefficient + child_transfer_gain) / pivot,
+                mask=node_mask,
+            )
+            guard_trips += tl.sum(
+                tl.where(node_mask & (pivot <= 0.0), 1, 0).to(tl.int32), axis=0
+            )
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
+    # ---- y := 0 everywhere. The root keeps this value (it has no ancestors); every other node's
+    # entry is overwritten by its parent in the top-down pass before anything reads it. This also
+    # retires the source term, whose slot y0 takes over.
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        zeros = tl.zeros([BLOCK_S], dtype=DTYPE)
+        tl.store(scratch_ptr + source_base + s_offs, zeros, mask=mask)
+        tl.store(scratch_ptr + y1_base + s_offs, zeros, mask=mask)
+    tl.debug_barrier()
+
+    # ---- top-down: the same levels, deepest-subtree level (the root) first. alpha / gamma turn
+    # into P0 / P1 in place; a node is rewritten exactly once, by its parent.
+    for level_index in range(0, n_levels):
+        level = n_levels - 1 - level_index
+        level_start = tl.load(level_ptr_ptr + level)
+        level_end = tl.load(level_ptr_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(level_parents_ptr + node_offs, mask=node_mask, other=0).to(tl.int64)
+            child1 = tl.load(level_child1_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
+            child2 = tl.load(level_child2_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
+            child1_mask = node_mask & (child1 < S)
+            child2_mask = node_mask & (child2 < S)
+
+            parent_p0 = tl.load(scratch_ptr + alpha_base + parent, mask=node_mask, other=0.0)
+            parent_p1 = tl.load(scratch_ptr + gamma_base + parent, mask=node_mask, other=0.0)
+            parent_y0 = tl.load(scratch_ptr + source_base + parent, mask=node_mask, other=0.0)
+            parent_y1 = tl.load(scratch_ptr + y1_base + parent, mask=node_mask, other=0.0)
+            if USE_RECEIVER_WEIGHTS:
+                receiver_weight = tl.load(receiver_lin_ptr + parent, mask=node_mask, other=0.0)
+            else:
+                receiver_weight = tl.full([BLOCK_NODES], value=1.0, dtype=DTYPE)
+            # Both children see the same ancestor sum: the parent's, plus the parent's own mass.
+            child_y0 = parent_y0 + receiver_weight * parent_p0
+            child_y1 = parent_y1 + receiver_weight * parent_p1
+
+            alpha_child1 = tl.load(scratch_ptr + alpha_base + child1, mask=child1_mask, other=0.0)
+            beta_child1 = tl.load(scratch_ptr + beta_base + child1, mask=child1_mask, other=0.0)
+            gamma_child1 = tl.load(scratch_ptr + gamma_base + child1, mask=child1_mask, other=0.0)
+            tl.store(
+                scratch_ptr + alpha_base + child1,
+                alpha_child1 + beta_child1 * child_y0,
+                mask=child1_mask,
+            )
+            tl.store(
+                scratch_ptr + gamma_base + child1,
+                gamma_child1 + beta_child1 * child_y1,
+                mask=child1_mask,
+            )
+            tl.store(scratch_ptr + source_base + child1, child_y0, mask=child1_mask)
+            tl.store(scratch_ptr + y1_base + child1, child_y1, mask=child1_mask)
+
+            alpha_child2 = tl.load(scratch_ptr + alpha_base + child2, mask=child2_mask, other=0.0)
+            beta_child2 = tl.load(scratch_ptr + beta_base + child2, mask=child2_mask, other=0.0)
+            gamma_child2 = tl.load(scratch_ptr + gamma_base + child2, mask=child2_mask, other=0.0)
+            tl.store(
+                scratch_ptr + alpha_base + child2,
+                alpha_child2 + beta_child2 * child_y0,
+                mask=child2_mask,
+            )
+            tl.store(
+                scratch_ptr + gamma_base + child2,
+                gamma_child2 + beta_child2 * child_y1,
+                mask=child2_mask,
+            )
+            tl.store(scratch_ptr + source_base + child2, child_y0, mask=child2_mask)
+            tl.store(scratch_ptr + y1_base + child2, child_y1, mask=child2_mask)
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
+    # ---- close the loop: T = sum recv p = T0 + T1 T, so T = T0 / (1 - T1).
+    transfer_constant = tl.full((), value=0.0, dtype=DTYPE)
+    transfer_gain = tl.full((), value=0.0, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        p0 = tl.load(scratch_ptr + alpha_base + s_offs, mask=mask, other=0.0)
+        p1 = tl.load(scratch_ptr + gamma_base + s_offs, mask=mask, other=0.0)
+        if USE_RECEIVER_WEIGHTS:
+            receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=mask, other=0.0)
+            p0 = p0 * receiver_weight
+            p1 = p1 * receiver_weight
+        transfer_constant += tl.sum(tl.where(mask, p0, 0.0), axis=0)
+        transfer_gain += tl.sum(tl.where(mask, p1, 0.0), axis=0)
+    loop_denominator = 1.0 - transfer_gain
+    total_receiver_mass = transfer_constant / loop_denominator
+    if WRITE_GUARD_TRIPS:
+        tl.store(guard_trips_ptr + 2 * global_row, guard_trips)
+        tl.store(
+            guard_trips_ptr + 2 * global_row + 1,
+            tl.where(loop_denominator <= 0.0, 1, 0).to(tl.int32),
+        )
+    tl.debug_barrier()
+
+    # ---- publish, part 1: p = P0 + P1 T (written back over P0), the row's receiver mass and
+    # maximum, and the log2 distance from the row this solve was handed.
+    final_receiver_mass = tl.full((), value=0.0, dtype=DTYPE)
+    final_receiver_max = tl.full((), value=0.0, dtype=DTYPE)
+    max_log2_change = tl.full((), value=0.0, dtype=tl.float32)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        p0 = tl.load(scratch_ptr + alpha_base + s_offs, mask=mask, other=0.0)
+        p1 = tl.load(scratch_ptr + gamma_base + s_offs, mask=mask, other=0.0)
+        final_likelihood = tl.where(
+            mask, p0 + p1 * total_receiver_mass, tl.zeros([BLOCK_S], dtype=DTYPE)
+        )
+        tl.store(scratch_ptr + alpha_base + s_offs, final_likelihood, mask=mask)
+        weighted = final_likelihood
+        if USE_RECEIVER_WEIGHTS:
+            receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=mask, other=0.0)
+            weighted = weighted * receiver_weight
+        weighted = tl.where(mask, weighted, tl.zeros([BLOCK_S], dtype=DTYPE))
+        final_receiver_mass += tl.sum(weighted, axis=0)
+        final_receiver_max = tl.maximum(final_receiver_max, tl.max(weighted, axis=0))
+        if COMPUTE_DIFF:
+            # Distance from the iterate this solve was handed to the solved row, in absolute
+            # log2 units: the two live in different frames, so both offsets are added back.
+            entry_residual = tl.load(
+                Pi_in_ptr + global_base + s_offs, mask=mask, other=NEG_LARGE
+            )
+            both_finite = mask & (final_likelihood > 0.0) & (entry_residual != NEG_LARGE)
+            change = tl.where(
+                both_finite,
+                tl.abs(
+                    tl.log2(final_likelihood).to(ACC_DTYPE)
+                    + scale
+                    - (entry_residual.to(ACC_DTYPE) + pi_in_offset)
+                ),
+                tl.zeros([BLOCK_S], dtype=ACC_DTYPE),
+            )
+            max_log2_change = tl.maximum(max_log2_change, tl.max(change, axis=0).to(tl.float32))
+    tl.store(
+        pibar_row_max_ptr + global_row,
+        tl.where(final_receiver_max > 0.0, tl.log2(final_receiver_max), NEG_LARGE),
+    )
+    tl.debug_barrier()
+
+    # ---- publish, part 2: Pibar and the log2 residual + offset pair for both rows. The excluded
+    # donor mass is read straight off the solved y (ancestors of s) plus s's own mass, so no
+    # ancestor-chain gather is needed here.
+    pi_has_finite = tl.full((), value=0, dtype=tl.int32)
+    pibar_has_finite = tl.full((), value=0, dtype=tl.int32)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        const_offsets = const_base + s_offs
+        final_likelihood = tl.load(scratch_ptr + alpha_base + s_offs, mask=mask, other=0.0)
+        y0 = tl.load(scratch_ptr + source_base + s_offs, mask=mask, other=0.0)
+        y1 = tl.load(scratch_ptr + y1_base + s_offs, mask=mask, other=0.0)
+        own_mass = final_likelihood
+        if USE_RECEIVER_WEIGHTS:
+            receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=mask, other=0.0)
+            own_mass = own_mass * receiver_weight
+        excluded_ancestor_mass = y0 + y1 * total_receiver_mass + own_mass
+        valid_receiver_mass = final_receiver_mass - excluded_ancestor_mass
+        max_transfer = tl.load(max_transfer_lin_ptr + const_offsets, mask=mask, other=0.0)
+        transfer_complement_likelihood = max_transfer * tl.where(
+            valid_receiver_mass > 0.0, valid_receiver_mass, tl.zeros([BLOCK_S], dtype=DTYPE)
+        )
+
+        final_residual = tl.where(
+            mask & (final_likelihood > 0.0), tl.log2(final_likelihood), NEG_LARGE
+        )
+        pibar_residual = tl.where(
+            mask & (transfer_complement_likelihood > 0.0),
+            tl.log2(transfer_complement_likelihood),
+            NEG_LARGE,
+        )
+        tl.store(Pi_out_ptr + global_base + s_offs, final_residual, mask=mask)
+        tl.store(Pibar_out_ptr + global_base + s_offs, pibar_residual, mask=mask)
+        pi_has_finite = tl.maximum(
+            pi_has_finite, tl.max(tl.where(final_residual != NEG_LARGE, 1, 0), axis=0)
+        )
+        pibar_has_finite = tl.maximum(
+            pibar_has_finite, tl.max(tl.where(pibar_residual != NEG_LARGE, 1, 0), axis=0)
+        )
+
+    tl.store(
+        Pi_out_offset_ptr + global_row,
+        tl.where(pi_has_finite != 0, scale, tl.zeros_like(scale)),
+    )
+    tl.store(
+        Pibar_offset_ptr + global_row,
+        tl.where(pibar_has_finite != 0, scale, tl.zeros_like(scale)),
+    )
+    if COMPUTE_DIFF:
+        tl.store(pi_residual_out_ptr + global_row, max_log2_change)
+
+
 # ``family_offset`` is the wave's start row and changes every launch; keeping it out of
 # the specialization key avoids one JIT compile per divisibility state (see README.md).
 @triton.jit(do_not_specialize=["family_offset"])
@@ -1949,6 +2456,196 @@ def compute_fused_linear_self_loop(
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
         num_warps=_NUM_WARPS_UPDATE_RECONCILIATION,
+    )
+
+
+def compute_exact_tree_self_loop(
+    Pi_in,
+    Pi_in_offset,
+    Pi_out,
+    Pi_out_offset,
+    Pibar,
+    Pibar_offset,
+    scratch,
+    ws,
+    W,
+    S,
+    self_diagonal_lin,
+    transfer_coefficient_lin,
+    speciation_child1_lin,
+    speciation_child2_lin,
+    max_transfer_lin,
+    receiver_lin,
+    species_child1,
+    compact_level_ptr,
+    compact_level_parents,
+    compact_level_child1,
+    compact_level_child2,
+    gene_split_log_likelihood,
+    gene_split_offset,
+    gene_split_center_offset,
+    *,
+    leaf_species_idx,
+    leaf_logp,
+    family_idx,
+    pibar_row_max,
+    has_leaf_term,
+    use_receiver_weights,
+    pi_residual_out,
+    guard_trips_out,
+    leaf_fm_log,
+):
+    """Launch :func:`_exact_tree_pi_self_loop_kernel` for one wave.
+
+    Same contract as :func:`compute_fused_linear_self_loop` -- one launch per wave, the wave's
+    current iterate in ``Pi_in``/``Pi_in_offset``, the answer published into
+    ``Pi_out``/``Pi_out_offset`` with its Pibar in ``Pibar``/``Pibar_offset`` -- except that the
+    answer is the EXACT fixed point rather than an iterate, so there is no iteration count and no
+    tolerance. ``Pi_in`` only supplies the row gauge and the ``pi_residual_out`` reference point.
+
+    ``scratch`` is the five-slot per-row working buffer, shape ``[5, rows, S]`` with
+    ``rows >= W``; ``rows * S`` is passed as the slot stride so the offset arithmetic is built in
+    Python rather than in int32 device arithmetic.
+
+    ``guard_trips_out`` is an optional ``int32`` tensor of shape ``[clade rows, 2]``: column 0
+    counts this row's non-positive elimination pivots and column 1 flags a non-positive
+    ``1 - loop gain``. Both are zero for any parameter set the fixed point converges for; it is a
+    diagnostic, not a fallback, so pass ``None`` in production.
+    """
+    _validate_residual_tensors(
+        Pi_in,
+        Pi_out=Pi_out,
+        Pibar=Pibar,
+        scratch=scratch,
+        self_diagonal_lin=self_diagonal_lin,
+        transfer_coefficient_lin=transfer_coefficient_lin,
+        speciation_child1_lin=speciation_child1_lin,
+        speciation_child2_lin=speciation_child2_lin,
+        max_transfer_lin=max_transfer_lin,
+        receiver_lin=receiver_lin,
+        leaf_logp=leaf_logp,
+        pibar_row_max=pibar_row_max,
+        gene_split_log_likelihood=gene_split_log_likelihood,
+    )
+    if (
+        scratch.ndim != 3
+        or int(scratch.shape[0]) != _EXACT_TREE_SCRATCH_SLOTS
+        or int(scratch.shape[2]) != int(S)
+    ):
+        raise ValueError(
+            f"exact tree working buffer must have shape [{_EXACT_TREE_SCRATCH_SLOTS}, rows, S]"
+        )
+    slot_rows = int(scratch.shape[1])
+    if slot_rows < int(W):
+        raise ValueError("exact tree working buffer has fewer rows than the wave")
+    n_levels = int(compact_level_ptr.numel()) - 1
+    if n_levels < 1:
+        raise ValueError("exact tree solve needs a species tree with at least one internal node")
+    Pi_in_offset = _validate_offset_tensor(
+        "Pi_in_offset",
+        Pi_in_offset,
+        rows=Pi_in.shape[0],
+        device=Pi_in.device,
+        residual_dtype=Pi_in.dtype,
+    )
+    accumulator_dtype = Pi_in_offset.dtype
+    Pi_out_offset = _validate_offset_tensor(
+        "Pi_out_offset",
+        Pi_out_offset,
+        rows=Pi_out.shape[0],
+        device=Pi_in.device,
+        dtype=accumulator_dtype,
+    )
+    Pibar_offset = _validate_offset_tensor(
+        "Pibar_offset",
+        Pibar_offset,
+        rows=Pibar.shape[0],
+        device=Pi_in.device,
+        dtype=accumulator_dtype,
+    )
+    has_splits = gene_split_log_likelihood is not None
+    if has_splits:
+        if gene_split_offset is None or gene_split_center_offset is None:
+            raise ValueError(
+                "gene_split_offset and gene_split_center_offset are required with split DTS input"
+            )
+        gene_split_offset = _validate_offset_tensor(
+            "gene_split_offset",
+            gene_split_offset,
+            rows=W,
+            device=Pi_in.device,
+            dtype=accumulator_dtype,
+        )
+        gene_split_center_offset = _validate_offset_tensor(
+            "gene_split_center_offset",
+            gene_split_center_offset,
+            rows=W,
+            device=Pi_in.device,
+            dtype=accumulator_dtype,
+        )
+    else:
+        # Unused behind the ``HAS_SPLITS`` constexpr; a valid pointer is still required.
+        gene_split_log_likelihood = Pi_in
+        gene_split_offset = Pi_in_offset
+        gene_split_center_offset = Pi_in_offset
+    compute_diff = pi_residual_out is not None
+    write_guard_trips = guard_trips_out is not None
+    use_fraction_missing = leaf_fm_log is not None
+    # When there is no fraction-missing tensor the constexpr short-circuits the
+    # off-hit load, so a valid-but-unused 1-element placeholder is enough.
+    leaf_fm_log_arg = (
+        leaf_fm_log.contiguous()
+        if use_fraction_missing
+        else torch.empty(1, device=Pi_in.device, dtype=Pi_in.dtype)
+    )
+    _, const_row_stride = _prepare_wave_launch(S, self_diagonal_lin)
+    block_s = min(_BLOCK_SPECIES_FUSED_LINEAR, triton.next_power_of_2(S))
+    _exact_tree_pi_self_loop_kernel[(W,)](
+        Pi_in,
+        Pi_in_offset,
+        scratch,
+        Pi_out,
+        Pi_out_offset,
+        Pibar,
+        Pibar_offset,
+        pibar_row_max,
+        pi_residual_out if compute_diff else pibar_row_max,
+        guard_trips_out if write_guard_trips else species_child1,
+        self_diagonal_lin,
+        transfer_coefficient_lin,
+        speciation_child1_lin,
+        speciation_child2_lin,
+        max_transfer_lin,
+        receiver_lin,
+        species_child1,
+        compact_level_ptr,
+        compact_level_parents,
+        compact_level_child1,
+        compact_level_child2,
+        leaf_species_idx,
+        leaf_logp,
+        leaf_fm_log_arg,
+        family_idx,
+        gene_split_log_likelihood,
+        gene_split_offset,
+        gene_split_center_offset,
+        ws,
+        slot_rows * int(S),
+        n_levels,
+        S,
+        stride=S,
+        CONST_ROW_STRIDE=const_row_stride,
+        BLOCK_S=block_s,
+        BLOCK_NODES=_BLOCK_NODES_EXACT_TREE,
+        HAS_SPLITS=has_splits,
+        USE_LEAF_INDEX=bool(has_leaf_term),
+        USE_FRACTION_MISSING=use_fraction_missing,
+        COMPUTE_DIFF=compute_diff,
+        WRITE_GUARD_TRIPS=write_guard_trips,
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+        DTYPE=_tl_float_dtype(Pi_in.dtype),
+        ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
+        num_warps=_NUM_WARPS_EXACT_TREE,
     )
 
 
