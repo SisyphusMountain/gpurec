@@ -336,6 +336,15 @@ def fit_genewise(
         if verbose:
             print(msg, flush=True)
 
+    if base.get("forward_self_loop") == "exact":
+        # The exact tree solve returns the converged fixed point whatever `pi_iters` is, so the
+        # second (pi=64) tier would recompute an identical forward: run a single tier and let
+        # families that do not converge simply stay unconverged instead of being deferred
+        # (deferral keyed on `pi_residual_out`, which in exact mode is |prologue - solution|, not
+        # a stiffness signal). Backward accuracy still follows `neu_opt` / `neu_cert` as before.
+        pis = pis[:1]
+        cert_pi = pis[0]
+
     def sopts(pi, neu):
         return SolverOptions(**{**base, "pi_iters": pi, "neumann_terms": neu})
 
