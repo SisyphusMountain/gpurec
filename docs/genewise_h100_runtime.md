@@ -60,7 +60,9 @@ Two smaller items:
 
 Things checked and ruled out: Python's cyclic garbage collector (disabling it changes nothing),
 a larger `clade_budget` (13 to 3 batches gives 9 % on the gradient; the work is GPU-bound, not
-launch-bound), warm vs cold adjoint (same speed).
+launch-bound), warm vs cold adjoint (same speed), and Triton `num_warps` for the five hottest
+kernels (`benchmark/cc/sweep_num_warps.py`: every alternative is within 2 % of the current
+default or slower; 2 warps on the tangent self-loop kernel is 6.7x slower).
 
 ## After
 
@@ -71,7 +73,7 @@ launch-bound), warm vs cold adjoint (same speed).
 | first full-dataset gradient (includes JIT) | > 300 s | 64 s |
 | steady-state full-dataset gradient | 58 s (hidden behind JIT) | 58 s |
 | 40-family end-to-end fit | 354 s | 68 s, same NLL (115604.90 bits), same 25 steps / 4 builds |
-| 500-family end-to-end fit | PENDING (job ab500_old) | PENDING (job ab500_new) |
+| 500-family end-to-end fit | PENDING (job ab500_old, warm cache forced off so it fits) | 1017 s, NLL 1618463.77 bits, 231 steps, 11 builds, 490/500 certified converged |
 | 5123-family end-to-end fit, 1 GPU | PENDING (job baseline_full) | PENDING (job full_v3) |
 | 5123-family fit, 4 GPUs sharded | - | PENDING (job full_v3_4gpu, needs a free node) |
 
