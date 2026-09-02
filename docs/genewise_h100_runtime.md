@@ -230,6 +230,15 @@ converged, 110 Newton steps (220 with two tiers), peak 26 GiB; split: warm-up 22
 contention: 162 s in the previous run), Newton gradients 559 s, curvature 71 s (7 refreshes),
 verification 65 s, certificate 19 s, re-plans 15 s, first build 69 s (19 s uncontended).
 
+**Full dataset, exact forward + exact adjoint, single tier (job full_v11exact2): 793.6 s — under the
+800 s target.** NLL 9048938.39 bits (18 bits below the first-round value 9048956.57), 5120/5123
+certified converged (3 unconverged), 109 Newton steps, peak 24.4 GiB. Split: warm-up 145 s, Newton
+gradients 463 s, curvature 58 s (7 exact refreshes), verification 49 s (32 rounds), re-plans 17 s,
+certificate 18 s, first build ~20 s. Fitted rates vs the original code's optimum: median difference
+1e-5 log2 units, but 43 % of families differ by more than 1e-3 and 412 families by more than one
+log2 unit — the per-family likelihood surfaces are flat or multimodal in those directions (per-family
+likelihood comparison in progress; the total is better).
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
