@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 
 pub mod batch_planning;
 pub mod layout;
+pub mod pybridge;
 pub mod scheduler;
 
 const BITS_PER_WORD: usize = 64;
@@ -90,8 +91,9 @@ fn preprocess_dataset(
             .map(|result| result.map_err(PreprocessError::InvalidInput))
             .collect();
         family_outputs.and_then(|families| {
+            let family_refs = families.iter().collect::<Vec<&Value>>();
             let (batches, batch_wave_layouts) = plan_batches_and_layouts(
-                &families,
+                &family_refs,
                 family_chunk_size,
                 clade_budget,
                 batch_packing.as_deref().unwrap_or("depth_first_fit"),
@@ -118,6 +120,7 @@ fn gpurec_preprocess(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<
     module.add_function(wrap_pyfunction!(build_family_ccp, module)?)?;
     module.add_function(wrap_pyfunction!(species_leaf_index_map, module)?)?;
     module.add_class::<FamilyCcp>()?;
+    module.add_class::<pybridge::ParsedFamilies>()?;
     Ok(())
 }
 
@@ -133,8 +136,9 @@ fn plan_batch_layouts(
 ) -> PyResult<String> {
     let families: Vec<Value> = serde_json::from_str(&families_json)
         .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    let family_refs = families.iter().collect::<Vec<&Value>>();
     let (batches, batch_wave_layouts) = plan_batches_and_layouts(
-        &families,
+        &family_refs,
         family_chunk_size,
         clade_budget,
         batch_packing.as_deref().unwrap_or("depth_first_fit"),
@@ -602,7 +606,7 @@ fn clade_schedule_depth(clade_data: &CladeData) -> usize {
 }
 
 fn plan_batches_and_layouts(
-    families: &[Value],
+    families: &[&Value],
     family_chunk_size: Option<usize>,
     clade_budget: Option<usize>,
     batch_packing: &str,
@@ -728,7 +732,7 @@ fn value_vec_f64(family: &Value, key: &str) -> Result<Vec<f64>, String> {
 }
 
 fn batch_wave_layout(
-    families: &[Value],
+    families: &[&Value],
     batch: &[usize],
     max_wave_size: usize,
 ) -> Result<Value, String> {

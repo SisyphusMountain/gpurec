@@ -35,6 +35,7 @@ from gpurec.api.solver_options import SolverOptions
 from gpurec.config import GpurecConfig, PrecisionOptions, resolve_torch_dtype
 from gpurec.config.rates import RateBounds
 from gpurec.core.inference.solver import solve_forward_residual
+from gpurec.core.scheduling.batching import parse_families
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
 from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight
 from gpurec.solver.hvp.exact import make_exact_hvp_single
@@ -205,9 +206,16 @@ def fit_genewise(
     def sopts(pi, neu):
         return SolverOptions(**{**base, "pi_iters": pi, "neumann_terms": neu})
 
-    def build(paths, pi, neu):
-        m = GeneReconModel(str(species_tree), [str(p) for p in paths], mode="genewise",
+    def build(indices, pi, neu):
+        """Rebuild the model over ``indices`` into ``fam_paths``, reusing the parsed families.
+
+        Every rebuild (rebatch / tier escalation / certificate) re-plans batches and rebuilds
+        tensors from the SAME resident parse -- no .ale file is read more than once per fit.
+        """
+        idx = [int(i) for i in indices]
+        m = GeneReconModel(str(species_tree), [str(fam_paths[i]) for i in idx], mode="genewise",
                            device=dev, dtype=dtype, config=config, solver_options=sopts(pi, neu),
+                           parsed_families=parsed, family_indices=idx,
                            **({} if clade_budget is None else {"clade_budget": clade_budget}))
         m.receiver_weights.requires_grad_(False)   # uniform transfer recipients (UndatedDTL default)
         return m
@@ -234,6 +242,8 @@ def fit_genewise(
 
     fam_paths = _resolve_gene_trees(gene_trees)
     F_all = len(fam_paths)
+    # Parse every family ONCE for the whole fit; build() re-plans subsets off this handle.
+    parsed = parse_families(species_tree, fam_paths)
     theta = clamp_(torch.zeros(F_all, 3, device=dev, dtype=dtype))
     active = torch.arange(F_all, device=dev)
     was_dropped = torch.zeros(F_all, dtype=torch.bool, device=dev)
@@ -256,7 +266,7 @@ def fit_genewise(
                 break
             last_tier = pi_idx == len(pis) - 1
             carry = active[:0].clone()
-            m = build([fam_paths[j] for j in active.tolist()], pi_cur, neu_opt); n_builds += 1
+            m = build(active.tolist(), pi_cur, neu_opt); n_builds += 1
             sub = theta.index_select(0, active).clone()
             _log(f"[fit_genewise] tier pi={pi_cur}: {active.numel()} families")
 
@@ -318,7 +328,7 @@ def fit_genewise(
                             if active.numel() == 0:
                                 break
                             del m; torch.cuda.empty_cache()
-                            m = build([fam_paths[j] for j in active.tolist()], pi_cur, neu_opt); n_builds += 1
+                            m = build(active.tolist(), pi_cur, neu_opt); n_builds += 1
                             Hd = None
                             continue
                 if it % 5 == 0 or Hd is None or Hd.shape[0] != sub.shape[0]:
@@ -351,7 +361,7 @@ def fit_genewise(
     if certify:   # final cold PD certificate over ALL families at the high pi/Neumann tier
         _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
         try:
-            mfull = build(fam_paths, cert_pi, neu_cert)
+            mfull = build(range(F_all), cert_pi, neu_cert)
             _, g = lg(mfull, theta); pg = pgmax(theta, g)
             H = _analytic_hessian(mfull, theta, cert_pi)
             lam_min = torch.linalg.eigvalsh(H)[:, 0]

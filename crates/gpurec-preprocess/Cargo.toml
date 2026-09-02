@@ -7,6 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+numpy = "0.22"
 pyo3 = { version = "0.22", features = ["abi3-py310", "extension-module"] }
 rayon = "1"
 rustree = { git = "https://github.com/SisyphusMountain/rustree.git", rev = "e3a58478f0e57c80af04c730acade639d8e9015e" }
