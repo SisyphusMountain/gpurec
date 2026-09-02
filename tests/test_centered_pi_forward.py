@@ -914,8 +914,15 @@ def test_exact_tree_self_loop_matches_converged_log_self_loop(
 
     The exact solve eliminates the self-loop on the species tree instead of sweeping it, so the
     only honest reference is the log-space path run far past convergence (``pi_iters=256`` here,
-    against the exact solve's own 8, which it ignores). Everything is fp64 so the comparison is
-    about the two algorithms, not about float32 rounding.
+    against the exact solve's own 8, which it ignores). Everything is float64 so the comparison
+    is about the two algorithms, not about float32 rounding.
+
+    Compared only WITHIN ``window`` log2 units of each row's maximum, for a reason that is a
+    property of the representation and not of this kernel. The exact solve, like the fused linear
+    one, works on a row rescaled so its largest entry is 1; a lane whose true value is further
+    below that maximum than the dtype's roundoff (about 53 log2 units in float64) is built
+    entirely out of terms that round to nothing, so it comes out as an exact zero and is
+    published as -inf. The log-space path has no such floor. ``window`` stays well inside it.
     """
     _require_native_cuda()
     species_tree, gene_trees = _write_tiny_ale_example(tmp_path)
@@ -959,18 +966,33 @@ def test_exact_tree_self_loop_matches_converged_log_self_loop(
         pibar = result[6].to(state.pibar_offset.dtype) + state.pibar_offset.unsqueeze(1)
         return pi, pibar, result[4]
 
+    # A lane ``window`` log2 units below its row's maximum is carried with an absolute error of
+    # about one float64 roundoff of that maximum, i.e. a relative error near 2**(window - 53);
+    # at window = 30 that is 1.2e-7, or 1.7e-7 log2 units, comfortably inside ``tolerance``.
+    window = 30.0
+    tolerance = 1e-6
+
+    def in_window(rows: torch.Tensor) -> torch.Tensor:
+        """Reference entries no more than ``window`` log2 units below their own row's maximum."""
+        finite = torch.isfinite(rows)
+        row_max = torch.where(finite, rows, torch.full_like(rows, -float("inf")))
+        row_max = row_max.amax(dim=1, keepdim=True)
+        return finite & torch.isfinite(row_max) & (rows >= row_max - window)
+
     reference_pi, reference_pibar, reference_root = solved_rows(reference)
     exact_pi, exact_pibar, exact_root = solved_rows(candidate)
 
-    # The impossible (species, clade) entries must be the same ones on both paths.
-    assert torch.equal(torch.isfinite(reference_pi), torch.isfinite(exact_pi))
-    assert torch.equal(torch.isfinite(reference_pibar), torch.isfinite(exact_pibar))
-    finite_pi = torch.isfinite(reference_pi)
-    finite_pibar = torch.isfinite(reference_pibar)
-    torch.testing.assert_close(
-        exact_pi[finite_pi], reference_pi[finite_pi], rtol=0.0, atol=1e-8
-    )
-    torch.testing.assert_close(
-        exact_pibar[finite_pibar], reference_pibar[finite_pibar], rtol=0.0, atol=1e-8
-    )
-    torch.testing.assert_close(exact_root, reference_root, rtol=0.0, atol=1e-8)
+    for name, reference_rows, exact_rows in (
+        ("Pi", reference_pi, exact_pi),
+        ("Pibar", reference_pibar, exact_pibar),
+    ):
+        selected = in_window(reference_rows)
+        assert bool(selected.any()), f"no {name} entries inside the {window} log2 window"
+        # Nothing the reference can still resolve at this depth may vanish on the exact path.
+        assert bool(
+            torch.isfinite(exact_rows[selected]).all()
+        ), f"exact {name} lost an entry the reference resolves"
+        torch.testing.assert_close(
+            exact_rows[selected], reference_rows[selected], rtol=0.0, atol=tolerance
+        )
+    torch.testing.assert_close(exact_root, reference_root, rtol=0.0, atol=tolerance)
