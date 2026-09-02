@@ -1,16 +1,31 @@
-"""Is the log-space reference actually converged where "exact" disagrees with it?
+"""Where "exact" and the log-space forward disagree, which one is wrong?
 
-``test_exact_forward.py`` reports, at the fitted theta, a handful of Pi entries where the exact
-tree solve and the log path at ``pi_iters=256`` differ by ~15 log2 units even though the NLL and
-the gradient agree. Only two things can explain that: either the exact solve is wrong on those
-rows, or the log path is still moving there at 256 iterations, i.e. the "reference" is not the
-fixed point. This script settles it by making the log path itself the moving part: it compares the
-log path at ``--reference-pi-iters`` and at ``--long-pi-iters`` (a multiple of it) against each
-other, and both against "exact" and "linear", on the same batch, same theta.
+``test_exact_forward.py`` reports, at the fitted theta, a small number of Pi entries where the
+exact tree solve and the log path at ``pi_iters=256`` differ by over 10 log2 units even though
+the NLL and the gradient agree. Three things could explain that: the log path is still moving at
+256 iterations (so the "reference" is not the fixed point), the exact solve is wrong, or neither
+linear-space path can represent those entries. This script separates them by making the log path
+itself the moving part: it compares the log path at ``--reference-pi-iters`` and at
+``--long-pi-iters`` (a multiple of it) against each other, and both against "exact" and "linear",
+on the same batch, same theta.
 
 For each pair it prints the number of entries past a few log2-distance thresholds and the full
 profile of the single worst-disagreeing entry (its row, its species, its row maximum and its value
 under every path), so a disagreement can be read as "this lane, this far below its row's maximum".
+
+What it established (100 families, fitted theta, batch 0, 6.2e8 entries, H100):
+
+  * The reference IS converged. log@256 against log@2048 differ by at most 2.1e-2 log2, with 9
+    entries past 1e-3 and none past 1e-2.
+  * The exact solve IS the fixed point. Re-run at ``--dtype float64``, it matches log@512 to
+    2.5e-7 log2 with nothing past 1e-3 -- a thousand times closer than the truncated linear path
+    at the same precision (2.5e-4). The elimination is right; only its float32 arithmetic is not.
+  * What is left in float32 belongs to the representation, not to either solver. Both linear-space
+    paths rescale a row so its largest entry is 1, so a lane whose share of the row's transfer
+    mass is under float32 roundoff gets the roundoff instead of its value -- and comes out too
+    LARGE. On the worst entry the two paths land on the SAME wrong value (-6281.3 and -6281.4
+    against the log path's -6293.9, a lane 36.6 log2 below its row maximum). Only the log path
+    is free of that floor.
 
 Usage:
   python benchmark/cc/diagnose_exact_forward.py --species S --families LIST \
