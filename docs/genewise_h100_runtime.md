@@ -130,6 +130,16 @@ Python batch statics 22 %), verification of candidates is the larger per-round c
 few stiff families less converged in the second tier. This is being addressed (exact curvature for the
 small second tier is cheap).
 
+**Full dataset, everything merged (first attempt):** the run crashed at 1490 s (iteration 14-16 of the
+first tier, after a re-plan to 2339 live families) with an infinite residual in the E-adjoint Neumann
+series, i.e. a non-finite value produced upstream at a mid-fit theta; the same code passes the 40- and
+500-family fits and an isolated full-scale gradient at the final fitted theta. Under investigation
+(suspect: overflow in the linear-space forward when a source term is far above the row scale).
+
+**Gradient cost depends on the rates.** At full scale the merged kernels give 33.7 s per gradient at
+a flat theta (all rates 2^-6) but 54 s at the fitted theta (95 % of families have a rate above 0.25):
+the early-exit loops and E fixed points take more iterations at high rates. Being profiled.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
