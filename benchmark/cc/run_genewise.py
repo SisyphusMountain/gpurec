@@ -35,7 +35,15 @@ def main() -> int:
     ap.add_argument("--limit", required=True, type=int, help="0 = all families; N = first N of the list")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--tag", required=True)
+    # Optional because it is a debugging aid, not a setting: leaving it out is exactly the
+    # behaviour of a build without the facility. When given, a batch whose curvature probe or
+    # gradient goes non-finite is reported and written there before the run dies, so the failure
+    # can be replayed on that batch alone instead of re-running the whole fit.
+    ap.add_argument("--debug-dump-dir", required=False, default=None)
     args = ap.parse_args()
+
+    from gpurec.api import _failure_dump
+    _failure_dump.use_directory(args.debug_dump_dir)
 
     paths = [ln.strip() for ln in open(args.families) if ln.strip() and not ln.startswith("#")]
     if args.limit > 0:

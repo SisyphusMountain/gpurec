@@ -30,6 +30,15 @@ JOBS = {
         dict(compare=100, time=500, reps=3, minutes=30, dtype="float32"),
     ),
     "fit40": ("k1_smoke40", "benchmark/cc/run_genewise.py", dict(minutes=30)),
+    "grid": ("k1_grid", "benchmark/cc/test_linear_extreme_theta.py", dict(minutes=30)),
+    # One slot: the cheap rate-box sweep first, then the full fit that actually crashed.
+    "diagnose": ("k1_diagnose", None, dict(minutes=120)),
+    "replay": ("k1_replay", "benchmark/cc/replay_failing_batch.py", dict(minutes=30)),
+    # fp64 replay of the failing batch (same model for both paths) + the easy-regime regression.
+    "check": ("k1_check", None, dict(minutes=40)),
+    "repro": ("k1_repro", "benchmark/cc/run_genewise.py", dict(minutes=120)),
+    "fit500": ("k1_fit500", "benchmark/cc/run_genewise.py", dict(minutes=30)),
+    "full": ("k1_full", "benchmark/cc/run_genewise.py", dict(minutes=180)),
     # 40-family end-to-end fit plus the float64 control that shows the residual log-vs-linear
     # disagreement is model-dtype rounding of the row frame, not an arithmetic difference.
     "fit40_fp64": ("k1_fit40_fp64", None, dict(minutes=30)),
@@ -43,6 +52,9 @@ def main() -> int:
     parser.add_argument("--time", type=int, default=None)
     parser.add_argument("--reps", type=int, default=None)
     parser.add_argument("--minutes", type=int, default=None)
+    parser.add_argument("--dump", default=None, help="dumped batch .pt for the replay job")
+    parser.add_argument("--dtype", default="float32", choices=("float32", "float64"))
+    parser.add_argument("--oracle", type=int, default=0)
     args = parser.parse_args()
 
     repo = os.environ["CC_REPO"]
@@ -58,7 +70,59 @@ def main() -> int:
         "--pi-iters 16 --neumann-terms 16 --theta -6.0 --window 60 --reps 2 --dtype float64 "
         "--fused-blocks 256"
     )
-    if args.job == "fit40":
+    debug_dir = "$CC_RUNS/debug"
+    grid_command = (
+        "$CC_PY -u benchmark/cc/test_linear_extreme_theta.py --species $CC_SPECIES "
+        "--families $CC_FAMILIES --limit 40 --clade-budget 315000 --pi-iters 16 "
+        "--neumann-terms 16 --window 60 --grid=-19.9,-12.0,-6.0,-2.0,0.0,1.0"
+    )
+    repro_command = (
+        "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
+        "--families $CC_FAMILIES --limit 0 --out-dir $CC_RUNS/results --tag k1_repro "
+        f"--debug-dump-dir {debug_dir}"
+    )
+    if args.job == "check":
+        command = (
+            f"$CC_PY -u benchmark/cc/replay_failing_batch.py --dump {args.dump} "
+            "--clade-budget 315000 --window 60 --run-hessian 0 --dtype float64 --oracle 0; "
+            "$CC_PY -u benchmark/cc/test_linear_forward.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit-compare 100 --limit-time 100 --clade-budget 315000 "
+            "--pi-iters 16 --neumann-terms 16 --theta -6.0 --window 60 --reps 2 "
+            "--dtype float32 --fused-blocks 256"
+        )
+    elif args.job == "replay":
+        command = (
+            f"$CC_PY -u benchmark/cc/replay_failing_batch.py --dump {args.dump} "
+            f"--clade-budget 315000 --window 60 --run-hessian 1 --dtype {args.dtype} "
+            f"--oracle {args.oracle}"
+        )
+    elif args.job == "diagnose":
+        command = f"{grid_command}; {repro_command}"
+    elif args.job == "grid":
+        command = (
+            "$CC_PY -u benchmark/cc/test_linear_extreme_theta.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit 40 --clade-budget 315000 --pi-iters 16 "
+            "--neumann-terms 16 --window 60 --grid=-19.9,-12.0,-6.0,-2.0,0.0,1.0"
+        )
+    elif args.job == "repro":
+        command = (
+            "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit 0 --out-dir $CC_RUNS/results --tag k1_repro "
+            f"--debug-dump-dir {debug_dir}"
+        )
+    elif args.job == "fit500":
+        command = (
+            "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit 500 --out-dir $CC_RUNS/results --tag k1_fit500 "
+            f"--debug-dump-dir {debug_dir}"
+        )
+    elif args.job == "full":
+        command = (
+            "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit 0 --out-dir $CC_RUNS/results --tag k1_full "
+            f"--debug-dump-dir {debug_dir}"
+        )
+    elif args.job == "fit40":
         command = fit_command
     elif args.job == "fit40_fp64":
         command = f"{fit_command}; {fp64_command}"

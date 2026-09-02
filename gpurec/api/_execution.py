@@ -2,6 +2,7 @@ import os
 
 import torch
 
+from gpurec.api import _failure_dump
 from gpurec.api._batch_state import _BatchStatic
 from gpurec.api._implicit_grad import implicit_grad_loglik_vjp_wave
 from gpurec.core.inference.solver import (
@@ -362,6 +363,22 @@ def evaluate_static_loss_vector_grad(
             if need_origination_grad
             else None
         )
+    if _failure_dump.is_enabled():
+        # Synchronising, so it only runs for a driver that asked for dumps. A non-finite loss or
+        # gradient here means the batch is already broken before any curvature probe touches it.
+        broken = [
+            text
+            for text in (
+                _failure_dump.nonfinite_summary("loss_vec", loss_vec),
+                _failure_dump.nonfinite_summary("grad_theta", grad_theta),
+                _failure_dump.nonfinite_summary("grad_receiver", grad_receiver),
+            )
+            if text
+        ]
+        if broken:
+            print(f"[gpurec] non-finite gradient output on a "
+                  f"{len(static.family_indices)}-family batch: {'; '.join(broken)}")
+            print(_failure_dump.describe_forward_state(static, theta, receiver_weights))
     return loss_vec, grad_theta, grad_receiver, grad_origination
 
 

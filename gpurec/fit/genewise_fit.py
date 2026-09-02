@@ -48,6 +48,7 @@ import time
 
 import torch
 
+from gpurec.api import _failure_dump
 from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
 from gpurec.config import GpurecConfig, PrecisionOptions, resolve_torch_dtype
@@ -113,7 +114,24 @@ def _resolve_gene_trees(spec) -> list[str]:
     return paths
 
 
-def _analytic_hessian(m, theta, pi_cur):
+def _report_batch_failure(static, theta_batch, receiver_weights, *, species_tree, family_paths,
+                          reason, extra):
+    """Print where this batch's forward turns non-finite and write it out, when dumps are on."""
+    if not _failure_dump.is_enabled():
+        return
+    print(f"[gpurec] {reason} failed on a {len(static.family_indices)}-family batch; "
+          f"theta min/max per column = "
+          f"{[round(float(v), 3) for v in theta_batch.amin(dim=0)]} / "
+          f"{[round(float(v), 3) for v in theta_batch.amax(dim=0)]}")
+    print(_failure_dump.describe_forward_state(static, theta_batch, receiver_weights))
+    path = _failure_dump.save_batch(
+        static, theta_batch, receiver_weights, species_tree=species_tree,
+        family_paths=family_paths, reason=reason, extra=extra,
+    )
+    print(f"[gpurec] wrote the failing batch to {path}")
+
+
+def _analytic_hessian(m, theta, pi_cur, species_tree, model_family_paths):
     """Per-family [G,3,3] curvature via 3 analytic-HVP probes (unit theta-component directions).
 
     Batches are streamed one at a time. For each batch the forward solve and the adjoint point
@@ -136,7 +154,18 @@ def _analytic_hessian(m, theta, pi_cur):
         hvp = make_exact_hvp_single(static, theta_b, rw, sv, tangent_self_iters=pi_cur)
         for j in range(3):
             u_b = torch.zeros(G_b, 3, device=dev, dtype=dtype); u_b[:, j] = 1.0
-            out_b = hvp(u_b.reshape(-1), probe_id=j)[: G_b * 3].reshape(G_b, 3)
+            try:
+                out_b = hvp(u_b.reshape(-1), probe_id=j)[: G_b * 3].reshape(G_b, 3)
+            except RuntimeError:
+                # A solve failing here names no families and no rates, and the fit cannot be
+                # replayed to this iterate. When a driver has asked for dumps, say where the
+                # first non-finite value is and write the batch out before re-raising.
+                _report_batch_failure(
+                    static, theta_b, rw, species_tree=species_tree,
+                    family_paths=model_family_paths,
+                    reason="analytic_hessian", extra={"pi_iters": int(pi_cur), "probe": j},
+                )
+                raise
             cols[j].index_add_(0, fam, out_b)
         del hvp, sv
         free_cuda_cache_if_tight()
@@ -529,7 +558,15 @@ def fit_genewise(
                             continue   # the gradient above belongs to the old batch; re-measure
                 if refresh_due:
                     _sync(); _t = time.perf_counter()
-                    B_fam.index_copy_(0, active, _analytic_hessian(m, sub, pi_cur))
+                    B_fam.index_copy_(
+                        0, active,
+                        _analytic_hessian(
+                            m, sub, pi_cur, species_tree,
+                            # ``static.family_indices`` are positions in THIS model's family
+                            # list, so hand over the paths already in that order.
+                            [fam_paths[i] for i in active.tolist()],
+                        ),
+                    )
                     _sync(); hessian_seconds += time.perf_counter() - _t
                     refresh_due = False; since_exact = 0; n_hessians += 1
                 e, V = torch.linalg.eigh(B_fam.index_select(0, active))
@@ -602,7 +639,9 @@ def fit_genewise(
                 loss_bits=nll_bits, loss_nats=nll_bits * math.log(2),
             )
             if certify_curvature:   # the 3-probe Hessian is ~7 gradients; only pay it when asked
-                lam_min = torch.linalg.eigvalsh(_analytic_hessian(mfull, theta, cert_pi))[:, 0]
+                lam_min = torch.linalg.eigvalsh(
+                    _analytic_hessian(mfull, theta, cert_pi, species_tree, list(fam_paths))
+                )[:, 0]
                 result["interior_pd"] = int((conv & (lam_min > tol) & ~bound_active).sum())
             del mfull; torch.cuda.empty_cache()
             _sync(); result["certify_seconds"] = time.perf_counter() - _t
