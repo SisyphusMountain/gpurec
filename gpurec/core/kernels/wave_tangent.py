@@ -880,11 +880,16 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
             mask=mask,
         )
     if WRITE_GUARD_TRIPS:
-        tl.store(guard_trips_ptr + w * 2, guard_trips)
+        tl.store(guard_trips_ptr + w * 3, guard_trips.to(DTYPE))
         tl.store(
-            guard_trips_ptr + w * 2 + 1,
-            tl.where(loop_denominator <= 0.0, 1, 0).to(tl.int32),
+            guard_trips_ptr + w * 3 + 1,
+            tl.where(loop_denominator <= 0.0, 1.0, 0.0).to(DTYPE),
         )
+        # How far the one scalar closure stayed from singular. Everything the solve computes is
+        # divided by this once, so a row whose margin is near zero is a row whose tangent carries
+        # the reciprocal of that margin in relative error -- the number to look at when the
+        # answer disagrees with the sweeps but no guard actually tripped.
+        tl.store(guard_trips_ptr + w * 3 + 2, loop_denominator.to(DTYPE))
 
 
 def _prepare_wave_offsets(Pi_in, pi_offset, gene_split_offset, has_splits, W):
@@ -1031,10 +1036,13 @@ def compute_wave_step_tangent_selfloop(
         species_height = species_height.to(device=Pi_in.device, dtype=torch.int32).contiguous()
         n_levels = int(species_levels)
         collect_guard_trips = _COLLECT_EXACT_TANGENT_GUARD_TRIPS
+        # [rows, 3]: non-positive pivot count, non-positive-closure flag, and the closure's own
+        # margin ``1 - M1``. Floats throughout -- the counts are small integers, exact in either
+        # float type, and one dtype keeps the kernel's stores uniform.
         guard_trips = (
-            torch.zeros((int(W), 2), device=Pi_in.device, dtype=torch.int32)
+            torch.zeros((int(W), 3), device=Pi_in.device, dtype=Pi_in.dtype)
             if collect_guard_trips
-            else species_height
+            else Pi_in
         )
         _solve_reconciliation_self_loop_jvp_exact_kernel[(int(W),)](
             Pi_in, dPi_io,

@@ -97,8 +97,13 @@ def main() -> int:
     parser.add_argument("--theta", required=True, type=float)
     parser.add_argument("--reps", required=True, type=int)
     parser.add_argument("--forward-self-loop", required=True, choices=("log", "linear", "exact"))
+    parser.add_argument("--dtype", required=True, choices=("float32", "float64"),
+                        help="float64 is the control: it separates the elimination's arithmetic "
+                             "from float32's own resolution")
+    parser.add_argument("--skip-timing", required=True, type=int,
+                        help="1 to stop after the correctness section")
     args = parser.parse_args()
-    dtype = torch.float32
+    dtype = torch.float32 if args.dtype == "float32" else torch.float64
 
     from gpurec.core.kernels import wave_tangent
 
@@ -118,7 +123,7 @@ def main() -> int:
         f"[cmp] build {time.perf_counter() - build_start:.1f}s families={len(paths)} "
         f"batches={len(model.batch_statics)} S={int(model.species_helpers['S'])} "
         f"species_tree_height={int(height.max().item())} forward={args.forward_self_loop} "
-        f"reference=sweeps@{args.reference_iters}",
+        f"dtype={args.dtype} reference=sweeps@{args.reference_iters}",
         flush=True,
     )
     thetas = {
@@ -137,11 +142,17 @@ def main() -> int:
         model.configure_solver(adjoint_self_loop="exact")
         exact = _hessian(model, theta, args.species, paths, args.pi_iters)
         trips = torch.cat([t for t in wave_tangent._EXACT_TANGENT_GUARD_TRIPS], dim=0)
+        margin = trips[:, 2]
         print(
             f"[C {rate_label}] guard trips over {int(trips.shape[0])} clade-row solves: "
             f"non-positive elimination pivots = {int(trips[:, 0].sum().item())} "
             f"(in {int((trips[:, 0] > 0).sum().item())} rows), "
-            f"non-positive 1 - loop gain = {int(trips[:, 1].sum().item())} rows",
+            f"non-positive 1 - loop gain = {int(trips[:, 1].sum().item())} rows; "
+            f"closure margin 1 - M1: min {float(margin.min().item()):.4e} "
+            f"1st-percentile {float(margin.quantile(0.01).item()):.4e} "
+            f"median {float(margin.median().item()):.4e} "
+            f"(worst row loses about {-torch.log10(margin.min().abs().clamp_min(1e-30)).item():.1f} "
+            f"decimal digits to it)",
             flush=True,
         )
         wave_tangent.set_exact_tangent_guard_trip_collection(False)
@@ -155,6 +166,8 @@ def main() -> int:
 
     del model, thetas
     torch.cuda.empty_cache()
+    if args.skip_timing:
+        return 0
 
     # ---------------- B: timing on --limit-time families ----------------
     paths = all_paths[: args.limit_time]
