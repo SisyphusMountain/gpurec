@@ -56,17 +56,23 @@ def main() -> int:
         "tag": args.tag, "n_families": res["n_families"], "wall_s": wall,
         "nll_bits": res["nll_bits"], "nll_nats": res["nll_nats"],
         "opt_seconds": g["opt_seconds"], "n_steps": g["n_steps"], "n_builds": g["n_builds"],
-        # rebatching cost split: candidate verification vs re-planning the model over the survivors
+        # per-phase wall-clock split (see fit_genewise's result dict)
+        "adam_seconds": g["adam_seconds"], "hessian_seconds": g["hessian_seconds"],
+        "n_hessians": g["n_hessians"], "newton_grad_seconds": g["newton_grad_seconds"],
         "n_verify_builds": g["n_verify_builds"], "verify_seconds": g["verify_seconds"],
         "n_rebuilds": g["n_rebuilds"], "rebuild_seconds": g["rebuild_seconds"],
+        "certify_seconds": g["certify_seconds"],
         "history": g["history"], "peak_gib": peak_gib,
         "certificate": {k: g[k] for k in ("converged", "interior_pd", "bound_active", "unconverged",
                                            "premature_drops", "pg_max") if k in g},
     }
     print(f"[driver] DONE wall={wall:.1f}s nll_bits={res['nll_bits']:.3f} nll_nats={res['nll_nats']:.3f} "
           f"steps={g['n_steps']} builds={g['n_builds']} peak={peak_gib:.2f}GiB "
+          f"adam={g['adam_seconds']:.0f}s hess={g['n_hessians']}x/{g['hessian_seconds']:.0f}s "
+          f"grad={g['newton_grad_seconds']:.0f}s "
           f"verify={g['n_verify_builds']}x/{g['verify_seconds']:.0f}s "
-          f"rebuild={g['n_rebuilds']}x/{g['rebuild_seconds']:.0f}s cert={summary['certificate']}")
+          f"rebuild={g['n_rebuilds']}x/{g['rebuild_seconds']:.0f}s "
+          f"cert={g['certify_seconds']:.0f}s {summary['certificate']}")
     import os
     os.makedirs(args.out_dir, exist_ok=True)
     with open(f"{args.out_dir}/{args.tag}.json", "w") as fh:

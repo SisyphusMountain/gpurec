@@ -49,6 +49,13 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
     tolerances, pruning); the E-adjoint linear solve always uses a Neumann series, which converges
     to the fp32 floor in a handful of terms with no orthogonalization residual floor.
 
+    The genewise start uses ``init_curvature="adam_bfgs"``: the first Newton iteration's 3x3
+    curvature is built from the Adam warm-up's own (step, gradient-change) pairs instead of an exact
+    3-probe Hessian. Measured at 500 Coleman families (job 57481509, all four arms in one process):
+    392 s vs 430 s for the exact start, same 499/500 converged, likelihood 1.1 bits BETTER -- the
+    exact first Hessian cost 63 s and the slightly worse-aimed early steps cost 25 s of extra
+    gradient, so it nets out ahead.
+
     For genewise this calls ``fit_genewise`` with ``certify_curvature=False``: the final certificate
     reports the projected gradient, the converged / unconverged / bound-active counts and the total
     NLL, but NOT the count of families at an interior positive-definite optimum -- that needs the
@@ -62,12 +69,12 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
 
     if mode == "genewise":
         # fit_genewise resolves its own gene-tree spec and rebuilds tiered models internally.
-        # min_drop / rebuild_frac / hessian_refresh / certify_curvature have no signature default
-        # in fit_genewise (one value, one place): the production values are stated right here.
+        # min_drop / rebuild_frac / hessian_refresh / init_curvature / certify_curvature have no
+        # signature default in fit_genewise (one value, one place): the production values are here.
         res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype,
                            certify=True, certify_curvature=False, min_drop=32, rebuild_frac=0.25,
-                           hessian_refresh=15, solver_options=solver_options, config=config,
-                           verbose=verbose)
+                           hessian_refresh=15, init_curvature="adam_bfgs",
+                           solver_options=solver_options, config=config, verbose=verbose)
         wall_s = time.perf_counter() - t0
         nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)
         return {"mode": mode, "theta": res["theta"].detach().cpu(),
