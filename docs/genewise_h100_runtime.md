@@ -198,6 +198,16 @@ dependence, zero pivot guard trips over 1.2M row solves. Against the converged l
 8.94 s, exact **5.96 s** at fitted rates (log 8.35 / linear 5.72 / exact 4.71 at a flat theta).
 500-family fit: **231 s** (linear 305 s, log 365 s), 499/500 converged. 40 families: 29 s.
 
+**Full dataset with the exact forward (job full_v9exact, main partition): 1101 s**, NLL 9048938.42 bits
+(the lowest so far, 18 bits below the first-round value), 5119/5123 converged (4 unconverged, worst
+projected gradient 3.6), 220 Newton steps. Split: warm-up 162 s, Newton gradients 570 s, curvature
+118 s (15 exact refreshes), verification 66 s (58 rounds), certificate 19 s, re-plans 19 s, first build
+19 s; the two tiers' tails (1-4 live families iterating to the 120-iteration cap) take most of the
+rest. Full-scale gradient: 36 s (was 58 s at the start of the second round, 54 s at fitted rates).
+Per-gradient profile at fitted rates (500 families, 6.05 s): adjoint Neumann series 17 %, exact forward
+16 %, prepare-VJP kernel 16 %, transfer-subtree VJP 12 %, gene-split VJP 7 %, DTS forward 7 %,
+index_add 6 %, log-space prologue 6 %, receiver VJP 5 %.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
