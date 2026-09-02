@@ -102,9 +102,10 @@ def solve_resident_e_pi(
         accumulator_dtype=accumulator_dtype,
         self_loop_mode=solver_options.forward_self_loop,
         linear_tol=solver_options.pi_linear_tol,
-        # Per-row iteration counts are a benchmarking probe, not production state; the
-        # benchmark wraps ``pi_wave_forward`` to pass its own tensor.
+        # Per-row iteration counts and exact-solve pivot-guard counts are benchmarking probes,
+        # not production state; the benchmark wraps ``pi_wave_forward`` to pass its own tensors.
         linear_iterations_out=None,
+        exact_guard_trips_out=None,
         # E-only fraction-missing (AleRax v1.4.0 model): fraction-missing enters
         # ONLY the extinction E-step above; the Pi/reconciliation numerator gets
         # no fraction-missing leaf term, so None here (never `static.leaf_fm_log`).

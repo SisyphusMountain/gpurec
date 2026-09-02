@@ -63,6 +63,14 @@ class SolverOptions:
     #               one scale per row rather than one exponent per lane. Only reachable with the
     #               loss rate pinned at the box floor together with a high transfer rate; see
     #               _fused_linear_pi_self_loop_kernel's "KNOWN LIMIT".
+    #   "exact"  -- one fused kernel launch per wave that SOLVES the fixed point instead of
+    #               iterating it. Every Pi entry is a likelihood, so the `max` in the transfer
+    #               complement is never active and the fixed point is a linear system on the
+    #               species tree; the kernel eliminates it with a leaves-to-root pass, one scalar
+    #               equation for the row's total transfer mass, and a root-to-leaves pass. Its
+    #               answer is what "log" converges to as `pi_iters` grows, so `pi_iters` does not
+    #               affect it (beyond the one- or two-step log-space prologue all three modes
+    #               share) and there is nothing for `pi_linear_tol` to stop.
     forward_self_loop: str = "linear"
     # Stopping test for the "linear" self-loop, applied per clade row: the row stops once EVERY
     # species lane has settled relative to ITSELF, |p_new[s] - p[s]| <= pi_linear_tol * p_new[s],
@@ -90,7 +98,7 @@ class SolverOptions:
             raise ValueError("adjoint_pruning_threshold must be non-negative")
         if float(self.pibar_side_threshold) < 0.0:
             raise ValueError("pibar_side_threshold must be non-negative")
-        if self.forward_self_loop not in ("log", "linear"):
-            raise ValueError('forward_self_loop must be "log" or "linear"')
+        if self.forward_self_loop not in ("log", "linear", "exact"):
+            raise ValueError('forward_self_loop must be "log", "linear" or "exact"')
         if float(self.pi_linear_tol) < 0.0:
             raise ValueError("pi_linear_tol must be non-negative")

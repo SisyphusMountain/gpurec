@@ -3,18 +3,24 @@ import torch
 from ..pi_state import PiState
 from ..kernels.pi_forward import (
     compute_dts_forward,
+    compute_exact_tree_self_loop,
     compute_fused_linear_self_loop,
     compute_leaf_initial_wave_step,
     compute_wave_step,
+    _EXACT_TREE_SCRATCH_SLOTS,
     _select_log_split_probs,
 )
 from ..parameters.extract_parameters import as_family_param, as_family_species
 
-# The two self-loop implementations selectable through ``SolverOptions.forward_self_loop``.
+# The three self-loop implementations selectable through ``SolverOptions.forward_self_loop``.
 # "log": one ``compute_wave_step`` launch per fixed-point iteration, arithmetic in log2 space.
 # "linear": the same recurrence, but one ``compute_fused_linear_self_loop`` launch runs every
 # remaining iteration per row in scaled linear space with a per-row early exit.
-SELF_LOOP_MODES = ("log", "linear")
+# "exact": one ``compute_exact_tree_self_loop`` launch SOLVES the fixed point instead of
+# iterating it (the ``max`` in the transfer complement is never active, so the fixed point is a
+# linear system on the species tree). Its answer is what "log" converges to as ``pi_iters`` grows,
+# so ``pi_iters`` has no effect on it beyond the shared log-space prologue below.
+SELF_LOOP_MODES = ("log", "linear", "exact")
 
 
 def _linear_event_multipliers(
@@ -85,6 +91,49 @@ def _valid_receiver_index_tables(species_start, species_end, species_count):
     )
 
 
+def _exact_tree_coefficients(
+    duplication_loss_const,
+    extinction_complement,
+    extinction,
+    max_transfer,
+    receiver_log_probs,
+    use_receiver_weights,
+    accumulator_dtype,
+):
+    """The two extra per-species linear coefficients the exact tree solve needs.
+
+    Both are per ``[family, species]``, the same layout as the multipliers above, so one build per
+    forward solve serves every wave.
+
+    ``transfer_coefficient[s] = 2**E[s] * 2**max_transfer[s]`` is what multiplies the transfer
+    mass still available to species ``s`` (the row total minus s and its ancestors).
+
+    ``self_diagonal[s] = 1 - 2**(1 + log_pD[s] + E[s]) - 2**Ebar[s]
+                           + transfer_coefficient[s] * recv[s]``
+    is the coefficient of ``p[s]`` in the fixed-point equation once the transfer term has been
+    written as ``transfer_coefficient[s] * (T - y[s] - recv[s] p[s])``. The two subtracted terms
+    are the probability of the gene staying in species ``s``, so ``1 - (them)`` is the only
+    cancellation in the whole solve; it is evaluated in the accumulator dtype and only then
+    rounded to the model dtype, which keeps the subtraction's relative error at the accumulator's
+    resolution rather than the model dtype's.
+    """
+    dl = torch.exp2(duplication_loss_const.to(accumulator_dtype))
+    ebar = torch.exp2(extinction_complement.to(accumulator_dtype))
+    transfer_coefficient = torch.exp2(extinction.to(accumulator_dtype)) * torch.exp2(
+        max_transfer.to(accumulator_dtype)
+    )
+    if use_receiver_weights:
+        weight = torch.exp2(receiver_log_probs.to(accumulator_dtype))
+    else:
+        weight = torch.ones_like(receiver_log_probs, dtype=accumulator_dtype)
+    self_diagonal = 1.0 - dl - ebar + transfer_coefficient * weight
+    dtype = duplication_loss_const.dtype
+    return (
+        self_diagonal.to(dtype).contiguous(),
+        transfer_coefficient.to(dtype).contiguous(),
+    )
+
+
 def pi_wave_forward(
     wave_layout,
     species_helpers,
@@ -106,6 +155,7 @@ def pi_wave_forward(
     self_loop_mode: str,
     linear_tol: float,
     linear_iterations_out: torch.Tensor | None,
+    exact_guard_trips_out: torch.Tensor | None,
 ):
     pi_iters = int(pi_iters)
     if pi_iters < 2 or pi_iters % 2 != 0:
@@ -160,7 +210,8 @@ def pi_wave_forward(
     sl2_const = log_p_s_family + e_s1_family
 
     use_linear_self_loop = self_loop_mode == "linear"
-    if use_linear_self_loop:
+    use_exact_self_loop = self_loop_mode == "exact"
+    if use_linear_self_loop or use_exact_self_loop:
         (
             dl_lin,
             e_bar_lin,
@@ -182,10 +233,34 @@ def pi_wave_forward(
         max_wave_rows = max(
             (int(meta["W"]) for meta in wave_layout["wave_metas"]), default=1
         )
+    if use_linear_self_loop:
         # Four slots, one allocation reused by every wave: 0 and 1 ping-pong the iterate (the
         # update is Jacobi, so a source and a destination row are both live), 2 and 3 hold the two
         # running sums the valid receiver mass is built from.
         linear_scratch = torch.empty((4, max_wave_rows, S), dtype=dtype, device=device)
+    if use_exact_self_loop:
+        self_diag_lin, transfer_coefficient_lin = _exact_tree_coefficients(
+            dl_const,
+            e_bar_family,
+            e_family,
+            max_transfer_family,
+            receiver_log_probs,
+            use_receiver_weights,
+            accumulator_dtype,
+        )
+        # Four slots: the elimination's two affine coefficients per species plus two working
+        # arrays (see ``_exact_tree_pi_self_loop_kernel``'s slot table).
+        exact_scratch = torch.empty(
+            (_EXACT_TREE_SCRATCH_SLOTS, max_wave_rows, S), dtype=dtype, device=device
+        )
+        compact_level_ptr = species_helpers["compact_level_ptr"]
+        compact_level_parents = species_helpers["compact_level_parents"]
+        compact_level_child1 = species_helpers["compact_level_child1"]
+        compact_level_child2 = species_helpers["compact_level_child2"]
+
+    # The log-space prologue never publishes the wave's final state when a one-launch self-loop
+    # takes over afterwards; ``-1`` is a local iteration index no prologue step can reach.
+    final_log_iter = -1 if use_exact_self_loop else pi_iters - 1
 
     for meta in wave_layout["wave_metas"]:
         ws = meta["start"]
@@ -231,6 +306,12 @@ def pi_wave_forward(
             if pi_iters - candidate_prologue >= 1:
                 prologue_iters = candidate_prologue
                 fused_iters = pi_iters - candidate_prologue
+        elif use_exact_self_loop:
+            # Same prologue as "linear": the leaf initializer for a leaf wave, and for a split
+            # wave the gene-split-input step, which is what publishes ``dts_center_offset`` (the
+            # DTS row's absolute maximum, part of the exact solve's entry gauge). ``pi_iters``
+            # plays no other role here -- the solve is not an iteration.
+            prologue_iters = 1 if has_leaf_term else 2
         for local_iter in range(prologue_iters):
             pi_in = pi if (local_iter % 2 == 0) else pibar
             pi_in_offset = pi_offset if (local_iter % 2 == 0) else pibar_offset
@@ -292,12 +373,12 @@ def pi_wave_forward(
                     leaf_logp=log_p_s_family,
                     family_idx=family_idx,
                     pibar_row_max=uniform_pibar_row_max,
-                    store_final_pibar=local_iter == pi_iters - 1,
+                    store_final_pibar=local_iter == final_log_iter,
                     has_leaf_term=has_leaf_term,
                     input_ws=step_input_ws,
                     use_receiver_weights=use_receiver_weights,
                     pi_residual_out=(
-                        pi_residual_out if local_iter == pi_iters - 1 else None
+                        pi_residual_out if local_iter == final_log_iter else None
                     ),
                     leaf_fm_log=leaf_fm_log,
                 )
@@ -341,6 +422,47 @@ def pi_wave_forward(
                 use_receiver_weights=use_receiver_weights,
                 pi_residual_out=pi_residual_out,
                 iterations_used=linear_iterations_out,
+                leaf_fm_log=leaf_fm_log,
+            )
+        if use_exact_self_loop:
+            # Same handover as the linear path: the prologue's last write lands in ``pibar`` for a
+            # leaf wave (iteration 0) and in ``pi`` for a split wave (iteration 1).
+            exact_input = pibar if has_leaf_term else pi
+            exact_input_offset = pibar_offset if has_leaf_term else pi_offset
+            compute_exact_tree_self_loop(
+                exact_input,
+                exact_input_offset,
+                pi,
+                pi_offset,
+                pibar,
+                pibar_offset,
+                exact_scratch,
+                ws,
+                W,
+                S,
+                self_diag_lin,
+                transfer_coefficient_lin,
+                sl1_lin,
+                sl2_lin,
+                max_transfer_lin,
+                receiver_lin,
+                sp_child1,
+                sp_child2,
+                compact_level_ptr,
+                compact_level_parents,
+                compact_level_child1,
+                compact_level_child2,
+                dts_r,
+                dts_offset,
+                dts_center_offset,
+                leaf_species_idx=wave_layout["leaf_species_index"],
+                leaf_logp=log_p_s_family,
+                family_idx=family_idx,
+                pibar_row_max=uniform_pibar_row_max,
+                has_leaf_term=has_leaf_term,
+                use_receiver_weights=use_receiver_weights,
+                pi_residual_out=pi_residual_out,
+                guard_trips_out=exact_guard_trips_out,
                 leaf_fm_log=leaf_fm_log,
             )
 
