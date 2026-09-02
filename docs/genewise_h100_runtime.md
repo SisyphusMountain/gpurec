@@ -219,6 +219,12 @@ terms; one gradient at 500 families 5.99 s to 5.15 s at fitted rates; the pi=64/
 verification pass costs the same as a normal gradient (series at 256 terms: 12.5 s); 40-family fit
 18 s with both exact solves.
 
+**Unconverged tail safety (commit 69a93ced).** In one 500-family run with the exact adjoint, a single
+knife-edge family that never certifies (projected gradient 2 vs 256 at the end in the two runs) ended
+127 bits worse because a 0.4 %-level change in its gradient sent its trajectory elsewhere. The recipe
+now tracks each family's best NLL over every evaluated iterate and returns that theta for the families
+that run out of iterations; certified families are unaffected.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
