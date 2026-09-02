@@ -164,6 +164,7 @@ def implicit_grad_loglik_vjp_wave(
     specieswise: bool = False,
     genewise: bool = False,
     neumann_terms: int | None = None,
+    neumann_term_tol: float | None = None,
     e_adjoint_max_iter: int | None = None,
     e_adjoint_tol=None,
     adjoint_pruning_threshold: float | None = None,
@@ -186,6 +187,11 @@ def implicit_grad_loglik_vjp_wave(
     neumann_terms = int(neumann_terms)
     if neumann_terms < 0:
         raise ValueError("neumann_terms must be non-negative")
+    if neumann_term_tol is None:
+        neumann_term_tol = SolverOptions().neumann_term_tol
+    neumann_term_tol = float(neumann_term_tol)
+    if neumann_term_tol < 0.0:
+        raise ValueError("neumann_term_tol must be non-negative")
     if e_adjoint_max_iter is None:
         e_adjoint_max_iter = SolverOptions().e_adjoint_max_iter
     if adjoint_pruning_threshold is None:
@@ -349,6 +355,7 @@ def implicit_grad_loglik_vjp_wave(
             sp_child2,
             None,
             neumann_terms=neumann_terms,
+            neumann_term_tol=neumann_term_tol,
             leaf_species_idx=leaf_species_idx,
             leaf_logp=log_pS_family,
             # E-only fraction-missing (AleRax v1.4.0 model): the Pi backward gets

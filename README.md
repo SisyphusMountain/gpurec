@@ -111,7 +111,12 @@ The most important controls are:
 - `e_max_iter`, `e_tol`, `e_init`: resident `E` fixed-point solve.
 - `pi_iters`: number of Pi/Pibar wave iterations.  It must be an even integer
   at least 2.
-- `neumann_terms`: number of Neumann-series terms used in the wave self-loop.
+- `neumann_terms`: maximum number of Neumann-series terms used in the wave self-loop.
+- `neumann_term_tol`: early-exit threshold for that series. Each row block stops
+  once its largest remaining term is at or below
+  `neumann_term_tol * (that block's largest |adjoint|)`. The default 1e-7 sits
+  just below the float32 unit roundoff, so the dropped tail is smaller than the
+  rounding already in the sum. Set to `0.0` to always run `neumann_terms`.
 - `e_adjoint_max_iter`, `e_adjoint_tol`: implicit E-adjoint linear-solve
   controls (Neumann series).
 - `use_adjoint_pruning`, `adjoint_pruning_threshold`: skip low-signal adjoint

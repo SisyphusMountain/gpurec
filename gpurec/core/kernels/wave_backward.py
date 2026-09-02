@@ -19,6 +19,7 @@ from gpurec.core.kernels.wave_backward_kernels import (
     _select_active_adjoint_rows_kernel,
     _prepare_reconciliation_self_loop_vjp_kernel,
     _apply_reconciliation_self_loop_transpose_kernel,
+    _reconciliation_self_loop_transpose_series_kernel,
     _accumulate_transfer_receiver_log_probability_vjp_kernel,
     _accumulate_reconciliation_event_vjp_kernel,
     _accumulate_gene_split_event_vjp_kernel,
@@ -36,6 +37,40 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 _NUM_WARPS_PREPARE_SELF_LOOP_VJP = 8
 _NUM_WARPS_SELF_LOOP_TRANSPOSE = 2
 _NUM_WARPS_TRANSFER_SUBTREE_VJP = 4
+
+# Debug instrumentation for the fused Neumann-series kernel, off in production.
+# When switched on with ``set_neumann_term_stat_collection(True)`` every wave's
+# self-loop solve appends a [W] int32 tensor to ``_NEUMANN_TERM_COUNTS`` holding
+# the number of Neumann terms each row block actually ran before its early exit.
+# A module-level switch (not a function argument or an environment variable) so
+# the production call path keeps its exact signature and costs nothing.
+_COLLECT_NEUMANN_TERM_STATS = False
+_NEUMANN_TERM_COUNTS = []
+
+# A/B switch between the fused Neumann-series kernel (production) and the historical
+# one-launch-per-term reference loop. Only benchmark/cc/test_neumann_exit.py flips it,
+# to show the two agree bit for bit at neumann_term_tol=0.
+_USE_FUSED_NEUMANN_SERIES = True
+
+
+def set_fused_neumann_series(enabled):
+    """Choose the fused series kernel (True) or the per-term reference loop (False)."""
+    global _USE_FUSED_NEUMANN_SERIES
+    _USE_FUSED_NEUMANN_SERIES = bool(enabled)
+
+
+def set_neumann_term_stat_collection(enabled):
+    """Turn per-row Neumann-term counting on or off and clear any counts held."""
+    global _COLLECT_NEUMANN_TERM_STATS
+    _COLLECT_NEUMANN_TERM_STATS = bool(enabled)
+    _NEUMANN_TERM_COUNTS.clear()
+
+
+def take_neumann_term_counts():
+    """Return and clear the per-wave [W] int32 term counts collected so far."""
+    counts = list(_NEUMANN_TERM_COUNTS)
+    _NEUMANN_TERM_COUNTS.clear()
+    return counts
 
 
 def _tl_float_dtype(dtype):
@@ -212,6 +247,7 @@ def _solve_reconciliation_wave_vjp_2d(
     species_child1, species_child2, leaf_term_wt,
     *,
     neumann_terms,
+    neumann_term_tol,
     leaf_species_idx,
     leaf_logp,
     leaf_fm_log,
@@ -360,8 +396,13 @@ def _solve_reconciliation_wave_vjp_2d(
     )
     speciation_child1_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
     speciation_child2_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
-    spec_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
-    term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+    # One [2, W, S] allocation instead of two [W, S] ones (same total bytes): the
+    # fused series kernel ping-pongs the two Neumann term buffers by adding an
+    # integer offset of 0 or W*S to a single base pointer, which Triton can carry
+    # through a while loop (a pointer swap it cannot).
+    term_pair = torch.empty((2, W, S), device=device, dtype=dtype)
+    spec_buf = term_pair[0]
+    term_buf = term_pair[1]
     subtree_donor_adjoint = torch.empty(scratch_shape, device=device, dtype=dtype)
 
     if pibar_row_max is None:
@@ -447,53 +488,28 @@ def _solve_reconciliation_wave_vjp_2d(
         num_warps=_NUM_WARPS_PREPARE_SELF_LOOP_VJP,
     )
 
-    jt_options = {"num_warps": 2}
     if initial_v is not None:
+        # Warm start: the series then iterates the fixed point v <- rhs + J^T v
+        # from this v instead of summing Neumann terms from scratch.
         if tuple(initial_v.shape) != scratch_shape:
             raise ValueError(
                 f"initial_v shape {tuple(initial_v.shape)} does not match "
                 f"wave scratch shape {scratch_shape}"
             )
         v_k.copy_(initial_v.contiguous())
-        for _n in range(int(neumann_terms)):
-            _apply_reconciliation_self_loop_transpose_kernel[(n_row_blocks,)](
-                v_k,
-                spec_buf,
-                rhs,
-                active_mask if active_mask is not None else rhs,
-                self_loop_diagonal,
-                donor_adjoint_coefficient,
-                receiver_mass,
-                speciation_child1_probability,
-                speciation_child2_probability,
-                species_child1,
-                species_child2,
-                species_parent,
-                compact_level_ptr,
-                compact_level_parents,
-                compact_level_child1,
-                compact_level_child2,
-                subtree_donor_adjoint,
-                v_k,
-                W,
-                S,
-                block_w,
-                block_s,
-                block_nodes,
-                compact_level_ptr.numel() - 1,
-                USE_ACTIVE_MASK=bool(active_mask is not None),
-                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-                FIXED_POINT_UPDATE=True,
-                DTYPE=_tl_float_dtype(dtype),
-                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-                OUTPUT_A=False,
-                ACCUMULATE_V=True,
-                num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
-            )
-    else:
+
+    jt_options = {"num_warps": 2}
+    if int(neumann_terms) > 0 and not _USE_FUSED_NEUMANN_SERIES:
+        # Reference path: one launch per Neumann term, no early exit. Kept only so
+        # benchmark/cc/test_neumann_exit.py can show the fused kernel below repro-
+        # duces it bit for bit; production never takes this branch.
         for n in range(int(neumann_terms)):
-            term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
-            term_out = spec_buf if n % 2 == 0 else term_buf
+            if initial_v is not None:
+                term_in = v_k
+                term_out = spec_buf
+            else:
+                term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
+                term_out = spec_buf if n % 2 == 0 else term_buf
             _apply_reconciliation_self_loop_transpose_kernel[(n_row_blocks,)](
                 term_in,
                 term_out,
@@ -521,14 +537,70 @@ def _solve_reconciliation_wave_vjp_2d(
                 compact_level_ptr.numel() - 1,
                 USE_ACTIVE_MASK=bool(active_mask is not None),
                 SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-                FIXED_POINT_UPDATE=False,
+                FIXED_POINT_UPDATE=bool(initial_v is not None),
                 DTYPE=_tl_float_dtype(dtype),
                 USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
                 OUTPUT_A=False,
                 ACCUMULATE_V=True,
                 num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
             )
-
+        if return_last_increment and initial_v is None:
+            # The reference path leaves the final term in whichever buffer the
+            # launch parity picked; mirror it where the diagnostic below looks.
+            if (int(neumann_terms) - 1) % 2 != 0:
+                spec_buf.copy_(term_buf)
+    elif int(neumann_terms) > 0:
+        # One launch for the WHOLE Neumann series (was one launch per term). Each
+        # program runs its row block's terms in-kernel and stops as soon as the
+        # block's largest remaining term is at or below
+        # neumann_term_tol * (block max |v_k|). The self-loop operator is a
+        # strong contraction (spectral radius ~0.04), so the tail terms are below
+        # float32 resolution and the launches that carried them did no useful work.
+        collect_terms = _COLLECT_NEUMANN_TERM_STATS
+        terms_taken = (
+            torch.zeros((W,), device=device, dtype=torch.int32)
+            if collect_terms
+            else compact_level_ptr
+        )
+        write_last_term = bool(return_last_increment and initial_v is None)
+        _reconciliation_self_loop_transpose_series_kernel[(n_row_blocks,)](
+            rhs,
+            term_pair,
+            active_mask if active_mask is not None else rhs,
+            self_loop_diagonal,
+            donor_adjoint_coefficient,
+            receiver_mass,
+            speciation_child1_probability,
+            speciation_child2_probability,
+            species_child1,
+            species_child2,
+            species_parent,
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+            subtree_donor_adjoint,
+            v_k,
+            terms_taken,
+            float(neumann_term_tol),
+            int(neumann_terms),
+            W,
+            S,
+            block_w,
+            block_s,
+            block_nodes,
+            compact_level_ptr.numel() - 1,
+            USE_ACTIVE_MASK=bool(active_mask is not None),
+            SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
+            FIXED_POINT_UPDATE=bool(initial_v is not None),
+            DTYPE=_tl_float_dtype(dtype),
+            USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+            COLLECT_TERMS=bool(collect_terms),
+            WRITE_LAST_TERM=write_last_term,
+            num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
+        )
+        if collect_terms:
+            _NEUMANN_TERM_COUNTS.append(terms_taken)
     # Per-row relative size of the last Neumann increment = validated stiffness predictor.
     # Computed before the param-store kernel runs (which may reuse scratch buffers).
     last_increment_relres = None
@@ -537,7 +609,9 @@ def _solve_reconciliation_wave_vjp_2d(
         and initial_v is None
         and int(neumann_terms) > 0
     ):
-        last_buf = spec_buf if (int(neumann_terms) - 1) % 2 == 0 else term_buf
+        # The series kernel mirrors each row's final term into term_pair[0]
+        # (= spec_buf) whatever term it stopped at, so no parity bookkeeping.
+        last_buf = spec_buf
         positive_floor = torch.finfo(torch.float32).tiny
         last_increment_norm = last_buf.float().norm(dim=1)
         adjoint_norm = v_k.float().norm(dim=1).clamp_min(positive_floor)
@@ -700,6 +774,7 @@ def solve_reconciliation_wave_vjp(
     return_last_increment=False,
     reserved_scratch_bytes=None,
     *,
+    neumann_term_tol,
     pi_offset,
     pibar_offset,
     gene_split_offset=None,
@@ -718,7 +793,10 @@ def solve_reconciliation_wave_vjp(
             [S], [W, S], or [G, S] when family_indexed_consts=True
         species_child1, species_child2: [S] long
         leaf_term_wt: [W, S]
-        neumann_terms: int
+        neumann_terms: int, the maximum number of Neumann terms
+        neumann_term_tol: stop a row block's series once its largest remaining
+            term is <= neumann_term_tol * (that block's max |v_k|).
+            0.0 disables the early exit (full ``neumann_terms`` every row).
         leaf_species_idx: optional [C] row -> species leaf index, -1 for non-leaves
         leaf_logp: optional [S], [G], or [G, S] log_pS values used with
             leaf_species_idx
@@ -789,6 +867,7 @@ def solve_reconciliation_wave_vjp(
         species_child2,
         leaf_term_wt,
         neumann_terms=neumann_terms,
+        neumann_term_tol=neumann_term_tol,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
         leaf_fm_log=leaf_fm_log,

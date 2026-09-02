@@ -331,11 +331,9 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
 
 
 @triton.jit
-def _apply_reconciliation_self_loop_transpose_kernel(
+def _reconciliation_self_loop_transpose_term(
     term_in_ptr,
     term_out_ptr,
-    rhs_update_ptr,
-    active_mask_ptr,
     self_loop_diagonal_ptr,
     donor_adjoint_coefficient_ptr,
     receiver_mass_ptr,
@@ -349,41 +347,27 @@ def _apply_reconciliation_self_loop_transpose_kernel(
     compact_level_child1_ptr,
     compact_level_child2_ptr,
     subtree_donor_adjoint_ptr,
-    v_k_ptr,
-    W,
+    rows,
+    s_offs,
+    offsets,
+    mask,
+    store_mask,
+    row_mask,
+    species_valid,
     S: tl.constexpr,
     BLOCK_W: tl.constexpr,
     BLOCK_S: tl.constexpr,
     BLOCK_NODES: tl.constexpr,
     N_LEVELS: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
-    SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
-    FIXED_POINT_UPDATE: tl.constexpr,
     DTYPE: tl.constexpr,
     USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
-    OUTPUT_A: tl.constexpr,
-    ACCUMULATE_V: tl.constexpr,
 ):
-    """Apply one self-loop J^T term using in-program bottom-up tree reduction."""
-    # int64: rows range over the whole batch's clade rows, so the *S address
-    # arithmetic below can overflow int32 once total_clades * S exceeds 2^31.
-    block = tl.program_id(0).to(tl.int64)
-    rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
-    s_offs = tl.arange(0, BLOCK_S)
-    row_valid = rows < W
-    species_valid = s_offs < S
-    if USE_ACTIVE_MASK:
-        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
-    else:
-        row_active = row_valid
-    row_mask = row_valid & row_active
-    mask = species_valid[:, None] & row_mask[None, :]
-    if SKIP_INACTIVE_SCRATCH_ZERO:
-        store_mask = mask
-    else:
-        store_mask = species_valid[:, None] & row_valid[None, :]
-    offsets = rows[None, :] * S + s_offs[:, None]
+    """One J^T application on this program's row block.
 
+    Shared verbatim by the single-term kernel and by the fused Neumann-series
+    kernel so both do the same arithmetic in the same order. Returns the tile
+    read from ``term_in_ptr`` and the tile ``J^T @ that``.
+    """
     input_adjoint = tl.load(term_in_ptr + offsets, mask=mask, other=0.0)
     donor_adjoint_coefficient = tl.load(donor_adjoint_coefficient_ptr + offsets, mask=mask, other=0.0)
     donor_adjoint = input_adjoint * donor_adjoint_coefficient
@@ -506,6 +490,95 @@ def _apply_reconciliation_self_loop_transpose_kernel(
             term_out_ptr + offsets, mask=mask, other=0.0
         )
 
+    return input_adjoint, self_loop_vjp
+
+
+@triton.jit
+def _apply_reconciliation_self_loop_transpose_kernel(
+    term_in_ptr,
+    term_out_ptr,
+    rhs_update_ptr,
+    active_mask_ptr,
+    self_loop_diagonal_ptr,
+    donor_adjoint_coefficient_ptr,
+    receiver_mass_ptr,
+    speciation_child1_probability_ptr,
+    speciation_child2_probability_ptr,
+    species_child1_ptr,
+    species_child2_ptr,
+    species_parent_ptr,
+    compact_level_ptr,
+    compact_level_parent_ptr,
+    compact_level_child1_ptr,
+    compact_level_child2_ptr,
+    subtree_donor_adjoint_ptr,
+    v_k_ptr,
+    W,
+    S: tl.constexpr,
+    BLOCK_W: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    BLOCK_NODES: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
+    FIXED_POINT_UPDATE: tl.constexpr,
+    DTYPE: tl.constexpr,
+    USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
+    OUTPUT_A: tl.constexpr,
+    ACCUMULATE_V: tl.constexpr,
+):
+    """Apply one self-loop J^T term using in-program bottom-up tree reduction."""
+    # int64: rows range over the whole batch's clade rows, so the *S address
+    # arithmetic below can overflow int32 once total_clades * S exceeds 2^31.
+    block = tl.program_id(0).to(tl.int64)
+    rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
+    s_offs = tl.arange(0, BLOCK_S)
+    row_valid = rows < W
+    species_valid = s_offs < S
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    else:
+        row_active = row_valid
+    row_mask = row_valid & row_active
+    mask = species_valid[:, None] & row_mask[None, :]
+    if SKIP_INACTIVE_SCRATCH_ZERO:
+        store_mask = mask
+    else:
+        store_mask = species_valid[:, None] & row_valid[None, :]
+    offsets = rows[None, :] * S + s_offs[:, None]
+
+    input_adjoint, self_loop_vjp = _reconciliation_self_loop_transpose_term(
+        term_in_ptr,
+        term_out_ptr,
+        self_loop_diagonal_ptr,
+        donor_adjoint_coefficient_ptr,
+        receiver_mass_ptr,
+        speciation_child1_probability_ptr,
+        speciation_child2_probability_ptr,
+        species_child1_ptr,
+        species_child2_ptr,
+        species_parent_ptr,
+        compact_level_ptr,
+        compact_level_parent_ptr,
+        compact_level_child1_ptr,
+        compact_level_child2_ptr,
+        subtree_donor_adjoint_ptr,
+        rows,
+        s_offs,
+        offsets,
+        mask,
+        store_mask,
+        row_mask,
+        species_valid,
+        S,
+        BLOCK_W,
+        BLOCK_S,
+        BLOCK_NODES,
+        N_LEVELS,
+        DTYPE,
+        USE_CHILD_EDGE_SELF_LOOP,
+    )
+
     operator_output = (
         input_adjoint - self_loop_vjp if OUTPUT_A else self_loop_vjp
     )
@@ -525,6 +598,279 @@ def _apply_reconciliation_self_loop_transpose_kernel(
     elif ACCUMULATE_V:
         v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0)
         tl.store(v_k_ptr + offsets, v_prev + self_loop_vjp, mask=mask)
+
+
+@triton.jit
+def _reconciliation_self_loop_transpose_series_kernel(
+    rhs_ptr,
+    term_pair_ptr,
+    active_mask_ptr,
+    self_loop_diagonal_ptr,
+    donor_adjoint_coefficient_ptr,
+    receiver_mass_ptr,
+    speciation_child1_probability_ptr,
+    speciation_child2_probability_ptr,
+    species_child1_ptr,
+    species_child2_ptr,
+    species_parent_ptr,
+    compact_level_ptr,
+    compact_level_parent_ptr,
+    compact_level_child1_ptr,
+    compact_level_child2_ptr,
+    subtree_donor_adjoint_ptr,
+    v_k_ptr,
+    terms_taken_ptr,
+    term_tol,
+    max_terms,
+    W,
+    S: tl.constexpr,
+    BLOCK_W: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    BLOCK_NODES: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
+    FIXED_POINT_UPDATE: tl.constexpr,
+    DTYPE: tl.constexpr,
+    USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
+    COLLECT_TERMS: tl.constexpr,
+    WRITE_LAST_TERM: tl.constexpr,
+):
+    """Whole Neumann series for one row block in a single launch.
+
+    Every term calls the same device function the single-term kernel calls, so
+    the arithmetic and its per-element order are unchanged; only the loop moved
+    from the host into the kernel. A program stops as soon as its row block's
+    largest remaining term is at or below ``term_tol * (block max |v_k|)``, or
+    after ``max_terms`` terms.
+
+    The test is RELATIVE to the block's own adjoint, with no absolute floor. An
+    earlier version used ``term_tol * max(1, block max |v_k|)``; measured on the
+    40-family Coleman fit that floor turned the test absolute for the many rows
+    whose adjoint is far below 1, dropped terms those rows still needed, and cost
+    the Newton loop 42 steps instead of 25 (same final NLL, but 4 families left
+    uncertified). Purely relative, the dropped tail is a fixed fraction of each
+    row's own adjoint whatever its scale.
+
+    With ``term_tol == 0`` the test can only fire on an exactly-zero term, which
+    adds nothing to ``v_k`` and (the operator being linear) makes every later term
+    zero too, so the result is bit-identical to ``max_terms`` separate launches of
+    the single-term kernel.
+
+    ``term_pair_ptr`` points at a ``[2, W, S]`` scratch holding the two term
+    buffers. The ping-pong is an integer offset of 0 or ``W * S`` added to that one
+    base pointer, because Triton can carry an integer through a ``while`` loop but
+    not a swapped pointer.
+    """
+    # int64: rows range over the whole batch's clade rows, so the *S address
+    # arithmetic below can overflow int32 once total_clades * S exceeds 2^31.
+    block = tl.program_id(0).to(tl.int64)
+    rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
+    s_offs = tl.arange(0, BLOCK_S)
+    row_valid = rows < W
+    species_valid = s_offs < S
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    else:
+        row_active = row_valid
+    row_mask = row_valid & row_active
+    mask = species_valid[:, None] & row_mask[None, :]
+    if SKIP_INACTIVE_SCRATCH_ZERO:
+        store_mask = mask
+    else:
+        store_mask = species_valid[:, None] & row_valid[None, :]
+    offsets = rows[None, :] * S + s_offs[:, None]
+    # Distance between the two term buffers, in elements. It must be int64 for the
+    # same overflow reason as `offsets` above, and Triton hands `W` in as a plain
+    # Python int when it specializes the argument (no `.to()` on it), so widen an
+    # int64 value we already have and add W to that.
+    zero_offset = block * 0
+    buffer_stride = (zero_offset + W) * S
+
+    n_taken = 0
+    out_off = zero_offset
+    if FIXED_POINT_UPDATE:
+        # Warm branch: v_k is both the iterate and the operator input, so there is
+        # no ping-pong -- the first term buffer only holds the raw operator output.
+        running = 1
+        while running == 1:
+            input_adjoint, self_loop_vjp = _reconciliation_self_loop_transpose_term(
+                v_k_ptr,
+                term_pair_ptr,
+                self_loop_diagonal_ptr,
+                donor_adjoint_coefficient_ptr,
+                receiver_mass_ptr,
+                speciation_child1_probability_ptr,
+                speciation_child2_probability_ptr,
+                species_child1_ptr,
+                species_child2_ptr,
+                species_parent_ptr,
+                compact_level_ptr,
+                compact_level_parent_ptr,
+                compact_level_child1_ptr,
+                compact_level_child2_ptr,
+                subtree_donor_adjoint_ptr,
+                rows,
+                s_offs,
+                offsets,
+                mask,
+                store_mask,
+                row_mask,
+                species_valid,
+                S,
+                BLOCK_W,
+                BLOCK_S,
+                BLOCK_NODES,
+                N_LEVELS,
+                DTYPE,
+                USE_CHILD_EDGE_SELF_LOOP,
+            )
+            tl.store(
+                term_pair_ptr + offsets,
+                tl.where(mask, self_loop_vjp, tl.zeros_like(self_loop_vjp)),
+                mask=store_mask,
+            )
+            rhs_val = tl.load(rhs_ptr + offsets, mask=mask, other=0.0)
+            v_new = rhs_val + self_loop_vjp
+            tl.store(
+                v_k_ptr + offsets,
+                tl.where(mask, v_new, tl.zeros_like(self_loop_vjp)),
+                mask=store_mask,
+            )
+            # Warm-branch analogue of a Neumann term: how far the fixed-point
+            # iterate moved. No movement means the iteration has stopped.
+            increment = tl.where(mask, v_new - input_adjoint, tl.zeros_like(v_new))
+            increment_max = tl.max(tl.abs(increment))
+            v_max = tl.max(tl.abs(tl.where(mask, v_new, tl.zeros_like(v_new))))
+            n_taken += 1
+            if (n_taken >= max_terms) or (increment_max <= term_tol * v_max):
+                running = 0
+            tl.debug_barrier()
+    else:
+        # Cold branch. Term 0 reads the incoming adjoint and is peeled out of the
+        # loop so the loop never has to choose between two different base pointers;
+        # later terms ping-pong between the two halves of term_pair.
+        input_adjoint, self_loop_vjp = _reconciliation_self_loop_transpose_term(
+            rhs_ptr,
+            term_pair_ptr,
+            self_loop_diagonal_ptr,
+            donor_adjoint_coefficient_ptr,
+            receiver_mass_ptr,
+            speciation_child1_probability_ptr,
+            speciation_child2_probability_ptr,
+            species_child1_ptr,
+            species_child2_ptr,
+            species_parent_ptr,
+            compact_level_ptr,
+            compact_level_parent_ptr,
+            compact_level_child1_ptr,
+            compact_level_child2_ptr,
+            subtree_donor_adjoint_ptr,
+            rows,
+            s_offs,
+            offsets,
+            mask,
+            store_mask,
+            row_mask,
+            species_valid,
+            S,
+            BLOCK_W,
+            BLOCK_S,
+            BLOCK_NODES,
+            N_LEVELS,
+            DTYPE,
+            USE_CHILD_EDGE_SELF_LOOP,
+        )
+        tl.store(
+            term_pair_ptr + offsets,
+            tl.where(mask, self_loop_vjp, tl.zeros_like(self_loop_vjp)),
+            mask=store_mask,
+        )
+        v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0)
+        v_new = v_prev + self_loop_vjp
+        tl.store(v_k_ptr + offsets, v_new, mask=mask)
+        term_max = tl.max(
+            tl.abs(tl.where(mask, self_loop_vjp, tl.zeros_like(self_loop_vjp)))
+        )
+        v_max = tl.max(tl.abs(tl.where(mask, v_new, tl.zeros_like(v_new))))
+        n_taken = 1
+        running = 1
+        if (n_taken >= max_terms) or (term_max <= term_tol * v_max):
+            running = 0
+        tl.debug_barrier()
+        # out_off always names the half holding the newest term (buffer 0 so far),
+        # so it is still right if the loop below never runs.
+        in_off = zero_offset
+        while running == 1:
+            in_off = out_off
+            out_off = buffer_stride - out_off
+            input_adjoint, self_loop_vjp = _reconciliation_self_loop_transpose_term(
+                term_pair_ptr + in_off,
+                term_pair_ptr + out_off,
+                self_loop_diagonal_ptr,
+                donor_adjoint_coefficient_ptr,
+                receiver_mass_ptr,
+                speciation_child1_probability_ptr,
+                speciation_child2_probability_ptr,
+                species_child1_ptr,
+                species_child2_ptr,
+                species_parent_ptr,
+                compact_level_ptr,
+                compact_level_parent_ptr,
+                compact_level_child1_ptr,
+                compact_level_child2_ptr,
+                subtree_donor_adjoint_ptr,
+                rows,
+                s_offs,
+                offsets,
+                mask,
+                store_mask,
+                row_mask,
+                species_valid,
+                S,
+                BLOCK_W,
+                BLOCK_S,
+                BLOCK_NODES,
+                N_LEVELS,
+                DTYPE,
+                USE_CHILD_EDGE_SELF_LOOP,
+            )
+            tl.store(
+                term_pair_ptr + out_off + offsets,
+                tl.where(mask, self_loop_vjp, tl.zeros_like(self_loop_vjp)),
+                mask=store_mask,
+            )
+            v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0)
+            v_new = v_prev + self_loop_vjp
+            tl.store(v_k_ptr + offsets, v_new, mask=mask)
+            term_max = tl.max(
+                tl.abs(tl.where(mask, self_loop_vjp, tl.zeros_like(self_loop_vjp)))
+            )
+            v_max = tl.max(tl.abs(tl.where(mask, v_new, tl.zeros_like(v_new))))
+            n_taken += 1
+            if (n_taken >= max_terms) or (term_max <= term_tol * v_max):
+                running = 0
+            tl.debug_barrier()
+
+    if WRITE_LAST_TERM:
+        # The stiffness diagnostic on the host reads the FIRST half of term_pair,
+        # so mirror the final term there when the ping-pong left it in the second.
+        if out_off != zero_offset:
+            last_term = tl.load(
+                term_pair_ptr + out_off + offsets, mask=mask, other=0.0
+            )
+            tl.store(
+                term_pair_ptr + offsets,
+                tl.where(mask, last_term, tl.zeros_like(last_term)),
+                mask=store_mask,
+            )
+    if COLLECT_TERMS:
+        tl.store(
+            terms_taken_ptr + rows,
+            n_taken + tl.zeros([BLOCK_W], dtype=tl.int32),
+            mask=row_valid,
+        )
+
 
 
 @triton.jit

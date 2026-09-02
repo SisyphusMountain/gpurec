@@ -10,6 +10,19 @@ class SolverOptions:
     e_tol: float = 1e-8
     pi_iters: int = 64
     neumann_terms: int = 64
+    # Early-exit threshold for the wave self-loop Neumann series. Each row block
+    # stops as soon as its largest remaining term is at or below
+    # neumann_term_tol * (that block's largest |adjoint|) -- i.e. once the term can
+    # no longer move the accumulated adjoint at float32 resolution. The test is
+    # purely relative to each row's own adjoint: an absolute floor makes it far too
+    # loose for the many rows whose adjoint is well below 1, which are exactly the
+    # near-converged families the Newton loop is testing. The self-loop operator is
+    # a strong contraction (spectral radius ~0.04, so each term is ~25x smaller than
+    # the last), so this fires after ~6 terms and the rest of the 16/64-term budget
+    # did nothing. 1e-7 is just below the fp32 unit roundoff 1.19e-7, so the dropped
+    # tail is smaller than the rounding already present in the sum.
+    # Set to 0.0 to disable the exit and always run the full neumann_terms.
+    neumann_term_tol: float = 1e-7
     # Max iterations for the linear E-adjoint / GGN solve: a Neumann series
     # (:func:`gpurec.api._implicit_grad._neumann_e_adjoint`), valid because the
     # E-step self-map Jacobian is a contraction (the forward E fixed point
@@ -48,6 +61,8 @@ class SolverOptions:
             raise ValueError("pi_iters must be an even integer at least 2")
         if int(self.neumann_terms) < 0:
             raise ValueError("neumann_terms must be non-negative")
+        if float(self.neumann_term_tol) < 0.0:
+            raise ValueError("neumann_term_tol must be non-negative (0.0 disables the early exit)")
         if int(self.e_adjoint_max_iter) < 1:
             raise ValueError("e_adjoint_max_iter must be at least 1")
         if self.e_adjoint_tol is not None and float(self.e_adjoint_tol) <= 0.0:
