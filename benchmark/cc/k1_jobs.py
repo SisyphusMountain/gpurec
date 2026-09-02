@@ -56,7 +56,7 @@ def main() -> int:
         "$CC_PY -u benchmark/cc/test_linear_forward.py --species $CC_SPECIES "
         "--families $CC_FAMILIES --limit-compare 8 --limit-time 8 --clade-budget 315000 "
         "--pi-iters 16 --neumann-terms 16 --theta -6.0 --window 60 --reps 2 --dtype float64 "
-        "--fused-blocks 1024"
+        "--fused-blocks 256"
     )
     if args.job == "fit40":
         command = fit_command
