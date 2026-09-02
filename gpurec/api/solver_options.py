@@ -38,6 +38,20 @@ class SolverOptions:
     # JVP (`gpurec.solver.hvp.forward_tangent`). Distinct from `e_tol` (the primal
     # E-step fixed point).
     e_tangent_tol: float = 1e-9
+    # Which implementation runs the forward Pi self-loop inside a wave
+    # (`gpurec.core.inference.forward.SELF_LOOP_MODES`).
+    #   "linear" -- one fused kernel launch per wave; the fixed point is iterated in scaled
+    #               linear space (multiply-adds, no per-lane exp2/log2) with a per-row early
+    #               exit at `pi_linear_tol`. Same recurrence, same published log2 state.
+    #   "log"    -- the original one-launch-per-iteration log2-space path, kept selectable so
+    #               the two can be compared on identical inputs.
+    forward_self_loop: str = "linear"
+    # Relative stopping test for the "linear" self-loop, applied per clade row:
+    # stop once max_s |p_new[s] - p[s]| <= pi_linear_tol * max_s p_new[s], where p is the row's
+    # linear iterate. 1e-6 is fp32's usable relative floor (~8x eps 1.19e-7), the same target
+    # `dtype_rel_tol_default` uses for the other fp32 solves. 0.0 disables the early exit, so
+    # every row runs the full `pi_iters` count.
+    pi_linear_tol: float = 1e-6
 
     def validate(self) -> None:
         if int(self.e_max_iter) < 1:
@@ -56,3 +70,7 @@ class SolverOptions:
             raise ValueError("adjoint_pruning_threshold must be non-negative")
         if float(self.pibar_side_threshold) < 0.0:
             raise ValueError("pibar_side_threshold must be non-negative")
+        if self.forward_self_loop not in ("log", "linear"):
+            raise ValueError('forward_self_loop must be "log" or "linear"')
+        if float(self.pi_linear_tol) < 0.0:
+            raise ValueError("pi_linear_tol must be non-negative")

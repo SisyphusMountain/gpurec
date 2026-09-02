@@ -92,6 +92,9 @@ def test_pi_wave_forward_rejects_accumulator_narrower_than_residual() -> None:
             value.reshape(-1),
             family_idx=torch.zeros(1, device="cuda", dtype=torch.long),
             accumulator_dtype=torch.float32,
+            self_loop_mode="linear",
+            linear_tol=1e-6,
+            linear_iterations_out=None,
         )
 
 
