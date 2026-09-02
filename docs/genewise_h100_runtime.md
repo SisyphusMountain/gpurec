@@ -158,6 +158,12 @@ at a flat theta of -6. At fitted rates 88 % of clade rows use the full 14 forwar
 128-iteration cap for 12 of 13 batches (vs 6 iterations flat; the E loops themselves cost < 0.1 s).
 So the extra time is genuine iteration work at high rates, not synchronisation overhead.
 
+**Starting rates (commit ae204fc1).** `fit_dtl` now starts every family at D=0.01, L=0.1, T=0.01
+(relative to speciation) instead of all rates equal to 1.0; `fit_genewise` takes the start as a
+required keyword. On 500 families with the log-space forward this gave 365 s, NLL 1618463.31 bits
+(the two bimodal families land on their original branch), 499/500 converged, Adam 46 s — i.e. no
+measurable warm-up saving; kept as the more sensible start, control run pending.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
