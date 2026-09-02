@@ -42,7 +42,8 @@ res = gpurec.fit_genewise(
     str(DATASETS[DATASET]["species_tree"]), paths,
     min_rate=MIN_RATE, max_rate=MAX_RATE, pi_tiers=PIS, neu_opt=NEU_OPT, neu_cert=NEU_CERT,
     clade_budget=CLADE_BUDGET, adam_steps=ADAM, adam_lr=ADAM_LR, grad_clip=GRAD_CLIP,
-    tol=TOL, max_iter=MAXIT, certify=CERT, verbose=True,
+    tol=TOL, max_iter=MAXIT, min_drop=32, hessian_refresh=15,
+    certify=CERT, certify_curvature=CERT, verbose=True,   # certify_curvature: this driver prints interior_pd
 )
 total = time.perf_counter() - t0
 fit = res["opt_seconds"]; cert_s = total - fit

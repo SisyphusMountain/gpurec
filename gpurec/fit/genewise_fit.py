@@ -7,12 +7,17 @@ benchmarks; see ``kernel-bench/experiments/alerax_speed/OPTIMIZATION_PLAN.md``) 
 
   1. **Adam warm-up** -- a few large clipped steps (lr=1, grad-clip-norm 10) projected against the rate
      box, to enter the basin fast.
-  2. **Box-constrained trust-region Newton** on the per-family 3x3 **analytic-HVP** Hessian (3
-     broadcast unit-theta-component probes, warm-started across repeated rebuilds; eigenvalue-clamped
-     to ``mu`` -> PD), converging on the per-family projected gradient ``|Pg| < tol``.
-  3. **Convergence-based rebatching** -- once a fraction of the active batch has converged (verified at
-     the high pi/Neumann tier), those families are frozen and dropped and the model is rebuilt over the
-     survivors, so the long tail of hard families runs on a small batch.
+  2. **Box-constrained trust-region Newton** on the per-family 3x3 curvature matrix. The matrix is
+     the exact **analytic-HVP** Hessian (3 broadcast unit-theta-component probes) at the first Newton
+     iteration of each pi tier and again every ``hessian_refresh`` iterations; in between it is carried
+     forward per family by a **BFGS** update built from the step and the gradient change the family
+     actually took (see ``_bfgs_update``). Either way it is eigenvalue-clamped to ``mu`` -> PD before the
+     step. Converges on the per-family projected gradient ``|Pg| < tol``.
+  3. **Convergence-based rebatching** -- as soon as ``min_drop`` families (or ``drop_frac`` of the active
+     batch) look converged at the cheap tier, ONLY those candidates are re-checked cold at the high
+     pi/Neumann tier -- on a temporary model built over just them -- and the ones that pass are frozen
+     and dropped; the model is then rebuilt over the survivors, so the long tail of hard families runs
+     on a small batch and the accurate-tier gradient is never paid for a non-candidate.
   4. **pi-tier escalation** -- the bulk runs at a cheap forward pi (16) with the adjoint **warm-start**
      (``GPUREC_WARM_ADJOINT``, memory-gated automatically -- see ``gpurec.core.memory_policy``); only the
      forward-stiff families escalate to the accurate pi (64).
@@ -57,14 +62,23 @@ _BASE_SOLVER = {
 }
 
 # Reference recipe tuned for the standard genewise problem. Import and clone-override per dataset:
-#   fit_genewise(sp, genes, **{**GENEWISE_REFERENCE, "tol": 5e-4})
+#   fit_genewise(sp, genes, **{**GENEWISE_REFERENCE, "tol": 5e-4},
+#                min_drop=32, hessian_refresh=15, certify_curvature=False)
+# ``min_drop`` / ``hessian_refresh`` / ``certify_curvature`` have NO signature default (every caller
+# states them), so they are not part of this dict -- pass them alongside it, as above.
 # Per-dataset values belong in your experiment script, NOT edited here (see docs/config_convention.md).
 GENEWISE_REFERENCE = dict(
     adam_steps=5, adam_lr=1.0, grad_clip=10.0, pi_tiers=(16, 64), neu_opt=16, neu_cert=64,
-    clade_budget=None, tol=1e-3, max_iter=120, check_every=4, drop_frac=0.30, trust=2.0,
+    clade_budget=None, tol=1e-3, max_iter=120, check_every=2, drop_frac=0.05, trust=2.0,
     mu=1e-2, fwd_tol=1e-3, improve_frac=0.8, verify_drop=True, eager_defer=True,
     warm_adjoint=True, certify=False,
 )
+
+# BFGS curvature-condition floor: a family's 3x3 matrix is only updated when the step and the
+# gradient change point the same way, i.e. s.y > 1e-10 * |s| * |y|. Not a setting -- it is the
+# standard "skip the update rather than destroy positive-definiteness" guard, and the fit is
+# insensitive to its exact value (it only has to exclude s.y <= 0 and 0/0).
+_BFGS_CURVATURE_FLOOR = 1e-10
 
 
 def _resolve_gene_trees(spec) -> list[str]:
@@ -115,6 +129,39 @@ def _analytic_hessian(m, theta, pi_cur):
     return 0.5 * (H + H.transpose(1, 2))
 
 
+def _bfgs_update(B, s, y, free_both):
+    """Per-family BFGS refresh of the [G,3,3] curvature matrices ``B``. Returns the updated copy.
+
+    For one family, ``s`` is the step it just took (theta_new - theta_old) and ``y`` is the change in
+    its gradient over that same step (g_new - g_old). The secant condition says the curvature matrix
+    should map the step onto the gradient change (``B_new @ s = y``); the BFGS formula is the rank-2
+    correction that enforces it while staying symmetric and as close to ``B`` as possible:
+
+        B_new = B - (B s)(B s)^T / (s . B s)  +  y y^T / (y . s)
+
+    ``free_both`` is 1.0 on the coordinates that were strictly inside the rate box at BOTH iterates
+    and 0.0 elsewhere; ``s`` and ``y`` are zeroed there before the update, so a coordinate pinned at a
+    bound (whose step was cut by the projection, not by curvature) cannot inject bogus curvature. The
+    two correction terms then live entirely in the free block, leaving the rest of ``B`` untouched.
+
+    A family is left alone (its old ``B`` kept) when ``s . y <= 1e-10 * |s| * |y|`` -- the curvature
+    condition, which also covers ``s = 0`` (no step, e.g. the iteration right after a rebuild) -- or
+    when ``s . B s <= 0`` (the old matrix has no positive curvature along the step, so the first
+    correction term would blow up), or when the result is not finite.
+    """
+    s = s * free_both
+    y = y * free_both
+    Bs = torch.einsum("gij,gj->gi", B, s) * free_both
+    sBs = (s * Bs).sum(dim=1)
+    sy = (s * y).sum(dim=1)
+    ok = (sy > _BFGS_CURVATURE_FLOOR * s.norm(dim=1) * y.norm(dim=1)) & (sBs > 0)
+    safe_sy = torch.where(ok, sy, torch.ones_like(sy))[:, None, None]
+    safe_sBs = torch.where(ok, sBs, torch.ones_like(sBs))[:, None, None]
+    upd = (y.unsqueeze(2) * y.unsqueeze(1)) / safe_sy - (Bs.unsqueeze(2) * Bs.unsqueeze(1)) / safe_sBs
+    ok = ok & torch.isfinite(upd).flatten(1).all(dim=1)
+    return B + torch.where(ok[:, None, None], upd, torch.zeros_like(upd))
+
+
 def fit_genewise(
     species_tree,
     gene_trees,
@@ -133,8 +180,10 @@ def fit_genewise(
     clade_budget: int | None = None,
     tol: float = 1e-3,
     max_iter: int = 120,
-    check_every: int = 4,
-    drop_frac: float = 0.30,
+    check_every: int = 2,
+    drop_frac: float = 0.05,
+    min_drop: int,
+    hessian_refresh: int,
     trust: float = 2.0,
     mu: float = 1e-2,
     fwd_tol: float = 1e-3,
@@ -143,11 +192,27 @@ def fit_genewise(
     eager_defer: bool = True,
     warm_adjoint: bool = True,
     certify: bool = False,
+    certify_curvature: bool,
     solver_options: SolverOptions | dict | None = None,
     config: GpurecConfig | None = None,
     verbose: bool = False,
 ) -> dict:
     """Fit per-family DTL rates to a converged, box-bounded optimum. See module docstring for the recipe.
+
+    Three keywords have no default and must be stated by every caller:
+
+    ``min_drop`` -- how many families must look converged at the cheap tier before the fit pays for a
+    verify-and-rebatch round (a temporary accurate-tier model over the candidates, then a rebuild over
+    the survivors). A round also triggers on ``drop_frac`` of the active batch, whichever comes first.
+
+    ``hessian_refresh`` -- how many Newton iterations between exact analytic-HVP Hessians. The exact
+    Hessian costs about 7 gradients; in between, each family's 3x3 is carried by the BFGS update in
+    ``_bfgs_update``. An exact Hessian is always computed at the first iteration of each pi tier.
+
+    ``certify_curvature`` -- whether the final ``certify=True`` certificate also computes the 3-probe
+    Hessian and its smallest eigenvalue. That is what fills in ``interior_pd``; with False the
+    certificate still reports ``converged`` / ``unconverged`` / ``bound_active`` / ``pg_max`` and the
+    total NLL, and ``interior_pd`` is simply absent from the result.
 
     ``config`` (a top-level :class:`GpurecConfig`) threads ``config.solver`` (the same key subset as
     ``_BASE_SOLVER``) and ``config.rates`` (``min_rate``/``max_rate``) when the corresponding explicit
@@ -249,7 +314,15 @@ def fit_genewise(
     was_dropped = torch.zeros(F_all, dtype=torch.bool, device=dev)
     pg_last = torch.full((F_all,), float("inf"), device=dev, dtype=dtype)
     rebatch_log, defer_log = [], []
-    n_steps = n_builds = 0
+    n_steps = n_builds = n_verify_builds = 0
+    # Curvature state, kept per GLOBAL family index so it survives every rebuild (a rebuild changes
+    # which families are in the batch, never their theta): B_fam is the raw (un-convexified) 3x3
+    # curvature matrix, and prev_* is the (theta, gradient, free-coordinate) triple of the last
+    # iterate, which the BFGS update differences against the current one.
+    B_fam = torch.zeros(F_all, 3, 3, device=dev, dtype=dtype)
+    prev_theta = torch.zeros(F_all, 3, device=dev, dtype=dtype)
+    prev_g = torch.zeros(F_all, 3, device=dev, dtype=dtype)
+    prev_free = torch.zeros(F_all, 3, device=dev, dtype=dtype)
 
     _warm_saved = os.environ.get("GPUREC_WARM_ADJOINT")
     if warm_adjoint:
@@ -283,28 +356,51 @@ def fit_genewise(
                         clamp_(lf)
                 sub = lf.detach().clone()
 
-            Hd = None
+            # An exact Hessian is always due on the tier's first Newton iteration (nothing has been
+            # measured for these families at this tier yet); it stays due until one is actually
+            # computed, so a rebatch landing on a refresh iteration only postpones it by one step.
+            refresh_due = True
             for it in range(max_iter):
                 if active.numel() == 0:
                     break
                 lv, g = lg(m, sub)
+                fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
+                    ((sub <= lo + bounds.bound_active_eps) & (g > 0))
+                free = (~fixed).to(dtype)
+
+                refresh_due = refresh_due or (it % hessian_refresh == 0)
+                if not refresh_due:   # carry the curvature forward from the step just taken
+                    both = free * prev_free.index_select(0, active)
+                    B_fam.index_copy_(0, active, _bfgs_update(
+                        B_fam.index_select(0, active),
+                        sub - prev_theta.index_select(0, active),
+                        g - prev_g.index_select(0, active), both))
+                prev_theta.index_copy_(0, active, sub)
+                prev_g.index_copy_(0, active, g)
+                prev_free.index_copy_(0, active, free)
+
                 if it % check_every == 0:
                     pgm = pgmax(sub, g)
                     plateau = pgm >= improve_frac * pg_last.index_select(0, active)
                     pg_last.index_copy_(0, active, pgm)
                     conv = pgm < tol
-                    frac = float(conv.float().mean())
-                    _log(f"  [pi{pi_cur} it{it}] active={active.numel()} conv={frac*100:.0f}% "
+                    n_conv = int(conv.sum())
+                    _log(f"  [pi{pi_cur} it{it}] active={active.numel()} conv={n_conv} "
                          f"|Pg|max={float(pgm.max()):.2e}")
-                    if frac > drop_frac and bool(conv.any()):
+                    if n_conv > 0 and (n_conv >= min_drop or n_conv >= drop_frac * active.numel()):
                         cert_ok = conv.clone()
-                        if verify_drop:   # re-check the converged subset cold at the high tier before freezing
+                        if verify_drop:   # re-check the CANDIDATES ONLY, cold at the high tier
+                            cand = conv.nonzero(as_tuple=True)[0]
+                            sub_c = sub.index_select(0, cand)
                             _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
-                            m.solver_options = sopts(cert_pi, neu_cert)
-                            cert_ok = conv & (pgmax(sub, lg(m, sub)[1]) < tol)
-                            m.solver_options = sopts(pi_cur, neu_opt)
+                            mv = build(active.index_select(0, cand).tolist(), cert_pi, neu_cert)
+                            n_verify_builds += 1; n_builds += 1
+                            ok_c = pgmax(sub_c, lg(mv, sub_c)[1]) < tol
+                            del mv; torch.cuda.empty_cache()
                             if _w:
                                 os.environ["GPUREC_WARM_ADJOINT"] = _w
+                            cert_ok = torch.zeros_like(conv)
+                            cert_ok.index_copy_(0, cand, ok_c)
                         drop = cert_ok
                         defer = torch.zeros_like(conv)
                         reject = conv & ~cert_ok
@@ -329,15 +425,12 @@ def fit_genewise(
                                 break
                             del m; torch.cuda.empty_cache()
                             m = build(active.tolist(), pi_cur, neu_opt); n_builds += 1
-                            Hd = None
-                            continue
-                if it % 5 == 0 or Hd is None or Hd.shape[0] != sub.shape[0]:
-                    H = _analytic_hessian(m, sub, pi_cur)
-                    e, V = torch.linalg.eigh(H)
-                    Hd = V @ torch.diag_embed(e.clamp(min=mu)) @ V.transpose(1, 2)   # convexify -> PD
-                fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
-                    ((sub <= lo + bounds.bound_active_eps) & (g > 0))
-                free = (~fixed).float()
+                            continue   # one rebuild per check; re-measure the gradient on the new batch
+                if refresh_due:
+                    B_fam.index_copy_(0, active, _analytic_hessian(m, sub, pi_cur))
+                    refresh_due = False
+                e, V = torch.linalg.eigh(B_fam.index_select(0, active))
+                Hd = V @ torch.diag_embed(e.clamp(min=mu)) @ V.transpose(1, 2)   # convexify -> PD
                 Hred = Hd * free.unsqueeze(1) * free.unsqueeze(2) + torch.diag_embed(1.0 - free)
                 delta = -torch.linalg.solve(Hred, (g * free).unsqueeze(-1)).squeeze(-1)
                 dn = delta.norm(dim=1, keepdim=True)
@@ -356,6 +449,7 @@ def fit_genewise(
     result = dict(
         theta=theta, rates=torch.exp2(theta), n_families=F_all,
         opt_seconds=time.perf_counter() - t0, n_steps=n_steps, n_builds=n_builds,
+        n_verify_builds=n_verify_builds,   # of n_builds: the temporary candidate-only verify models
         history=dict(rebatch=rebatch_log, defer=defer_log),
     )
     if certify:   # final cold PD certificate over ALL families at the high pi/Neumann tier
@@ -363,20 +457,20 @@ def fit_genewise(
         try:
             mfull = build(range(F_all), cert_pi, neu_cert)
             _, g = lg(mfull, theta); pg = pgmax(theta, g)
-            H = _analytic_hessian(mfull, theta, cert_pi)
-            lam_min = torch.linalg.eigvalsh(H)[:, 0]
             bound_active = ((theta <= lo + bounds.bound_active_eps) | (theta >= hi - bounds.bound_active_eps)).any(dim=1)
             conv = pg < tol
             nll_bits = float(mfull.genewise_loss_vector(theta=theta).sum())
             result.update(
                 converged=int(conv.sum()),
-                interior_pd=int((conv & (lam_min > tol) & ~bound_active).sum()),
                 bound_active=int(bound_active.sum()),
                 unconverged=int((~conv).sum()),
                 premature_drops=int((was_dropped & ~conv).sum()),
                 pg_max=float(pg.max()),
                 loss_bits=nll_bits, loss_nats=nll_bits * math.log(2),
             )
+            if certify_curvature:   # the 3-probe Hessian is ~7 gradients; only pay it when asked
+                lam_min = torch.linalg.eigvalsh(_analytic_hessian(mfull, theta, cert_pi))[:, 0]
+                result["interior_pd"] = int((conv & (lam_min > tol) & ~bound_active).sum())
             del mfull; torch.cuda.empty_cache()
         finally:
             if _w:
