@@ -1,0 +1,49 @@
+{
+  "tag": "full_v3_2gpu",
+  "n_shards": 2,
+  "n_families": 5123,
+  "wall_s": 2854.680747801438,
+  "nll_bits": 9048957.28956953,
+  "nll_nats": 6272259.232272484,
+  "per_shard": [
+    {
+      "shard": 0,
+      "exit_code": 0,
+      "shard_wall_s": 2854.675161683932,
+      "n_families": 2561,
+      "wall_s": 2851.1437275568023,
+      "nll_bits": 4555576.830728484,
+      "n_steps": 227,
+      "n_builds": 15,
+      "peak_gib": 69.22356605529785,
+      "certificate": {
+        "converged": 2537,
+        "interior_pd": 1416,
+        "bound_active": 234,
+        "unconverged": 24,
+        "premature_drops": 19,
+        "pg_max": 0.49040910601615906
+      }
+    },
+    {
+      "shard": 1,
+      "exit_code": 0,
+      "shard_wall_s": 2854.6790925888345,
+      "n_families": 2562,
+      "wall_s": 2695.8945570816286,
+      "nll_bits": 4493380.458841046,
+      "n_steps": 225,
+      "n_builds": 17,
+      "peak_gib": 61.082520961761475,
+      "certificate": {
+        "converged": 2543,
+        "interior_pd": 1401,
+        "bound_active": 239,
+        "unconverged": 19,
+        "premature_drops": 18,
+        "pg_max": 0.006196651607751846
+      }
+    }
+  ],
+  "failed_shards": []
+}
