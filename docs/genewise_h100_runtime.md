@@ -103,6 +103,27 @@ On 500 families, 498 families reach the same optimum (total within 0.013 bits); 
 (`COG0210_2`, `COG0099_1`) land on the other, better branch (-1.9 bits in total), both stationary
 under the 1e-3 tolerance in both runs.
 
+**Kernel changes (commits c16b6201, 4ecf9540).** The wave adjoint's Neumann series now runs in one launch
+per wave with a per-row-block early exit (relative test `max|term| <= 1e-7 * max|v|`; bitwise identical
+at tolerance 0; mean 2.3 of 16 terms taken, 4.1 on rows the pruner keeps): gradient 9.9 s to 8.3 s at
+500 families, Hessian 66 s to 60 s. The forward self-loop runs in one launch per wave in scaled linear
+space (row converted once to `p = 2**(Pi - scale)`, seven-term log-sum-exp replaced by multiply-adds,
+per-lane relative early exit at 1e-6; mean 6.1 iterations instead of 15 launches): gradient 9.85 s to
+7.34 s at 500 families; the log-vs-linear difference is float32 rounding of the row frame (an fp64
+control agrees to 1e-11). Both keep the old path selectable (`SolverOptions.forward_self_loop = "log"`,
+`neumann_term_tol = 0`). 40-family fit unchanged in NLL, steps and builds for each.
+
+**Recipe follow-up (commit fe642caf).** Verified families are frozen in place (masked out of the Newton
+step) and the survivor model is re-planned only when frozen families own 25 % of its clades. 500
+families: 552 s to 493 s, peak memory 57 GiB to 28 GiB; a full-scale re-plan costs ~7 s (Rust 63 %,
+Python batch statics 22 %), verification of candidates is the larger per-round cost.
+
+| run (500 families) | wall | NLL bits |
+|---|---|---|
+| original code | 2290 s (warm cache forced off) / 1017 s (first round) | 1618463.75 / .77 |
+| recipe only | 493 s | 1618461.83 |
+| recipe + both kernel tracks | 450 s | 1618461.88 |
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
