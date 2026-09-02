@@ -421,6 +421,19 @@ def fit_genewise(
     # rest of the fit. The certificate reuses these instead of re-running a gradient over everything.
     cert_pg = torch.full((F_all,), float("inf"), device=dev, dtype=dtype)
     cert_known = torch.zeros(F_all, dtype=torch.bool, device=dev)
+    # Best per-family NLL seen at any evaluated iterate, and the theta that produced it. A family
+    # that never certifies (runs out of iterations on a knife-edge trajectory) is returned at this
+    # best iterate rather than at its last one, so an unconverged tail can only lower the total NLL
+    # relative to any point it visited. Certified families are untouched (their theta is final).
+    best_nll = torch.full((F_all,), float("inf"), device=dev, dtype=dtype)
+    best_theta = theta.clone()
+
+    def _track_best(rows, nll_rows, theta_rows, mask):
+        cur = best_nll.index_select(0, rows)
+        better = mask & (nll_rows < cur)
+        best_nll.index_copy_(0, rows, torch.where(better, nll_rows, cur))
+        best_theta.index_copy_(0, rows, torch.where(
+            better.unsqueeze(1), theta_rows, best_theta.index_select(0, rows)))
     # Curvature state, kept per GLOBAL family index so it survives every rebuild (a rebuild changes
     # which families are in the batch, never their theta): B_fam is the raw (un-convexified) 3x3
     # curvature matrix, and prev_* is the (theta, gradient, free-coordinate) triple of the last
@@ -465,7 +478,8 @@ def fit_genewise(
                 ad = torch.optim.Adam([lf], lr=adam_lr)
                 pairs, seen = [], None
                 for _ in range(adam_steps):
-                    _, g = lg(m, lf.detach())
+                    lv_a, g = lg(m, lf.detach())
+                    _track_best(active, lv_a, lf.detach(), torch.ones_like(lv_a, dtype=torch.bool))
                     th_a, g_a = lf.detach().clone(), g.clone()   # BEFORE clipping mutates lf.grad
                     fx_a = ((th_a >= hi - bounds.bound_active_eps) & (g_a < 0)) | \
                         ((th_a <= lo + bounds.bound_active_eps) & (g_a > 0))
@@ -502,6 +516,7 @@ def fit_genewise(
                 _sync(); _t = time.perf_counter()
                 lv, g = lg(m, sub)
                 _sync(); newton_grad_seconds += time.perf_counter() - _t
+                _track_best(active, lv, sub, live)
                 fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
                     ((sub <= lo + bounds.bound_active_eps) & (g > 0))
                 free = (~fixed).to(dtype)
@@ -600,8 +615,8 @@ def fit_genewise(
                 sub = clamp_(sub + delta * (trust / dn.clamp(min=trust)))   # trust-region cap
                 n_steps += 1; since_exact += 1
             live = ~settled
-            if bool(live.any()):   # ran out of iterations: carry the unfinished families forward
-                theta.index_copy_(0, active[live], sub[live])
+            if bool(live.any()):   # ran out of iterations: keep each unfinished family's best iterate
+                theta.index_copy_(0, active[live], best_theta.index_select(0, active[live]))
                 carry = torch.cat([carry, active[live]])
             del m; torch.cuda.empty_cache()
     finally:
