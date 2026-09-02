@@ -48,6 +48,7 @@ def main():
         dtype=torch.float64 if args.fp64 else torch.float32,
         min_rate=args.min_rate, max_rate=args.max_rate,
         clade_budget=args.clade_budget, certify=args.certify, verbose=not args.quiet,
+    init_log2_rates=(0.0, 0.0, 0.0),
     )
 
     rates = res["rates"].cpu()

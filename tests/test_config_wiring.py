@@ -246,6 +246,7 @@ def _run_fit_genewise_capture(monkeypatch, **kwargs):
         max_iter=0, min_drop=32, rebuild_frac=0.25, hessian_refresh=15,
         init_curvature="exact", certify=False,
         certify_curvature=False, verbose=False, **kwargs,
+    init_log2_rates=(0.0, 0.0, 0.0),
     )
     return captured["kwargs"]["solver_options"], bounds_seen[0]
 

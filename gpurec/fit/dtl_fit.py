@@ -25,6 +25,7 @@ place.
 """
 from __future__ import annotations
 
+import math
 import time
 
 import torch
@@ -71,10 +72,18 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
         # fit_genewise resolves its own gene-tree spec and rebuilds tiered models internally.
         # min_drop / rebuild_frac / hessian_refresh / init_curvature / certify_curvature have no
         # signature default in fit_genewise (one value, one place): the production values are here.
+        # Genewise start: ``init_rate`` (a rate) for all three events when given; otherwise the
+        # DTL-typical start D=0.01, L=0.1, T=0.01 relative to speciation (ALE-style defaults),
+        # far cheaper to iterate from than the historical all-rates-equal-1.0 start.
+        if init_rate is None:
+            init_log2_rates = (math.log2(0.01), math.log2(0.1), math.log2(0.01))
+        else:
+            init_log2_rates = (math.log2(init_rate),) * 3
         res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype,
                            certify=True, certify_curvature=False, min_drop=32, rebuild_frac=0.25,
                            hessian_refresh=15, init_curvature="adam_bfgs",
-                           solver_options=solver_options, config=config, verbose=verbose)
+                           solver_options=solver_options, config=config, verbose=verbose,
+                           init_log2_rates=init_log2_rates)
         wall_s = time.perf_counter() - t0
         nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)
         return {"mode": mode, "theta": res["theta"].detach().cpu(),

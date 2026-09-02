@@ -213,6 +213,7 @@ def fit_genewise(
     warm_adjoint: bool = True,
     certify: bool = False,
     certify_curvature: bool,
+    init_log2_rates: tuple[float, float, float],
     solver_options: SolverOptions | dict | None = None,
     config: GpurecConfig | None = None,
     verbose: bool = False,
@@ -361,7 +362,10 @@ def fit_genewise(
     F_all = len(fam_paths)
     # Parse every family ONCE for the whole fit; build() re-plans subsets off this handle.
     parsed = parse_families(species_tree, fam_paths)
-    theta = clamp_(torch.zeros(F_all, 3, device=dev, dtype=dtype))
+    # Starting point for every family's [log2 D, log2 L, log2 T]. The historical start was all
+    # zeros (every rate = 1.0 x speciation), which is both far from typical optima and in the
+    # slow, stiff high-rate regime for the wave/E fixed points; callers pass the start explicitly.
+    theta = clamp_(torch.tensor(init_log2_rates, device=dev, dtype=dtype).reshape(1, 3).repeat(F_all, 1).contiguous())
     active = torch.arange(F_all, device=dev)
     was_dropped = torch.zeros(F_all, dtype=torch.bool, device=dev)
     pg_last = torch.full((F_all,), float("inf"), device=dev, dtype=dtype)

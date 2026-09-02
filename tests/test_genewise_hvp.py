@@ -550,6 +550,7 @@ def test_fit_genewise_converges_on_small_fixture():
         adam_steps=5, pi_tiers=(16,), neu_opt=16, neu_cert=16,
         min_drop=1, rebuild_frac=0.25, hessian_refresh=5, init_curvature="exact", max_iter=60,
         certify=True, certify_curvature=True, verbose=False,
+    init_log2_rates=(0.0, 0.0, 0.0),
     )
     assert res["n_families"] == 4
     assert torch.isfinite(res["theta"]).all()
@@ -594,6 +595,7 @@ def test_fit_genewise_converges_with_multibatch_analytic_hvp():
         clade_budget=clade_budget, min_drop=1, rebuild_frac=0.25, hessian_refresh=5,
         init_curvature="exact", max_iter=60,
         certify=True, certify_curvature=True, verbose=False,
+    init_log2_rates=(0.0, 0.0, 0.0),
     )
     assert res["n_families"] == n_fam
     assert torch.isfinite(res["theta"]).all()
