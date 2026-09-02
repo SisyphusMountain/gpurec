@@ -1,6 +1,7 @@
 #!/bin/bash
 # Shared paths for gpurec jobs on the CC-IN2P3 cluster (ssh cc). Source this from job scripts.
-export CC_REPO=/sps/biometr/emarsot/gpurec
+# CC_REPO may be pre-set by the caller (e.g. an agent's own checkout); default is the main copy.
+export CC_REPO=${CC_REPO:-/sps/biometr/emarsot/gpurec}
 export CC_PY=/sps/biometr/emarsot/envs/gpurec-h100/bin/python
 export CC_DATA=/sps/biometr/emarsot/gpurec-data/coleman
 export CC_RUNS=/sps/biometr/emarsot/gpurec-runs
