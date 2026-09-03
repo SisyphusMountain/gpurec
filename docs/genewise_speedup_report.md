@@ -1,0 +1,335 @@
+# The genewise fit, 7x faster: what was done and why it is safe
+
+Written 2026-09-03. Companion to the chronological measurement log
+`docs/genewise_h100_runtime.md` (every number below is taken from a run recorded there or in
+`benchmark/cc/results/*.json`).
+
+## The task and the result
+
+The task was to make `gpurec fit --mode genewise` fast on a large real dataset without changing the
+fitted likelihood: the Coleman et al. bacterial dataset (species tree `ReferenceTree.nwk`, 1007
+leaves, so 2013 species-tree nodes; 5124 gene families as ALE files; the single 400,918-clade family
+`COG3676_X` excluded, leaving 5123 families and 22.9 million clades). The first goal was "as fast as
+possible", the second "under 800 seconds on one GPU". All measurements are on one NVIDIA H100 NVL
+(94 GB) of the CC-IN2P3 cluster; the user's local RTX 4090 took over an hour before this work.
+
+| full fit, 5123 families, one H100 | wall time | total NLL (bits) | families certified converged |
+|---|---|---|---|
+| original code | 5353 s (89 min) | 9048956.57 | 5073 of 5123 |
+| final code, quiet node, two runs | **777 s and 786 s** | 9048938.28 and 9048938.29 | 5121 and 5119 |
+
+The total negative log-likelihood (NLL, the quantity the fit minimises, in bits) ended 18 bits
+*lower* than before, and more families reach the convergence certificate. The same code on a node
+whose CPUs were busy with other users' jobs took 890 to 1244 s, so the wall time depends on the
+node; the likelihood does not.
+
+The 500-family subset went from 1017 s to 136 s, the 40-family smoke test from 354 s to 12 s.
+
+How to run the fastest configuration on the cluster (see `benchmark/cc/env.sh` for the paths):
+
+```
+python benchmark/cc/run_genewise.py --species ReferenceTree.nwk --families families_no_largest.txt \
+  --limit 0 --out-dir RESULTS --tag NAME --forward-self-loop exact --adjoint-self-loop exact --init-rate none
+```
+
+`--forward-self-loop exact --adjoint-self-loop exact` select the new exact solvers described below
+(the driver makes every choice explicit); `--init-rate none` uses the new default starting rates.
+Through the library nothing needs to be passed: `GpurecConfig.genewise_reference()`, which `gpurec
+fit --mode genewise` and `fit_dtl(..., mode="genewise")` use, now selects the exact solves. The
+library-wide `SolverOptions` defaults stay on the iterated paths ("linear" forward, "series"
+adjoint) because the exact solves are validated with uniform transfer receiver weights only (what
+the genewise recipe uses); a float64 test with optimized, non-uniform receiver weights showed a
+Hessian asymmetry of 3e-3 on the exact path and is being fixed.
+
+## How a genewise fit works (the words used below)
+
+A **family** is one gene family; a **clade** is one node of that family's clade distribution
+(a family has a few thousand clades). Families are grouped into **batches** (about 315,000 clades
+each; 79 batches for this dataset). Inside a batch the clades are processed in **waves**: all
+clades whose children are already computed form one wave (150 to 200 waves per batch). For each
+clade the model keeps one number per species-tree node, the likelihood of that clade being at that
+species; that row of 2013 numbers is a **clade row**, and one number of it a **species lane**.
+
+Within a wave, each clade row obeys a fixed-point equation: the row depends on itself through the
+events "transfer out then the donor lineage is lost" and "duplicate then one copy is lost". Solving
+that per-row equation is the **self-loop**. The original code iterated it (16 sweeps per wave in the
+cheap tier, 64 in the accurate tier).
+
+The fit is Newton's method run independently for every family on its three rates (duplication,
+loss, transfer, stored as log2 rates). Each Newton iteration needs, for every live family, the
+gradient of the NLL: a **forward** pass (the self-loops above, wave by wave) and a **backward**
+pass (the **adjoint**, i.e. the same equations transposed, solved wave by wave in reverse). Every
+few iterations it needs the 3x3 curvature (the **Hessian**) from three **Hessian-vector products**,
+each of which needs a **tangent** pass (the forward equations with a different right-hand side).
+A family counts as converged when its **projected gradient** (the gradient with components pointing
+into a rate bound zeroed) is below 1e-3; converged families are re-checked at the accurate solver
+tier ("**verification**"), frozen, and eventually the model is re-planned over the survivors
+("**re-plan**"). At the end a **certificate** recomputes the total NLL and the per-family projected
+gradients over all families at the accurate tier.
+
+## Where the time went originally
+
+Measured on the H100 with the code as it was (first day):
+
+| stage | measured | consequence |
+|---|---|---|
+| building the model over 5123 families | 775 s | done again at every re-plan, tier change and for the certificate: 4 to 16 times per fit |
+| first gradients of a run | over 300 s each | Triton was compiling kernels, not computing |
+| one gradient in steady state | 58 s (79 batches) | GPU 96 % busy: 45 % of GPU time in the forward self-loop kernel, 21 % in the backward one |
+| one Hessian (3 probes) | about 7 gradients | the forward and the adjoint cache were rebuilt once per probe |
+| certificate | 22 min | included a full 3-probe Hessian whose only use was a positive-definiteness count |
+| recipe | | verification gradient computed over the whole active set, not the candidates; first drop only at iteration 12; exact Hessian every 5 iterations |
+
+Three independent problems explained the build time. (1) The Rust parsing extension shipped in
+the repository (`gpurec/gpurec_preprocess.abi3.so`) was a **debug build**; a release build of the
+same source gives byte-identical output 11x faster. (2) ALE files grow as clades x leaves (the
+`#set-id` section lists every leaf of every clade), so parsing looked quadratic in the clade count;
+the parser materialised every leaf list. (3) Rust handed Python **one JSON string** (5.3 GB for
+5123 families): parsing it took 98 s, turning its lists into tensors 54 s, and the process held
+57 GB of Python objects.
+
+## What changed
+
+### A. Building the model (775 s to about 20 s, then a few seconds per re-plan)
+
+- The extension is built in release mode (both crates; the backtracking extension had the same
+  problem). `setup.py` already builds release; the shipped files had been built by hand.
+- `.ale` set-id lists are read in place (byte spans, no per-clade allocation), the schedule depth
+  is computed in one topological pass, wave layouts are built in parallel. Output byte-identical to
+  the old parser on all sample files and all batch-plan settings; parse time is now proportional
+  to file size (about 390 MB/s). Files: `crates/gpurec-preprocess/src/lib.rs`.
+- Families are **parsed once per fit** and kept in Rust memory (`ParsedFamilies` in
+  `crates/gpurec-preprocess/src/pybridge.rs`). Every rebuild only re-plans the batches over the
+  requested subset of families and receives numpy arrays (zero-copy from Rust) that become tensors
+  with `torch.from_numpy`. All batch tensors are `torch.equal` to the legacy JSON path
+  (`tests/test_parsed_families_equivalence.py`). Python side: `parse_families`,
+  `preprocess_from_parsed` in `gpurec/core/scheduling/batching.py`; `GeneReconModel` accepts
+  `parsed_families` + `family_indices`; the legacy path is unchanged and still tested.
+- Measured at full scale: first build 18 to 20 s (parse 44 s once, included in the first build in
+  the timings above), re-plan over ~4500 families about 7 s (Rust 63 %, Python batch statics 22 %).
+
+### B. Triton compilation (first gradient over 300 s to about 35 s)
+
+Triton compiles one kernel variant per distinct combination of compile-time constants and
+argument specialisations. Three kernel arguments that change with every wave (`n_ws`, the number
+of splits in the wave; `MAX_TILES`; `n_tiles`) were declared `tl.constexpr`, and integer/pointer
+arguments were left to Triton's automatic specialisation (value == 1, divisibility by 16, 16-byte
+alignment of sliced views). The shared kernel cache had accumulated 19,615 variants. The per-wave
+arguments are now runtime integers (they are only used in index arithmetic, so the arithmetic is
+unchanged) and the varying arguments carry `do_not_specialize`; a forward + gradient + Hessian over
+100 families now compiles 35 variants. Files: `gpurec/core/kernels/*.py`.
+
+### C. The fit recipe (`gpurec/fit/genewise_fit.py`, `gpurec/fit/dtl_fit.py`)
+
+Each change keeps the optimum the same and removes work:
+
+- **Verify only the candidates.** The accurate-tier gradient that re-checks converged families is
+  computed on a small temporary model over those families only, not over the whole active set.
+- **Freeze without rebuilding.** Verified families are frozen in place (masked out of the Newton
+  step and of the statistics) and the model is re-planned only once frozen families own 25 % of its
+  clades (`rebuild_frac`), because a re-plan costs about 7 s while carrying a frozen family costs its
+  share of one gradient. Checks happen every 2 iterations and a drop round starts at 32 families or
+  5 % of the active set (`min_drop`, `drop_frac`), instead of every 4 iterations and 30 %.
+- **Cheaper curvature.** The exact 3-probe Hessian is computed at the first Newton iteration of a
+  tier and every 15 iterations (`hessian_refresh`); in between each family's 3x3 matrix is updated by
+  the BFGS formula from the (step, gradient change) pairs the iterations already produce; the initial
+  curvature comes from BFGS updates over the Adam warm-up's own pairs. Measured: no extra Newton
+  iterations.
+- **Certificate reuses verification.** A family's accurate-tier projected gradient was already
+  measured, at its final rates, when it was frozen; the certificate now reuses it and only runs the
+  forward pass for the total NLL plus a gradient over the few never-frozen families. The Hessian in
+  the certificate (a positive-definiteness count) is skipped unless `certify_curvature=True`.
+- **Sensible start.** Every family starts at duplication 0.01, loss 0.1, transfer 0.01 (relative to
+  speciation) instead of all rates equal to 1.0 (about 8 % of the fit; `init_log2_rates` is now a
+  required keyword of `fit_genewise`, derived from `init_rate` in `fit_dtl`).
+- **Single tier with the exact forward.** With the exact solver (D below) the second, more
+  accurate tier recomputed an identical forward, so the recipe runs one tier
+  (Newton steps 220 to 110 at full scale).
+- **Tail safety.** A family that never certifies within the iteration cap ends at its best evaluated
+  iterate rather than its last one (one run had lost 127 bits in a single knife-edge family). A
+  "stall" rule that settles such families earlier (`stall_patience`) exists but is off in
+  `fit_dtl` (patience = the iteration cap): it saved about 28 s but cost 3 to 4 certified families.
+- The recipe also fixes the warm-adjoint memory gate: with the Hessian warm start on, each probe
+  direction keeps its own cache the size of the gradient's, so the gate now counts 1 + 3 caches
+  (`warm_adjoint_fits(..., resident_caches=...)`). The old gate admitted a 500-family run at 32 GB
+  that then ran out of memory at 90 GB inside the Hessian.
+
+Effect of the recipe alone at full scale: 5353 s to 3166 s (old kernels, old start).
+
+### D. Kernels
+
+**D1. The fused backward series (`_reconciliation_self_loop_transpose_series_kernel`).** The wave
+adjoint was solved by a Neumann series: 16 separate kernel launches per wave (64 in the accurate
+tier), each adding one term, whether or not the terms still mattered. It now runs in one launch per
+wave and stops a row block once its largest remaining term is below `neumann_term_tol` (1e-7)
+times the block's largest adjoint value. Bitwise identical to the old launches at tolerance 0;
+mean 2.3 terms taken instead of 16 (4.1 on rows the adjoint pruner keeps). Gradient at 500
+families 9.9 s to 8.3 s. This path is still available (`adjoint_self_loop = "series"`).
+
+**D2. The forward self-loop in linear space (`_fused_linear_pi_self_loop_kernel`).** This
+followed the suggestion to replace log-sum-exp arithmetic by multiplications with tracked
+scale factors. Each clade row is converted once to `p[s] = 2**(Pi[s] - scale)` with the row
+maximum as scale (the code already stores rows with a per-row gauge, so this is natural), every
+log-space per-species constant is converted once to a multiplier, and the update
+
+```
+A[s]     = recv[s] * p[s]                      transfer mass offered by species s
+T        = sum over s of A[s]                  total transfer mass of the row
+X[s]     = sum of A over s and its ancestors   mass a donor at s may not receive back
+pbar[s]  = mt[s] * (T - X[s])                  transfer complement
+p_new[s] = leaf[s] + dts[s]                    fixed source terms (leaf observation, gene splits)
+         + dl[s] * p[s] + ebar[s] * p[s]       duplicate-and-lose, stay-with-transferred-copy-lost
+         + e[s] * pbar[s]                      transfer out, donor lost
+         + sl1[s] * p[child1(s)] + sl2[s] * p[child2(s)]   speciation with one child lost
+```
+
+is iterated as multiply-adds with a per-lane early exit at relative change 1e-6 (`pi_linear_tol`),
+re-gauging the row every iteration. This is the same seven-term sum the log kernel evaluates with
+six `exp2` and one `log2` per lane per iteration. Mean 6 iterations instead of 15 launches. The
+first version crashed on the full dataset: at transfer rates near the cap, `T - X[s]` cancels
+catastrophically in float32 (a float64 replay showed the *log* path was the inaccurate one there,
+by 129 log2 units). The mass is now built from **two running sums of non-negative terms** over the
+depth-first species order (species whose subtree has not opened yet, plus species whose subtree has
+already closed), with no subtraction and no 34-step ancestor walk. That made the kernel faster too
+(1.52x over the log path). Known limit: one scale per row means a lane more than about 126 binary
+orders below its row maximum is zero in float32; the log path (`forward_self_loop = "log"`) keeps
+it and remains the reference implementation.
+
+**D3. Exact tree solves (the largest kernel gain).** In the update above the `max(T - X, 0)` of the
+original code never clips, because every value is a likelihood and hence non-negative. So the
+fixed point is a **linear system on the species tree**: species s is coupled to its two children
+through `p[child]`, to its ancestors through one scalar (the mass its ancestors have taken), and
+to everything through the scalar `T`. Such a system is solved exactly by elimination in a fixed
+number of passes over the tree (`_exact_tree_pi_self_loop_kernel`):
+
+1. Leaves to root: write each node's answer as an affine function of what comes from above,
+   `p[s] = alpha[s] + gamma[s] * u[s]`, where `u[s]` is the transfer mass still available once s's
+   ancestors have taken theirs. A leaf gives `alpha = src / diag`, `gamma = q / diag` with
+   `q = e * mt` and `diag = 1 - dl - ebar + q * recv`; an internal node substitutes its children's
+   affine forms and divides by `pivot = diag + (children's feedback) * recv`, which is bounded below
+   by `diag`, so nothing is subtracted.
+2. Root to leaves for the two basis vectors, giving one scalar equation for `T`.
+3. Two more passes rebuild `u` from additions only (subtree mass bottom-up, off-path mass top-down),
+   because `T` minus what the ancestors took cancels for deep species in float32.
+
+Four passes of O(S) per row, no iteration, and the answer is what the old iteration converges to
+as the sweep count grows. The **adjoint** is the transposed system for the same row and is solved
+by the analogous elimination (`_exact_tree_self_loop_transpose_kernel`); the **tangent** used by the
+Hessian probes is the forward system with a different right-hand side and reuses the forward
+elimination (`gpurec/core/kernels/wave_tangent.py`). Evidence, at 100 families and fitted rates,
+against the old path run to convergence (256 sweeps or 256 terms): total NLL within 2.6e-3 bits,
+gradients and per-wave adjoints inside the run-to-run noise of the reference itself (the backward
+accumulates with atomics, so two identical runs differ at the 1e-3 level), per-wave adjoints within
+about 8 float32 ulps, zero divisions by a non-positive pivot over millions of row solves. Timings
+at 500 families: one gradient 9.6 s (log) / 8.9 s (linear) / **6.0 s** (exact forward) / **5.2 s**
+(exact forward + adjoint); one 3-probe Hessian 61 s to 43 s. Modes: `forward_self_loop = "exact"`,
+`adjoint_self_loop = "exact"` (the exact tangent follows the adjoint setting).
+
+**D4. The backward "prepare" kernel built additively.** After D3 the largest remaining kernel in a
+gradient was `_prepare_reconciliation_self_loop_vjp_kernel`, which recomputed each donor's valid
+receiver mass as "row total minus ancestor sum" with a 34-step ancestor walk and 46 `exp2` per
+element. It now uses the same two running sums as D2 (shared helper `gpurec/core/valid_receivers.py`).
+Kernel 174 to 61 microseconds, gradient 13 to 17 % faster; in float64 both formulations agree to
+4e-12; in float32 the gradient's run-to-run noise drops (1.1e-3 to 6.8e-4 at fitted rates) and
+reordering a reduction no longer moves the gradient by O(1), which made a warp-count change on the
+transfer-subtree kernel safe (+5 %).
+
+**D5. Float64 kept exact.** The two early-exit tolerances (`neumann_term_tol`, `pi_linear_tol`) are
+written in units of float32 precision and are rescaled by the ratio of machine epsilons for the
+dtype in use (`dtype_scaled_self_loop_tol`), so float64 runs exit only below one fp64 ulp; float32
+behaviour is bit-identical. Without this, the fp64 curvature-symmetry test lost eight digits.
+
+**D6. Things measured and left alone.** Python's garbage collector (no effect), larger batches
+(9 % at most; the work is GPU-bound), warm versus cold adjoint (same speed), and a full `num_warps`
+sweep of the five hottest kernels on the H100 (nothing beyond 2 %; the defaults tuned on an RTX 4090
+stand). The four per-wave backward kernels are latency-bound at low occupancy rather than
+compute- or bandwidth-bound; every tiling change tried was either slower or rejected on
+correctness before D4 removed the cancellation.
+
+## Is the likelihood preserved?
+
+Yes in total and for almost every family; a few dozen families with two competing optima changed
+basin, mostly for the better. Scoring the fitted rates of the original code and of the final code
+under one common solver (`benchmark/cc/compare_fit_thetas.py`): 5060 of 5123 families agree within
+0.01 bits; 63 differ by more (29 worse, 34 better); 22 are worse by more than 0.1 bits (largest 2.4)
+and 30 better by more than 0.1 bits (largest 5.3); worsenings sum to 18.3 bits, improvements to
+36.1 bits, net 17.8 bits better. The families that move have flat or bimodal likelihood surfaces
+(for example a duplication rate of 2^-2.8 versus 2^-16.6 with nearly equal likelihood), so their
+fitted **rates** can differ by more than a factor of two while their likelihoods differ by a few
+bits: 412 of 5123 families differ by more than one log2 unit in some rate. Anyone comparing
+per-family rates rather than likelihoods should know this.
+
+"Certified converged" means the accurate-tier projected gradient at the family's final rates is
+below 1e-3; 5119 to 5121 families certify now versus 5073 before. The remaining 2 to 4 are
+knife-edge families that no path converges within the 120-iteration cap; their rates are the best
+iterate seen.
+
+Reproducibility: the gradient is not bitwise reproducible (atomic accumulation), so per-family
+convergence flags in the tail can differ by a few families between any two runs, old or new; the
+total NLL varies by about 0.02 bits between runs.
+
+Precision: production runs are float32 with float64 accumulators (unchanged). The exact and linear
+paths hold one scale per row (see D2's known limit); float64 runs are supported by the same kernels
+and were used as the oracle whenever two float32 answers disagreed.
+
+## The progression of full-dataset runs
+
+| configuration | wall | NLL bits | certified |
+|---|---|---|---|
+| original | 5353 s | 9048956.57 | 5073 |
+| + recipe (C), old kernels | 3166 s | 9048964.87 | 5052 |
+| + new start, log forward, fused series | 1948 s | 9048939.01 | 5120 |
+| + robust linear forward (D2) | 1570 s | 9048959.32 | 5119 |
+| + exact forward (D3), single tier | 1053 to 1101 s | 9048938.4 | 5119 to 5120 |
+| + exact adjoint (D3) | 782 to 794 s | 9048938.3 | 5120 |
+| + exact tangent, additive prepare kernel (D4), fp64 fix (final) | 777 to 786 s | 9048938.28 | 5119 to 5121 |
+
+Time split of the 777 s run: warm-up (5 Adam gradients) 125 s, Newton gradients 397 s, curvature
+38 s, verification 44 s, re-plans 13 s, certificate 17 s, first build 20 s, and a tail of a few
+families iterating to the cap for the rest. One full-dataset gradient now costs about 30 s
+(79 batches x 0.4 s) at fitted rates, spread over the per-wave backward kernels, the two exact
+solves (about 15 % each) and the split reductions; all are latency-bound at low occupancy.
+
+## What is left
+
+- Kernel occupancy work on the per-wave backward kernels (each launches one block per clade row or
+  per split with 40 to 187 registers per thread; the profile in `docs/genewise_h100_runtime.md`
+  lists them with their stall reasons).
+- The warm-up's five full gradients (125 s) and the tail of a few slow families (30 to 120 s,
+  run-dependent).
+- Independent families shard perfectly across GPUs: `benchmark/cc/run_genewise_sharded.py` splits
+  the family list by squared clade count and merges the results (2 GPUs: 48 min in the first round).
+- The exact tangent in float32 is a few times the reference noise at a flat starting point (signed
+  accumulation through 33 tree levels) and indistinguishable from 16 sweeps at fitted rates; carrying
+  the two affine coefficients in float64 inside the walk would remove even that.
+
+## Reproducing
+
+Cluster (CC-IN2P3, `ssh cc`; when the Kerberos servers are unreachable, `ssh -o
+HostKeyAlias=cca.in2p3.fr emarsot@cca019.in2p3.fr` works with the cached ticket): repo copy
+`/sps/biometr/emarsot/gpurec`, Python environment `/sps/biometr/emarsot/envs/gpurec-h100`
+(torch 2.13.0+cu130, triton 3.7.1), data `/sps/biometr/emarsot/gpurec-data/coleman`, results
+`/sps/biometr/emarsot/gpurec-runs`. `source benchmark/cc/env.sh; bash benchmark/cc/sbatch_h100.sh
+NAME HH:MM:SS 'cmd'` submits a one-GPU job (`srun` does not work from the login node; GPU nodes are
+shared, pin a quiet one with `--nodelist` for timings). Drivers: `run_genewise.py` (timed fit with
+JSON + fitted rates), `run_genewise_sharded.py` (N GPUs), `compare_fit_thetas.py` (per-family
+likelihood comparison of two fits), `profile_phases.py`, `nsys_theta.py` / `run_nsys_theta.sh`
+(Nsight Systems), `run_ncu_bwd.sh` (Nsight Compute), `test_exact_forward.py`,
+`test_exact_adjoint.py`, `test_exact_tangent.py`, `test_neumann_exit.py`, `test_linear_forward.py`
+(kernel equivalence tests against converged references).
+
+Locally: build both Rust crates in release mode before anything else (`cargo build --release
+--manifest-path crates/gpurec-preprocess/Cargo.toml`, same for `crates/gpurec-backtrack`, then copy
+`target/release/lib<name>.so` to `gpurec/<name>.abi3.so`, or `pip install -e .` which does this);
+the `.so` files are gitignored and the ones previously in the tree were debug builds.
+
+## Knobs added
+
+| where | knob | meaning |
+|---|---|---|
+| `SolverOptions` | `forward_self_loop` = "log" / "linear" (library default) / "exact" (genewise recipe default) | which forward self-loop kernel runs |
+| `SolverOptions` | `adjoint_self_loop` = "series" (library default) / "exact" (genewise recipe default) | which adjoint solve runs (the exact tangent follows "exact") |
+| `SolverOptions` | `pi_linear_tol` (1e-6), `neumann_term_tol` (1e-7) | early-exit tolerances of the linear forward and the fused series, in float32 units |
+| `fit_genewise` (required keywords, set by `fit_dtl`) | `min_drop` 32, `rebuild_frac` 0.25, `hessian_refresh` 15, `certify_curvature` False, `init_log2_rates` (log2 0.01, log2 0.1, log2 0.01), `stall_patience` 120 | recipe controls described in section C |
+| `GeneReconModel` | `parsed_families`, `family_indices` | build from an already parsed dataset |
+| `run_genewise.py` | `--forward-self-loop`, `--adjoint-self-loop`, `--init-rate`, `--debug-dump-dir` | driver flags |
