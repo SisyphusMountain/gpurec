@@ -304,6 +304,46 @@ def test_specieswise_value_and_gradients_match(tmp_path, receiver_scale, origina
         )
 
 
+def test_joint_theta_receiver_origination_hessian_matches(tmp_path):
+    """The full joint (theta, receiver, origination) second derivative agrees between the arms.
+
+    This is the sharpest of the checks. ``build_joint_hvp`` refuses to run at uniform weights -- at
+    all-zero logits the weighted branches of the tangent are dead code -- so it can only be exercised
+    with the weights on, which is precisely the situation that was under-tested. The whole matrix is
+    built one column at a time from unit directions, so the comparison covers every block, including
+    the receiver-weight block whose exact-tangent term was the one found missing at internal species
+    nodes.
+
+    The matrix is (3S + 2S) by (3S + 2S): three rate parameters per species, plus one receiver logit
+    and one origination logit per species.
+    """
+    _require_gpu()
+    from gpurec.solver.curvature.origination import build_joint_hvp
+
+    columns = {}
+    for arm in ("iterated", "exact"):
+        model = _build(tmp_path, arm, "specieswise", _FRACTION_MISSING)
+        species_count = int(model.species_helpers["S"])
+        receiver, origination = _weights(species_count, 0.6, 0.5)
+        theta = _theta(model, math.log2(0.1))
+        size = theta.numel() + 2 * species_count
+        identity = torch.eye(size, dtype=torch.float64, device="cuda")
+        hvp, _loss, _solve, _cache = build_joint_hvp(
+            model.batch_statics[0], theta, receiver, origination,
+            tangent_self_iters=_TANGENT_ITERS,
+        )
+        columns[arm] = torch.stack([hvp(identity[i]) for i in range(size)], dim=1)
+        torch.cuda.synchronize()
+        del model, hvp
+        torch.cuda.empty_cache()
+
+    gap = _relative_gap(columns["iterated"], columns["exact"])
+    assert gap < _TOLERANCE, (
+        f"joint (theta, receiver, origination) Hessian: exact and converged-iterated differ by "
+        f"{gap:.3e} relative, tolerance {_TOLERANCE:.0e}"
+    )
+
+
 def test_weighted_setting_actually_changes_the_answer(tmp_path):
     """Guard against the whole file silently testing nothing.
 
