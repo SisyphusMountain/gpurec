@@ -46,7 +46,8 @@ Usage:
   python benchmark/cc/test_weighted_equiv.py --species $CC_SPECIES --families $CC_FAMILIES \
       --fitted-theta $CC_RUNS/results/full_v3.pt --limit 100 --clade-budget 315000 \
       --pi-iters 256 --neumann-terms 256 --receiver-scale 0.6 --origination-scale 0.5 \
-      --missing-leaf-fraction 0.3 --missing-max 0.5 --seed 0 --json-out out.json
+      --missing-leaf-fraction 0.3 --missing-max 0.5 --seed 0 --e-adjoint-max-iter 512 \
+      --json-out out.json
 """
 from __future__ import annotations
 
@@ -67,7 +68,6 @@ from test_exact_forward import _fitted_theta  # noqa: E402
 # about the self-loop and nothing else.
 _SHARED_SOLVER = dict(
     e_max_iter=512,
-    e_adjoint_max_iter=512,
     e_adjoint_tol=None,
     adjoint_pruning_threshold=1e-6,
     use_adjoint_pruning=False,
@@ -82,7 +82,7 @@ _SHARED_SOLVER = dict(
 _E_TOL_BY_DTYPE = {torch.float32: 1e-8, torch.float64: 1e-15}
 
 
-def _solver_options(mode, pi_iters, neumann_terms, dtype):
+def _solver_options(mode, pi_iters, neumann_terms, dtype, e_adjoint_max_iter):
     from gpurec.api.solver_options import SolverOptions
 
     if mode == "exact":
@@ -95,6 +95,7 @@ def _solver_options(mode, pi_iters, neumann_terms, dtype):
         **{
             **_SHARED_SOLVER,
             "e_tol": _E_TOL_BY_DTYPE[dtype],
+            "e_adjoint_max_iter": int(e_adjoint_max_iter),
             "pi_iters": int(pi_iters),
             "neumann_terms": int(neumann_terms),
             # 0.0 disables the Neumann early exit, so the reference really runs every term.
@@ -236,10 +237,11 @@ def _print_row(label, row):
 
 
 def _run_one(species, paths, clade_budget, dtype, mode, fraction_missing, parsed, indices,
+             e_adjoint_max_iter,
              theta_source, receiver_scale, origination_scale, seed, pi_iters, neumann_terms,
              label):
     """Build a model in one dtype/mode, evaluate the five quantities, tear it down."""
-    options = _solver_options(mode, pi_iters, neumann_terms, dtype)
+    options = _solver_options(mode, pi_iters, neumann_terms, dtype, e_adjoint_max_iter)
     build_start = time.perf_counter()
     model = _build(species, paths, clade_budget, dtype, options, fraction_missing, parsed, indices)
     build_seconds = time.perf_counter() - build_start
@@ -312,6 +314,11 @@ def main() -> int:
     parser.add_argument("--missing-max", required=True, type=float,
                         help="upper end of the random fraction_missing values")
     parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument("--e-adjoint-max-iter", required=True, type=int,
+                        help="Neumann terms allowed for the extinction-adjoint linear solve. This "
+                             "is NOT the wave self-loop being compared -- it is the separate solve "
+                             "the gradient needs, and it is what a large fraction_missing makes "
+                             "slow (see benchmark/cc/diagnose_fraction_missing_adjoint.py).")
     parser.add_argument("--json-out", required=True,
                         help="where the numbers are written; '-' to skip")
     args = parser.parse_args()
@@ -371,7 +378,8 @@ def main() -> int:
                 label = f"{setting_name}/{dtype_name}/{mode}"
                 runs[(dtype_name, mode)] = _run_one(
                     args.species, paths, args.clade_budget, dtype, mode, fraction_missing,
-                    parsed, indices, args.fitted_theta, receiver_scale, origination_scale,
+                    parsed, indices, args.e_adjoint_max_iter,
+                    args.fitted_theta, receiver_scale, origination_scale,
                     args.seed, args.pi_iters, args.neumann_terms, label,
                 )
 

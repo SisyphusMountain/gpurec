@@ -1,0 +1,188 @@
+"""Why does a gradient with ``fraction_missing`` set raise "E-adjoint Neumann series failed"?
+
+The gradient needs one linear solve that the self-loop kernels have nothing to do with: the
+EXTINCTION-ADJOINT solve ``(I - J) x = b``, where ``J`` is the Jacobian of the extinction-probability
+step. gpurec solves it by summing the Neumann series ``x = b + Jb + J^2 b + ...``, which is only
+valid, and only FAST, when ``J`` shrinks a vector -- when its spectral radius is below 1. The code
+stops after ``e_adjoint_max_iter`` terms and raises if the last term is still large.
+
+A run of benchmark/cc/test_weighted_equiv.py on 100 Coleman families raised exactly that, in
+float64, with ``fraction_missing`` on 610 of the 2013 species at values up to 0.4998:
+
+    E-adjoint Neumann series failed to converge at conservative relative residual 6.069e-03
+    after 512 terms (target 1.000e-12, dtype torch.float64)
+
+Two very different things produce that message and they need opposite fixes:
+  * ``J`` does not shrink at all (spectral radius at or above 1) -- the series is the WRONG method
+    and no iteration budget saves it;
+  * ``J`` shrinks, but only just -- the series is right and simply needs more terms.
+
+This script tells them apart by measuring the shrink factor directly. Each Neumann term is
+``J`` applied to the previous one, so the ratio of consecutive term norms IS the operator's
+asymptotic shrink factor per term (its spectral radius). The script records every term norm of every
+extinction-adjoint solve in one gradient call, at a sweep of ``fraction_missing`` levels, and reports
+that ratio along with how many terms the requested tolerance would actually need.
+
+Usage:
+  python benchmark/cc/diagnose_fraction_missing_adjoint.py --species S --families LIST \
+      --fitted-theta $CC_RUNS/results/full_v3.pt --limit 100 --clade-budget 315000 \
+      --missing-levels 0.0 0.1 0.2 0.3 0.5 --missing-leaf-fraction 0.3 \
+      --e-adjoint-max-iter 4096 --seed 0
+"""
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import sys
+import time
+
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_weighted_equiv import (  # noqa: E402
+    _random_fraction_missing, _random_weights, _solver_options, _theta,
+)
+
+
+def _install_term_norm_recorder():
+    """Replace the extinction-adjoint solve with one that records every term norm it computes.
+
+    The replacement runs the identical recurrence -- ``term <- J term``, ``x <- x + term`` -- so the
+    answer is the same; it just never gives up and keeps the whole norm history. It is installed on
+    the module the caller looks the name up on, which is the same module it is defined in.
+    """
+    from gpurec.api import _implicit_grad
+
+    original = _implicit_grad._neumann_e_adjoint
+    history: list[list[float]] = []
+
+    @torch.no_grad()
+    def recording(Av, b, *, max_iter, tol=None):
+        norm_b = float(torch.linalg.vector_norm(b.reshape(-1)))
+        if norm_b == 0.0:
+            history.append([])
+            return b.clone()
+        x = b.clone()
+        term = b.clone()
+        norms = []
+        for _ in range(int(max_iter)):
+            term = term - Av(term)
+            x = x + term
+            norms.append(float(torch.linalg.vector_norm(term.reshape(-1))) / norm_b)
+        history.append(norms)
+        return x
+
+    _implicit_grad._neumann_e_adjoint = recording
+    return original, history
+
+
+def _shrink_factor(norms):
+    """Geometric shrink per term over the last quarter of the history.
+
+    The first terms are dominated by whichever directions the right-hand side happens to excite;
+    the asymptotic rate is what the tail shows, so the ratio is measured there.
+    """
+    if len(norms) < 8:
+        return float("nan")
+    start = len(norms) - max(4, len(norms) // 4)
+    first, last = norms[start], norms[-1]
+    steps = len(norms) - 1 - start
+    if first <= 0.0 or last <= 0.0 or steps < 1:
+        return float("nan")
+    return (last / first) ** (1.0 / steps)
+
+
+def _terms_needed(shrink, target):
+    if not (0.0 < shrink < 1.0):
+        return float("inf")
+    return math.log(target) / math.log(shrink)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--species", required=True)
+    parser.add_argument("--families", required=True)
+    parser.add_argument("--fitted-theta", required=True)
+    parser.add_argument("--limit", required=True, type=int)
+    parser.add_argument("--clade-budget", required=True, type=int)
+    parser.add_argument("--missing-levels", required=True, type=float, nargs="+",
+                        help="upper end of the random fraction_missing values; 0 means none at all")
+    parser.add_argument("--missing-leaf-fraction", required=True, type=float)
+    parser.add_argument("--e-adjoint-max-iter", required=True, type=int,
+                        help="how many Neumann terms the recorder runs (it never raises)")
+    parser.add_argument("--receiver-scale", required=True, type=float)
+    parser.add_argument("--origination-scale", required=True, type=float)
+    parser.add_argument("--seed", required=True, type=int)
+    args = parser.parse_args()
+
+    from gpurec.api._execution import stream_genewise_loss_vector_grad
+    from gpurec.api.model import GeneReconModel
+
+    all_paths = [
+        line.strip() for line in open(args.families) if line.strip() and not line.startswith("#")
+    ]
+    paths = all_paths[: args.limit]
+
+    original, history = _install_term_norm_recorder()
+    try:
+        for level in args.missing_levels:
+            missing = (
+                None if level <= 0.0
+                else _random_fraction_missing(
+                    args.species, args.missing_leaf_fraction, level, args.seed
+                )
+            )
+            options = _solver_options("exact", 64, 64, torch.float64, args.e_adjoint_max_iter)
+            model = GeneReconModel(
+                args.species, paths, mode="genewise", device="cuda", dtype=torch.float64,
+                solver_options=options, clade_budget=args.clade_budget,
+                fraction_missing=missing,
+            )
+            species_count = int(model.species_helpers["S"])
+            receiver = _random_weights(
+                species_count, args.receiver_scale, args.seed, torch.float64).cuda()
+            origination = _random_weights(
+                species_count, args.origination_scale, args.seed + 1, torch.float64).cuda()
+            theta = _theta(args.fitted_theta, paths, torch.float64)
+
+            history.clear()
+            start = time.perf_counter()
+            stream_genewise_loss_vector_grad(
+                model.batch_statics, theta, receiver, origination,
+                need_grad=True, update_warm_starts=False, need_origination_grad=True,
+            )
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - start
+
+            described = "none" if missing is None else (
+                f"{len(missing)} species, values up to {max(missing.values()):.4f}"
+            )
+            print(f"\n[level {level:g}] fraction_missing: {described}   "
+                  f"gradient took {elapsed:.1f}s over {len(history)} extinction-adjoint solves",
+                  flush=True)
+            for index, norms in enumerate(history):
+                if not norms:
+                    print(f"  solve {index}: right-hand side was zero, nothing to solve", flush=True)
+                    continue
+                shrink = _shrink_factor(norms)
+                reached = min(norms)
+                print(
+                    f"  solve {index}: after {len(norms)} terms the term is "
+                    f"{norms[-1]:.4e} of the right-hand side (smallest seen {reached:.4e}); "
+                    f"shrink per term = {shrink:.6f}; "
+                    f"terms needed for 1e-12 = {_terms_needed(shrink, 1e-12):.0f}; "
+                    f"term at 512 would be {shrink ** 512:.3e}",
+                    flush=True,
+                )
+            del model, theta, receiver, origination
+            torch.cuda.empty_cache()
+    finally:
+        from gpurec.api import _implicit_grad
+
+        _implicit_grad._neumann_e_adjoint = original
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
