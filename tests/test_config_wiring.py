@@ -286,6 +286,25 @@ def test_fit_genewise_config_none_reproduces_today_defaults(monkeypatch):
     assert bounds.max_rate == RateBounds.genewise().max_rate
 
 
+@pytest.mark.parametrize("cfg", [
+    GpurecConfig(),                                    # nothing set at all
+    GpurecConfig(solver=SolverOptions(e_max_iter=999)),  # some other table set, [rates] still not
+])
+def test_fit_genewise_config_with_unset_rates_keeps_genewise_preset(monkeypatch, cfg):
+    """A config that never sets ``[rates]`` must leave the genewise box (1e-6 / 2.0) alone.
+
+    Its ``config.rates`` holds the library defaults -- floor 1e-10 and NO cap -- only because that
+    is what a bare ``RateBounds()`` is, not because anyone asked for the global box. Substituting it
+    here handed ``max_rate=None`` down to the fit, and the first Newton iteration's bound test
+    (``theta >= hi - bounds.bound_active_eps``, with ``hi`` then ``None``) died with
+    ``TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'``. See the CLI end-to-end
+    gate in tests/test_cli.py::test_fit_genewise_with_config_without_rates_table_gpu.
+    """
+    _so, bounds = _run_fit_genewise_capture(monkeypatch, config=cfg)
+    assert bounds.min_rate == RateBounds.genewise().min_rate
+    assert bounds.max_rate == RateBounds.genewise().max_rate
+
+
 # --- optimize ----------------------------------------------------------
 
 def _run_optimize_capture(monkeypatch, **kwargs):

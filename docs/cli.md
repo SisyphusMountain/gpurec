@@ -96,17 +96,14 @@ AleRax_fixed to ≤3e-12 nats (machine round-off), versus approximately 2.9e-5
 in the historical fp32 comparison; see
 `tests/test_fidelity_alerax.py::test_fidelity_float64_reaches_machine_precision`.
 
-## Known issue: `--config` and genewise rate bounds
+## `--config` and genewise rate bounds
 
-`fit_genewise` takes its rate box from its own preset (min 1e-6, cap 2.0) but replaces it
-with `config.rates` whenever a config is present — and a `GpurecConfig` whose `[rates]`
-table is unset carries the *global* bounds (min 1e-10, **no** cap). The missing cap then
-reaches `log2_rate_bounds`, which returns `None` for the upper bound, and the fit dies with
-`TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'`.
+`gpurec fit --mode genewise` fits per-family rates inside a box: rates may not fall below
+`min_rate` (1e-6) nor rise above `max_rate` (2.0). That box is `fit_genewise`'s own preset,
+and it is deliberately tighter than the library-wide `RateBounds()` default, which has a
+floor of 1e-10 and **no** cap at all.
 
-`gpurec fit` therefore passes a config only when you actually give `--config`, so plain
-`gpurec fit --mode genewise` works. **Passing `--config run.toml` without a `[rates]` table
-still hits this.** Work around it by giving the file an explicit genewise box:
+A `--config` file only replaces that box when it actually contains a `[rates]` table:
 
 ```toml
 [rates]
@@ -114,5 +111,13 @@ min_rate = 1e-6
 max_rate = 2.0
 ```
 
-The real fix belongs in `gpurec/fit/genewise_fit.py`, which should substitute `config.rates`
-only when the config's rate bounds were actually set rather than left at their defaults.
+A config that leaves `[rates]` out keeps the genewise preset, so `gpurec fit --mode genewise
+--config run.toml` works whether or not the file mentions rates. When a `[rates]` table *is*
+present it wins as a whole, not field by field: a table that names only `min_rate` also
+imposes that table's `max_rate` (i.e. no cap), because `[rates]` is read as one box. If you
+want a floor without losing the cap, write both keys.
+
+(Before 2026-09-04 the preset was replaced by any config at all. A config without `[rates]`
+therefore imposed the capless global box; `log2_rate_bounds` passed the missing cap through as
+`None`, and the fit's first Newton bound test killed the run with
+`TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'`.)

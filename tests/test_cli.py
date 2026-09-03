@@ -80,6 +80,32 @@ def test_fit_global_smoke_gpu(tmp_path):
     assert math.isfinite(side["nll_nats"]) and side["mode"] == "global"
 
 
+@pytest.mark.gpu
+def test_fit_genewise_with_config_without_rates_table_gpu(tmp_path):
+    """`gpurec fit --mode genewise --config run.toml` must run when the file has no `[rates]` table.
+
+    fit_genewise's own rate box is 1e-6 / 2.0; a config that never sets `[rates]` carries the
+    library-default box, whose upper bound is None (no cap). Substituting that here used to reach the
+    Newton bound test `theta >= hi - bounds.bound_active_eps` with `hi` = None, and the whole fit died
+    with `TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'`. The unit-level
+    precedence checks live in tests/test_config_wiring.py; this is the end-to-end gate.
+    """
+    from pathlib import Path
+    data = Path(__file__).parent / "data" / "alerax" / "test_trees_3"
+    if not data.exists():
+        pytest.skip("fixtures not vendored yet (Task 5)")
+    cfg = tmp_path / "run.toml"
+    cfg.write_text("[solver]\npi_iters = 16\n", encoding="utf-8")   # a real config, [rates] absent
+    out = tmp_path / "fit_rates.txt"
+    rc = main(["fit", "--species", str(data / "sp.nwk"), "--gene", str(data / "g.nwk"),
+               "--mode", "genewise", "--device", "cuda",
+               "--config", str(cfg), "--out", str(out)])
+    assert rc == 0
+    import json
+    side = json.loads((tmp_path / "fit_rates.txt.json").read_text())
+    assert math.isfinite(side["nll_nats"]) and side["mode"] == "genewise"
+
+
 def test_gene_recon_model_dtype_defaults_to_float32():
     """Back-compat: GeneReconModel(sp, [g]) with no dtype still builds float32 (unchanged callers)."""
     import torch

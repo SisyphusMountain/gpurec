@@ -66,6 +66,15 @@ from gpurec.solver.hvp.exact import make_exact_hvp_single
 # min_rate/max_rate signature defaults below (Global Constraint 2, task-5 brief).
 _GENEWISE_RATE_BOUNDS = RateBounds.genewise()
 
+# The library-default rate box (the GLOBAL floor 1e-10 with NO cap), used below as the "the config's
+# [rates] table was never set" sentinel: a GpurecConfig built without a [rates] table holds exactly
+# this object's values, and substituting it over the genewise preset would hand a None cap to
+# log2_rate_bounds. Built once here at import rather than inline at the comparison site, because
+# tests/test_config_wiring.py's fit_genewise probe monkeypatches this module's ``RateBounds`` name to
+# record every box the fit constructs; an inline ``RateBounds()`` would be recorded as a spurious
+# first box and hide the one the fit actually uses.
+_GLOBAL_RATE_BOUNDS = RateBounds()
+
 # Proven base solver settings (pi_iters / neumann_terms are overridden per tier below). Single-sourced
 # from ``GpurecConfig.genewise_reference().solver`` (task-10 brief) -- edit the values there, not here.
 _BASE_SOLVER = {
@@ -309,13 +318,20 @@ def fit_genewise(
     kwarg is left at its signature default; an explicit kwarg always wins. ``config=None`` (the
     default) reproduces today's behavior exactly.
 
-    IMPORTANT -- ``config`` is AUTHORITATIVE, not a partial overlay. Because ``config.solver`` is
-    taken wholesale and ``config.rates`` substitutes each field, passing ANY non-default ``config``
-    (even one that only tweaks ``e_max_iter``) replaces this recipe's genewise-tuned defaults
-    (``e_adjoint_tol=1e-7``, rate box ``1e-6``/``2.0``) with
-    ``config``'s values -- which default to the GLOBAL ``SolverOptions()``/``RateBounds()`` defaults.
-    To keep the genewise tuning and change only a few knobs, START FROM THE RECIPE FACTORY and modify
-    it: ``cfg = GpurecConfig.genewise_reference(); cfg.solver.e_max_iter = 999; fit_genewise(..., config=cfg)``.
+    IMPORTANT -- for the SOLVER, ``config`` is AUTHORITATIVE, not a partial overlay: ``config.solver``
+    is taken wholesale, so passing ANY config (even one that only tweaks ``e_max_iter``) replaces this
+    recipe's genewise-tuned solver defaults (such as ``e_adjoint_tol=1e-7``) with that config's
+    values, which are the GLOBAL ``SolverOptions()`` defaults wherever its ``[solver]`` table is
+    silent. To keep the genewise tuning and change only a few knobs, START FROM THE RECIPE FACTORY and
+    modify it: ``cfg = GpurecConfig.genewise_reference(); cfg.solver.e_max_iter = 999;
+    fit_genewise(..., config=cfg)``.
+
+    The RATE BOX behaves differently, because ``RateBounds()``'s own default has no cap and this
+    recipe needs one: ``config.rates`` is substituted only when the config's ``[rates]`` table was
+    actually set (i.e. it differs from ``RateBounds()``). A config that leaves ``[rates]`` unset keeps
+    this recipe's box (``1e-6``/``2.0``); a config that sets it wins over the preset for BOTH fields,
+    so a ``[rates]`` table that names only ``min_rate`` also takes that table's ``max_rate``; and an
+    explicit ``min_rate``/``max_rate`` kwarg beats both.
 
     NOT threaded: ``config.newton`` (this recipe's Newton step is a bespoke box-constrained
     trust-region analytic-HVP 3x3 Hessian solve, not a ``NewtonOptions`` consumer); ``config.regularizer``
@@ -336,9 +352,19 @@ def fit_genewise(
     # config.rates when the kwarg is still at that preset default, so an explicit min_rate/max_rate
     # always wins over config. Documented edge case: a caller who explicitly repasses the preset
     # value AND supplies a differing config gets the config value.
-    if config is not None and min_rate == _GENEWISE_RATE_BOUNDS.min_rate:
+    # A config whose [rates] table was never set is NOT a request for the global box: it holds the
+    # library defaults (floor 1e-10, no cap) only because that is what RateBounds() is, and taking
+    # them here replaced the genewise cap 2.0 with None. `log2_rate_bounds` passes that None straight
+    # through as `hi`, and the Newton bound test below (`th >= hi - bounds.bound_active_eps`) then
+    # died with `TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'` -- which is how
+    # `gpurec fit --mode genewise --config run.toml` used to crash. So only a
+    # [rates] table that actually differs from the library default counts as set; when it does, BOTH
+    # fields come from it (each still guarded by its own kwarg-is-still-the-preset test), so a config
+    # that sets only min_rate also takes that table's max_rate.
+    config_rates_set = config is not None and config.rates != _GLOBAL_RATE_BOUNDS
+    if config_rates_set and min_rate == _GENEWISE_RATE_BOUNDS.min_rate:
         min_rate = config.rates.min_rate
-    if config is not None and max_rate == _GENEWISE_RATE_BOUNDS.max_rate:
+    if config_rates_set and max_rate == _GENEWISE_RATE_BOUNDS.max_rate:
         max_rate = config.rates.max_rate
     if init_curvature not in ("exact", "adam_bfgs"):
         raise ValueError(f'init_curvature must be "exact" or "adam_bfgs", got {init_curvature!r}')
