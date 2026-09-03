@@ -1,0 +1,125 @@
+{
+  "tag": "exacttan500",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 500,
+  "wall_s": 138.98013712000102,
+  "nll_bits": 1618462.605674577,
+  "nll_nats": 1121832.7919650355,
+  "opt_seconds": 133.83575648488477,
+  "n_steps": 113,
+  "n_builds": 23,
+  "adam_seconds": 25.641353803221136,
+  "hessian_seconds": 8.85652005020529,
+  "n_hessians": 7,
+  "newton_grad_seconds": 83.46769024198875,
+  "n_verify_builds": 15,
+  "verify_seconds": 10.205336186569184,
+  "n_rebuilds": 7,
+  "rebuild_seconds": 2.974407387431711,
+  "certify_seconds": 3.1507623181678355,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 93,
+        "remain": 407
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 135,
+        "remain": 272
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 53,
+        "remain": 219
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 37,
+        "remain": 182
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 26,
+        "remain": 156
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 11,
+        "remain": 145
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 27,
+        "remain": 118
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 34,
+        "remain": 84
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 29,
+        "remain": 55
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 23,
+        "remain": 32
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 20,
+        "remain": 12
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 6,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 3,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 38,
+        "dropped": 1,
+        "remain": 1
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 29.028006553649902,
+  "certificate": {
+    "converged": 499,
+    "bound_active": 33,
+    "unconverged": 1,
+    "premature_drops": 0,
+    "pg_max": 3.907113552093506
+  }
+}

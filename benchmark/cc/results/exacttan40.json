@@ -1,0 +1,107 @@
+{
+  "tag": "exacttan40",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 40,
+  "wall_s": 14.5632021157071,
+  "nll_bits": 115604.88006525545,
+  "nll_nats": 80131.19667620244,
+  "opt_seconds": 13.59335325518623,
+  "n_steps": 28,
+  "n_builds": 19,
+  "adam_seconds": 3.2055664248764515,
+  "hessian_seconds": 0.284374067094177,
+  "n_hessians": 1,
+  "newton_grad_seconds": 5.979641366750002,
+  "n_verify_builds": 12,
+  "verify_seconds": 1.4689663900062442,
+  "n_rebuilds": 6,
+  "rebuild_seconds": 0.25256549613550305,
+  "certify_seconds": 0.5270544160157442,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 4,
+        "remain": 36
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 12,
+        "remain": 24
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 3,
+        "remain": 21
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 4,
+        "remain": 17
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 3,
+        "remain": 14
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 1,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 2,
+        "remain": 11
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 5,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 1,
+        "remain": 5
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 2,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 2,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 9.632552146911621,
+  "certificate": {
+    "converged": 40,
+    "bound_active": 1,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009970542741939425
+  }
+}
