@@ -61,7 +61,9 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     active_mask_ptr,
     max_transfer_ptr, duplication_loss_const_ptr, Ebar_ptr, E_ptr, speciation_child1_const_ptr, speciation_child2_const_ptr,
     receiver_log_probs_ptr,
-    species_child1_ptr, species_child2_ptr, species_parent_ptr,
+    species_child1_ptr, species_child2_ptr,
+    not_open_source_ptr, closed_source_ptr, not_open_index_ptr, closed_index_ptr,
+    valid_receiver_scratch_ptr,
     leaf_term_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
@@ -79,7 +81,6 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     stride: tl.constexpr,
     BLOCK_W: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
@@ -142,7 +143,11 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
         receiver_mass = tl.exp2(receiver_log_probability[:, None] + reconciliation_log_likelihood - row_max_safe[None, :])
     else:
         receiver_mass = tl.exp2(reconciliation_log_likelihood - row_max_safe[None, :])
-    total_receiver_mass = tl.sum(tl.where(mask, receiver_mass, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)), axis=0)
+    # Publish the receiver-mass row now: the two running sums below gather it at species the
+    # host's scan orders name, i.e. at lanes other warps of this block hold. There is no row-wide
+    # reduction here any more -- the total the old subtraction needed is what has gone away.
+    zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
+    tl.store(receiver_mass_ptr + out_offsets, tl.where(mask, receiver_mass, zero), mask=store_mask)
 
     family = tl.full([BLOCK_W], value=0, dtype=tl.int64)
     const_base = tl.zeros([BLOCK_W], dtype=tl.int64)
@@ -268,49 +273,57 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     else:
         within_wave_probability = tl.full([BLOCK_S, BLOCK_W], value=1.0, dtype=DTYPE)
 
-    ancestor_sum = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
-    ancestor_species = s_offs
-    for _depth in range(MAX_ANCESTOR_DEPTH):
-        ancestor_valid = (
-            species_valid & (ancestor_species >= 0) & (ancestor_species < S)
-        )
-        ancestor_reconciliation_log_likelihood = tl.load(
-            Pi_star_ptr
-            + row_global[None, :] * stride
-            + ancestor_species[:, None],
-            mask=ancestor_valid[:, None] & row_mask[None, :],
-            other=NEG_LARGE,
-        )
-        if USE_RECEIVER_WEIGHTS:
-            ancestor_receiver_log_probability = tl.load(
-                receiver_log_probs_ptr + ancestor_species,
-                mask=ancestor_valid,
-                other=NEG_LARGE,
-            )
-            ancestor_sum += tl.where(
-                ancestor_valid[:, None] & row_mask[None, :],
-                tl.exp2(
-                    ancestor_receiver_log_probability[:, None]
-                    + ancestor_reconciliation_log_likelihood
-                    - row_max_safe[None, :]
-                ),
-                tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
-            )
+    # A donor may transfer to every species that is neither itself nor one of its ancestors. This
+    # used to be ``total row mass - mass on the donor's lineage``, which walked 34 ancestors per
+    # lane and then subtracted two nearly equal numbers: at a high transfer rate the row's mass
+    # sits on the donor's own lineage, the two agree past float32's 24 bits and the difference is
+    # noise. Built additively instead, exactly as the forward self-loop builds it -- see
+    # :func:`gpurec.core.valid_receivers.valid_receiver_index_tables` for the depth-first interval
+    # argument and :func:`gpurec.core.kernels.pi_forward._write_valid_receiver_prefix_sums` for the
+    # same two passes on the forward side. The allowed recipients split into the species whose
+    # subtree has not opened yet and those whose subtree already closed, two disjoint groups whose
+    # masses are running sums of non-negative terms and so cannot cancel.
+    tl.debug_barrier()
+    scratch_row_base = rows[None, :] * S
+    # Distance between the two running-sum slots, in elements. int64 for the same overflow reason
+    # as ``out_offsets``, and Triton hands ``W`` in as a plain Python int when it specializes the
+    # argument, so widen an int64 value we already have and add W to that.
+    prefix_slot_stride = (block * 0 + W) * S
+    for pass_id in tl.static_range(2):
+        if pass_id == 0:
+            source_ptr = not_open_source_ptr
+            output_base = valid_receiver_scratch_ptr
         else:
-            ancestor_sum += tl.where(
-                ancestor_valid[:, None] & row_mask[None, :],
-                tl.exp2(
-                    ancestor_reconciliation_log_likelihood
-                    - row_max_safe[None, :]
-                ),
-                tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
-            )
-        ancestor_species = tl.load(
-            species_parent_ptr + ancestor_species,
-            mask=ancestor_valid,
-            other=-1,
+            source_ptr = closed_source_ptr
+            output_base = valid_receiver_scratch_ptr + prefix_slot_stride
+        scan_species = tl.load(source_ptr + s_offs, mask=species_valid, other=S)
+        # ``S`` is the one-position shift's sentinel: it contributes nothing.
+        contributes = species_valid & (scan_species < S)
+        scan_value = tl.load(
+            receiver_mass_ptr + scratch_row_base + scan_species[:, None],
+            mask=contributes[:, None] & row_mask[None, :],
+            other=0.0,
         )
-    valid_receiver_mass = total_receiver_mass[None, :] - ancestor_sum
+        tl.store(
+            output_base + scratch_row_base + s_offs[:, None],
+            tl.cumsum(tl.where(contributes[:, None], scan_value, zero), axis=0),
+            mask=species_valid[:, None] & row_valid[None, :],
+        )
+    # The lookups below read lanes other warps in this block just wrote.
+    tl.debug_barrier()
+    not_open_index = tl.load(not_open_index_ptr + s_offs, mask=species_valid, other=0).to(tl.int64)
+    closed_index = tl.load(closed_index_ptr + s_offs, mask=species_valid, other=0).to(tl.int64)
+    not_yet_open = tl.load(
+        valid_receiver_scratch_ptr + scratch_row_base + not_open_index[:, None],
+        mask=mask,
+        other=0.0,
+    )
+    already_closed = tl.load(
+        valid_receiver_scratch_ptr + prefix_slot_stride + scratch_row_base + closed_index[:, None],
+        mask=mask,
+        other=0.0,
+    )
+    valid_receiver_mass = not_yet_open + already_closed
     inverse_valid_receiver_mass = tl.where(valid_receiver_mass > 0.0, 1.0 / valid_receiver_mass, tl.zeros_like(valid_receiver_mass))
 
     self_loop_diagonal = within_wave_probability * (duplication_loss_mass + transfer_loss_mass) * inverse_local_event_scaled_mass
@@ -318,12 +331,10 @@ def _prepare_reconciliation_self_loop_vjp_kernel(
     speciation_child1_probability = within_wave_probability * speciation_child1_mass * inverse_local_event_scaled_mass
     speciation_child2_probability = within_wave_probability * speciation_child2_mass * inverse_local_event_scaled_mass
 
-    zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
     rhs_val = tl.load(rhs_ptr + out_offsets, mask=mask, other=0.0)
     tl.store(v_k_ptr + out_offsets, tl.where(mask, rhs_val, zero), mask=store_mask)
     tl.store(self_loop_diagonal_ptr + out_offsets, tl.where(mask, self_loop_diagonal, zero), mask=store_mask)
     tl.store(donor_adjoint_coefficient_ptr + out_offsets, tl.where(mask, donor_adjoint_coefficient, zero), mask=store_mask)
-    tl.store(receiver_mass_ptr + out_offsets, tl.where(mask, receiver_mass, zero), mask=store_mask)
     if USE_CHILD_EDGE_SELF_LOOP:
         child1_offsets = rows[None, :] * S + c1[:, None]
         child2_offsets = rows[None, :] * S + c2[:, None]
