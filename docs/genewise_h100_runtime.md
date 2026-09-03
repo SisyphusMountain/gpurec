@@ -256,7 +256,8 @@ a shared node.
 | + recipe (candidate verification, prompt freezing, BFGS curvature, freeze-time certificate) | 3166 s / 1948 s (new start) | 9048964.87 / 9048939.01 | 5052 / 5120 |
 | + fused early-exit backward series, robust linear forward | 1570 s | 9048959.32 | 5119 |
 | + exact tree-elimination forward, single tier | 1053-1101 s | 9048938.4 | 5119-5120 |
-| + exact adjoint solve | **782-794 s** | 9048938.3-9048938.4 | 5120 |
+| + exact adjoint solve | 782-794 s | 9048938.3-9048938.4 | 5120 |
+| + exact tangent solve, additive backward prepare kernel, fp64 fix (final) | **777-786 s** (quiet nodes; 890-1244 s on nodes whose CPUs were shared with other jobs) | 9048938.28-9048938.29 | 5119-5121 |
 
 **Exact tangent solve for the Hessian probes (commit c4bd87ba, gated on `adjoint_self_loop = "exact"`).**
 The tangent system of each row is the forward's linear system with a different right-hand side and is
@@ -315,11 +316,19 @@ re-plans took 41 s instead of 13 s), NLL 9048938.30 bits, 5118/5123 certified.**
 cost 3-4 certified families relative to no stall rule (5121) for a ~28 s gain, so `fit_dtl` now passes
 `stall_patience = 120` (= max_iter, i.e. off); the mechanism stays available as a knob.
 
+**Final timing run (job full_v18final, node with two other users' GPU jobs): 786.2 s**, NLL 9048938.29
+bits, 5119/5123 certified, 109 Newton steps; split: warm-up 125 s, Newton gradients 400 s, curvature
+31 s, verification 53 s, re-plans 19 s, certificate 24 s, build 68 s (20 s on a quiet node).
+
 ## What is left
 
-The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
-so further gains need kernel work (`ncu` on `_update_reconciliation_likelihood_kernel` and the
-backward self-loop kernel). The Hessian costs about 7 gradients (and 4x more at the
-`pi_iters=64` certificate tier, where the tangent self-loop kernel runs 64 fixed iterations);
-the recipe evaluates it every 5 iterations and once for the certificate. Independent families
-shard perfectly across GPUs (`run_genewise_sharded.py`).
+With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs
+~30 s (79 batches x 0.4 s) and is spread over the per-wave backward kernels (prepare-VJP, transfer-subtree
+VJP, gene-split VJP), the exact forward and adjoint solves (~15 % each), the DTS forward reduction and the
+`index_add` scatter; all are latency-bound at low occupancy rather than compute- or bandwidth-bound, so
+further gains need occupancy/tiling work per kernel. The warm-up (5 Adam gradients, ~125 s) and the tail
+of a few families iterating to `max_iter` (30-120 s, run-dependent) are the remaining recipe-level costs;
+the stall rule (`stall_patience`) trades the tail against 3-4 certified families and is off by default.
+Timings on the shared GPU nodes vary by ±100 s with other users' CPU load; pin a quiet node
+(`sbatch --nodelist=...`) for measurements. Independent families still shard perfectly across GPUs
+(`run_genewise_sharded.py`).
