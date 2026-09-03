@@ -75,8 +75,18 @@ def run_fit(args) -> int:
         or args.pi_iters is not None
         or args.neumann_terms is not None
         or args.e_max_iter is not None
+        or args.forward_self_loop is not None
+        or args.adjoint_self_loop is not None
     )
-    config = load_config(args.config)
+    # Pass a config ONLY when the user actually supplied one, for the same reason as
+    # solver_options above. A default-constructed GpurecConfig is not neutral: its [rates] table
+    # holds the GLOBAL bounds (min 1e-10, no cap), and fit_genewise's reference-defaults rule
+    # substitutes config.rates over its own genewise preset (min 1e-6, cap 2.0) whenever a config
+    # is present. Handing it GpurecConfig() therefore replaced the genewise cap with None and
+    # `gpurec fit --mode genewise` died in log2_rate_bounds with `None - 0.001`. See the note in
+    # docs/cli.md: an explicit --config that leaves [rates] unset still hits this, and the real fix
+    # belongs in gpurec/fit/genewise_fit.py.
+    config = load_config(args.config) if args.config is not None else None
     try:
         res = fit_dtl(args.species, args.gene, args.mode, device=args.device,
                       dtype=(None if args.dtype is None else _common.make_dtype(args.dtype)),

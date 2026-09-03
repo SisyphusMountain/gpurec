@@ -11,6 +11,8 @@ happens when a subcommand executes.
 gpurec reconcile --species sp.nwk --gene g.nwk [g2.nwk ...] \
   --delta 0.1 --tau 0.05 --lambda 0.1 [--mode global|genewise] \
   [--device cuda] [--config run.toml] [--dtype float32|float64] \
+  [--forward-self-loop exact|log|linear] [--adjoint-self-loop exact|series] \
+  [--pi-iters N] [--neumann-terms N] [--e-max-iter N] \
   [--out per_fam.txt]
 ```
 Prints `<family> <logL_nats>`. `global` mode prints one total line; `genewise` prints one
@@ -27,6 +29,8 @@ returns NLL in bits; the CLI converts (`logL_nats = -loss_bits * ln 2`).
 gpurec fit --species sp.nwk --gene DIR_OR_GLOB \
   --mode global|specieswise|genewise [--steps 300] [--init-rate 0.1] \
   [--device cuda] [--config run.toml] [--dtype float32|float64] \
+  [--forward-self-loop exact|log|linear] [--adjoint-self-loop exact|series] \
+  [--pi-iters N] [--neumann-terms N] [--e-max-iter N] \
   [--out rates.txt]
 ```
 `global` uses `fit_global`; `genewise` uses `fit_genewise`. A one-shot
@@ -35,6 +39,34 @@ points. `--out`: for `global`, writes fitted rates (AleRax `# node D L T` order)
 to `<out>` plus a `<out>.json` sidecar (`nll_bits`, `nll_nats`, `elapsed_s`,
 `mode`, `n_families`). For `genewise`, writes ONLY `<out>.json` (schema:
 `theta_log2`, `rates`, plus the same nll/timing fields) — no `<out>` rates file.
+
+## Solver selection (`--forward-self-loop`, `--adjoint-self-loop`)
+
+Inside each wave, every clade row obeys a small fixed-point equation — the row depends
+on itself through "transfer out, then the donor lineage is lost" and "duplicate, then one
+copy is lost". That is the **self-loop**, and these two flags choose how it is solved.
+
+| flag | value | what it does |
+|---|---|---|
+| `--forward-self-loop` | `exact` (default) | Solves the fixed point outright. Every entry is a likelihood, so the equation is a linear system on the species tree and is eliminated in a fixed number of passes. |
+| | `log` | Iterates it in log2 space, `--pi-iters` times. The reference implementation. |
+| | `linear` | Iterates it in scaled linear space with an early exit. Holds one scale per row, so it cannot represent a row spanning more than ~126 binary orders in float32. |
+| `--adjoint-self-loop` | `exact` (default) | Solves the transposed system outright. The Hessian-probe tangent follows this setting. |
+| | `series` | Sums up to `--neumann-terms` Neumann terms, stopping early once a term can no longer move the result. |
+
+**`--pi-iters` and `--neumann-terms` only apply to the iterated modes.** They are
+iteration *counts*. Under the default exact solves the answer is the converged fixed
+point no matter how many iterations are requested, so passing them changes nothing —
+they are accepted so that a command line can select an iterated mode and its iteration
+count together. `--e-max-iter` is unrelated to the self-loop: it caps the resident `E`
+(survival) fixed-point solve and applies in every mode.
+
+The exact solves are the library-wide defaults, so these flags are only needed to
+reproduce the older iterated behaviour or to compare the two. On the toy fixtures under
+`tests/data/alerax`, `reconcile` in float64 gives **bit-identical** per-family
+log-likelihoods either way, and both land within 9.1e-13 nats of the AleRax reference;
+in float32 the two paths differ by at most 2.8e-5 nats (on the 2336-leaf
+`test_mixed_200`, whose log-likelihood is about -6221 nats).
 
 ## Precision configuration
 
@@ -63,3 +95,24 @@ On the toy AleRax fixtures, the float64/float64 likelihood matches
 AleRax_fixed to ≤3e-12 nats (machine round-off), versus approximately 2.9e-5
 in the historical fp32 comparison; see
 `tests/test_fidelity_alerax.py::test_fidelity_float64_reaches_machine_precision`.
+
+## Known issue: `--config` and genewise rate bounds
+
+`fit_genewise` takes its rate box from its own preset (min 1e-6, cap 2.0) but replaces it
+with `config.rates` whenever a config is present — and a `GpurecConfig` whose `[rates]`
+table is unset carries the *global* bounds (min 1e-10, **no** cap). The missing cap then
+reaches `log2_rate_bounds`, which returns `None` for the upper bound, and the fit dies with
+`TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'`.
+
+`gpurec fit` therefore passes a config only when you actually give `--config`, so plain
+`gpurec fit --mode genewise` works. **Passing `--config run.toml` without a `[rates]` table
+still hits this.** Work around it by giving the file an explicit genewise box:
+
+```toml
+[rates]
+min_rate = 1e-6
+max_rate = 2.0
+```
+
+The real fix belongs in `gpurec/fit/genewise_fit.py`, which should substitute `config.rates`
+only when the config's rate bounds were actually set rather than left at their defaults.
