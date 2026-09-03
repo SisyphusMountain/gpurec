@@ -8,9 +8,9 @@ to), a small card gets a budget whose predicted peak actually fits, and a datase
 alone overflow the card fails immediately with a message that says so rather than OOM-ing later.
 
 Reference measurement throughout (job 57680456, H100 NVL, the full Coleman set): 5123 families,
-22,926,670 clades, 60,422,454 splits, S=2013, fp32, 79 batches of <=315,000 clades, peak 23.85 GiB
-of which 2.22 GiB was static -- 1.77 GiB once the unread fp64 split-probability copy is no longer
-materialized.
+22,931,793 clades and 71,885,789 splits as the parser counts them, S=2013, fp32, 79 batches of
+<=315,000 clades, peak 23.85 GiB of which 2.22 GiB was static -- 1.68 GiB once the unread fp64
+split-probability copy (0.54 GiB) is no longer materialized.
 """
 import pytest
 import torch
@@ -24,8 +24,8 @@ from gpurec.core.memory_policy import (
 )
 from gpurec.core.scheduling.batching import DEFAULT_CLADE_BUDGET
 
-COLEMAN_CLADES = 22_926_670
-COLEMAN_SPLITS = 60_422_454
+COLEMAN_CLADES = 22_931_793
+COLEMAN_SPLITS = 71_885_789
 COLEMAN_S = 2013
 SCRATCH_TENSORS = 10
 
@@ -43,9 +43,15 @@ def _budget(monkeypatch, budget_bytes, **overrides):
 
 
 def test_static_bytes_match_the_measured_coleman_statics():
-    """The per-clade / per-split byte constants must reproduce the 1.77 GiB actually measured."""
+    """The byte constants must reproduce the 1.68 GiB measured, erring only on the high side.
+
+    Over-estimating the statics can only shrink the derived clade budget, so it is safe; under-
+    estimating them would predict a peak that does not fit. The measured 1.68 GiB is the 2.22 GiB
+    of `tier_build` statics in job 57680456 minus the 0.54 GiB fp64 split-probability copy that
+    batching.py no longer materializes for an fp32 model.
+    """
     predicted = batch_static_bytes(COLEMAN_CLADES, COLEMAN_SPLITS) / GIB
-    assert predicted == pytest.approx(1.77, abs=0.10)
+    assert 1.68 <= predicted <= 1.68 * 1.15
 
 
 def test_static_bytes_do_not_depend_on_how_clades_are_batched():

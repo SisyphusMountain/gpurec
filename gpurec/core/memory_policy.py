@@ -173,21 +173,25 @@ def warm_adjoint_fits(
 #      so the clade budget is the knob that sizes it.
 #
 # Both constants below were measured on the full Coleman set (job 57680456, H100 NVL: 5123
-# families, 22,926,670 clades, 60,422,454 splits, S=2013, fp32, 79 batches of <=315,000 clades,
-# peak 23.85 GiB of which 2.22 GiB static).
+# families, 22,931,793 clades, 71,885,789 splits as the parser counts them, S=2013, fp32, 79
+# batches of <=315,000 clades, peak 23.85 GiB of which 2.22 GiB static).
 # ---------------------------------------------------------------------------------------------
 
 # Resident static bytes per clade and per CCP split, summed over every batch of a fit. Per clade:
 # ``perm`` (int64) + ``family_idx`` (int64) + ``leaf_species_index`` (int32) = 20 B. Per split:
-# ``sl`` + ``sr`` + ``reduce_idx`` + ``eq1_reduce_idx`` (int32 each) + the model-dtype
-# ``log_split_probs`` (4 B in fp32) = 20 B, plus the ``ge2_ptr`` / ``ge2_parent_ids`` fan-out arrays,
-# which the measurement puts at about 4 B per split more. These are a fact of that module's tensor
-# list rather than a tuning knob, so they are hard-wired here: change the tensors there and change
-# these with them. Check: 20 B x 22.93M + 24 B x 60.42M = 1.78 GiB, against 1.77 GiB measured (the
-# 2.22 GiB above minus the 0.45 GiB fp64 split-probability copy that batching.py no longer
-# materializes for an fp32 model).
+# ``sl`` + ``sr`` + ``reduce_idx`` (int32 each) = 12 B, the model-dtype ``log_split_probs`` (4 B in
+# fp32), and 4 B more for the ``eq1_reduce_idx`` / ``ge2_ptr`` / ``ge2_parent_ids`` arrays, which
+# only cover part of the splits each -- 20 B in total. These are a fact of that module's tensor list
+# rather than a tuning knob, so they are hard-wired here: change the tensors there and change these
+# with them.
+#
+# Check against the measurement: the 2.22 GiB above includes the fp64 split-probability copy that
+# batching.py no longer materializes for an fp32 model (71,885,789 x 8 B = 0.54 GiB), so the static
+# footprint this predicts is 2.22 - 0.54 = 1.68 GiB. The constants give 20 B x 22.93M + 20 B x
+# 71.89M = 1.77 GiB, i.e. 5 % high -- the conservative direction, since over-estimating the
+# statics can only make the derived clade budget smaller.
 _STATIC_BYTES_PER_CLADE = 20
-_STATIC_BYTES_PER_SPLIT = 24
+_STATIC_BYTES_PER_SPLIT = 20
 
 # The caching allocator RESERVES more than it hands out. At the Coleman peak it held 28.82 GiB
 # reserved against 23.85 GiB allocated, a factor of 1.21. A clade budget derived from the free
