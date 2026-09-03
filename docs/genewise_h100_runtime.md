@@ -302,6 +302,14 @@ gradients 397 s, curvature 38 s, verification 44 s, re-plans 13 s, certificate 1
 remaining ~120 s is the tail, where the last 2-17 live families iterate to the 120-iteration cap at
 1-2 s per iteration (in the 781 s run the tail was 33 s; it depends on which families stall).
 
+**Stall rule (commits 4476dd8c, refined next).** A live family whose best NLL has not improved for 24
+Newton steps is settled at its best iterate as unconverged. Full fit: **748.8 s**, NLL 9048938.31 bits,
+but 5117/5123 certified (5121 before): near a float32-flat optimum the NLL stops registering
+improvement while |Pg| still shrinks, so the rule now also requires |Pg| not to have improved by 10 %
+over the same window (re-measured below). The 500-family control of this run landed on a node whose
+CPUs were shared with other jobs and took 270 s for 35 steps (7.7 s per step against 1.2 s on a quiet
+node): timings from shared nodes are not comparable.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
