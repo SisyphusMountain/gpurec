@@ -1,0 +1,336 @@
+{
+  "tag": "memverify_cb0",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "clade_budget": 0,
+  "n_families": 5123,
+  "wall_s": 747.4081009589136,
+  "nll_bits": 9048938.282240339,
+  "nll_nats": 6272246.057395845,
+  "opt_seconds": 644.3713206308894,
+  "n_steps": 108,
+  "n_builds": 44,
+  "adam_seconds": 128.2793129850179,
+  "hessian_seconds": 39.6900396826677,
+  "n_hessians": 7,
+  "newton_grad_seconds": 405.6967233326286,
+  "n_verify_builds": 31,
+  "verify_seconds": 48.406658499035984,
+  "n_rebuilds": 12,
+  "rebuild_seconds": 12.639379711356014,
+  "certify_seconds": 17.31221712101251,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 226,
+        "remain": 4897
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 903,
+        "remain": 3994
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 1257,
+        "remain": 2737
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 456,
+        "remain": 2281
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 285,
+        "remain": 1996
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 184,
+        "remain": 1812
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 109,
+        "remain": 1703
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 252,
+        "remain": 1451
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 102,
+        "remain": 1349
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 337,
+        "remain": 1012
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 305,
+        "remain": 707
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 339,
+        "remain": 368
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 115,
+        "remain": 253
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 67,
+        "remain": 186
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 66,
+        "remain": 120
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 58,
+        "remain": 62
+      },
+      {
+        "pi": 16,
+        "it": 38,
+        "dropped": 11,
+        "remain": 51
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 8,
+        "remain": 43
+      },
+      {
+        "pi": 16,
+        "it": 42,
+        "dropped": 5,
+        "remain": 38
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 5,
+        "remain": 33
+      },
+      {
+        "pi": 16,
+        "it": 46,
+        "dropped": 9,
+        "remain": 24
+      },
+      {
+        "pi": 16,
+        "it": 48,
+        "dropped": 5,
+        "remain": 19
+      },
+      {
+        "pi": 16,
+        "it": 50,
+        "dropped": 2,
+        "remain": 17
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 3,
+        "remain": 14
+      },
+      {
+        "pi": 16,
+        "it": 60,
+        "dropped": 4,
+        "remain": 10
+      },
+      {
+        "pi": 16,
+        "it": 62,
+        "dropped": 1,
+        "remain": 9
+      },
+      {
+        "pi": 16,
+        "it": 64,
+        "dropped": 1,
+        "remain": 8
+      },
+      {
+        "pi": 16,
+        "it": 66,
+        "dropped": 1,
+        "remain": 7
+      },
+      {
+        "pi": 16,
+        "it": 70,
+        "dropped": 1,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 76,
+        "dropped": 2,
+        "remain": 4
+      },
+      {
+        "pi": 16,
+        "it": 78,
+        "dropped": 1,
+        "remain": 3
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 23.822239875793457,
+  "memory_phases": {
+    "parse_families": {
+      "n": 1,
+      "alloc_max": 0,
+      "alloc_last": 0,
+      "peak_max": 0,
+      "reserved_max": 0,
+      "peak_reserved_max": 0
+    },
+    "tier_build": {
+      "n": 1,
+      "alloc_max": 1802775040,
+      "alloc_last": 1802775040,
+      "peak_max": 1802775040,
+      "reserved_max": 1811939328,
+      "peak_reserved_max": 1811939328
+    },
+    "adam_warmup": {
+      "n": 1,
+      "alloc_max": 2207442432,
+      "alloc_last": 2207442432,
+      "peak_max": 14992608768,
+      "reserved_max": 27200061440,
+      "peak_reserved_max": 27200061440
+    },
+    "newton_grad": {
+      "n": 120,
+      "alloc_max": 8889715712,
+      "alloc_last": 1741347840,
+      "peak_max": 19148529152,
+      "reserved_max": 31237079040,
+      "peak_reserved_max": 31237079040
+    },
+    "verify_build": {
+      "n": 31,
+      "alloc_max": 8919865344,
+      "alloc_last": 1714232320,
+      "peak_max": 8919865344,
+      "reserved_max": 31237079040,
+      "peak_reserved_max": 31237079040
+    },
+    "verify_grad": {
+      "n": 31,
+      "alloc_max": 8889696768,
+      "alloc_last": 1714126336,
+      "peak_max": 17931385344,
+      "reserved_max": 21174943744,
+      "peak_reserved_max": 50713329664
+    },
+    "replan": {
+      "n": 12,
+      "alloc_max": 841291264,
+      "alloc_last": 39909888,
+      "peak_max": 8889698304,
+      "reserved_max": 868220928,
+      "peak_reserved_max": 21174943744
+    },
+    "hessian": {
+      "n": 7,
+      "alloc_max": 2843311104,
+      "alloc_last": 1738745856,
+      "peak_max": 25578935296,
+      "reserved_max": 30723276800,
+      "peak_reserved_max": 30723276800
+    },
+    "tier_end": {
+      "n": 1,
+      "alloc_max": 35812864,
+      "alloc_last": 35812864,
+      "peak_max": 1744071680,
+      "reserved_max": 289406976,
+      "peak_reserved_max": 6123683840
+    },
+    "cert_unfrozen_grad": {
+      "n": 1,
+      "alloc_max": 40799744,
+      "alloc_last": 40799744,
+      "peak_max": 1637819904,
+      "reserved_max": 1845493760,
+      "peak_reserved_max": 1845493760
+    },
+    "cert_full_build": {
+      "n": 1,
+      "alloc_max": 1828421632,
+      "alloc_last": 1828421632,
+      "peak_max": 1828421632,
+      "reserved_max": 1847590912,
+      "peak_reserved_max": 1847590912
+    },
+    "cert_nll_forward": {
+      "n": 1,
+      "alloc_max": 2197637632,
+      "alloc_last": 2197637632,
+      "peak_max": 9312010752,
+      "reserved_max": 9548333056,
+      "peak_reserved_max": 9548333056
+    },
+    "certify_end": {
+      "n": 1,
+      "alloc_max": 35907584,
+      "alloc_last": 35907584,
+      "peak_max": 2197696000,
+      "reserved_max": 291504128,
+      "peak_reserved_max": 9548333056
+    },
+    "driver_end": {
+      "n": 1,
+      "alloc_max": 33678336,
+      "alloc_last": 33678336,
+      "peak_max": 35907584,
+      "reserved_max": 291504128,
+      "peak_reserved_max": 291504128
+    }
+  },
+  "certificate": {
+    "converged": 5120,
+    "bound_active": 453,
+    "unconverged": 3,
+    "premature_drops": 0,
+    "pg_max": 0.4748297333717346
+  }
+}
