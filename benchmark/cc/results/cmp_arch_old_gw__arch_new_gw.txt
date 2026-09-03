@@ -1,0 +1,18 @@
+[cmp] build 16.8s families=5446
+[cmp] |d(NLL)| > 0.01 bits: 438 families (worse: 425, better: 13)
+[cmp] |d(NLL)| > 0.1 bits: 424 families (worse: 414, better: 10)
+[cmp] |d(NLL)| > 0.5 bits: 84 families (worse: 81, better: 3)
+[cmp] |d(NLL)| > 1 bits: 7 families (worse: 5, better: 2)
+[cmp] |d(NLL)| > 2 bits: 2 families (worse: 1, better: 1)
+[cmp] sum of worsenings 174.651 bits, sum of improvements -6.504 bits, max worsening 2.261, max improvement -2.079
+[cmp] total NLL difference (right - left) = 168.1471 bits over 5446 families; left sum 360167.9205, right sum 360336.0676
+[cmp] rank 0: family row 150  d(NLL) = +2.2611 bits  (1.34% of the total once ranks 0..0 are counted)  left theta = [1.0, 0.7681, -12.6255]  right theta = [-0.2047, -9.5446, -3.9044]
+[cmp] rank 1: family row 4365  d(NLL) = -2.0788 bits  (0.11% of the total once ranks 0..1 are counted)  left theta = [-10.1493, 1.0, 0.8076]  right theta = [-12.0759, -0.8357, -12.427]
+[cmp] rank 2: family row 434  d(NLL) = +1.9600 bits  (1.27% of the total once ranks 0..2 are counted)  left theta = [-14.139, -2.9358, -2.4032]  right theta = [-3.8994, -1.4758, -14.1796]
+[cmp] rank 3: family row 124  d(NLL) = +1.7645 bits  (2.32% of the total once ranks 0..3 are counted)  left theta = [1.0, 0.7155, -11.8304]  right theta = [-0.2043, -9.3017, -3.9049]
+[cmp] rank 4: family row 5031  d(NLL) = +1.2840 bits  (3.09% of the total once ranks 0..4 are counted)  left theta = [0.595, -0.0862, -3.8494]  right theta = [-0.3329, -8.5246, -3.5784]
+[cmp] rank 5: family row 2303  d(NLL) = -1.1609 bits  (2.40% of the total once ranks 0..5 are counted)  left theta = [-10.6505, 1.0, 0.8986]  right theta = [-12.6119, -0.9083, -2.8965]
+[cmp] rank 6: family row 2861  d(NLL) = +1.1314 bits  (3.07% of the total once ranks 0..6 are counted)  left theta = [-10.7399, 1.0, 0.8792]  right theta = [-12.3643, -0.792, -11.8181]
+[cmp] rank 7: family row 4355  d(NLL) = +0.7756 bits  (3.53% of the total once ranks 0..7 are counted)  left theta = [-10.676, 1.0, 0.8918]  right theta = [-12.0616, -0.7028, -12.8395]
+[cmp] rank 8: family row 1172  d(NLL) = +0.6888 bits  (3.94% of the total once ranks 0..8 are counted)  left theta = [-14.019, -13.4035, -3.7949]  right theta = [-15.2401, -2.7703, -11.865]
+[cmp] rank 9: family row 1583  d(NLL) = +0.6217 bits  (4.31% of the total once ranks 0..9 are counted)  left theta = [0.1314, 0.4459, -12.202]  right theta = [-1.5734, -10.8227, -3.1286]

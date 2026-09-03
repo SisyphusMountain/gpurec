@@ -1,0 +1,20 @@
+{
+  "tag": "sm_hog_old_gl",
+  "mode": "global",
+  "n_families": 40,
+  "wall_s": 25.17978114960715,
+  "nll_bits": 22992.47400955383,
+  "nll_nats": 15937.168533820057,
+  "theta_log2": [
+    -1.9452705383300781,
+    -0.6692450642585754,
+    -2.295276641845703
+  ],
+  "rate_D": 0.2596660852432251,
+  "rate_L": 0.6288356781005859,
+  "rate_T": 0.20372901856899261,
+  "gnorm": 0.08832168579101562,
+  "n_steps": 20,
+  "peak_gib": 0.8358287811279297,
+  "fit_global_shim": "dropped fit_global's dead e_adjoint_solver kwarg (SolverOptions has no such field)"
+}
