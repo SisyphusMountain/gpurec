@@ -1,6 +1,38 @@
 from dataclasses import dataclass
 from typing import Optional
 
+import torch
+
+# The self-loop early-exit tolerances below (``neumann_term_tol``, ``pi_linear_tol``)
+# are written in units of FLOAT32 precision, because float32 is the production model
+# dtype. Applied unchanged in float64 they would stop an iteration about nine orders
+# of magnitude before float64's own resolution and silently cap its accuracy -- which
+# is exactly what tests/test_origination_curvature.py caught: a Hessian that must be
+# symmetric to 1e-10 came out at 2.6e-8. ``dtype_scaled_self_loop_tol`` rescales them
+# to whatever dtype a solve actually runs in.
+_SELF_LOOP_TOL_REFERENCE_DTYPE = torch.float32
+
+
+def dtype_scaled_self_loop_tol(tol, dtype) -> float:
+    """Rescale a float32-referenced self-loop early-exit tolerance to ``dtype``.
+
+    The configured number says "stop once the remaining change is this small
+    relative to the row's own value, measured in float32 precision". Carrying that
+    meaning to another dtype means scaling by the ratio of machine epsilons, so:
+
+      * float32  -> factor exactly 1.0, i.e. bit-for-bit the configured value;
+      * float64  -> factor 1.86e-9 (2.22e-16 / 1.19e-7), so 1e-7 becomes 1.9e-16,
+        just under one float64 ulp -- the exit still fires, but only once the term
+        genuinely can no longer move the sum at float64 resolution.
+
+    ``tol`` of 0.0 (early exit disabled) stays 0.0.
+    """
+    tol = float(tol)
+    if tol < 0.0:
+        raise ValueError("self-loop early-exit tolerance must be non-negative")
+    reference_eps = float(torch.finfo(_SELF_LOOP_TOL_REFERENCE_DTYPE).eps)
+    return tol * (float(torch.finfo(dtype).eps) / reference_eps)
+
 
 @dataclass
 class SolverOptions:
@@ -10,8 +42,10 @@ class SolverOptions:
     e_tol: float = 1e-8
     pi_iters: int = 64
     neumann_terms: int = 64
-    # Early-exit threshold for the wave self-loop Neumann series. Each row block
-    # stops as soon as its largest remaining term is at or below
+    # Early-exit threshold for the wave self-loop Neumann series, in units of float32
+    # precision (see dtype_scaled_self_loop_tol above: a float64 solve rescales it by
+    # eps64/eps32 = 1.86e-9 so it never caps float64). Each row block stops as soon as
+    # its largest remaining term is at or below
     # neumann_term_tol * (that block's largest |adjoint|) -- i.e. once the term can
     # no longer move the accumulated adjoint at float32 resolution. The test is
     # purely relative to each row's own adjoint: an absolute floor makes it far too
@@ -85,7 +119,9 @@ class SolverOptions:
     # Stopping test for the "linear" self-loop, applied per clade row: the row stops once EVERY
     # species lane has settled relative to ITSELF, |p_new[s] - p[s]| <= pi_linear_tol * p_new[s],
     # where p is the row's linear iterate. 1e-6 is fp32's usable relative floor (~8x eps 1.19e-7),
-    # the same target `dtype_rel_tol_default` uses for the other fp32 solves. 0.0 disables the
+    # the same target `dtype_rel_tol_default` uses for the other fp32 solves. Like
+    # `neumann_term_tol` it is written in units of float32 precision and rescaled by
+    # `dtype_scaled_self_loop_tol` for the dtype a solve runs in. 0.0 disables the
     # early exit, so every row runs the full `pi_iters` count.
     pi_linear_tol: float = 1e-6
 
