@@ -308,9 +308,13 @@ solves (about 15 % each) and the split reductions; all are latency-bound at low 
   fused-series merge. The cause was not a race but uninitialised memory: the wave backward writes
   only the clade rows the adjoint pruner keeps, and its returned buffers were `torch.empty`, so
   pruned rows carried allocator leftovers that the HVP (unlike the gradient) does not mask. Pruned
-  rows are now zeroed (commit 0d319ad9); the test passes 10 of 10 with the exact defaults. With the
-  `"linear"` forward selected explicitly the HVP is still not bitwise reproducible (16 of 20 repeats
-  differ) although the forward's own output is; that path is being fixed.
+  rows are now zeroed (commit 0d319ad9). What remains is 1 to 3 float32-ulp scatter in the
+  Hessian-vector product for every forward path alike, traced to the relaxed float atomics that
+  accumulate parameter cotangents in the second-order kernels (the forward's own outputs are
+  bitwise stable across repeats, and a poisoned-allocator run shows no uninitialised read is left).
+  A bit-identity assertion on the HVP is therefore inherently flaky at the ulp level; making it hold
+  would need a fixed-order reduction in those kernels. Measurement tools:
+  `benchmark/cc/test_hvp_reproducibility.py`, `test_hvp_bit_identity_flake.py`.
 
 ## Reproducing
 
