@@ -52,9 +52,11 @@ from gpurec.api import _failure_dump
 from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
 from gpurec.config import GpurecConfig, PrecisionOptions, resolve_torch_dtype
+from gpurec.config.memory import MemoryOptions
 from gpurec.config.rates import RateBounds
 from gpurec.core.inference.solver import solve_forward_residual
-from gpurec.core.scheduling.batching import parse_families
+from gpurec.core.memory_policy import clade_budget_for_device
+from gpurec.core.scheduling.batching import DEFAULT_CLADE_BUDGET, parse_families
 from gpurec.optimization import clamp_log_rate_, log2_rate_bounds, project_rate_gradient_
 from gpurec.solver.value_and_grad import forward_solve, free_cuda_cache_if_tight
 from gpurec.solver.hvp.exact import make_exact_hvp_single
@@ -98,6 +100,19 @@ GENEWISE_REFERENCE = dict(
 # standard "skip the update rather than destroy positive-definiteness" guard, and the fit is
 # insensitive to its exact value (it only has to exclude s.y <= 0 and 0/0).
 _BFGS_CURVATURE_FLOOR = 1e-10
+
+# Optional memory probe. ``None`` (the state a normal run is in) makes every ``_mem`` call below a
+# single ``is None`` test, so an uninstrumented fit is unchanged. A benchmark driver installs a
+# callable with ``set_memory_probe`` and is handed the name of every phase boundary the recipe
+# already brackets with ``_sync()``; the callable reads the CUDA allocator counters itself. This is
+# a measurement facility, never a setting: nothing the recipe computes depends on it.
+_MEMORY_PROBE = None
+
+
+def set_memory_probe(probe) -> None:
+    """Install (or, with ``None``, remove) the phase-boundary memory probe. See ``_MEMORY_PROBE``."""
+    global _MEMORY_PROBE
+    _MEMORY_PROBE = probe
 
 
 def _resolve_gene_trees(spec) -> list[str]:
@@ -281,6 +296,14 @@ def fit_genewise(
     certified at freeze time, ``premature_drops`` is 0 by construction -- a frozen family's reported
     ``|Pg|`` IS the one that justified freezing it. The key stays for result-shape compatibility.
 
+    ``clade_budget`` -- how many clades one batch may hold, which is what sizes the transient
+    [clades x species] forward / adjoint / curvature buffers and therefore the fit's peak GPU
+    memory. ``None`` (the default) DERIVES it from the card: never above the tuned
+    ``DEFAULT_CLADE_BUDGET`` of 315,000, and lower only when 315,000's predicted peak does not fit
+    this device's memory budget. So a card with room to spare runs exactly the fit it always ran,
+    and the same fit still runs on a small card with smaller batches. An explicit int uses that
+    value as given, fitting or not.
+
     ``config`` (a top-level :class:`GpurecConfig`) threads ``config.solver`` (the same key subset as
     ``_BASE_SOLVER``) and ``config.rates`` (``min_rate``/``max_rate``) when the corresponding explicit
     kwarg is left at its signature default; an explicit kwarg always wins. ``config=None`` (the
@@ -296,9 +319,10 @@ def fit_genewise(
 
     NOT threaded: ``config.newton`` (this recipe's Newton step is a bespoke box-constrained
     trust-region analytic-HVP 3x3 Hessian solve, not a ``NewtonOptions`` consumer); ``config.regularizer``
-    (unused -- this recipe has no regularization term); ``config.memory`` (the adjoint warm-start
-    is controlled by the ``GPUREC_WARM_ADJOINT`` env var + the library's own memory gate, not a
-    config field).
+    (unused -- this recipe has no regularization term). Of ``config.memory`` only
+    ``scratch_tensors`` is read, as the clades x species multiplier that sizes a batch's working set
+    when ``clade_budget`` is derived from the card; the adjoint warm-start is still controlled by
+    the ``GPUREC_WARM_ADJOINT`` env var plus the library's own memory gate, not by a config field.
     """
     precision = config.precision if config is not None else PrecisionOptions()
     if dtype is None:
@@ -360,6 +384,11 @@ def fit_genewise(
         if dev.type == "cuda":
             torch.cuda.synchronize()
 
+    def _mem(label):
+        """Hand a phase-boundary name to the installed memory probe (a no-op when none is)."""
+        if _MEMORY_PROBE is not None:
+            _MEMORY_PROBE(label)
+
     def clade_counts(model):
         """Per-family clade counts of ``model``, in its own family order (= the ``active`` order).
 
@@ -379,7 +408,7 @@ def fit_genewise(
         m = GeneReconModel(str(species_tree), [str(fam_paths[i]) for i in idx], mode="genewise",
                            device=dev, dtype=dtype, config=config, solver_options=sopts(pi, neu),
                            parsed_families=parsed, family_indices=idx,
-                           **({} if clade_budget is None else {"clade_budget": clade_budget}))
+                           clade_budget=clade_budget)
         m.receiver_weights.requires_grad_(False)   # uniform transfer recipients (UndatedDTL default)
         return m
 
@@ -407,6 +436,33 @@ def fit_genewise(
     F_all = len(fam_paths)
     # Parse every family ONCE for the whole fit; build() re-plans subsets off this handle.
     parsed = parse_families(species_tree, fam_paths)
+    _mem("parse_families")
+    if clade_budget is None and dev.type != "cuda":
+        # No card to size against: the tuned batch size stands, and the per-family counts below are
+        # not even read.
+        clade_budget = DEFAULT_CLADE_BUDGET
+    if clade_budget is None:
+        # Size the batches to the card. The per-family clade and split counts come straight off the
+        # parse handle (~2 s at 5123 families, 0.3 % of the fit) and are the two totals the static
+        # part of the footprint scales with; the batch clade budget sizes the transient part.
+        _fam_meta = parsed.families(list(range(F_all)))
+        clade_budget, _budget_detail = clade_budget_for_device(
+            total_clades=sum(int(f["C"]) for f in _fam_meta),
+            total_splits=sum(int(f["N_splits"]) for f in _fam_meta),
+            S=int(parsed.species()["S"]),
+            dtype=dtype,
+            device=dev,
+            fixed_clade_budget=DEFAULT_CLADE_BUDGET,
+            scratch_tensors=(config.memory if config is not None else MemoryOptions()).scratch_tensors,
+        )
+        del _fam_meta
+        _gib = 1024 ** 3
+        _log(f"[fit_genewise] clade_budget={clade_budget:,} "
+             f"({'derived from the device' if _budget_detail['automatic'] else 'the tuned default; it fits'}): "
+             f"device budget {(_budget_detail['device_budget_bytes'] or 0) / _gib:.1f} GiB, "
+             f"statics {_budget_detail['static_bytes'] / _gib:.2f} GiB, "
+             f"one batch {_budget_detail['working_set_bytes'] / _gib:.2f} GiB, "
+             f"predicted peak {_budget_detail['predicted_peak_bytes'] / _gib:.2f} GiB")
     # Starting point for every family's [log2 D, log2 L, log2 T]. The historical start was all
     # zeros (every rate = 1.0 x speciation), which is both far from typical optima and in the
     # slow, stiff high-rate regime for the wave/E fixed points; callers pass the start explicitly.
@@ -472,6 +528,7 @@ def fit_genewise(
             last_tier = pi_idx == len(pis) - 1
             carry = active[:0].clone()
             m = build(active.tolist(), pi_cur, neu_opt); n_builds += 1
+            _mem("tier_build")
             sub = theta.index_select(0, active).clone()
             # ``settled`` marks the rows of the current model that are finished for this tier --
             # frozen (verified converged, theta final) or deferred to the next pi tier. They are
@@ -522,6 +579,7 @@ def fit_genewise(
                     B_fam.index_copy_(0, active, B)
                     refresh_due = False   # the warm-up already paid for this curvature
                 _sync(); adam_seconds += time.perf_counter() - _t
+                _mem("adam_warmup")
             for it in range(max_iter):
                 live = ~settled
                 if not bool(live.any()):
@@ -529,6 +587,7 @@ def fit_genewise(
                 _sync(); _t = time.perf_counter()
                 lv, g = lg(m, sub)
                 _sync(); newton_grad_seconds += time.perf_counter() - _t
+                _mem("newton_grad")
                 _track_best(active, lv, sub, live, n_steps)
                 fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
                     ((sub <= lo + bounds.bound_active_eps) & (g > 0))
@@ -578,6 +637,7 @@ def fit_genewise(
                             _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
                             mv = build(active.index_select(0, cand).tolist(), cert_pi, neu_cert)
                             n_verify_builds += 1; n_builds += 1
+                            _mem("verify_build")            # candidate model alongside the live one
                             pg_c = pgmax(sub_c, lg(mv, sub_c)[1])
                             ok_c = pg_c < tol
                             cert_pg.index_copy_(0, active.index_select(0, cand), pg_c)
@@ -587,6 +647,7 @@ def fit_genewise(
                             cert_ok = torch.zeros_like(conv)
                             cert_ok.index_copy_(0, cand, ok_c)
                             _sync(); verify_seconds += time.perf_counter() - _t
+                            _mem("verify_grad")
                         drop = cert_ok
                         defer = torch.zeros_like(conv)
                         reject = conv & ~cert_ok
@@ -620,6 +681,7 @@ def fit_genewise(
                             clades = clade_counts(m); clade_total = float(clades.sum())
                             settled = torch.zeros(active.numel(), dtype=torch.bool, device=dev)
                             _sync(); rebuild_seconds += time.perf_counter() - _t
+                            _mem("replan")
                             _log(f"  [pi{pi_cur} it{it}] re-planned over {active.numel()} live families")
                             continue   # the gradient above belongs to the old batch; re-measure
                 if refresh_due:
@@ -634,6 +696,7 @@ def fit_genewise(
                         ),
                     )
                     _sync(); hessian_seconds += time.perf_counter() - _t
+                    _mem("hessian")
                     refresh_due = False; since_exact = 0; n_hessians += 1
                 e, V = torch.linalg.eigh(B_fam.index_select(0, active))
                 Hd = V @ torch.diag_embed(e.clamp(min=mu)) @ V.transpose(1, 2)   # convexify -> PD
@@ -648,6 +711,7 @@ def fit_genewise(
                 theta.index_copy_(0, active[live], best_theta.index_select(0, active[live]))
                 carry = torch.cat([carry, active[live]])
             del m; torch.cuda.empty_cache()
+            _mem("tier_end")
     finally:
         if _warm_saved is None:
             os.environ.pop("GPUREC_WARM_ADJOINT", None)
@@ -685,14 +749,17 @@ def fit_genewise(
                 mneed = build(need.tolist(), cert_pi, neu_cert)
                 th_n = theta.index_select(0, need)
                 pg.index_copy_(0, need, pgmax(th_n, lg(mneed, th_n)[1]))
+                _mem("cert_unfrozen_grad")
                 del mneed; torch.cuda.empty_cache()
             # 2. the headline likelihood: ONE forward-only pass over every family, so the total is a
             #    single consistent measurement on a single model (no backward, no Hessian).
             mfull = build(range(F_all), cert_pi, neu_cert)
+            _mem("cert_full_build")
             if need.numel() == F_all:   # nothing was ever frozen (verify_drop=False): one model does both
                 pg = pgmax(theta, lg(mfull, theta)[1])
             with torch.no_grad():
                 nll_bits = float(mfull.genewise_loss_vector(theta=theta).sum())
+            _mem("cert_nll_forward")
             bound_active = ((theta <= lo + bounds.bound_active_eps) | (theta >= hi - bounds.bound_active_eps)).any(dim=1)
             conv = pg < tol
             result.update(
@@ -711,6 +778,7 @@ def fit_genewise(
                 result["interior_pd"] = int((conv & (lam_min > tol) & ~bound_active).sum())
             del mfull; torch.cuda.empty_cache()
             _sync(); result["certify_seconds"] = time.perf_counter() - _t
+            _mem("certify_end")
         finally:
             if _w:
                 os.environ["GPUREC_WARM_ADJOINT"] = _w

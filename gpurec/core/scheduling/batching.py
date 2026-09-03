@@ -1,5 +1,6 @@
 import json
 from bisect import bisect_right
+from collections.abc import Mapping
 
 import numpy as np
 import torch
@@ -45,6 +46,11 @@ def _normalize_batch_packing(batch_packing: str, clade_budget: int | None) -> st
 # path); narrowing in numpy first keeps the host->device copy at the tensor's final width.
 _NUMPY_FOR_TORCH_INDEX = {torch.int32: np.int32, torch.int64: np.int64}
 
+# Per-batch clade budget the depth-first packer is tuned for, and the ceiling the device-derived
+# budget in gpurec/core/memory_policy.clade_budget_for_device is never allowed to exceed. Single
+# source for the signature defaults below and for GeneReconModel's.
+DEFAULT_CLADE_BUDGET = 315_000
+
 
 def _index_tensor(values, *, dtype: torch.dtype, device) -> torch.Tensor:
     """``torch.tensor(values, dtype=dtype, device=device)`` without a per-element Python loop.
@@ -61,13 +67,50 @@ def _float64_array(values) -> np.ndarray:
     return np.ascontiguousarray(np.asarray(values, dtype=np.float64))
 
 
-def _materialize_split_probabilities(values, *, device) -> dict[torch.dtype, torch.Tensor]:
-    """Create both supported dense-kernel variants directly from f64 payload values."""
-    host = torch.from_numpy(_float64_array(values))
-    return {
-        dtype: host.to(dtype=dtype, device=device).contiguous()
-        for dtype in (torch.float32, torch.float64)
-    }
+# The two model dtypes a wave's split log-probabilities can be handed to a kernel as. Not a
+# setting: gpurec/config/precision.py admits exactly these two model dtypes.
+_SPLIT_PROB_DTYPES = (torch.float32, torch.float64)
+
+
+class _LazySplitProbabilities(Mapping):
+    """A wave's split log-probabilities, put on the DEVICE only for the dtypes actually asked for.
+
+    The payload stores these values as f64. Both device variants used to be built up front, so that
+    a later ``model.to(...)`` or an explicit runtime dtype could never be served a widened fp32
+    copy. Both are still available and still built from the SAME f64 source -- no precision is lost
+    -- but the device tensor for a dtype is only created when that dtype is first requested, and
+    cached from then on. An fp32 model therefore never materializes the fp64 variant, which nothing
+    reads: on the 5123-family Coleman set (60.42M splits) that copy is 483 MiB of device memory,
+    a fifth of the 2.22 GiB of per-batch statics that stay resident for the whole fit.
+
+    The f64 source stays on the HOST, where the payload already put it, so this trades device bytes
+    for host bytes -- 483 MiB of host RAM at Coleman scale, against 96 GiB of job memory.
+    """
+
+    def __init__(self, host_values, device):
+        self._host = host_values          # torch.float64 CPU tensor: the payload's own values
+        self._device = device
+        self._device_tensors = {}
+
+    def __getitem__(self, dtype):
+        if dtype not in _SPLIT_PROB_DTYPES:
+            raise KeyError(dtype)
+        tensor = self._device_tensors.get(dtype)
+        if tensor is None:
+            tensor = self._host.to(dtype=dtype, device=self._device).contiguous()
+            self._device_tensors[dtype] = tensor
+        return tensor
+
+    def __iter__(self):
+        return iter(_SPLIT_PROB_DTYPES)
+
+    def __len__(self):
+        return len(_SPLIT_PROB_DTYPES)
+
+
+def _materialize_split_probabilities(values, *, device) -> Mapping:
+    """The wave's split log-probabilities as a lazy {dtype: device tensor} view of the f64 payload."""
+    return _LazySplitProbabilities(torch.from_numpy(_float64_array(values)), device)
 
 
 def _load_native_module():
@@ -88,7 +131,7 @@ def preprocess_dataset(
     families,
     *,
     family_chunk_size: int | None = 300,
-    clade_budget: int | None = 315_000,
+    clade_budget: int | None = DEFAULT_CLADE_BUDGET,
     batch_packing: str = "depth_first_fit",
     max_wave_size: int = 8192,
     family_group_assignments: list[int] | None = None,
@@ -322,7 +365,7 @@ def plan_batch_wave_layouts(
     families,
     *,
     family_chunk_size: int | None = 300,
-    clade_budget: int | None = 315_000,
+    clade_budget: int | None = DEFAULT_CLADE_BUDGET,
     batch_packing: str = "depth_first_fit",
     max_wave_size: int = 8192,
     family_group_assignments: list[int] | None = None,
@@ -451,9 +494,11 @@ def build_wave_layout(
     lefts_t = torch.tensor(lefts_new, dtype=index_dtype, device=device)
     rights_t = torch.tensor(rights_new, dtype=index_dtype, device=device)
     parents_t = torch.tensor(parents_new, dtype=index_dtype, device=device)
-    # ``logp_global`` contains Python doubles decoded from Rust f64 values. Build
-    # both supported kernel inputs directly, without an intermediate cast.
-    logp_by_dtype = _materialize_split_probabilities(logp_global, device=device)
+    # ``logp_global`` contains Python doubles decoded from Rust f64 values. Keep them on the host
+    # as f64 and let each wave's ``_LazySplitProbabilities`` put only the dtypes a kernel asks for
+    # on the device (the plan path below does the same), instead of building both device variants
+    # of the whole array and then slicing them per wave.
+    logp_host = torch.from_numpy(_float64_array(logp_global))
     wave_metas = []
     order_head = 0
     for wave_idx, wave in enumerate(waves):
@@ -476,10 +521,9 @@ def build_wave_layout(
             meta["sr"] = rights_t[split_tensor].contiguous()
             reduce_idx = (parents_t[split_tensor] - start).contiguous()
             meta["reduce_idx"] = reduce_idx
-            split_probabilities = {
-                dtype: values[split_tensor].contiguous()
-                for dtype, values in logp_by_dtype.items()
-            }
+            split_probabilities = _LazySplitProbabilities(
+                logp_host[split_tensor.cpu()].contiguous(), device
+            )
             meta["_log_split_probs_by_dtype"] = split_probabilities
             meta["log_split_probs"] = split_probabilities[model_dtype]
             meta["n_eq1"] = n_eq1
@@ -528,7 +572,7 @@ def plan_family_batches(
     families,
     *,
     family_chunk_size: int | None = 300,
-    clade_budget: int | None = 315_000,
+    clade_budget: int | None = DEFAULT_CLADE_BUDGET,
     batch_packing: str = "depth_first_fit",
 ):
     family_cap = int(family_chunk_size or 0)

@@ -14,6 +14,7 @@ from gpurec.api.solver_options import SolverOptions
 from gpurec.config import GpurecConfig, PrecisionOptions, torch_dtype_name
 from gpurec.config.rates import RateBounds
 from gpurec.core.scheduling.batching import (
+    DEFAULT_CLADE_BUDGET,
     plan_batch_wave_layouts,
     plan_batches_from_parsed,
     preprocess_dataset,
@@ -51,7 +52,7 @@ class GeneReconModel(torch.nn.Module):
         mode: str = "global",
         device="cuda",
         family_chunk_size: int | None = 300,
-        clade_budget: int | None = 315_000,
+        clade_budget: int | None = DEFAULT_CLADE_BUDGET,
         batch_packing: str = "depth_first_fit",
         max_wave_size: int = 8192,
         solver_options: SolverOptions | dict | None = None,

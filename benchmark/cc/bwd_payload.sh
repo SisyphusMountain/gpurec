@@ -33,9 +33,9 @@ PYTHONPATH=$NEW $CC_PY -u $NEW/benchmark/cc/bwd_kernels.py --mode time --species
 
 echo "############ FIT 40 families (bwd_smoke40) ############"
 $CC_PY -u $NEW/benchmark/cc/run_genewise.py --species $CC_SPECIES --families $CC_FAMILIES --limit 40 \
-  --forward-self-loop exact --adjoint-self-loop exact --init-rate none \
+  --forward-self-loop exact --adjoint-self-loop exact --init-rate none --clade-budget 0 \
   --out-dir $CC_RUNS/results --tag bwd_smoke40
 echo "############ FIT 500 families (bwd_500) ############"
 $CC_PY -u $NEW/benchmark/cc/run_genewise.py --species $CC_SPECIES --families $CC_FAMILIES --limit 500 \
-  --forward-self-loop exact --adjoint-self-loop exact --init-rate none \
+  --forward-self-loop exact --adjoint-self-loop exact --init-rate none --clade-budget 0 \
   --out-dir $CC_RUNS/results --tag bwd_500
