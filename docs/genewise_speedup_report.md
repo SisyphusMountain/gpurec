@@ -34,12 +34,14 @@ python benchmark/cc/run_genewise.py --species ReferenceTree.nwk --families famil
 
 `--forward-self-loop exact --adjoint-self-loop exact` select the new exact solvers described below
 (the driver makes every choice explicit); `--init-rate none` uses the new default starting rates.
-Through the library nothing needs to be passed: `GpurecConfig.genewise_reference()`, which `gpurec
-fit --mode genewise` and `fit_dtl(..., mode="genewise")` use, now selects the exact solves. The
-library-wide `SolverOptions` defaults stay on the iterated paths ("linear" forward, "series"
-adjoint) because the exact solves are validated with uniform transfer receiver weights only (what
-the genewise recipe uses); a float64 test with optimized, non-uniform receiver weights showed a
-Hessian asymmetry of 3e-3 on the exact path and is being fixed.
+Through the library nothing needs to be passed: the exact solves are now the `SolverOptions`
+defaults (`forward_self_loop = "exact"`, `adjoint_self_loop = "exact"`), so `gpurec fit`, `fit_dtl`
+and `GeneReconModel` use them unless told otherwise. Before that switch, a float64 test with
+optimized, non-uniform transfer receiver weights exposed one missing term in the exact tangent at
+internal species nodes (Hessian asymmetry 2.8e-3); it is fixed (asymmetry 6e-14, equal to the
+iterated solves), bitwise-neutral for uniform weights, and guarded by a new test that compares the
+exact and iterated Hessians with random receiver weights. With the exact defaults the full test
+suite shows exactly the pre-existing failures of the original code and none added.
 
 ## How a genewise fit works (the words used below)
 
@@ -302,6 +304,9 @@ solves (about 15 % each) and the split reductions; all are latency-bound at low 
 - The exact tangent in float32 is a few times the reference noise at a flat starting point (signed
   accumulation through 33 tree levels) and indistinguishable from 16 sweeps at fitted rates; carrying
   the two affine coefficients in float64 inside the walk would remove even that.
+- The fused Neumann series (`adjoint_self_loop = "series"`, no longer the default) makes one
+  bit-identity test flaky (4 of 6 runs) since its introduction; a race in the fused kernel is
+  suspected and being investigated.
 
 ## Reproducing
 
@@ -327,8 +332,8 @@ the `.so` files are gitignored and the ones previously in the tree were debug bu
 
 | where | knob | meaning |
 |---|---|---|
-| `SolverOptions` | `forward_self_loop` = "log" / "linear" (library default) / "exact" (genewise recipe default) | which forward self-loop kernel runs |
-| `SolverOptions` | `adjoint_self_loop` = "series" (library default) / "exact" (genewise recipe default) | which adjoint solve runs (the exact tangent follows "exact") |
+| `SolverOptions` | `forward_self_loop` = "log" / "linear" / "exact" (default) | which forward self-loop kernel runs |
+| `SolverOptions` | `adjoint_self_loop` = "series" / "exact" (default) | which adjoint solve runs (the exact tangent follows "exact") |
 | `SolverOptions` | `pi_linear_tol` (1e-6), `neumann_term_tol` (1e-7) | early-exit tolerances of the linear forward and the fused series, in float32 units |
 | `fit_genewise` (required keywords, set by `fit_dtl`) | `min_drop` 32, `rebuild_frac` 0.25, `hessian_refresh` 15, `certify_curvature` False, `init_log2_rates` (log2 0.01, log2 0.1, log2 0.01), `stall_patience` 120 | recipe controls described in section C |
 | `GeneReconModel` | `parsed_families`, `family_indices` | build from an already parsed dataset |

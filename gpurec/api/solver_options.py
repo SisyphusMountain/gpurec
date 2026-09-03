@@ -105,7 +105,7 @@ class SolverOptions:
     #               answer is what "log" converges to as `pi_iters` grows, so `pi_iters` does not
     #               affect it (beyond the one- or two-step log-space prologue all three modes
     #               share) and there is nothing for `pi_linear_tol` to stop.
-    forward_self_loop: str = "linear"
+    forward_self_loop: str = "exact"
     # Which adjoint self-loop the wave backward runs, per clade row
     # (`gpurec.core.kernels.wave_backward.ADJOINT_SELF_LOOP_MODES`).
     #   "series" -- sum the Neumann terms of (I - J^T)^-1 rhs in one fused kernel, stopping a row
@@ -115,7 +115,7 @@ class SolverOptions:
     #               a leaves-to-root pass, one scalar equation for the row's total donor adjoint,
     #               and a root-to-leaves pass. Its answer is what "series" converges to, so
     #               `neumann_terms`, `neumann_term_tol` and any warm start have no effect on it.
-    adjoint_self_loop: str = "series"
+    adjoint_self_loop: str = "exact"
     # Stopping test for the "linear" self-loop, applied per clade row: the row stops once EVERY
     # species lane has settled relative to ITSELF, |p_new[s] - p[s]| <= pi_linear_tol * p_new[s],
     # where p is the row's linear iterate. 1e-6 is fp32's usable relative floor (~8x eps 1.19e-7),
