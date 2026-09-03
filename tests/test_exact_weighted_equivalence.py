@@ -19,7 +19,9 @@ These tests turn all three weightings on at once and check every output the fit 
                               of the very system the exact solve eliminates.
 
 Compared, in float64 on a small fixture: per-family NLL, the theta gradient, the receiver-weight
-gradient, the origination gradient, and the genewise 3x3 curvature blocks.
+gradient, the origination gradient, the genewise 3x3 curvature blocks, and the full joint
+(theta, receiver, origination) second-derivative matrix -- which can only be built with the weights
+switched on at all, because it refuses to run at a uniform base.
 
 Every solver setting is written out explicitly rather than inherited from ``SolverOptions``'
 defaults: the defaults ARE one of the two arms, so a test that relied on them would stop comparing
