@@ -296,6 +296,12 @@ pre-existing failures (`bicgstab_*` / `e_adjoint_solver` options, benchmark `--h
 **Timing sample before the additive backward kernel (job full_v14exact3): 781.2 s**, NLL 9048938.28,
 5119/5123 converged.
 
+**Final configuration (job full_v15final, all merged tracks, fp64 fix): 776.8 s**, NLL 9048938.28 bits,
+5121/5123 converged (2 unconverged), 109 Newton steps, peak 24 GiB. Split: warm-up 125 s, Newton
+gradients 397 s, curvature 38 s, verification 44 s, re-plans 13 s, certificate 17 s, build 20 s; the
+remaining ~120 s is the tail, where the last 2-17 live families iterate to the 120-iteration cap at
+1-2 s per iteration (in the 781 s run the tail was 33 s; it depends on which families stall).
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
