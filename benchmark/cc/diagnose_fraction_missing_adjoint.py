@@ -134,6 +134,11 @@ def main() -> int:
     parser.add_argument("--receiver-scale", required=True, type=float)
     parser.add_argument("--origination-scale", required=True, type=float)
     parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument("--per-family", required=True, type=int, choices=(0, 1),
+                        help="1 to also rebuild the model one family at a time at the LAST level "
+                             "and name the families whose own solve diverges. A batch's solve "
+                             "covers many families at once, so this is what turns 'batch 1 blew "
+                             "up' into 'these gene families blow up'.")
     args = parser.parse_args()
 
     from gpurec.api._execution import stream_genewise_loss_vector_grad
@@ -215,6 +220,47 @@ def main() -> int:
                 print(f"    term norms: {shown}", flush=True)
             del model, theta, receiver, origination
             torch.cuda.empty_cache()
+
+        if args.per_family:
+            level = args.missing_levels[-1]
+            missing = _random_fraction_missing(
+                args.species, args.missing_leaf_fraction, level, args.seed
+            )
+            print(f"\n[per-family at level {level:g}] one model per family, "
+                  f"{len(paths)} families", flush=True)
+            diverged = []
+            for family_index, path in enumerate(paths):
+                options = _solver_options("exact", 64, 64, torch.float64, 200)
+                model = GeneReconModel(
+                    args.species, [path], mode="genewise", device="cuda", dtype=torch.float64,
+                    solver_options=options, clade_budget=args.clade_budget,
+                    fraction_missing=missing,
+                )
+                species_count = int(model.species_helpers["S"])
+                receiver = _random_weights(
+                    species_count, args.receiver_scale, args.seed, torch.float64).cuda()
+                origination = _random_weights(
+                    species_count, args.origination_scale, args.seed + 1, torch.float64).cuda()
+                theta = _theta(args.fitted_theta, [path], torch.float64)
+                history.clear()
+                stream_genewise_loss_vector_grad(
+                    model.batch_statics, theta, receiver, origination,
+                    need_grad=True, update_warm_starts=False, need_origination_grad=True,
+                )
+                torch.cuda.synchronize()
+                worst = max(
+                    (max(norms) for norms in history if norms), default=0.0
+                )
+                if not math.isfinite(worst) or worst > 1.0:
+                    diverged.append((family_index, path, worst,
+                                     [round(float(t), 4) for t in theta[0].tolist()]))
+                del model, theta, receiver, origination
+                torch.cuda.empty_cache()
+            print(f"[per-family] {len(diverged)} of {len(paths)} families diverge on their own:",
+                  flush=True)
+            for family_index, path, worst, rates in diverged:
+                print(f"   family {family_index}: largest term {worst:.4e}  "
+                      f"theta (log2 rates D,T,L) = {rates}  {path}", flush=True)
     finally:
         from gpurec.api import _implicit_grad
 
