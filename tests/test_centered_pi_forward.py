@@ -94,6 +94,7 @@ def test_pi_wave_forward_rejects_accumulator_narrower_than_residual() -> None:
             accumulator_dtype=torch.float32,
             self_loop_mode="linear",
             linear_tol=1e-6,
+            exact_range_log2=100.0,
             linear_iterations_out=None,
             exact_guard_trips_out=None,
         )
@@ -315,6 +316,7 @@ def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows(
         has_leaf_term=False,
         use_receiver_weights=False,
         pi_residual_out=pi_residual,
+        row_mask=None,
     )
 
     expected_absolute = pi_in[0].double() + pi_in_offset[0] + dl_const[0].double()
@@ -381,6 +383,7 @@ def test_centered_final_pibar_all_impossible_row_uses_zero_offset() -> None:
         store_final_pibar=True,
         has_leaf_term=False,
         use_receiver_weights=False,
+        row_mask=None,
     )
 
     assert torch.isneginf(pibar).all().item()
@@ -452,6 +455,7 @@ def test_centered_split_input_uses_raw_max_for_virtual_dts_frame(
         has_leaf_term=False,
         input_ws=0,
         use_receiver_weights=weighted,
+        row_mask=None,
     )
 
     torch.testing.assert_close(

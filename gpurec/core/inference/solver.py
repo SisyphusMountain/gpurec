@@ -102,6 +102,7 @@ def solve_resident_e_pi(
         accumulator_dtype=accumulator_dtype,
         self_loop_mode=solver_options.forward_self_loop,
         linear_tol=solver_options.pi_linear_tol,
+        exact_range_log2=solver_options.exact_range_log2,
         # Per-row iteration counts and exact-solve pivot-guard counts are benchmarking probes,
         # not production state; the benchmark wraps ``pi_wave_forward`` to pass its own tensors.
         linear_iterations_out=None,

@@ -116,6 +116,16 @@ class SolverOptions:
     #               and a root-to-leaves pass. Its answer is what "series" converges to, so
     #               `neumann_terms`, `neumann_term_tol` and any warm start have no effect on it.
     adjoint_self_loop: str = "exact"
+    # Rows whose lanes span more than this many binary orders below their maximum are solved in
+    # log space. The exact and linear paths carry one scale per clade row in scaled linear space,
+    # so a species lane this far under the row maximum is zero in float32 (whose exponent floor is
+    # 126 binary orders, denormals aside) where the log path still carries it. Such a row is
+    # flagged by the exact forward and handed to the log-space sweeps, and its adjoint and tangent
+    # to the Neumann series and the tangent sweeps, so the exact defaults keep the log path's
+    # range. The default 100 leaves margin under 126 for what the solve itself adds on top of the
+    # entry range. In float64 the kernels scale it by the ratio of exponent ranges, 1022/126 (see
+    # ``gpurec.core.kernels.pi_forward.exact_range_for_dtype``), so one number covers both.
+    exact_range_log2: float = 100.0
     # Stopping test for the "linear" self-loop, applied per clade row: the row stops once EVERY
     # species lane has settled relative to ITSELF, |p_new[s] - p[s]| <= pi_linear_tol * p_new[s],
     # where p is the row's linear iterate. 1e-6 is fp32's usable relative floor (~8x eps 1.19e-7),
@@ -148,5 +158,7 @@ class SolverOptions:
             raise ValueError('forward_self_loop must be "log", "linear" or "exact"')
         if self.adjoint_self_loop not in ("series", "exact"):
             raise ValueError('adjoint_self_loop must be "series" or "exact"')
+        if float(self.exact_range_log2) <= 0.0:
+            raise ValueError("exact_range_log2 must be positive")
         if float(self.pi_linear_tol) < 0.0:
             raise ValueError("pi_linear_tol must be non-negative")

@@ -114,6 +114,7 @@ def pi_wave_forward(
     leaf_fm_log: torch.Tensor | None = None,
     self_loop_mode: str,
     linear_tol: float,
+    exact_range_log2: float,
     linear_iterations_out: torch.Tensor | None,
     exact_guard_trips_out: torch.Tensor | None,
 ):
@@ -221,6 +222,15 @@ def pi_wave_forward(
         compact_level_parents = species_helpers["compact_level_parents"]
         compact_level_child1 = species_helpers["compact_level_child1"]
         compact_level_child2 = species_helpers["compact_level_child2"]
+        # One flag per clade row, and one count per wave so the host learns whether ANY row needs
+        # the log-space fallback without reading the [C] mask back. The mask is part of the
+        # forward's published state: the adjoint and the tangent of this solve must make the same
+        # per-row decision it did.
+        wide_row = torch.zeros((C,), dtype=torch.int8, device=device)
+        wide_row_count = torch.zeros(
+            (len(wave_layout["wave_metas"]),), dtype=torch.int32, device=device
+        )
+    wave_index = 0
 
     # The log-space prologue never publishes the wave's final state when a one-launch self-loop
     # takes over afterwards; ``-1`` is a local iteration index no prologue step can reach.
@@ -345,6 +355,7 @@ def pi_wave_forward(
                         pi_residual_out if local_iter == final_log_iter else None
                     ),
                     leaf_fm_log=leaf_fm_log,
+                    row_mask=None,
                 )
         if fused_iters > 0:
             # The prologue's last write lands in ``pibar`` for a leaf wave (iteration 0) and in
@@ -428,11 +439,65 @@ def pi_wave_forward(
                 pi_residual_out=pi_residual_out,
                 guard_trips_out=exact_guard_trips_out,
                 leaf_fm_log=leaf_fm_log,
+                wide_row=wide_row,
+                wide_row_count=wide_row_count,
+                wave_index=wave_index,
+                range_log2=exact_range_log2,
             )
+            # One device-to-host read per wave, and only when it says so does the log-space path
+            # run at all. The exact kernel left every flagged row exactly as it found it, so the
+            # sweeps below pick up from the prologue's output with the same buffer parity the
+            # "log" mode uses, and the masked kernel returns immediately on every other row.
+            if int(wide_row_count[wave_index].item()) > 0:
+                for local_iter in range(prologue_iters, pi_iters):
+                    pi_in = pi if (local_iter % 2 == 0) else pibar
+                    pi_in_offset = pi_offset if (local_iter % 2 == 0) else pibar_offset
+                    pi_out = pibar if (local_iter % 2 == 0) else pi
+                    pi_out_offset = pibar_offset if (local_iter % 2 == 0) else pi_offset
+                    compute_wave_step(
+                        pi_in,
+                        pi_in_offset,
+                        pi_out,
+                        pi_out_offset,
+                        pibar,
+                        pibar_offset,
+                        ws,
+                        W,
+                        S,
+                        max_transfer_family,
+                        dl_const,
+                        e_bar_family,
+                        e_family,
+                        sl1_const,
+                        sl2_const,
+                        receiver_log_probs,
+                        sp_child1,
+                        sp_child2,
+                        sp_parent,
+                        max_ancestor_depth,
+                        dts_r,
+                        dts_offset,
+                        dts_center_offset,
+                        leaf_species_idx=wave_layout["leaf_species_index"],
+                        leaf_logp=log_p_s_family,
+                        family_idx=family_idx,
+                        pibar_row_max=uniform_pibar_row_max,
+                        store_final_pibar=local_iter == pi_iters - 1,
+                        has_leaf_term=has_leaf_term,
+                        input_ws=None,
+                        use_receiver_weights=use_receiver_weights,
+                        pi_residual_out=(
+                            pi_residual_out if local_iter == pi_iters - 1 else None
+                        ),
+                        leaf_fm_log=leaf_fm_log,
+                        row_mask=wide_row,
+                    )
+        wave_index += 1
 
     state = PiState(
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
+        wide_row=wide_row if use_exact_self_loop else None,
     )
     state.validate(pi, pibar, uniform_pibar_row_max, check_values=False)
     root_ids = wave_layout["root_clade_ids"]
