@@ -780,18 +780,30 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
         + leaf_observation_mass * d_leaf_observation_log_term
         + gene_split_tangent_numerator
     ) * inverse_reconciliation_event_scaled_mass
-    # Moving s's OWN donor term to the left-hand side leaves behind the part of it that does not
-    # multiply dv[s]: the row's donor tangent counts m[s](dv[s] + drecv[s]) for s, and only the
-    # dv[s] half belongs in the diagonal. Zero whenever the receiver weights are uniform, which is
-    # why the fit never sees it, but not zero on the weighted path.
-    source = source - donor_coefficient * receiver_mass * d_receiver_log_probability
     diagonal = 1.0 - self_coefficient + donor_coefficient * receiver_mass
+    # What s contributes to the row's donor tangent is m[s] (dv[s] + drecv[s]). Only the dv[s]
+    # half is an unknown; the drecv[s] half is a known number that s hands DOWN, because every
+    # node below s sees the donor tangent already reduced by it:
+    #
+    #     u[c] = u[s] - m[s] (dv[s] + drecv[s]).
+    #
+    # So it leaves the diagonal twice over -- once out of s's own donor term, and once out of
+    # every child term, whose u[c] carries it. Collecting both against the coefficient that
+    # multiplies u, which is exactly gamma[s], the whole correction is one product:
+    #
+    #     alpha[s] = (source[s] + children) / pivot[s]  -  gamma[s] m[s] drecv[s].
+    #
+    # Dropping the children's half is what broke the joint (theta, alpha, omega) Hessian's
+    # symmetry: it is zero at a leaf, where there are no children, so the error only appears at
+    # internal nodes, and it is zero for every node when the receiver weights are uniform, which
+    # is why no genewise fit could see it.
+    receiver_tangent_offset = receiver_mass * d_receiver_log_probability
 
     # ---- walk 1, bottom-up. Every lane starts at the leaf case; level ``level`` then rewrites the
     # lanes of that height, whose children are already final.
     species_height = tl.load(species_height_ptr + s_offs, mask=mask, other=0)
-    alpha = source / diagonal
     gamma = donor_coefficient / diagonal
+    alpha = source / diagonal - gamma * receiver_tangent_offset
     guard_trips = tl.sum(tl.where(mask & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0)
     for level in range(1, N_LEVELS + 1):
         child_source = (
@@ -807,9 +819,11 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
             * tl.where(c2_valid, tl.gather(gamma, c2_safe, axis=0), zero)
         )
         pivot = diagonal + child_donor_gain * receiver_mass
+        level_gamma = (donor_coefficient + child_donor_gain) / pivot
+        level_alpha = (source + child_source) / pivot - level_gamma * receiver_tangent_offset
         at_level = mask & (species_height == level)
-        alpha = tl.where(at_level, (source + child_source) / pivot, alpha)
-        gamma = tl.where(at_level, (donor_coefficient + child_donor_gain) / pivot, gamma)
+        alpha = tl.where(at_level, level_alpha, alpha)
+        gamma = tl.where(at_level, level_gamma, gamma)
         guard_trips += tl.sum(tl.where(at_level & (pivot <= 0.0), 1, 0).to(tl.int32), axis=0)
 
     # ---- walk 2, top-down. The root keeps the seed u = M (U0 = 0, U1 = 1); every other lane is
