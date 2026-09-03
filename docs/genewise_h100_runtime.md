@@ -258,6 +258,26 @@ a shared node.
 | + exact tree-elimination forward, single tier | 1053-1101 s | 9048938.4 | 5119-5120 |
 | + exact adjoint solve | **782-794 s** | 9048938.3-9048938.4 | 5120 |
 
+**Exact tangent solve for the Hessian probes (commit c4bd87ba, gated on `adjoint_self_loop = "exact"`).**
+The tangent system of each row is the forward's linear system with a different right-hand side and is
+solved by the same elimination. In float64 it agrees with 16 sweeps to five significant figures and with
+the converged reference to the reference's own noise; in float32 at a flat theta it is a few times the
+reference noise (signed accumulation through 33 tree levels, a conditioning difference of elimination vs
+iteration; fp64 accumulation of the two affine coefficients would close it if ever needed), and at fitted
+rates it is indistinguishable from 16 sweeps. One 3-probe Hessian at 500 families: 61.0 s to 42.7 s
+(the converged 256-sweep reference costs 376.6 s). End-to-end at 500 families: **139 s** (from 196 s with
+the exact adjoint alone), 113 Newton steps instead of 229, 7 Hessian refreshes instead of 15, NLL
+1618462.61 bits; the exact curvature also steers the one knife-edge family back into the reference band.
+40 families: 14.6 s.
+
+**Per-wave backward kernels (Nsight Compute, commit 66bb18f0: measurements only).** All four VJP kernels
+are latency-bound, none compute- or bandwidth-bound: the prepare kernel re-reads its 8 KB Pi row 34
+times (ancestor walk) at 12.5 % occupancy (187 registers), the transfer-subtree kernel is bound by the 33
+barriers of its level walk, the receiver kernel launches too few warps. Every tiling / warp-count change
+tried was rejected because `total_receiver_mass - ancestor_sum` in the prepare kernel cancels
+catastrophically, so any reordering of the 2013-term sum moves the gradient by O(1). The remedy is the
+forward's additive construction of that mass (in progress).
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
