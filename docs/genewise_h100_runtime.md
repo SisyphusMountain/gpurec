@@ -285,22 +285,16 @@ jobs of mine** (first build 69 s and warm-up 206 s vs 20 s and 145 s in the quie
 individual improvements still being made, so final timings should be taken with nothing else running on
 the node.
 
-**Known regression under investigation (float64 only).** `tests/test_origination_curvature.py::
-test_joint_hvp_symmetric_and_gauge_null` (fp64 joint Hessian, symmetric to 1e-10) fails since the fused
-Neumann-series merge (13714ef2) with an asymmetry of 2.6e-8; it still fails with the fused kernel switched
-off and the early-exit tolerance set to zero, so a float32 intermediate or constant on the shared adjoint
-path in fp64 is suspected. Production fp32 results are unaffected (all fits above). The other six CPU test
-failures (`bicgstab_*` / `e_adjoint_solver` options, benchmark `--help`) predate this work.
+**float64 regression fixed (commit 8a82e3c7).** The fp64 curvature-symmetry test failed since the fused
+Neumann-series merge because both self-loop early-exit tolerances (`neumann_term_tol` 1e-7,
+`pi_linear_tol` 1e-6) are float32-scale numbers and were applied unchanged in fp64, stopping iterations
+about nine orders of magnitude before fp64 resolution. They are now documented as written in units of
+float32 precision and scaled by the ratio of machine epsilons (`dtype_scaled_self_loop_tol`): fp32 is
+bit-identical (factor exactly 1), fp64 exits just under one ulp. CPU suite back to 252 passed with the six
+pre-existing failures (`bicgstab_*` / `e_adjoint_solver` options, benchmark `--help`).
 
-**Backward prepare kernel built additively (commit b3a7ef9f).** The donor's valid receiver mass is now
-two running sums of non-negative terms over the depth-first species order (shared table builder
-`gpurec/core/valid_receivers.py`, used by forward and backward), replacing the row-wide sum minus a
-34-step ancestor walk with an `exp2` per step. Kernel 174 to 61 µs (2.84x), instructions 28.2M to 10.7M,
-transcendentals per element 46 to 12. In float64 both formulations agree to 4e-12; in float32 the
-run-to-run atomics noise of the gradient drops (fitted rates 1.1e-3 to 6.8e-4, flat theta 2.6e-3 to
-1.2e-4) and reordering the transfer-subtree kernel's sum no longer moves the gradient by O(1), which
-made a `num_warps` 4 to 8 change safe (+5 %). One gradient at 500 families: 5.39 s to 4.77 s at fitted
-rates. Fits: 40 families 12.3 s (14.6 s), 500 families 136.4 s (139.0 s), NLL 1618462.55 bits, 499/500.
+**Timing sample before the additive backward kernel (job full_v14exact3): 781.2 s**, NLL 9048938.28,
+5119/5123 converged.
 
 ## What is left
 
