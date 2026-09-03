@@ -99,6 +99,19 @@ GENEWISE_REFERENCE = dict(
 # insensitive to its exact value (it only has to exclude s.y <= 0 and 0/0).
 _BFGS_CURVATURE_FLOOR = 1e-10
 
+# Optional memory probe. ``None`` (the state a normal run is in) makes every ``_mem`` call below a
+# single ``is None`` test, so an uninstrumented fit is unchanged. A benchmark driver installs a
+# callable with ``set_memory_probe`` and is handed the name of every phase boundary the recipe
+# already brackets with ``_sync()``; the callable reads the CUDA allocator counters itself. This is
+# a measurement facility, never a setting: nothing the recipe computes depends on it.
+_MEMORY_PROBE = None
+
+
+def set_memory_probe(probe) -> None:
+    """Install (or, with ``None``, remove) the phase-boundary memory probe. See ``_MEMORY_PROBE``."""
+    global _MEMORY_PROBE
+    _MEMORY_PROBE = probe
+
 
 def _resolve_gene_trees(spec) -> list[str]:
     """A list of paths, a glob ('dir/*.ale'), a directory (-> *.ale then *.newick), or a listfile."""
@@ -360,6 +373,11 @@ def fit_genewise(
         if dev.type == "cuda":
             torch.cuda.synchronize()
 
+    def _mem(label):
+        """Hand a phase-boundary name to the installed memory probe (a no-op when none is)."""
+        if _MEMORY_PROBE is not None:
+            _MEMORY_PROBE(label)
+
     def clade_counts(model):
         """Per-family clade counts of ``model``, in its own family order (= the ``active`` order).
 
@@ -407,6 +425,7 @@ def fit_genewise(
     F_all = len(fam_paths)
     # Parse every family ONCE for the whole fit; build() re-plans subsets off this handle.
     parsed = parse_families(species_tree, fam_paths)
+    _mem("parse_families")
     # Starting point for every family's [log2 D, log2 L, log2 T]. The historical start was all
     # zeros (every rate = 1.0 x speciation), which is both far from typical optima and in the
     # slow, stiff high-rate regime for the wave/E fixed points; callers pass the start explicitly.
@@ -472,6 +491,7 @@ def fit_genewise(
             last_tier = pi_idx == len(pis) - 1
             carry = active[:0].clone()
             m = build(active.tolist(), pi_cur, neu_opt); n_builds += 1
+            _mem("tier_build")
             sub = theta.index_select(0, active).clone()
             # ``settled`` marks the rows of the current model that are finished for this tier --
             # frozen (verified converged, theta final) or deferred to the next pi tier. They are
@@ -522,6 +542,7 @@ def fit_genewise(
                     B_fam.index_copy_(0, active, B)
                     refresh_due = False   # the warm-up already paid for this curvature
                 _sync(); adam_seconds += time.perf_counter() - _t
+                _mem("adam_warmup")
             for it in range(max_iter):
                 live = ~settled
                 if not bool(live.any()):
@@ -529,6 +550,7 @@ def fit_genewise(
                 _sync(); _t = time.perf_counter()
                 lv, g = lg(m, sub)
                 _sync(); newton_grad_seconds += time.perf_counter() - _t
+                _mem("newton_grad")
                 _track_best(active, lv, sub, live, n_steps)
                 fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
                     ((sub <= lo + bounds.bound_active_eps) & (g > 0))
@@ -578,6 +600,7 @@ def fit_genewise(
                             _w = os.environ.pop("GPUREC_WARM_ADJOINT", None)
                             mv = build(active.index_select(0, cand).tolist(), cert_pi, neu_cert)
                             n_verify_builds += 1; n_builds += 1
+                            _mem("verify_build")            # candidate model alongside the live one
                             pg_c = pgmax(sub_c, lg(mv, sub_c)[1])
                             ok_c = pg_c < tol
                             cert_pg.index_copy_(0, active.index_select(0, cand), pg_c)
@@ -587,6 +610,7 @@ def fit_genewise(
                             cert_ok = torch.zeros_like(conv)
                             cert_ok.index_copy_(0, cand, ok_c)
                             _sync(); verify_seconds += time.perf_counter() - _t
+                            _mem("verify_grad")
                         drop = cert_ok
                         defer = torch.zeros_like(conv)
                         reject = conv & ~cert_ok
@@ -620,6 +644,7 @@ def fit_genewise(
                             clades = clade_counts(m); clade_total = float(clades.sum())
                             settled = torch.zeros(active.numel(), dtype=torch.bool, device=dev)
                             _sync(); rebuild_seconds += time.perf_counter() - _t
+                            _mem("replan")
                             _log(f"  [pi{pi_cur} it{it}] re-planned over {active.numel()} live families")
                             continue   # the gradient above belongs to the old batch; re-measure
                 if refresh_due:
@@ -634,6 +659,7 @@ def fit_genewise(
                         ),
                     )
                     _sync(); hessian_seconds += time.perf_counter() - _t
+                    _mem("hessian")
                     refresh_due = False; since_exact = 0; n_hessians += 1
                 e, V = torch.linalg.eigh(B_fam.index_select(0, active))
                 Hd = V @ torch.diag_embed(e.clamp(min=mu)) @ V.transpose(1, 2)   # convexify -> PD
@@ -648,6 +674,7 @@ def fit_genewise(
                 theta.index_copy_(0, active[live], best_theta.index_select(0, active[live]))
                 carry = torch.cat([carry, active[live]])
             del m; torch.cuda.empty_cache()
+            _mem("tier_end")
     finally:
         if _warm_saved is None:
             os.environ.pop("GPUREC_WARM_ADJOINT", None)
@@ -685,14 +712,17 @@ def fit_genewise(
                 mneed = build(need.tolist(), cert_pi, neu_cert)
                 th_n = theta.index_select(0, need)
                 pg.index_copy_(0, need, pgmax(th_n, lg(mneed, th_n)[1]))
+                _mem("cert_unfrozen_grad")
                 del mneed; torch.cuda.empty_cache()
             # 2. the headline likelihood: ONE forward-only pass over every family, so the total is a
             #    single consistent measurement on a single model (no backward, no Hessian).
             mfull = build(range(F_all), cert_pi, neu_cert)
+            _mem("cert_full_build")
             if need.numel() == F_all:   # nothing was ever frozen (verify_drop=False): one model does both
                 pg = pgmax(theta, lg(mfull, theta)[1])
             with torch.no_grad():
                 nll_bits = float(mfull.genewise_loss_vector(theta=theta).sum())
+            _mem("cert_nll_forward")
             bound_active = ((theta <= lo + bounds.bound_active_eps) | (theta >= hi - bounds.bound_active_eps)).any(dim=1)
             conv = pg < tol
             result.update(
@@ -711,6 +741,7 @@ def fit_genewise(
                 result["interior_pd"] = int((conv & (lam_min > tol) & ~bound_active).sum())
             del mfull; torch.cuda.empty_cache()
             _sync(); result["certify_seconds"] = time.perf_counter() - _t
+            _mem("certify_end")
         finally:
             if _w:
                 os.environ["GPUREC_WARM_ADJOINT"] = _w
