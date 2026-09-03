@@ -273,8 +273,18 @@ def clade_budget_for_device(
             f"budget ({budget_b / GIB:.2f} GiB, of which {allocatable_b / GIB:.2f} GiB is "
             f"allocatable); no per-batch clade budget can make this fit"
         )
-    per_clade_b = _positive_int("scratch_tensors", scratch_tensors) * _positive_int("S", S)         * dtype_nbytes(dtype)
+    per_clade_b = (
+        _positive_int("scratch_tensors", scratch_tensors)
+        * _positive_int("S", S)
+        * dtype_nbytes(dtype)
+    )
     affordable = usable_b // per_clade_b
+    if affordable <= 0:
+        raise ValueError(
+            f"after the resident statics ({static_b / GIB:.2f} GiB) this device's memory budget "
+            f"({budget_b / GIB:.2f} GiB, {allocatable_b / GIB:.2f} GiB allocatable) leaves room "
+            f"for fewer than one clade per batch at {S} species; this fit does not fit this card"
+        )
     chosen = int(min(fixed, affordable))
     detail["automatic"] = chosen < fixed
     detail["allocatable_bytes"] = allocatable_b
