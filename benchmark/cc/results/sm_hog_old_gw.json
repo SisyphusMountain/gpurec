@@ -1,0 +1,75 @@
+{
+  "tag": "sm_hog_old_gw",
+  "n_families": 40,
+  "wall_s": 181.20640736818314,
+  "nll_bits": 22488.258159548386,
+  "nll_nats": 15587.672738995148,
+  "opt_seconds": 172.26317053521052,
+  "n_steps": 32,
+  "n_builds": 6,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 23,
+        "remain": 14
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 2,
+        "remain": 9
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 4,
+        "remain": 5
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 4,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 1,
+        "remain": 0
+      },
+      {
+        "pi": 64,
+        "it": 4,
+        "dropped": 6,
+        "remain": 0
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 12,
+        "deferred": 3,
+        "to": 64,
+        "resid_max": 0.19458580017089844
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "deferred": 3,
+        "to": 64,
+        "resid_max": 0.19460105895996094
+      }
+    ]
+  },
+  "peak_gib": 2.491541862487793,
+  "certificate": {
+    "converged": 40,
+    "interior_pd": 28,
+    "bound_active": 5,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009756983490660787
+  }
+}
