@@ -1,0 +1,137 @@
+{
+  "tag": "bwd_500",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 500,
+  "wall_s": 149.76291951118037,
+  "nll_bits": 1618462.5511611376,
+  "nll_nats": 1121832.7541791988,
+  "opt_seconds": 144.57612284179777,
+  "n_steps": 111,
+  "n_builds": 27,
+  "adam_seconds": 25.647815520875156,
+  "hessian_seconds": 8.925418947823346,
+  "n_hessians": 7,
+  "newton_grad_seconds": 84.58438300713897,
+  "n_verify_builds": 17,
+  "verify_seconds": 10.33330819196999,
+  "n_rebuilds": 9,
+  "rebuild_seconds": 3.8333172141574323,
+  "certify_seconds": 3.2049631061963737,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 89,
+        "remain": 411
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 140,
+        "remain": 271
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 51,
+        "remain": 220
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 39,
+        "remain": 181
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 24,
+        "remain": 157
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 14,
+        "remain": 143
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 19,
+        "remain": 124
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 12,
+        "remain": 112
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 14,
+        "remain": 98
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 28,
+        "remain": 70
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 28,
+        "remain": 42
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 18,
+        "remain": 24
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 12,
+        "remain": 12
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 6,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 3,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 38,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 1,
+        "remain": 1
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 27.2966365814209,
+  "certificate": {
+    "converged": 499,
+    "bound_active": 33,
+    "unconverged": 1,
+    "premature_drops": 0,
+    "pg_max": 2.057670831680298
+  }
+}

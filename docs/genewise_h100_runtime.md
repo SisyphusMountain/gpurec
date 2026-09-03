@@ -278,6 +278,13 @@ tried was rejected because `total_receiver_mass - ancestor_sum` in the prepare k
 catastrophically, so any reordering of the 2013-term sum moves the gradient by O(1). The remedy is the
 forward's additive construction of that mass (in progress).
 
+**Full fit with all three exact solves (job full_v13exact3): 891.7 s on a node shared with two other
+jobs of mine** (first build 69 s and warm-up 206 s vs 20 s and 145 s in the quiet runs; Newton gradients
+463 s unchanged; curvature 55 s to 46 s; verification 54 s; certificate 18 s), NLL 9048938.27 bits,
+5120/5123 converged, 108 Newton steps. Node contention moves the total by about ±100 s, larger than the
+individual improvements still being made, so final timings should be taken with nothing else running on
+the node.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,

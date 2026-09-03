@@ -1,0 +1,227 @@
+{
+  "tag": "full_v13exact3",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 5123,
+  "wall_s": 891.6966799162328,
+  "nll_bits": 9048938.269685272,
+  "nll_nats": 6272246.048693337,
+  "opt_seconds": 821.1151315639727,
+  "n_steps": 108,
+  "n_builds": 50,
+  "adam_seconds": 205.74721174826846,
+  "hessian_seconds": 45.73735197028145,
+  "n_hessians": 7,
+  "newton_grad_seconds": 462.619113501627,
+  "n_verify_builds": 37,
+  "verify_seconds": 53.922357416246086,
+  "n_rebuilds": 12,
+  "rebuild_seconds": 14.632050835061818,
+  "certify_seconds": 18.08887106506154,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 227,
+        "remain": 4896
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 896,
+        "remain": 4000
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 1276,
+        "remain": 2724
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 438,
+        "remain": 2286
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 298,
+        "remain": 1988
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 181,
+        "remain": 1807
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 107,
+        "remain": 1700
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 244,
+        "remain": 1456
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 104,
+        "remain": 1352
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 336,
+        "remain": 1016
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 308,
+        "remain": 708
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 337,
+        "remain": 371
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 116,
+        "remain": 255
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 67,
+        "remain": 188
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 68,
+        "remain": 120
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 58,
+        "remain": 62
+      },
+      {
+        "pi": 16,
+        "it": 38,
+        "dropped": 10,
+        "remain": 52
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 8,
+        "remain": 44
+      },
+      {
+        "pi": 16,
+        "it": 42,
+        "dropped": 6,
+        "remain": 38
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 3,
+        "remain": 35
+      },
+      {
+        "pi": 16,
+        "it": 46,
+        "dropped": 9,
+        "remain": 26
+      },
+      {
+        "pi": 16,
+        "it": 48,
+        "dropped": 6,
+        "remain": 20
+      },
+      {
+        "pi": 16,
+        "it": 50,
+        "dropped": 4,
+        "remain": 16
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 1,
+        "remain": 15
+      },
+      {
+        "pi": 16,
+        "it": 54,
+        "dropped": 2,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 60,
+        "dropped": 1,
+        "remain": 12
+      },
+      {
+        "pi": 16,
+        "it": 62,
+        "dropped": 2,
+        "remain": 10
+      },
+      {
+        "pi": 16,
+        "it": 64,
+        "dropped": 2,
+        "remain": 8
+      },
+      {
+        "pi": 16,
+        "it": 68,
+        "dropped": 1,
+        "remain": 7
+      },
+      {
+        "pi": 16,
+        "it": 70,
+        "dropped": 1,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 76,
+        "dropped": 1,
+        "remain": 5
+      },
+      {
+        "pi": 16,
+        "it": 78,
+        "dropped": 1,
+        "remain": 4
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 24.99518632888794,
+  "certificate": {
+    "converged": 5120,
+    "bound_active": 453,
+    "unconverged": 3,
+    "premature_drops": 0,
+    "pg_max": 2.071007013320923
+  }
+}
