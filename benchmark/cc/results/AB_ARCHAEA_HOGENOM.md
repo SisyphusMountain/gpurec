@@ -68,8 +68,11 @@ subset, so the full set would have run past the 2-hour job limit.
 
 `compare_fit_thetas.py` re-scores both fitted rate sets with the same converged solver (64 Pi
 iterations, 64 Neumann terms, exact forward self-loop), so the numbers isolate where the fits landed.
-The re-scored totals reproduce each run's own reported NLL to the last printed digit, which is the
-check that the scoring itself is neutral.
+The re-scored totals reproduce each run's own reported NLL: exactly for the new code (360336.0676
+vs 360336.068 on archaea, 578249.6771 vs 578249.677 on HOGENOM-1055, 1906508.9525 vs 1906508.952 on
+the full set) and to within 0.004-0.006 bits for the old code (360167.9205 vs 360167.917;
+578249.7556 vs 578249.750), because the new code's own final evaluation already uses this solver.
+Those 0.005 bits are 30,000 times smaller than the 168-bit archaea gap, so the scoring is neutral.
 
 **archaea, 5446 families** (`cmp_arch_old_gw__arch_new_gw.txt`):
 
