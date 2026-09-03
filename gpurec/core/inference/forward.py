@@ -24,6 +24,28 @@ from gpurec.api.solver_options import dtype_scaled_self_loop_tol
 # so ``pi_iters`` has no effect on it beyond the shared log-space prologue below.
 SELF_LOOP_MODES = ("log", "linear", "exact")
 
+# How the exact forward decides, per wave, whether to run the log-space range fallback at all.
+#   "sync":   read that wave's flagged-row count back to the host and run the sweeps only when it
+#             is nonzero -- one device-to-host copy per wave, and no launches at all in the
+#             overwhelmingly common case of nothing flagged.
+#   "always": skip the read and launch the masked sweeps regardless. They return immediately on
+#             every row, so this trades the copy for ``pi_iters`` empty launches per wave, and
+#             needs one whole-mask reduction at the end to learn the total.
+# A module-level switch rather than a setting: which one wins is a property of the GPU and the
+# wave count, not something a run should have to state.
+EXACT_RANGE_FALLBACK_DECISIONS = ("sync", "always")
+_EXACT_RANGE_FALLBACK_DECISION = "sync"
+
+
+def set_exact_range_fallback_decision(mode):
+    """Choose how the per-wave range-fallback decision is taken; see the constant above."""
+    global _EXACT_RANGE_FALLBACK_DECISION
+    if mode not in EXACT_RANGE_FALLBACK_DECISIONS:
+        raise ValueError(
+            f"decision must be one of {EXACT_RANGE_FALLBACK_DECISIONS}, got {mode!r}"
+        )
+    _EXACT_RANGE_FALLBACK_DECISION = mode
+
 
 def _linear_event_multipliers(
     duplication_loss_const,
@@ -445,13 +467,18 @@ def pi_wave_forward(
                 wave_index=wave_index,
                 range_log2=exact_range_log2,
             )
-            # One device-to-host read per wave, and only when it says so does the log-space path
-            # run at all. The exact kernel left every flagged row exactly as it found it, so the
+            # Two ways to spend the per-wave decision, measured against each other by
+            # benchmark/cc/test_exact_range_cost.py; see ``EXACT_RANGE_FALLBACK_DECISIONS``.
+            # Either way the exact kernel left every flagged row exactly as it found it, so the
             # sweeps below pick up from the prologue's output with the same buffer parity the
             # "log" mode uses, and the masked kernel returns immediately on every other row.
-            wave_wide_rows = int(wide_row_count[wave_index].item())
-            wide_row_total += wave_wide_rows
-            if wave_wide_rows > 0:
+            if _EXACT_RANGE_FALLBACK_DECISION == "sync":
+                wave_wide_rows = int(wide_row_count[wave_index].item())
+                wide_row_total += wave_wide_rows
+                run_fallback_sweeps = wave_wide_rows > 0
+            else:
+                run_fallback_sweeps = True
+            if run_fallback_sweeps:
                 for local_iter in range(prologue_iters, pi_iters):
                     pi_in = pi if (local_iter % 2 == 0) else pibar
                     pi_in_offset = pi_offset if (local_iter % 2 == 0) else pibar_offset
@@ -497,6 +524,9 @@ def pi_wave_forward(
                     )
         wave_index += 1
 
+    if use_exact_self_loop and _EXACT_RANGE_FALLBACK_DECISION != "sync":
+        # The per-wave counts were never read back, so the total costs one reduction here.
+        wide_row_total = int(wide_row.sum().item())
     state = PiState(
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
