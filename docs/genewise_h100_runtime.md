@@ -310,6 +310,11 @@ over the same window (re-measured below). The 500-family control of this run lan
 CPUs were shared with other jobs and took 270 s for 35 steps (7.7 s per step against 1.2 s on a quiet
 node): timings from shared nodes are not comparable.
 
+**Refined stall rule (commit b6dd38bb) measured on a heavily shared node: 1244 s wall (not comparable;
+re-plans took 41 s instead of 13 s), NLL 9048938.30 bits, 5118/5123 certified.** Both stall variants
+cost 3-4 certified families relative to no stall rule (5121) for a ~28 s gain, so `fit_dtl` now passes
+`stall_patience = 120` (= max_iter, i.e. off); the mechanism stays available as a knob.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,

@@ -1,0 +1,227 @@
+{
+  "tag": "full_v17stall2",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 5123,
+  "wall_s": 1244.0294016213156,
+  "nll_bits": 9048938.299316637,
+  "nll_nats": 6272246.069232234,
+  "opt_seconds": 1209.3135706158355,
+  "n_steps": 95,
+  "n_builds": 45,
+  "adam_seconds": 128.4515201332979,
+  "hessian_seconds": 57.24711935268715,
+  "n_hessians": 6,
+  "newton_grad_seconds": 399.0628524222411,
+  "n_verify_builds": 33,
+  "verify_seconds": 84.2233331031166,
+  "n_rebuilds": 11,
+  "rebuild_seconds": 40.73712590010837,
+  "certify_seconds": 25.680431868415326,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 227,
+        "remain": 4896
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 904,
+        "remain": 3992
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 1258,
+        "remain": 2734
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 448,
+        "remain": 2286
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 294,
+        "remain": 1992
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 177,
+        "remain": 1815
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 108,
+        "remain": 1707
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 252,
+        "remain": 1455
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 102,
+        "remain": 1353
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 338,
+        "remain": 1015
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 306,
+        "remain": 709
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 339,
+        "remain": 370
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 115,
+        "remain": 255
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 66,
+        "remain": 189
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 126,
+        "remain": 63
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 9,
+        "remain": 54
+      },
+      {
+        "pi": 16,
+        "it": 38,
+        "dropped": 10,
+        "remain": 44
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 3,
+        "remain": 41
+      },
+      {
+        "pi": 16,
+        "it": 42,
+        "dropped": 7,
+        "remain": 34
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 9,
+        "remain": 22
+      },
+      {
+        "pi": 16,
+        "it": 46,
+        "dropped": 4,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 48,
+        "dropped": 3,
+        "remain": 15
+      },
+      {
+        "pi": 16,
+        "it": 50,
+        "dropped": 2,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 1,
+        "remain": 11
+      },
+      {
+        "pi": 16,
+        "it": 54,
+        "dropped": 1,
+        "remain": 10
+      },
+      {
+        "pi": 16,
+        "it": 58,
+        "dropped": 1,
+        "remain": 9
+      },
+      {
+        "pi": 16,
+        "it": 60,
+        "dropped": 2,
+        "remain": 7
+      },
+      {
+        "pi": 16,
+        "it": 62,
+        "dropped": 2,
+        "remain": 5
+      },
+      {
+        "pi": 16,
+        "it": 64,
+        "dropped": 1,
+        "remain": 4
+      },
+      {
+        "pi": 16,
+        "it": 66,
+        "dropped": 1,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 74,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 88,
+        "dropped": 1,
+        "remain": 1
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 22.860304832458496,
+  "certificate": {
+    "converged": 5118,
+    "bound_active": 453,
+    "unconverged": 5,
+    "premature_drops": 0,
+    "pg_max": 0.5216315984725952
+  }
+}
