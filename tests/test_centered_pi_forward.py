@@ -1004,3 +1004,117 @@ def test_exact_tree_self_loop_matches_converged_log_self_loop(
             exact_rows[selected], reference_rows[selected], rtol=0.0, atol=tolerance
         )
     torch.testing.assert_close(exact_root, reference_root, rtol=0.0, atol=tolerance)
+
+
+def _caterpillar_species_tree(leaf_count: int) -> str:
+    """A ladder: every internal node has one leaf child, so the tree is as deep as it is wide."""
+    newick = "L0:1"
+    for index in range(1, leaf_count - 1):
+        newick = f"({newick},L{index}:1)n{index}:1"
+    return f"({newick},L{leaf_count - 1}:1)Root:1;"
+
+
+def _deep_fixture(tmp_path: Path) -> tuple[Path, list[Path]]:
+    species_tree = tmp_path / "deep_species.nwk"
+    gene_tree = tmp_path / "deep_family.nwk"
+    species_tree.write_text(_caterpillar_species_tree(24) + "\n", encoding="utf-8")
+    gene_tree.write_text("((L0_1:1,L1_1:1)g:1,L2_1:1)GeneRoot:1;\n", encoding="utf-8")
+    return species_tree, [gene_tree]
+
+
+def _solve_exact(species_tree, gene_trees, dtype, exact_range_log2, theta_values):
+    """One forward solve, returning absolute Pi, the root rows, and how many rows were flagged."""
+    from gpurec.core.inference.solver import solve_resident_e_pi
+
+    model = GeneReconModel(
+        species_tree, gene_trees, mode="specieswise", device="cuda", dtype=dtype,
+        family_chunk_size=1, clade_budget=None, batch_packing="sequential", max_wave_size=8,
+        solver_options=SolverOptions(
+            e_max_iter=256, e_tol=1e-13, pi_iters=64, neumann_terms=64,
+            forward_self_loop="exact", adjoint_self_loop="exact",
+            exact_range_log2=exact_range_log2,
+        ),
+    )
+    species_count = int(model.species_helpers["S"])
+    theta = torch.zeros(species_count, 3, device="cuda", dtype=dtype)
+    for column, value in enumerate(theta_values):
+        theta[:, column] = value
+    static = model.batch_statics[0]
+    with torch.no_grad():
+        result = solve_resident_e_pi(
+            static, theta, torch.zeros_like(model.receiver_weights),
+            warm_start_E=None, pi_iters=None, pi_residual_out=None,
+        )
+    state = static.pi_forward_state
+    absolute = result[5].to(state.pi_offset.dtype) + state.pi_offset.unsqueeze(1)
+    return absolute.clone(), result[4].clone(), state.wide_row_total
+
+
+# Duplication, loss and transfer all at the genewise rate box's log2 floor. Reaching a distant
+# species then costs many losses that the model says are very unlikely, which is what opens a
+# clade row's range: this corner is the widest the rate box offers.
+_RATE_FLOOR_CORNER = (-19.9, -19.9, -19.9)
+
+
+@pytest.mark.gpu
+def test_exact_forward_hands_back_a_row_wider_than_its_range_limit(tmp_path: Path) -> None:
+    """The range fallback must fire, and the row must come back right when it does.
+
+    One scale per clade row is why the exact path is fast and why it has less range than the log
+    path: a lane far enough below that scale is an exact zero in float32. ``exact_range_log2``
+    is the line, and this drives the machinery across it on a fixture small enough to run here.
+
+    NOTE on the limit used. A one-family fixture's widest row spans about 50 binary orders even
+    at the rate box's floor corner, whatever the tree's depth -- the transfer term keeps every
+    species reachable at bounded cost, so the span does not grow with depth. The production 100
+    therefore cannot fire on anything this size, and the test sets the limit BELOW the fixture's
+    own span instead of trying to manufacture a 100-order row. That exercises the same code on
+    the same decision; only the threshold moves.
+    """
+    _require_native_cuda()
+    species_tree, gene_trees = _deep_fixture(tmp_path)
+
+    # Wide limit: nothing is flagged, so this is the exact solve on its own.
+    exact_pi, exact_root, unflagged = _solve_exact(
+        species_tree, gene_trees, torch.float32, 1000.0, _RATE_FLOOR_CORNER
+    )
+    assert unflagged == 0, "this fixture fits in one row scale; the limit was set not to fire"
+
+    # Tight limit: the same rows now go to the log-space sweeps instead.
+    fallback_pi, fallback_root, flagged = _solve_exact(
+        species_tree, gene_trees, torch.float32, 20.0, _RATE_FLOOR_CORNER
+    )
+    assert flagged > 0, "a limit under the fixture's own span must flag rows"
+
+    # float64 solves the same system with room to spare: the oracle for both.
+    oracle_pi, oracle_root, oracle_flagged = _solve_exact(
+        species_tree, gene_trees, torch.float64, 1000.0, _RATE_FLOOR_CORNER
+    )
+    assert oracle_flagged == 0
+
+    finite = torch.isfinite(oracle_pi)
+    row_max = torch.where(finite, oracle_pi, torch.full_like(oracle_pi, -float("inf")))
+    row_max = row_max.amax(dim=1, keepdim=True)
+    window = finite & torch.isfinite(row_max) & (oracle_pi >= row_max - 60.0)
+    assert bool(window.any())
+    for label, rows, roots in (("exact", exact_pi, exact_root),
+                               ("fallback", fallback_pi, fallback_root)):
+        assert bool(torch.isfinite(rows[window]).all()), f"{label} lost a lane the oracle keeps"
+        assert float((rows[window] - oracle_pi[window]).abs().max()) < 1e-2, label
+        assert float((roots - oracle_root).abs().max()) < 1e-2, label
+
+
+@pytest.mark.gpu
+def test_ordinary_fixture_never_reaches_the_exact_range_limit(tmp_path: Path) -> None:
+    """Nothing ordinary may pay for the fallback: at the shipped limit no row is handed back.
+
+    The exact path exists for speed, and a fallback that fired on ordinary data would spend it.
+    """
+    _require_native_cuda()
+    species_tree, gene_trees = _write_tiny_ale_example(tmp_path)
+    shipped_limit = SolverOptions().exact_range_log2
+    for rates in (_RATE_FLOOR_CORNER, (-1.0, -1.0, -1.0), (1.0, -19.9, 1.0)):
+        _pi, _root, flagged = _solve_exact(
+            species_tree, gene_trees, torch.float32, shipped_limit, rates
+        )
+        assert flagged == 0, f"the fallback fired at {rates}, which fits in one row scale"
