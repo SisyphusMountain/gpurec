@@ -111,6 +111,10 @@ def main() -> int:
     # behaviour of a build without the facility. When given, a batch whose curvature probe or
     # gradient goes non-finite is reported and written there before the run dies, so the failure
     # can be replayed on that batch alone instead of re-running the whole fit.
+    # Per-batch clade budget: 0 = automatic (derive from the card; the tuned 315,000 when it
+    # fits, smaller when it does not). Required so a run's record always states which it used.
+    ap.add_argument("--clade-budget", required=True, type=int,
+                    help="clades per batch; 0 = derive from the device memory budget")
     ap.add_argument("--debug-dump-dir", required=False, default=None)
     # Memory instrumentation. Also a debugging aid rather than a setting: without --memory-table the
     # run is byte-for-byte the uninstrumented one (no probe is installed at all).
@@ -153,7 +157,8 @@ def main() -> int:
     t0 = time.perf_counter()
     init_rate = None if args.init_rate == "none" else float(args.init_rate)
     res = fit_dtl(args.species, paths, "genewise", device="cuda", verbose=True, config=cfg,
-                  init_rate=init_rate)
+                  init_rate=init_rate,
+                  clade_budget=(None if args.clade_budget == 0 else args.clade_budget))
     wall = time.perf_counter() - t0
     # The ledger resets the peak counter at every phase boundary, so with it installed
     # ``max_memory_allocated`` only covers the last phase; the ledger's own running maximum is the
@@ -168,7 +173,8 @@ def main() -> int:
     summary = {
         "tag": args.tag, "forward_self_loop": args.forward_self_loop,
         "adjoint_self_loop": args.adjoint_self_loop,
-        "init_rate": args.init_rate, "n_families": res["n_families"], "wall_s": wall,
+        "init_rate": args.init_rate, "clade_budget": args.clade_budget,
+        "n_families": res["n_families"], "wall_s": wall,
         "nll_bits": res["nll_bits"], "nll_nats": res["nll_nats"],
         "opt_seconds": g["opt_seconds"], "n_steps": g["n_steps"], "n_builds": g["n_builds"],
         # per-phase wall-clock split (see fit_genewise's result dict)

@@ -40,10 +40,16 @@ _MODES = ("global", "specieswise", "genewise")
 
 def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
             dtype: torch.dtype | str | None = None, max_steps=300, init_rate=None,
-            solver_options=None, config: GpurecConfig | None = None, verbose=False) -> dict:
+            solver_options=None, config: GpurecConfig | None = None, clade_budget=None,
+            verbose=False) -> dict:
     """Fit DTL rates with the best recipe for ``mode``. Returns a normalized result dict:
     ``{mode, theta[cpu], rates[cpu], nll_bits, nll_nats, n_families, wall_s, ...}`` (``gnorm`` for the
     coupled modes; ``genewise_result`` -- the full ``fit_genewise`` dict -- for genewise).
+
+    ``clade_budget`` (genewise only) caps how many clades one batch holds, which is what sizes the
+    fit's peak GPU memory. ``None`` derives it from the card -- the tuned 315,000 when it fits, less
+    when it does not -- so the same fit runs on a 94 GiB H100 and on a 24 GB card. See
+    ``fit_genewise``.
 
     ``init_rate`` (a rate, not log2) seeds theta for the coupled modes; ignored for genewise (which has
     its own box-projected warm start). ``solver_options`` overrides solver knobs (iteration caps,
@@ -83,7 +89,7 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
                            certify=True, certify_curvature=False, min_drop=32, rebuild_frac=0.25,
                            hessian_refresh=15, init_curvature="adam_bfgs",
                            solver_options=solver_options, config=config, verbose=verbose,
-                           init_log2_rates=init_log2_rates,
+                           init_log2_rates=init_log2_rates, clade_budget=clade_budget,
                            stall_patience=120)   # = max_iter: the stall rule is available but off (it settled 3-4 near-converged families early)
         wall_s = time.perf_counter() - t0
         nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)
