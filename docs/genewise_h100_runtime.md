@@ -285,6 +285,13 @@ jobs of mine** (first build 69 s and warm-up 206 s vs 20 s and 145 s in the quie
 individual improvements still being made, so final timings should be taken with nothing else running on
 the node.
 
+**Known regression under investigation (float64 only).** `tests/test_origination_curvature.py::
+test_joint_hvp_symmetric_and_gauge_null` (fp64 joint Hessian, symmetric to 1e-10) fails since the fused
+Neumann-series merge (13714ef2) with an asymmetry of 2.6e-8; it still fails with the fused kernel switched
+off and the early-exit tolerance set to zero, so a float32 intermediate or constant on the shared adjoint
+path in fp64 is suspected. Production fp32 results are unaffected (all fits above). The other six CPU test
+failures (`bicgstab_*` / `e_adjoint_solver` options, benchmark `--help`) predate this work.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
