@@ -462,16 +462,29 @@ def _solve_reconciliation_wave_vjp_2d(
     n_row_blocks = triton.cdiv(W, block_w)
     scratch_shape = (W, S)
 
-    v_k = torch.empty(scratch_shape, device=device, dtype=dtype)
-    self_loop_diagonal = torch.empty(scratch_shape, device=device, dtype=dtype)
-    donor_adjoint_coefficient = torch.empty(scratch_shape, device=device, dtype=dtype)
-    receiver_mass = torch.empty(scratch_shape, device=device, dtype=dtype)
+    # The buffers below are what this function RETURNS. Every kernel here writes only the rows
+    # the adjoint pruner marked active (SKIP_INACTIVE_SCRATCH_ZERO), so with pruning on a pruned
+    # row is never written at all. Left as torch.empty it hands back whatever the caching
+    # allocator last left in that block, and the exact-HVP consumer reads those rows -- the
+    # first-order gradient masks them away, which is why only the HVP noticed. That made
+    # tests/test_fraction_missing_hvp.py (two identical computations, asserted equal bit for bit)
+    # pass or fail on whether the recycled block happened to hold the same bytes both times.
+    # An explicit zero is also what "pruned" means: the row's adjoint is below
+    # adjoint_pruning_threshold and contributes nothing. Active rows are always fully written, so
+    # their values are bit-for-bit unchanged; without pruning every row is written, so the
+    # memsets are skipped entirely.
+    returned_buffer = torch.zeros if active_mask is not None else torch.empty
+
+    v_k = returned_buffer(scratch_shape, device=device, dtype=dtype)
+    self_loop_diagonal = returned_buffer(scratch_shape, device=device, dtype=dtype)
+    donor_adjoint_coefficient = returned_buffer(scratch_shape, device=device, dtype=dtype)
+    receiver_mass = returned_buffer(scratch_shape, device=device, dtype=dtype)
     accum_self_loop_grads = self_loop_grad_targets is not None
     speciation_leaf_event_vjp = (
-        None if accum_self_loop_grads else torch.empty(scratch_shape, device=device, dtype=dtype)
+        None if accum_self_loop_grads else returned_buffer(scratch_shape, device=device, dtype=dtype)
     )
-    speciation_child1_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
-    speciation_child2_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
+    speciation_child1_probability = returned_buffer(scratch_shape, device=device, dtype=dtype)
+    speciation_child2_probability = returned_buffer(scratch_shape, device=device, dtype=dtype)
     use_exact_adjoint = adjoint_self_loop == "exact"
     # One [2, W, S] allocation instead of two [W, S] ones (same total bytes): the
     # fused series kernel ping-pongs the two Neumann term buffers by adding an
