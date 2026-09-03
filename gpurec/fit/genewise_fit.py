@@ -433,6 +433,11 @@ def fit_genewise(
     # convexified curvature): it is settled at its best iterate as unconverged instead of burning
     # iterations up to ``max_iter`` in a tail of one or two families.
     best_step = torch.zeros(F_all, dtype=torch.long, device=dev)
+    # Same idea for the projected gradient: near a float32-flat optimum the NLL cannot register an
+    # improvement while |Pg| still shrinks, so a family counts as stalled only when NEITHER its best
+    # NLL nor its best |Pg| (by at least 10 %) improved during the last ``stall_patience`` steps.
+    best_pg = torch.full((F_all,), float("inf"), device=dev, dtype=dtype)
+    best_pg_step = torch.zeros(F_all, dtype=torch.long, device=dev)
 
     def _track_best(rows, nll_rows, theta_rows, mask, step):
         cur = best_nll.index_select(0, rows)
@@ -545,7 +550,15 @@ def fit_genewise(
                     plateau = pgm >= improve_frac * pg_last.index_select(0, active)
                     pg_last.index_copy_(0, active, torch.where(live, pgm, pg_last.index_select(0, active)))
                     conv = live & (pgm < tol)
-                    stalled = live & ~conv & ((n_steps - best_step.index_select(0, active)) > stall_patience)
+                    cur_pg = best_pg.index_select(0, active)
+                    pg_better = live & (pgm < 0.9 * cur_pg)
+                    best_pg.index_copy_(0, active, torch.where(pg_better, pgm, cur_pg))
+                    best_pg_step.index_copy_(0, active, torch.where(
+                        pg_better, torch.full_like(cur_pg, n_steps, dtype=torch.long),
+                        best_pg_step.index_select(0, active)))
+                    stalled = live & ~conv \
+                        & ((n_steps - best_step.index_select(0, active)) > stall_patience) \
+                        & ((n_steps - best_pg_step.index_select(0, active)) > stall_patience)
                     if bool(stalled.any()):   # settle at the best iterate, reported as unconverged
                         theta.index_copy_(0, active[stalled], best_theta.index_select(0, active[stalled]))
                         settled = settled | stalled
