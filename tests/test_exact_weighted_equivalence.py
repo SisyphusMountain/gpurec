@@ -192,12 +192,21 @@ def _value_and_grads(model, theta, receiver, origination):
     }
 
 
-def _relative_gap(reference, candidate):
-    """max |candidate - reference| divided by the reference's own largest entry (or 1 if it is 0)."""
-    assert torch.isfinite(candidate).all(), "the candidate produced a non-finite value"
-    assert torch.isfinite(reference).all(), "the reference produced a non-finite value"
+def _relative_gap(reference, candidate, label):
+    """max |candidate - reference| divided by the reference's own largest entry (or 1 if it is 0).
+
+    The measured number is printed as well as returned: a test that only asserts "below the
+    tolerance" cannot tell a healthy 1e-14 from a 9e-10 that is one change away from failing, and
+    ``pytest -s`` on this file is the cheapest way to see the real margin.
+    """
+    assert torch.isfinite(candidate).all(), f"{label}: the candidate produced a non-finite value"
+    assert torch.isfinite(reference).all(), f"{label}: the reference produced a non-finite value"
     scale = float(reference.abs().amax())
-    return float((candidate - reference).abs().max()) / (scale if scale > 0.0 else 1.0)
+    absolute = float((candidate - reference).abs().max())
+    gap = absolute / (scale if scale > 0.0 else 1.0)
+    print(f"    {label:<40} max|diff| = {absolute:.4e}  relative = {gap:.4e}  "
+          f"(max|reference| = {scale:.4e})")
+    return gap
 
 
 # The three weight settings. "uniform" is the control: it is the configuration the scale runs already
@@ -225,7 +234,7 @@ def test_genewise_value_and_gradients_match(tmp_path, receiver_scale, originatio
         torch.cuda.empty_cache()
 
     for name in ("nll", "grad_theta", "grad_receiver", "grad_origination"):
-        gap = _relative_gap(results["iterated"][name], results["exact"][name])
+        gap = _relative_gap(results["iterated"][name], results["exact"][name], f"genewise {name}")
         assert gap < _TOLERANCE, (
             f"{name}: exact and converged-iterated differ by {gap:.3e} relative, "
             f"tolerance {_TOLERANCE:.0e}"
@@ -259,7 +268,7 @@ def test_genewise_curvature_blocks_match(tmp_path, receiver_scale, origination_s
         del model
         torch.cuda.empty_cache()
 
-    gap = _relative_gap(results["iterated"], results["exact"])
+    gap = _relative_gap(results["iterated"], results["exact"], "genewise 3x3 curvature")
     assert gap < _TOLERANCE, (
         f"3x3 curvature blocks: exact and converged-iterated differ by {gap:.3e} relative, "
         f"tolerance {_TOLERANCE:.0e}"
@@ -297,7 +306,7 @@ def test_specieswise_value_and_gradients_match(tmp_path, receiver_scale, origina
         torch.cuda.empty_cache()
 
     for name in ("nll", "grad_theta", "grad_receiver", "grad_origination"):
-        gap = _relative_gap(results["iterated"][name], results["exact"][name])
+        gap = _relative_gap(results["iterated"][name], results["exact"][name], f"specieswise {name}")
         assert gap < _TOLERANCE, (
             f"specieswise {name}: exact and converged-iterated differ by {gap:.3e} relative, "
             f"tolerance {_TOLERANCE:.0e}"
@@ -337,7 +346,8 @@ def test_joint_theta_receiver_origination_hessian_matches(tmp_path):
         del model, hvp
         torch.cuda.empty_cache()
 
-    gap = _relative_gap(columns["iterated"], columns["exact"])
+    gap = _relative_gap(columns["iterated"], columns["exact"],
+                        "joint (theta, receiver, origination) Hessian")
     assert gap < _TOLERANCE, (
         f"joint (theta, receiver, origination) Hessian: exact and converged-iterated differ by "
         f"{gap:.3e} relative, tolerance {_TOLERANCE:.0e}"
@@ -368,13 +378,14 @@ def test_weighted_setting_actually_changes_the_answer(tmp_path):
         torch.cuda.empty_cache()
 
     for label in ("weighted", "weighted_and_missing"):
-        gap = _relative_gap(values["uniform"]["nll"], values[label]["nll"])
+        gap = _relative_gap(values["uniform"]["nll"], values[label]["nll"], f"{label} NLL vs uniform")
         assert gap > 1e-4, (
             f"{label} gave essentially the same NLL as uniform (relative gap {gap:.3e}); "
             "the weights are not reaching the likelihood, so the equivalence tests above are vacuous"
         )
     receiver_gap = _relative_gap(
-        values["uniform"]["grad_receiver"], values["weighted"]["grad_receiver"]
+        values["uniform"]["grad_receiver"], values["weighted"]["grad_receiver"],
+        "weighted receiver gradient vs uniform",
     )
     assert receiver_gap > 1e-4, (
         f"the receiver-weight gradient barely moved when the receiver logits were switched on "
