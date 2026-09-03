@@ -292,6 +292,16 @@ off and the early-exit tolerance set to zero, so a float32 intermediate or const
 path in fp64 is suspected. Production fp32 results are unaffected (all fits above). The other six CPU test
 failures (`bicgstab_*` / `e_adjoint_solver` options, benchmark `--help`) predate this work.
 
+**Backward prepare kernel built additively (commit b3a7ef9f).** The donor's valid receiver mass is now
+two running sums of non-negative terms over the depth-first species order (shared table builder
+`gpurec/core/valid_receivers.py`, used by forward and backward), replacing the row-wide sum minus a
+34-step ancestor walk with an `exp2` per step. Kernel 174 to 61 µs (2.84x), instructions 28.2M to 10.7M,
+transcendentals per element 46 to 12. In float64 both formulations agree to 4e-12; in float32 the
+run-to-run atomics noise of the gradient drops (fitted rates 1.1e-3 to 6.8e-4, flat theta 2.6e-3 to
+1.2e-4) and reordering the transfer-subtree kernel's sum no longer moves the gradient by O(1), which
+made a `num_warps` 4 to 8 change safe (+5 %). One gradient at 500 families: 5.39 s to 4.77 s at fitted
+rates. Fits: 40 families 12.3 s (14.6 s), 500 families 136.4 s (139.0 s), NLL 1618462.55 bits, 499/500.
+
 ## What is left
 
 The gradient itself is GPU-bound (96 % busy) with two kernels taking two thirds of the time,
