@@ -346,8 +346,11 @@ def test_default_origination_penalty_is_noop_equivalent_to_none():
 def _run_map_cv_capture(monkeypatch, **kwargs):
     """Run ``map_cv`` with stubbed ``_build``/``fit_specieswise``/``heldout_nll`` (each replaced by a
     cheap, deterministic fake) so the k-fold loop completes instantly without any real gene/species
-    tree files or CUDA/Triton solve. Returns ``(result_dict, captured)`` where
-    ``captured["solver_options"]`` is the ``SolverOptions`` every ``_build`` call actually received.
+    tree files or CUDA/Triton solve. ``parse_families`` is stubbed for the same reason as in
+    ``_run_fit_genewise_capture``: map_cv now parses the dataset once up front and hands the
+    resident handle to every fold/lambda model, and these paths do not exist on disk. Returns
+    ``(result_dict, captured)`` where ``captured["solver_options"]`` is the ``SolverOptions`` every
+    ``_build`` call actually received and ``captured["parsed"]`` is the handle it was given.
     """
     import gpurec.fit.map_cv as mc
 
@@ -359,9 +362,16 @@ def _run_map_cv_capture(monkeypatch, **kwargs):
             self.receiver_weights = torch.zeros(2)
             self.batch_statics = None
 
-    def _fake_build(species_tree, paths, *, mode, device, solver_options):
+    def _fake_build(species_tree, parsed, indices, all_paths, *, mode, device, solver_options):
         captured["solver_options"] = solver_options
+        captured["parsed"] = parsed
+        captured.setdefault("index_sets", []).append(list(indices))
         return _FakeModel()
+
+    def _fake_parse_families(species_path, family_paths):
+        captured.setdefault("parse_calls", []).append(
+            (str(species_path), [str(p) for p in family_paths]))
+        return ("parsed-handle", str(species_path), [str(p) for p in family_paths])
 
     def _fake_fit_specieswise(batch_statics, theta0, receiver_weights, *, lam, theta_ref, **fkwargs):
         return {"theta": theta0}
@@ -370,6 +380,7 @@ def _run_map_cv_capture(monkeypatch, **kwargs):
         return 0.0
 
     monkeypatch.setattr(mc, "_build", _fake_build)
+    monkeypatch.setattr(mc, "parse_families", _fake_parse_families)
     monkeypatch.setattr(mc, "fit_specieswise", _fake_fit_specieswise)
     monkeypatch.setattr(mc, "heldout_nll", _fake_heldout_nll)
     result = mc.map_cv("sp.nwk", ["g1.nwk", "g2.nwk"], device="cpu", k=2, verbose=False, **kwargs)
@@ -381,6 +392,31 @@ def test_map_cv_config_solver_field_threaded(monkeypatch):
     _result, captured = _run_map_cv_capture(monkeypatch, config=cfg)
     assert captured["solver_options"].e_max_iter == 999
     assert captured["solver_options"].pi_iters == 32  # pi_iters IS in _CV_SO's key subset
+
+
+def test_map_cv_parses_the_dataset_once_and_builds_every_model_from_it(monkeypatch):
+    """map_cv must parse the gene trees ONCE and rebuild each fold/lambda model over a subset.
+
+    A k-fold run builds 1 + 2k models (the full model, then a train and a test model per fold).
+    Each one used to re-read and re-parse its own gene-tree files, so every file was parsed k+1
+    times. They are all subsets of the same dataset, so the parse is hoisted out and every model
+    is rebuilt from the one resident handle over its own family indices.
+    """
+    _result, captured = _run_map_cv_capture(monkeypatch, lambdas=(0.0, 1.0))
+
+    assert captured["parse_calls"] == [("sp.nwk", ["g1.nwk", "g2.nwk"])], (
+        f"expected exactly one parse of the whole dataset, got {captured['parse_calls']}")
+    # k=2 folds -> the full model plus a train and a test model per fold.
+    assert len(captured["index_sets"]) == 1 + 2 * 2
+    # every model was built from that one handle, not from a fresh parse
+    assert captured["parsed"] == ("parsed-handle", "sp.nwk", ["g1.nwk", "g2.nwk"])
+    # the full model covers both families; each fold model is a subset of them
+    assert captured["index_sets"][0] == [0, 1]
+    for indices in captured["index_sets"][1:]:
+        assert set(indices) <= {0, 1}
+    # train and test of a fold partition the families
+    train, test = captured["index_sets"][1], captured["index_sets"][2]
+    assert sorted(train + test) == [0, 1]
 
 
 def test_map_cv_config_lambdas_threaded(monkeypatch):
