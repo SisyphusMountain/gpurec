@@ -22,8 +22,9 @@ What it runs:
      ``alpha`` are optimized alongside theta instead of being held at zero (uniform). That is the
      "joint receiver-weight" variant. It is written here rather than reused from
      ``experiments/sanderson_cv/run_cv_joint.py`` because that file is hard-wired to the hogenom
-     dataset and imports ``run_cv``, which does not import on either checkout (its ``_CV_SO`` still
-     names the removed ``bicgstab_*`` solver options).
+     dataset and imports two modules that still name the removed ``bicgstab_max_iter`` /
+     ``bicgstab_tol`` / ``bicgstab_breakdown_tol`` solver options and therefore raise TypeError on
+     import: ``run_cv`` (fixed in this branch) and ``converge_bounded_joint_archaea`` (not fixed).
 
 Everything the comparison needs is written to ``--out`` as a .pt: the CV curve, lam*, the final
 per-species rates, the final NLL, and wall times.
