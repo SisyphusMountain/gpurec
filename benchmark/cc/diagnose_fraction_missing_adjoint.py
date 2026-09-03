@@ -21,13 +21,36 @@ This script tells them apart by measuring the shrink factor directly. Each Neuma
 ``J`` applied to the previous one, so the ratio of consecutive term norms IS the operator's
 asymptotic shrink factor per term (its spectral radius). The script records every term norm of every
 extinction-adjoint solve in one gradient call, at a sweep of ``fraction_missing`` levels, and reports
-that ratio along with how many terms the requested tolerance would actually need.
+that ratio along with how many terms the requested tolerance would actually need. It also runs the
+FORWARD extinction fixed point at two very different iteration caps, because the series' stated
+justification is "the forward E fixed point converges, so its Jacobian is a contraction" and it
+matters whether the first half of that sentence still holds.
+
+What it found on 100 Coleman families, float64, fraction_missing on 610 of the 2013 species
+(one of the two batches; the other converges in 35-38 terms at every level):
+
+    fraction_missing up to   shrink per term   verdict
+    ---------------------    ---------------   -------------------------------------------
+    none                     0.552             done in 55 terms
+    0.05                     0.553             done in 55 terms
+    0.10                     0.834             done in 145 terms
+    0.20                     grows             falls for 7 terms to 7.07e-4, then CLIMBS
+                                               (term 33 = 8.2, term 129 = 2.0e16) -> inf at 977
+    0.50                     grows             falls for 5 terms to 6.07e-3, then climbs
+                                               (term 33 = 1.1e5, term 129 = 1.4e31) -> inf at 574
+
+So it is the first case, not the second: past a threshold between 0.10 and 0.20 the operator
+GROWS a vector by roughly 1.45x per application, and no iteration budget can help.
 
 Usage:
   python benchmark/cc/diagnose_fraction_missing_adjoint.py --species S --families LIST \
       --fitted-theta $CC_RUNS/results/full_v3.pt --limit 100 --clade-budget 315000 \
       --missing-levels 0.0 0.1 0.2 0.3 0.5 --missing-leaf-fraction 0.3 \
-      --e-adjoint-max-iter 4096 --seed 0
+      --e-adjoint-max-iter 3000 --receiver-scale 0.6 --origination-scale 0.5 \
+      --per-family 1 --seed 0
+
+The solver settings are filtered to the fields the imported checkout actually has, so the same file
+runs against the older checkout too -- which is how one tells whether this is a regression.
 """
 from __future__ import annotations
 
@@ -41,8 +64,43 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_weighted_equiv import (  # noqa: E402
-    _random_fraction_missing, _random_weights, _solver_options, _theta,
+    _random_fraction_missing, _random_weights, _theta,
 )
+
+
+def _solver_options(e_adjoint_max_iter):
+    """Converged float64 solver settings, keeping only the fields THIS checkout actually has.
+
+    The point of the filter is that the same file has to run against the older checkout, whose
+    ``SolverOptions`` has no ``forward_self_loop`` / ``adjoint_self_loop`` / ``pi_linear_tol``
+    fields at all -- passing them there is a TypeError. Dropping a field the old code does not know
+    about is safe here because the extinction-adjoint solve this script measures is upstream of the
+    wave self-loop those fields select: both checkouts run the same linear solve either way.
+    """
+    from gpurec.api.solver_options import SolverOptions
+
+    wanted = {
+        "e_max_iter": 512,
+        "e_tol": 1e-15,
+        "pi_iters": 64,
+        "neumann_terms": 64,
+        "neumann_term_tol": 0.0,
+        "e_adjoint_max_iter": int(e_adjoint_max_iter),
+        "e_adjoint_tol": None,
+        "adjoint_pruning_threshold": 1e-6,
+        "use_adjoint_pruning": False,
+        "pibar_side_threshold": 0.0,
+        "forward_self_loop": "exact",
+        "adjoint_self_loop": "exact",
+        "pi_linear_tol": 0.0,
+    }
+    available = set(vars(SolverOptions()).keys())
+    dropped = sorted(name for name in wanted if name not in available)
+    if dropped:
+        print(f"[solver] this checkout has no {dropped}; running without them", flush=True)
+    options = SolverOptions(**{k: v for k, v in wanted.items() if k in available})
+    options.validate()
+    return options
 
 
 def _install_term_norm_recorder():
@@ -158,7 +216,7 @@ def main() -> int:
                     args.species, args.missing_leaf_fraction, level, args.seed
                 )
             )
-            options = _solver_options("exact", 64, 64, torch.float64, args.e_adjoint_max_iter)
+            options = _solver_options(args.e_adjoint_max_iter)
             model = GeneReconModel(
                 args.species, paths, mode="genewise", device="cuda", dtype=torch.float64,
                 solver_options=options, clade_budget=args.clade_budget,
@@ -256,7 +314,7 @@ def main() -> int:
                   f"{len(paths)} families", flush=True)
             diverged = []
             for family_index, path in enumerate(paths):
-                options = _solver_options("exact", 64, 64, torch.float64, 200)
+                options = _solver_options(200)
                 model = GeneReconModel(
                     args.species, [path], mode="genewise", device="cuda", dtype=torch.float64,
                     solver_options=options, clade_budget=args.clade_budget,
