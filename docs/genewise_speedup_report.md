@@ -304,9 +304,13 @@ solves (about 15 % each) and the split reductions; all are latency-bound at low 
 - The exact tangent in float32 is a few times the reference noise at a flat starting point (signed
   accumulation through 33 tree levels) and indistinguishable from 16 sweeps at fitted rates; carrying
   the two affine coefficients in float64 inside the walk would remove even that.
-- The fused Neumann series (`adjoint_self_loop = "series"`, no longer the default) makes one
-  bit-identity test flaky (4 of 6 runs) since its introduction; a race in the fused kernel is
-  suspected and being investigated.
+- Reproducibility of the Hessian-vector product: a bit-identity test had become flaky after the
+  fused-series merge. The cause was not a race but uninitialised memory: the wave backward writes
+  only the clade rows the adjoint pruner keeps, and its returned buffers were `torch.empty`, so
+  pruned rows carried allocator leftovers that the HVP (unlike the gradient) does not mask. Pruned
+  rows are now zeroed (commit 0d319ad9); the test passes 10 of 10 with the exact defaults. With the
+  `"linear"` forward selected explicitly the HVP is still not bitwise reproducible (16 of 20 repeats
+  differ) although the forward's own output is; that path is being fixed.
 
 ## Reproducing
 
