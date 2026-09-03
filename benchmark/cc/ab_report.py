@@ -60,7 +60,8 @@ def main() -> int:
     print("| dataset | code | families | wall (s) | D | L | T | NLL (bits) | NLL (nats) | "
           "steps | max |Pg| |")
     print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
-    for label, old_tag, new_tag in (("archaea 5446 fam", "arch_old_gl", "arch_new_gl"),):
+    for label, old_tag, new_tag in (("archaea 5446 fam", "arch_old_gl", "arch_new_gl"),
+                                    ("HOGENOM 1055 fam", "hog1055_old_gl", "hog1055_new_gl")):
         for code, tag in (("old", old_tag), ("new", new_tag)):
             s = _load(d, tag)
             if s is None:
