@@ -42,6 +42,8 @@ JOBS = {
     "verify500": ("k1_verify500", None, dict(minutes=60)),
     # Production timing: no --debug-dump-dir, so the opt-in finiteness checks never synchronise.
     "fits": ("k1_fits", None, dict(minutes=120)),
+    # 40-family fit on the linear forward + exact adjoint combination.
+    "fit40linear": ("k1_fit40linear", None, dict(minutes=40)),
     "repro": ("k1_repro", "benchmark/cc/run_genewise.py", dict(minutes=120)),
     "fit500": ("k1_fit500", "benchmark/cc/run_genewise.py", dict(minutes=30)),
     "full": ("k1_full", "benchmark/cc/run_genewise.py", dict(minutes=180)),
@@ -92,7 +94,13 @@ def main() -> int:
         "--limit 8 --clade-budget 315000 --pi-iters 16 --neumann-terms 16 --window 60 "
         "--grid=-19.9,0.0"
     )
-    if args.job == "corner":
+    if args.job == "fit40linear":
+        command = (
+            "$CC_PY -u benchmark/cc/run_genewise.py --species $CC_SPECIES "
+            "--families $CC_FAMILIES --limit 40 --out-dir $CC_RUNS/results --tag k1_fit40linear "
+            "--forward-self-loop linear --adjoint-self-loop exact --init-rate none"
+        )
+    elif args.job == "corner":
         command = (
             f"$CC_PY -u {corner} --dtype float32; "
             "$CC_PY -u benchmark/cc/test_linear_forward.py --species $CC_SPECIES "
