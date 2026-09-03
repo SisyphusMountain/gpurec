@@ -55,6 +55,7 @@ def test_complete_centered_state_validates_frames_on_cuda(
         pi_offset=torch.zeros(2, device="cuda", dtype=accumulator_dtype),
         pibar_offset=torch.ones(2, device="cuda", dtype=accumulator_dtype),
         wide_row=None,
+        wide_row_total=0,
     )
     pibar = pi.clone()
     row_max = torch.zeros(2, device="cuda", dtype=torch.float32)
@@ -78,6 +79,7 @@ def test_centered_state_rejects_mixed_offset_dtypes():
         pi_offset=torch.zeros(1, device="cuda", dtype=torch.float32),
         pibar_offset=torch.zeros(1, device="cuda", dtype=torch.float64),
         wide_row=None,
+        wide_row_total=0,
     )
     with pytest.raises(TypeError, match="match accumulator dtype"):
         state.validate(pi, pi.clone(), torch.zeros(1, device="cuda"))
@@ -92,6 +94,7 @@ def test_centered_state_rejects_offsets_narrower_than_residuals():
         pi_offset=torch.zeros(1, device="cuda", dtype=torch.float32),
         pibar_offset=torch.zeros(1, device="cuda", dtype=torch.float32),
         wide_row=None,
+        wide_row_total=0,
     )
     with pytest.raises(TypeError, match="must not be narrower"):
         state.validate(
@@ -111,6 +114,7 @@ def test_centered_state_rejects_nonfinite_offsets_on_explicit_audit(bad_value: f
         pi_offset=torch.tensor([bad_value], device="cuda", dtype=torch.float64),
         pibar_offset=torch.zeros(1, device="cuda", dtype=torch.float64),
         wide_row=None,
+        wide_row_total=0,
     )
     with pytest.raises(ValueError, match="finite"):
         state.validate(pi, pi.clone(), torch.zeros(1, device="cuda"))
@@ -125,6 +129,7 @@ def test_centered_state_rejects_noncanonical_all_impossible_row():
         pi_offset=torch.ones(1, device="cuda", dtype=torch.float64),
         pibar_offset=torch.zeros(1, device="cuda", dtype=torch.float64),
         wide_row=None,
+        wide_row_total=0,
     )
     with pytest.raises(ValueError, match="canonical zero offset"):
         state.validate(impossible, impossible.clone(), torch.full((1,), float("-inf"), device="cuda"))

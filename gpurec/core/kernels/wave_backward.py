@@ -311,6 +311,7 @@ def _solve_reconciliation_wave_vjp_2d(
     neumann_terms,
     neumann_term_tol,
     adjoint_self_loop,
+    wide_row,
     leaf_species_idx,
     leaf_logp,
     leaf_fm_log,
@@ -486,6 +487,15 @@ def _solve_reconciliation_wave_vjp_2d(
     speciation_child1_probability = returned_buffer(scratch_shape, device=device, dtype=dtype)
     speciation_child2_probability = returned_buffer(scratch_shape, device=device, dtype=dtype)
     use_exact_adjoint = adjoint_self_loop == "exact"
+    # The forward flagged the rows whose lanes it could not hold under one row scale and solved
+    # them in log space instead. The transposed solve underflows on exactly those rows, so they
+    # go to the Neumann series and the exact elimination skips them. ``wide_row`` is None
+    # whenever the forward flagged nothing, which is the ordinary case and leaves both paths
+    # exactly as they were.
+    wide_rows_in_wave = None
+    if use_exact_adjoint and wide_row is not None:
+        wide_rows_in_wave = wide_row[int(ws): int(ws) + int(W)].to(torch.bool)
+    split_by_range = wide_rows_in_wave is not None
     # One [2, W, S] allocation instead of two [W, S] ones (same total bytes): the
     # fused series kernel ping-pongs the two Neumann term buffers by adding an
     # integer offset of 0 or W*S to a single base pointer, which Triton can carry
@@ -496,7 +506,9 @@ def _solve_reconciliation_wave_vjp_2d(
     # ``subtree_donor_adjoint``, which is pure scratch until the receiver-gradient kernel below
     # rewrites it. So the exact path allocates exactly what the series path does.
     term_pair = torch.empty(
-        (2, 1, 1) if use_exact_adjoint else (2, W, S), device=device, dtype=dtype
+        (2, 1, 1) if (use_exact_adjoint and not split_by_range) else (2, W, S),
+        device=device,
+        dtype=dtype,
     )
     spec_buf = term_pair[0]
     term_buf = term_pair[1]
@@ -619,9 +631,22 @@ def _solve_reconciliation_wave_vjp_2d(
             if collect_guard_trips
             else compact_level_ptr
         )
+        # Two disjoint row sets: the elimination takes the rows the forward kept, the series
+        # takes the ones it handed to the log sweeps. Both stay inside the pruner's own active
+        # mask, so a pruned row is still skipped by each.
+        if split_by_range:
+            active_rows = (
+                active_mask.reshape(W, -1).ne(0).any(dim=1)
+                if active_mask is not None
+                else torch.ones(W, device=device, dtype=torch.bool)
+            )
+            exact_rows = (active_rows & ~wide_rows_in_wave).to(torch.int8)
+            series_rows = (active_rows & wide_rows_in_wave).to(torch.int8)
+        else:
+            exact_rows = active_mask if active_mask is not None else rhs
         _exact_tree_self_loop_transpose_kernel[(n_row_blocks,)](
             rhs,
-            active_mask if active_mask is not None else rhs,
+            exact_rows,
             self_loop_diagonal,
             donor_adjoint_coefficient,
             receiver_mass,
@@ -645,13 +670,53 @@ def _solve_reconciliation_wave_vjp_2d(
             block_s,
             block_nodes,
             compact_level_ptr.numel() - 1,
-            USE_ACTIVE_MASK=bool(active_mask is not None),
+            USE_ACTIVE_MASK=bool(active_mask is not None or split_by_range),
             WRITE_GUARD_TRIPS=bool(collect_guard_trips),
             DTYPE=_tl_float_dtype(dtype),
             num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
         )
         if collect_guard_trips:
             _EXACT_ADJOINT_GUARD_TRIPS.append(guard_trips)
+        if split_by_range:
+            # The flagged rows, summed as a Neumann series exactly as ``adjoint_self_loop
+            # = "series"`` would. v_k already holds rhs for them (the prepare kernel wrote it and
+            # the elimination skipped them), so this is the series' own cold branch.
+            _reconciliation_self_loop_transpose_series_kernel[(n_row_blocks,)](
+                rhs,
+                term_pair,
+                series_rows,
+                self_loop_diagonal,
+                donor_adjoint_coefficient,
+                receiver_mass,
+                speciation_child1_probability,
+                speciation_child2_probability,
+                species_child1,
+                species_child2,
+                species_parent,
+                compact_level_ptr,
+                compact_level_parents,
+                compact_level_child1,
+                compact_level_child2,
+                subtree_donor_adjoint,
+                v_k,
+                compact_level_ptr,
+                float(dtype_scaled_self_loop_tol(neumann_term_tol, dtype)),
+                int(neumann_terms),
+                W,
+                S,
+                block_w,
+                block_s,
+                block_nodes,
+                compact_level_ptr.numel() - 1,
+                USE_ACTIVE_MASK=True,
+                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
+                FIXED_POINT_UPDATE=False,
+                DTYPE=_tl_float_dtype(dtype),
+                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+                COLLECT_TERMS=False,
+                WRITE_LAST_TERM=False,
+                num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
+            )
     elif int(neumann_terms) > 0 and not _USE_FUSED_NEUMANN_SERIES:
         # Reference path: one launch per Neumann term, no early exit. Kept only so
         # benchmark/cc/test_neumann_exit.py can show the fused kernel below repro-
@@ -936,6 +1001,7 @@ def solve_reconciliation_wave_vjp(
     *,
     neumann_term_tol,
     adjoint_self_loop,
+    wide_row,
     pi_offset,
     pibar_offset,
     gene_split_offset=None,
@@ -1031,6 +1097,7 @@ def solve_reconciliation_wave_vjp(
         neumann_terms=neumann_terms,
         neumann_term_tol=neumann_term_tol,
         adjoint_self_loop=adjoint_self_loop,
+        wide_row=wide_row,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
         leaf_fm_log=leaf_fm_log,

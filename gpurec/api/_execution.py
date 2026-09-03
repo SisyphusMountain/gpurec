@@ -24,7 +24,15 @@ def _backward_offsets(static: _BatchStatic) -> dict[str, torch.Tensor]:
     state = getattr(static, "pi_forward_state", None)
     if state is None:
         raise RuntimeError("Pi forward did not publish its row-offset state")
-    return {"pi_offset": state.pi_offset, "pibar_offset": state.pibar_offset}
+    return {
+        "pi_offset": state.pi_offset,
+        "pibar_offset": state.pibar_offset,
+        # Which rows the exact forward could not hold in one row scale. The adjoint has to make
+        # the same call the forward did, so it travels with the gauges rather than being
+        # re-derived. ``None`` on every non-exact forward, and on an exact one that flagged
+        # nothing -- which is the ordinary case, and keeps the backward on its usual path.
+        "wide_row": state.wide_row if state.wide_row_total > 0 else None,
+    }
 
 
 def theta_for_static(static: _BatchStatic, theta: torch.Tensor, *, genewise: bool) -> torch.Tensor:

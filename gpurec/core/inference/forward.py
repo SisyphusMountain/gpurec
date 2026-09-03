@@ -231,6 +231,7 @@ def pi_wave_forward(
             (len(wave_layout["wave_metas"]),), dtype=torch.int32, device=device
         )
     wave_index = 0
+    wide_row_total = 0
 
     # The log-space prologue never publishes the wave's final state when a one-launch self-loop
     # takes over afterwards; ``-1`` is a local iteration index no prologue step can reach.
@@ -448,7 +449,9 @@ def pi_wave_forward(
             # run at all. The exact kernel left every flagged row exactly as it found it, so the
             # sweeps below pick up from the prologue's output with the same buffer parity the
             # "log" mode uses, and the masked kernel returns immediately on every other row.
-            if int(wide_row_count[wave_index].item()) > 0:
+            wave_wide_rows = int(wide_row_count[wave_index].item())
+            wide_row_total += wave_wide_rows
+            if wave_wide_rows > 0:
                 for local_iter in range(prologue_iters, pi_iters):
                     pi_in = pi if (local_iter % 2 == 0) else pibar
                     pi_in_offset = pi_offset if (local_iter % 2 == 0) else pibar_offset
@@ -498,6 +501,7 @@ def pi_wave_forward(
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
         wide_row=wide_row if use_exact_self_loop else None,
+        wide_row_total=wide_row_total,
     )
     state.validate(pi, pibar, uniform_pibar_row_max, check_values=False)
     root_ids = wave_layout["root_clade_ids"]

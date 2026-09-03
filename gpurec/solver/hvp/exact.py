@@ -268,6 +268,9 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     )
     pi_offset = pi_state.pi_offset
     pibar_offset = pi_state.pibar_offset
+    # The forward's own per-row decision, so this HVP's adjoint and tangent split the same way it
+    # did. None whenever nothing was flagged, which leaves every path as it was.
+    wide_row = pi_state.wide_row if pi_state.wide_row_total > 0 else None
 
     # Turn ON the origination head whenever origination_weights are supplied (even UNIFORM omega=0):
     # the omega curvature at uniform omega is nonzero and is exactly what the joint gate must capture.
@@ -629,6 +632,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     species_child1, species_child2, None, neumann_terms=int(so.neumann_terms),
                     neumann_term_tol=float(so.neumann_term_tol),
                     adjoint_self_loop=so.adjoint_self_loop,
+                    wide_row=wide_row,
                     leaf_species_idx=leaf_species_idx,
                     leaf_logp=wave_constants["leaf_log_probability"],
                     has_leaf_term=has_leaf,
