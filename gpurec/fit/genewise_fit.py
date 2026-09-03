@@ -243,6 +243,7 @@ def fit_genewise(
     certify: bool = False,
     certify_curvature: bool,
     init_log2_rates: tuple[float, float, float],
+    stall_patience: int,
     solver_options: SolverOptions | dict | None = None,
     config: GpurecConfig | None = None,
     verbose: bool = False,
@@ -427,13 +428,20 @@ def fit_genewise(
     # relative to any point it visited. Certified families are untouched (their theta is final).
     best_nll = torch.full((F_all,), float("inf"), device=dev, dtype=dtype)
     best_theta = theta.clone()
+    # Newton step count at which each family last improved its best NLL. A live family that has
+    # not improved for ``stall_patience`` steps is going nowhere under this Newton (trust region,
+    # convexified curvature): it is settled at its best iterate as unconverged instead of burning
+    # iterations up to ``max_iter`` in a tail of one or two families.
+    best_step = torch.zeros(F_all, dtype=torch.long, device=dev)
 
-    def _track_best(rows, nll_rows, theta_rows, mask):
+    def _track_best(rows, nll_rows, theta_rows, mask, step):
         cur = best_nll.index_select(0, rows)
         better = mask & (nll_rows < cur)
         best_nll.index_copy_(0, rows, torch.where(better, nll_rows, cur))
         best_theta.index_copy_(0, rows, torch.where(
             better.unsqueeze(1), theta_rows, best_theta.index_select(0, rows)))
+        best_step.index_copy_(0, rows, torch.where(better, torch.full_like(cur, step, dtype=torch.long),
+                                                    best_step.index_select(0, rows)))
     # Curvature state, kept per GLOBAL family index so it survives every rebuild (a rebuild changes
     # which families are in the batch, never their theta): B_fam is the raw (un-convexified) 3x3
     # curvature matrix, and prev_* is the (theta, gradient, free-coordinate) triple of the last
@@ -479,7 +487,7 @@ def fit_genewise(
                 pairs, seen = [], None
                 for _ in range(adam_steps):
                     lv_a, g = lg(m, lf.detach())
-                    _track_best(active, lv_a, lf.detach(), torch.ones_like(lv_a, dtype=torch.bool))
+                    _track_best(active, lv_a, lf.detach(), torch.ones_like(lv_a, dtype=torch.bool), n_steps)
                     th_a, g_a = lf.detach().clone(), g.clone()   # BEFORE clipping mutates lf.grad
                     fx_a = ((th_a >= hi - bounds.bound_active_eps) & (g_a < 0)) | \
                         ((th_a <= lo + bounds.bound_active_eps) & (g_a > 0))
@@ -516,7 +524,7 @@ def fit_genewise(
                 _sync(); _t = time.perf_counter()
                 lv, g = lg(m, sub)
                 _sync(); newton_grad_seconds += time.perf_counter() - _t
-                _track_best(active, lv, sub, live)
+                _track_best(active, lv, sub, live, n_steps)
                 fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
                     ((sub <= lo + bounds.bound_active_eps) & (g > 0))
                 free = (~fixed).to(dtype)
@@ -537,6 +545,14 @@ def fit_genewise(
                     plateau = pgm >= improve_frac * pg_last.index_select(0, active)
                     pg_last.index_copy_(0, active, torch.where(live, pgm, pg_last.index_select(0, active)))
                     conv = live & (pgm < tol)
+                    stalled = live & ~conv & ((n_steps - best_step.index_select(0, active)) > stall_patience)
+                    if bool(stalled.any()):   # settle at the best iterate, reported as unconverged
+                        theta.index_copy_(0, active[stalled], best_theta.index_select(0, active[stalled]))
+                        settled = settled | stalled
+                        live = ~settled
+                        _log(f"  [pi{pi_cur} it{it}] {int(stalled.sum())} stalled families settled at their best iterate")
+                        if not bool(live.any()):
+                            break
                     n_conv, n_live = int(conv.sum()), int(live.sum())
                     _log(f"  [pi{pi_cur} it{it}] live={n_live} (+{int(settled.sum())} settled in batch) "
                          f"conv={n_conv} |Pg|max={float(pgm[live].max()):.2e}")
