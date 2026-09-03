@@ -14,6 +14,7 @@ from gpurec.core.kernels.pi_forward import (
     _validate_residual_tensors,
 )
 from gpurec.core.memory_policy import proposal0_memory_gate
+from gpurec.core.valid_receivers import valid_receiver_index_tables
 
 from gpurec.core.kernels.wave_backward_kernels import (
     _select_active_adjoint_rows_kernel,
@@ -34,10 +35,47 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 # Triton warps per program for the three adjoint kernels that dominate the genewise gradient.
 # Launch-shape tuning only: block sizes and every other constexpr are unchanged, so the
 # arithmetic is identical. Not user settings -- they are properties of the GPU the kernels run
-# on, measured by benchmark/cc/sweep_num_warps.py.
+# on, measured by benchmark/cc/sweep_num_warps.py and benchmark/cc/bwd_kernels.py --mode warps.
+#
+# The transfer-subtree kernel sat at 4 because 8, though 1.05x faster, used to move the gradient
+# by 3.5 -- 2800x the run-to-run atomics noise. That was not the warp count's doing: the self-loop
+# VJP kernel built each donor's valid receiver mass by subtracting two nearly equal numbers, and
+# any reordering anywhere in the wave came back magnified through that cancellation. With the mass
+# built additively (see ``_prepare_reconciliation_self_loop_vjp_kernel``) the same 8 warps move it
+# by 5.1e-3 against a noise floor of 8.4e-3, i.e. no longer distinguishable from running the same
+# code twice, and the 1.052x stands. Measured on an H100 NVL at 500 families, fitted theta.
 _NUM_WARPS_PREPARE_SELF_LOOP_VJP = 8
 _NUM_WARPS_SELF_LOOP_TRANSPOSE = 2
-_NUM_WARPS_TRANSFER_SUBTREE_VJP = 4
+_NUM_WARPS_TRANSFER_SUBTREE_VJP = 8
+
+# Attribute name under which the four valid-receiver scan tables are memoised on the caller's
+# ``sp_subtree_start`` tensor. They depend only on the species tree, and a gradient launches the
+# self-loop VJP kernel once per wave -- thousands of times -- so they must be built once.
+_VALID_RECEIVER_TABLE_ATTR = "_gpurec_backward_valid_receiver_tables"
+
+
+def _valid_receiver_tables(species_subtree_start, species_subtree_end, S, *, device):
+    """The four scan tables of :func:`gpurec.core.valid_receivers.valid_receiver_index_tables`.
+
+    Memoised on the ``sp_subtree_start`` tensor, which is one object per species tree for the whole
+    run. Built from the caller's own tensors rather than from device/dtype-converted copies, so a
+    conversion that allocates cannot hand every wave a fresh object and so a fresh table.
+    """
+    cached = getattr(species_subtree_start, _VALID_RECEIVER_TABLE_ATTR, None)
+    if (
+        cached is not None
+        and int(cached[0].numel()) == int(S)
+        and cached[0].device == device
+    ):
+        return cached
+    tables = valid_receiver_index_tables(
+        species_subtree_start.to(device=device),
+        species_subtree_end.to(device=device),
+        S,
+    )
+    setattr(species_subtree_start, _VALID_RECEIVER_TABLE_ATTR, tables)
+    return tables
+
 
 # Debug instrumentation for the fused Neumann-series kernel, off in production.
 # When switched on with ``set_neumann_term_stat_collection(True)`` every wave's
@@ -278,7 +316,8 @@ def _solve_reconciliation_wave_vjp_2d(
     has_leaf_term,
     active_mask,
     species_parent,
-    max_ancestor_depth,
+    species_subtree_start,
+    species_subtree_end,
     pibar_row_max,
     family_idx,
     const_layout,
@@ -392,9 +431,17 @@ def _solve_reconciliation_wave_vjp_2d(
     if species_parent is None:
         raise ValueError("species_parent is required for the retained 2D self-loop path")
     species_parent = species_parent.to(device=device, dtype=torch.int32).contiguous()
-    if max_ancestor_depth is None:
-        raise ValueError("max_ancestor_depth is required for the retained 2D self-loop path")
-    max_ancestor_depth = max(1, int(max_ancestor_depth))
+    if species_subtree_start is None or species_subtree_end is None:
+        raise ValueError(
+            "species_subtree_start and species_subtree_end are required for the retained 2D "
+            "self-loop path: the valid receiver mass is built from the depth-first interval order"
+        )
+    (
+        not_open_source,
+        closed_source,
+        not_open_index,
+        closed_index,
+    ) = _valid_receiver_tables(species_subtree_start, species_subtree_end, S, device=device)
 
     if (
         compact_level_ptr is None
@@ -444,6 +491,13 @@ def _solve_reconciliation_wave_vjp_2d(
         elimination_pair = torch.empty((2, W, S), device=device, dtype=dtype)
         subtree_donor_weight = elimination_pair[0]
         subtree_donor_constant = elimination_pair[1]
+    # The prepare kernel builds each donor's valid receiver mass from two running sums, which need
+    # one [W, S] slot each. No new allocation: on the exact path the elimination pair is pure
+    # scratch until the tree solve seeds every species of it, and on the series path the term pair
+    # is pure scratch until the first J^T application writes into it -- and both of those happen
+    # after the prepare kernel has finished with them. Same trick, and same reason, as
+    # ``subtree_donor_adjoint`` being scratch until the receiver-gradient kernel rewrites it.
+    valid_receiver_scratch = elimination_pair if use_exact_adjoint else term_pair
 
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained 2D self-loop path")
@@ -496,7 +550,11 @@ def _solve_reconciliation_wave_vjp_2d(
         receiver_log_probs,
         species_child1,
         species_child2,
-        species_parent,
+        not_open_source,
+        closed_source,
+        not_open_index,
+        closed_index,
+        valid_receiver_scratch,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
@@ -514,7 +572,6 @@ def _solve_reconciliation_wave_vjp_2d(
         Pi_star.stride(0),
         block_w,
         block_s,
-        max_ancestor_depth,
         USE_LEAF_INDEX=bool(use_leaf_index),
         HAS_LEAF_TERM=bool(has_leaf_term),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
@@ -846,7 +903,8 @@ def solve_reconciliation_wave_vjp(
     has_leaf_term=True,
     active_mask=None,
     species_parent=None,
-    max_ancestor_depth=None,
+    species_subtree_start=None,
+    species_subtree_end=None,
     pibar_row_max=None,
     family_idx=None,
     family_indexed_consts=False,
@@ -933,9 +991,6 @@ def solve_reconciliation_wave_vjp(
     species_parent = species_parent.to(device=Pi_star.device).contiguous()
     if Pi_star.device.type == "cuda" and species_parent.dtype != torch.int32:
         species_parent = species_parent.to(dtype=torch.int32)
-    if max_ancestor_depth is None:
-        raise ValueError("max_ancestor_depth is required for the retained backward fast path")
-    max_ancestor_depth = max(1, int(max_ancestor_depth))
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained backward fast path")
     pibar_row_max = pibar_row_max.contiguous()
@@ -967,7 +1022,8 @@ def solve_reconciliation_wave_vjp(
         has_leaf_term=requested_has_leaf_term,
         active_mask=active_mask,
         species_parent=species_parent,
-        max_ancestor_depth=max_ancestor_depth,
+        species_subtree_start=species_subtree_start,
+        species_subtree_end=species_subtree_end,
         pibar_row_max=pibar_row_max,
         family_idx=family_idx,
         const_layout=const_layout,

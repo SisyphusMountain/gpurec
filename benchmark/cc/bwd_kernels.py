@@ -17,6 +17,10 @@ Modes
           two calls is the run-to-run atomics noise; the dump is what ``compare`` diffs against a
           dump taken from the other kernel version.
   compare max-abs differences between two ``check`` dumps, printed next to each dump's own noise.
+  oracle  scores two fp32 ``check`` dumps against a pair of float64 ``check`` dumps of the same
+          model and theta (``--dtype float64``). In float64 the cancellation the two kernel
+          versions differ over is far below the working precision, so the two float64 dumps must
+          agree; whichever fp32 dump is closer to them is the more accurate kernel.
   warps   one gradient per candidate ``num_warps`` for the two hottest backward kernels, with the
           gradient difference from the default printed against that noise floor. NOTE what this
           measured on the H100: every non-default value moves the gradient by 3 to 7 while the
@@ -39,10 +43,16 @@ import time
 import torch
 
 
-def _load_theta(theta_pt, paths, device):
+_DTYPES = {"float32": torch.float32, "float64": torch.float64}
+
+
+def _load_theta(theta_pt, paths, device, dtype):
     saved = torch.load(theta_pt, map_location="cpu")
     pos = {p: i for i, p in enumerate(saved["paths"])}
-    return torch.stack([saved["theta"][pos[p]] for p in paths]).float().to(device)
+    # Always via float32: the fp64 oracle must sit at exactly the theta the fp32 runs use, so the
+    # widening happens after the fp32 rounding, not instead of it.
+    stacked = torch.stack([saved["theta"][pos[p]] for p in paths]).float()
+    return stacked.to(device=device, dtype=dtype)
 
 
 def _build(args):
@@ -62,12 +72,13 @@ def _build(args):
         "forward_self_loop": "exact",
         "adjoint_self_loop": "exact",
     })
+    dtype = _DTYPES[args.dtype]
     model = GeneReconModel(
-        args.species, paths, mode="genewise", device="cuda", dtype=torch.float32,
+        args.species, paths, mode="genewise", device="cuda", dtype=dtype,
         solver_options=so, clade_budget=args.clade_budget,
     )
     model.receiver_weights.requires_grad_(False)
-    theta_fit = _load_theta(args.theta_pt, paths, "cuda")
+    theta_fit = _load_theta(args.theta_pt, paths, "cuda", dtype)
     thetas = {"fitted": theta_fit, "flat-6": torch.full_like(theta_fit, -6.0)}
     return model, paths, thetas
 
@@ -266,9 +277,44 @@ def _mode_compare(args):
     return 0
 
 
+def _relative(diff, reference):
+    """Largest |a - b| divided by the largest |reference| entry, as a float."""
+    scale = reference.abs().max().item()
+    return diff / scale if scale > 0.0 else float("nan")
+
+
+def _mode_oracle(args):
+    """Score two fp32 gradients against a float64 gradient of the same model and theta.
+
+    ``--oracle`` and ``--oracle-b`` are ``check`` dumps taken in float64 from the two kernel
+    versions: they must agree with each other, because in float64 the cancellation the two versions
+    differ over is far below the working precision. ``--a`` and ``--b`` are the matching float32
+    dumps. Whichever fp32 dump sits closer to the float64 answer is the more accurate kernel.
+    """
+    oracle_a = torch.load(args.oracle, map_location="cpu")
+    oracle_b = torch.load(args.oracle_b, map_location="cpu")
+    a = torch.load(args.a, map_location="cpu")
+    b = torch.load(args.b, map_location="cpu")
+    for name in ("fitted", "flat-6"):
+        ga, gb = oracle_a[name]["grad0"].double(), oracle_b[name]["grad0"].double()
+        agree = (ga - gb).abs().max().item()
+        print(f"[oracle] {name}: the two float64 gradients agree to max|A-B| = {agree:.6e}, "
+              f"relative {_relative(agree, ga):.3e} (|grad| max {ga.abs().max().item():.6e})",
+              flush=True)
+        for label, dump in (("A", a), ("B", b)):
+            g = dump[name]["grad0"].double()
+            noise = (dump[name]["grad0"] - dump[name]["grad1"]).abs().max().item()
+            err = (g - ga).abs().max().item()
+            rms = ((g - ga) ** 2).mean().sqrt().item()
+            print(f"[oracle] {name}: fp32 {label} vs float64 oracle: max|err| {err:.6e} "
+                  f"(relative {_relative(err, ga):.3e}), rms {rms:.6e}; its own atomics noise "
+                  f"{noise:.6e}", flush=True)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", required=True, choices=("probe", "time", "check", "compare", "nsys", "warps"))
+    ap.add_argument("--mode", required=True, choices=("probe", "time", "check", "compare", "nsys", "warps", "oracle"))
     ap.add_argument("--species", required=False, default=None)
     ap.add_argument("--families", required=False, default=None)
     ap.add_argument("--limit", required=False, type=int, default=100)
@@ -278,9 +324,14 @@ def main() -> int:
     ap.add_argument("--out", required=False, default=None)
     ap.add_argument("--a", required=False, default=None)
     ap.add_argument("--b", required=False, default=None)
+    ap.add_argument("--oracle", required=False, default=None)
+    ap.add_argument("--oracle-b", required=False, default=None)
+    ap.add_argument("--dtype", required=False, default="float32", choices=tuple(_DTYPES))
     args = ap.parse_args()
     if args.mode == "compare":
         return _mode_compare(args)
+    if args.mode == "oracle":
+        return _mode_oracle(args)
     for required in ("species", "families", "theta_pt"):
         if getattr(args, required) is None:
             ap.error(f"--{required.replace('_', '-')} is required for mode {args.mode}")

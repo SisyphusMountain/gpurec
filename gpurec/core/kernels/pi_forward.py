@@ -745,7 +745,7 @@ def _lookup_valid_receiver_mass(
     """Read each donor lane's valid receiver mass out of the two running sums.
 
     Both index tables come from
-    :func:`gpurec.core.inference.forward._valid_receiver_index_tables`: one says where this
+    :func:`gpurec.core.valid_receivers.valid_receiver_index_tables`: one says where this
     donor's "not yet opened" prefix ends, the other where its "already closed" prefix ends. Adding
     the two is the whole mass, with no subtraction anywhere.
     """
@@ -788,7 +788,7 @@ def _write_valid_receiver_prefix_sums(
 
     and their masses are two running sums of non-negative terms, which cannot cancel. This writes
     both, each as a plain forward scan over a species order the host prepared
-    (:func:`gpurec.core.inference.forward._valid_receiver_index_tables`); the sources are shifted
+    (:func:`gpurec.core.valid_receivers.valid_receiver_index_tables`); the sources are shifted
     by one position, so an inclusive scan already gives the exclusive prefix the lookup wants.
     """
     # Both scans gather lanes of the value row at arbitrary positions, i.e. lanes other warps of
@@ -2511,7 +2511,7 @@ def compute_fused_linear_self_loop(
     valid receiver mass is built from. ``rows`` sets the slot stride (passed in as ``rows * S`` so
     the offset is built in Python rather than in int32 device arithmetic), so one allocation serves
     every wave. ``valid_receiver_tables`` is the four-tensor tuple from
-    :func:`gpurec.core.inference.forward._valid_receiver_index_tables`.
+    :func:`gpurec.core.valid_receivers.valid_receiver_index_tables`.
     """
     if int(n_iters) < 1:
         raise ValueError("fused linear self-loop needs at least one iteration")
