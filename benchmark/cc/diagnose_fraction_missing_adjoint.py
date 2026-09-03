@@ -171,6 +171,25 @@ def main() -> int:
                 species_count, args.origination_scale, args.seed + 1, torch.float64).cuda()
             theta = _theta(args.fitted_theta, paths, torch.float64)
 
+            # Does the FORWARD extinction fixed point converge at this level? The Neumann series is
+            # justified by "the forward E fixed point converges, so its Jacobian is a contraction",
+            # so it matters whether the first half of that sentence still holds. Running the forward
+            # at two very different iteration caps and comparing the per-family likelihood answers
+            # it: if the answer stops moving, the fixed point was reached.
+            history.clear()
+            model.configure_solver(e_max_iter=128)
+            short = stream_genewise_loss_vector_grad(
+                model.batch_statics, theta, receiver, origination,
+                need_grad=False, update_warm_starts=False, need_origination_grad=False,
+            )[0]
+            model.configure_solver(e_max_iter=4096)
+            long = stream_genewise_loss_vector_grad(
+                model.batch_statics, theta, receiver, origination,
+                need_grad=False, update_warm_starts=False, need_origination_grad=False,
+            )[0]
+            forward_move = float((long - short).abs().max())
+            model.configure_solver(e_max_iter=512)
+
             history.clear()
             start = time.perf_counter()
             stream_genewise_loss_vector_grad(
@@ -186,6 +205,13 @@ def main() -> int:
             print(f"\n[level {level:g}] fraction_missing: {described}   "
                   f"gradient took {elapsed:.1f}s over {len(history)} extinction-adjoint solves",
                   flush=True)
+            print(
+                f"  forward check: raising the extinction-step cap from 128 to 4096 iterations "
+                f"moves the largest per-family likelihood by {forward_move:.4e} bits "
+                + ("-- the forward fixed point IS converged here"
+                   if forward_move < 1e-9 else "-- the forward has NOT settled here"),
+                flush=True,
+            )
             for index, norms in enumerate(history):
                 if not norms:
                     print(f"  solve {index}: right-hand side was zero, nothing to solve", flush=True)
