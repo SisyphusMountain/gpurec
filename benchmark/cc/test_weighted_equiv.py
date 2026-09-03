@@ -373,15 +373,38 @@ def main() -> int:
     for setting_name, receiver_scale, origination_scale, fraction_missing in settings:
         print(f"\n[==== setting: {setting_name} ====]", flush=True)
         runs = {}
+        failures = {}
         for dtype_name, dtype in (("float64", torch.float64), ("float32", torch.float32)):
             for mode in ("exact", "iterated"):
                 label = f"{setting_name}/{dtype_name}/{mode}"
-                runs[(dtype_name, mode)] = _run_one(
-                    args.species, paths, args.clade_budget, dtype, mode, fraction_missing,
-                    parsed, indices, args.e_adjoint_max_iter,
-                    args.fitted_theta, receiver_scale, origination_scale,
-                    args.seed, args.pi_iters, args.neumann_terms, label,
-                )
+                # A solve that cannot be computed is a result, not a reason to lose the other
+                # settings: record why and carry on, so one broken configuration does not take the
+                # whole table down with it.
+                try:
+                    runs[(dtype_name, mode)] = _run_one(
+                        args.species, paths, args.clade_budget, dtype, mode, fraction_missing,
+                        parsed, indices, args.e_adjoint_max_iter,
+                        args.fitted_theta, receiver_scale, origination_scale,
+                        args.seed, args.pi_iters, args.neumann_terms, label,
+                    )
+                except RuntimeError as error:
+                    failures[(dtype_name, mode)] = str(error)
+                    print(f"[{label}] FAILED: {error}", flush=True)
+                    torch.cuda.empty_cache()
+
+        if failures:
+            report["settings"][setting_name] = {"failures": {
+                f"{dtype_name}/{mode}": message for (dtype_name, mode), message in failures.items()
+            }}
+            print(
+                f"\n-- {setting_name}: {len(failures)} of the 4 runs could not be computed, so "
+                f"there is nothing to compare here. What failed:", flush=True,
+            )
+            for (dtype_name, mode), message in sorted(failures.items()):
+                print(f"   {dtype_name}/{mode}: {message}", flush=True)
+            del runs, failures
+            torch.cuda.empty_cache()
+            continue
 
         entry = {}
         print(f"\n-- {setting_name}: float64 exact vs float64 iterated "

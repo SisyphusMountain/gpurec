@@ -69,7 +69,12 @@ def _install_term_norm_recorder():
         for _ in range(int(max_iter)):
             term = term - Av(term)
             x = x + term
-            norms.append(float(torch.linalg.vector_norm(term.reshape(-1))) / norm_b)
+            value = float(torch.linalg.vector_norm(term.reshape(-1))) / norm_b
+            norms.append(value)
+            # Once a term is not a finite number there is nothing left to measure, and every later
+            # term inherits the same NaN, so stop here and let the caller see where it happened.
+            if not math.isfinite(value):
+                break
         history.append(norms)
         return x
 
@@ -77,17 +82,32 @@ def _install_term_norm_recorder():
     return original, history
 
 
-def _shrink_factor(norms):
-    """Geometric shrink per term over the last quarter of the history.
+# A term this small can no longer move a float64 sum, so the series has finished whether or not it
+# literally reaches zero. Not a setting: it is float64's unit roundoff (2.22e-16) rounded down.
+_DONE = 1e-16
 
-    The first terms are dominated by whichever directions the right-hand side happens to excite;
-    the asymptotic rate is what the tail shows, so the ratio is measured there.
+
+def _terms_until_done(norms):
+    """Index of the first term at or below the float64 roundoff, or None if it never gets there."""
+    for index, value in enumerate(norms):
+        if value <= _DONE:
+            return index + 1
+    return None
+
+
+def _shrink_factor(norms):
+    """Geometric shrink per term, measured over the tail of the terms that are still meaningful.
+
+    The first terms are dominated by whichever directions the right-hand side happens to excite; the
+    asymptotic rate is what the tail shows. Terms that have already underflowed to zero carry no
+    rate information, so the tail is taken from the part of the history before that point.
     """
-    if len(norms) < 8:
+    useful = [value for value in norms if value > 0.0]
+    if len(useful) < 8:
         return float("nan")
-    start = len(norms) - max(4, len(norms) // 4)
-    first, last = norms[start], norms[-1]
-    steps = len(norms) - 1 - start
+    start = len(useful) - max(4, len(useful) // 4)
+    first, last = useful[start], useful[-1]
+    steps = len(useful) - 1 - start
     if first <= 0.0 or last <= 0.0 or steps < 1:
         return float("nan")
     return (last / first) ** (1.0 / steps)
@@ -165,16 +185,34 @@ def main() -> int:
                 if not norms:
                     print(f"  solve {index}: right-hand side was zero, nothing to solve", flush=True)
                     continue
+                finite = [value for value in norms if math.isfinite(value)]
+                smallest = min(finite) if finite else float("nan")
+                smallest_at = finite.index(smallest) + 1 if finite else -1
+                done = _terms_until_done(norms)
                 shrink = _shrink_factor(norms)
-                reached = min(norms)
+                verdict = (
+                    f"reached float64 roundoff after {done} terms" if done is not None
+                    else (
+                        f"went to {norms[-1]} at term {len(norms)}"
+                        if norms and not math.isfinite(norms[-1])
+                        else f"still {norms[-1]:.4e} after {len(norms)} terms"
+                    )
+                )
+                print(f"  solve {index}: {verdict}", flush=True)
                 print(
-                    f"  solve {index}: after {len(norms)} terms the term is "
-                    f"{norms[-1]:.4e} of the right-hand side (smallest seen {reached:.4e}); "
-                    f"shrink per term = {shrink:.6f}; "
-                    f"terms needed for 1e-12 = {_terms_needed(shrink, 1e-12):.0f}; "
-                    f"term at 512 would be {shrink ** 512:.3e}",
+                    f"    smallest term seen {smallest:.4e} of the right-hand side, at term "
+                    f"{smallest_at}; shrink per term over the tail = {shrink:.6f}"
+                    + (f"; terms needed for 1e-12 = {_terms_needed(shrink, 1e-12):.0f}"
+                       if 0.0 < shrink < 1.0 else ""),
                     flush=True,
                 )
+                # The whole shape of the sequence: a healthy solve falls monotonically; one that
+                # turns around and climbs is an operator that grows a vector rather than shrinking it.
+                probe = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+                shown = "  ".join(
+                    f"{i + 1}:{norms[i]:.3e}" for i in probe if i < len(norms)
+                )
+                print(f"    term norms: {shown}", flush=True)
             del model, theta, receiver, origination
             torch.cuda.empty_cache()
     finally:
