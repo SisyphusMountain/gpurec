@@ -1,0 +1,16 @@
+{
+  "label": "hog1055_new_gw",
+  "n_gpurec_families": 1055,
+  "n_alerax_families": 10869,
+  "n_matched": 1042,
+  "n_gpurec_not_in_alerax": 13,
+  "pearson_r": 0.999957203761239,
+  "mean_signed_diff_nats": 0.9121324320674061,
+  "median_signed_diff_nats": 0.18558416722319748,
+  "mean_abs_diff_nats": 0.9122098555718596,
+  "max_abs_diff_nats": 75.61346872715148,
+  "max_abs_diff_family": "CLU_007884_9_0_C",
+  "gpurec_total_nll_nats": 400356.66460578574,
+  "alerax_total_nll_nats": 401307.1066,
+  "gpurec_minus_alerax_total_logl_nats": 950.4419942142372
+}

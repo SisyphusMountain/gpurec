@@ -1,0 +1,4 @@
+[split] 5446 families, threshold 0.01 bits
+[split] disagree: 438 families (8.0%) -- 407 (92.9%) cover < 4 species, 409 (93.4%) have a rate pinned to a bound in at least one fit, median covered species 1
+[split] agree: 5008 families (92.0%) -- 1093 (21.8%) cover < 4 species, 870 (17.4%) have a rate pinned to a bound in at least one fit, median covered species 5
+[split] the 438 disagreeing families carry +168.248 bits of the +168.147 bit total
