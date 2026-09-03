@@ -15,6 +15,7 @@ from gpurec.core.kernels.pi_forward import (
 )
 from gpurec.core.memory_policy import proposal0_memory_gate
 from gpurec.core.valid_receivers import valid_receiver_index_tables
+from gpurec.api.solver_options import dtype_scaled_self_loop_tol
 
 from gpurec.core.kernels.wave_backward_kernels import (
     _select_active_adjoint_rows_kernel,
@@ -692,9 +693,10 @@ def _solve_reconciliation_wave_vjp_2d(
         # One launch for the WHOLE Neumann series (was one launch per term). Each
         # program runs its row block's terms in-kernel and stops as soon as the
         # block's largest remaining term is at or below
-        # neumann_term_tol * (block max |v_k|). The self-loop operator is a
-        # strong contraction (spectral radius ~0.04), so the tail terms are below
-        # float32 resolution and the launches that carried them did no useful work.
+        # neumann_term_tol (rescaled to this solve's dtype) * (block max |v_k|).
+        # The self-loop operator is a strong contraction (spectral radius ~0.04), so
+        # the tail terms are below the working dtype's resolution and the launches
+        # that carried them did no useful work.
         collect_terms = _COLLECT_NEUMANN_TERM_STATS
         terms_taken = (
             torch.zeros((W,), device=device, dtype=torch.int32)
@@ -721,7 +723,7 @@ def _solve_reconciliation_wave_vjp_2d(
             subtree_donor_adjoint,
             v_k,
             terms_taken,
-            float(neumann_term_tol),
+            dtype_scaled_self_loop_tol(neumann_term_tol, dtype),
             int(neumann_terms),
             W,
             S,

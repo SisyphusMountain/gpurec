@@ -12,6 +12,7 @@ from ..kernels.pi_forward import (
 )
 from ..parameters.extract_parameters import as_family_param, as_family_species
 from ..valid_receivers import valid_receiver_index_tables
+from gpurec.api.solver_options import dtype_scaled_self_loop_tol
 
 # The three self-loop implementations selectable through ``SolverOptions.forward_self_loop``.
 # "log": one ``compute_wave_step`` launch per fixed-point iteration, arithmetic in log2 space.
@@ -139,6 +140,10 @@ def pi_wave_forward(
     S = int(species_helpers["S"])
     device = e.device
     dtype = e.dtype
+    # linear_tol is written in units of float32 precision; carry that meaning to
+    # the dtype this solve actually runs in, so a float64 solve is not stopped at
+    # float32 resolution (see gpurec.api.solver_options.dtype_scaled_self_loop_tol).
+    linear_tol = dtype_scaled_self_loop_tol(linear_tol, dtype)
 
     pi = torch.empty((C, S), dtype=dtype, device=device)
     pibar = torch.empty((C, S), dtype=dtype, device=device)
