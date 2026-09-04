@@ -85,9 +85,13 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
             init_log2_rates = (math.log2(0.01), math.log2(0.1), math.log2(0.01))
         else:
             init_log2_rates = (math.log2(init_rate),) * 3
+        # Fourth-round recipe values (200-family Coleman sweep, work in full-dataset gradient
+        # equivalents with the H100's Hessian price): the exact starting Hessian plus the
+        # per-direction step cap with mu = 1e-4 costs 19.1 against 23.5 for the previous
+        # (adam_bfgs start, mu = 1e-2) recipe, lands 0.74 bits better and certifies every family.
         res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype,
                            certify=True, certify_curvature=False, min_drop=32, rebuild_frac=0.25,
-                           hessian_refresh=15, init_curvature="adam_bfgs",
+                           hessian_refresh=15, init_curvature="exact", mu=1e-4,
                            solver_options=solver_options, config=config, verbose=verbose,
                            init_log2_rates=init_log2_rates, clade_budget=clade_budget,
                            stall_patience=120, trust_max=16.0)   # = max_iter: the stall rule is available but off (it settled 3-4 near-converged families early)

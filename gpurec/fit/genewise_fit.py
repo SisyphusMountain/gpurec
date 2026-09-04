@@ -269,7 +269,7 @@ def fit_genewise(
     init_curvature: str,
     trust: float = 2.0,
     trust_max: float,
-    mu: float = 1e-2,
+    mu: float = 1e-4,
     fwd_tol: float = 1e-3,
     improve_frac: float = 0.8,
     verify_drop: bool = True,
@@ -298,6 +298,14 @@ def fit_genewise(
     optimum of 6.5, and paths were 1.75 times longer than the straight line: Newton under-stepped
     and zig-zagged. The adaptive radius is what lets a well-modelled family cover that distance in
     a few steps and stops a badly-modelled one from wandering.
+
+    ``mu`` is the sign guard on the 3x3 curvature: eigenvalues below it are raised to it before the
+    step. It is NOT a step-length control any more -- each eigen-direction's step is bounded by the
+    family's trust radius through ``lam = max(e, mu, |g_v| / radius)`` -- so it only needs to keep
+    negative or zero curvature from producing an uphill or infinite step. With the earlier value
+    1e-2 a rate heading towards zero (gradient and curvature both shrinking with the rate) moved
+    only gradient / 1e-2, about 0.1 to 0.2 log2 units per iteration, for 20 iterations while its
+    NLL changed by 0.01 bits.
 
     ``min_drop`` -- how many families must look converged at the cheap tier before the fit pays for a
     verification round (a temporary accurate-tier model over just those candidates). A round also
