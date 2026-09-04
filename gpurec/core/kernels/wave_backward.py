@@ -50,6 +50,25 @@ _NUM_WARPS_PREPARE_SELF_LOOP_VJP = 8
 _NUM_WARPS_SELF_LOOP_TRANSPOSE = 2
 _NUM_WARPS_TRANSFER_SUBTREE_VJP = 8
 
+# A CUDA warp is 32 threads on every NVIDIA GPU. Not a setting: it is a fact about the hardware,
+# and it is named here only so the tile width below reads as "one species-tree node per thread".
+_THREADS_PER_WARP = 32
+
+# Species-tree nodes per tile in the level walks of the kernels launched with
+# ``_NUM_WARPS_SELF_LOOP_TRANSPOSE``: the transposed self-loop term (single-term and fused-series
+# kernels alike) and the receiver-log-probability VJP. Launch-shape tuning only: the walks visit
+# every node of a level in the same order either way.
+#
+# The tile MUST hold one node per thread, so it is the warp count times the 32 threads in a warp
+# and not a number of its own. A wider tile does not buy anything: a Triton program cannot idle a
+# thread, so every thread issues every instruction of the walk, and with two nodes per thread it
+# issues each one twice whether or not the second node exists. The old 128 against these 64
+# threads did exactly that. On the 2013-species Coleman tree the 33 levels hold
+# [343, 187, 123, 80, 56, 42, 28, 23, 20, 16, 13, 10, 8, 8, 7, 5, 4, 4, 4, 3, then 2 or 1]
+# internal nodes, so 128-wide tiles cover the 1006 nodes in 4608 lane-slots (72 issue rounds of
+# 64 threads) where 64-wide tiles need 2688 (42 rounds) -- 42% fewer.
+_BLOCK_NODES_SELF_LOOP_TRANSPOSE = _NUM_WARPS_SELF_LOOP_TRANSPOSE * _THREADS_PER_WARP
+
 # Warps per program for the register-resident transposed solve
 # (``_solve_reconciliation_self_loop_transpose_row_kernel``). One program holds one clade row's
 # whole species tile, so the warp count decides how many species lanes each thread carries and
@@ -511,7 +530,7 @@ def _solve_reconciliation_wave_vjp_2d(
 
     block_w = 1
     block_s = triton.next_power_of_2(S)
-    block_nodes = 128
+    block_nodes = _BLOCK_NODES_SELF_LOOP_TRANSPOSE
     n_row_blocks = triton.cdiv(W, block_w)
     scratch_shape = (W, S)
 
