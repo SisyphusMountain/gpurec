@@ -1,20 +1,25 @@
-"""Validation for the Neumann-series E-adjoint solver (``_neumann_e_adjoint``).
+"""Validation for the E-adjoint linear solver (``_neumann_e_adjoint``).
 
 The backward E-adjoint solves ``(I - J) wE = q`` where ``J = d(E_from_E)/dE`` is the E-step
-self-map Jacobian. The forward E fixed point converges, so ``J`` is a contraction (spectral
-radius < 1) and the Neumann series ``(I-J)^{-1} = sum_k J^k`` converges. GMRES (the existing
-solver, ``_gmres``) has a theta-dependent fp32 residual floor from Arnoldi orthogonalization
-(~1e-6 to 5.5e-6) that makes it fail mid-optimization at large species counts; Neumann has no
-orthogonalization step, so it has no such floor.
+self-map Jacobian. When the forward extinction fixed point is the one the map actually has, ``J``
+is a contraction (spectral radius below 1) and the Neumann series ``(I-J)^{-1} = sum_k J^k``
+converges -- with no orthogonalization step, so no float32 Arnoldi-style residual floor.
+
+The series is not, however, unconditionally safe: a caller that hands over an operator that grows
+vectors gets terms that grow too. ``_neumann_e_adjoint`` detects that (the term norm stops
+improving) and falls back on a solver that needs no contraction -- a direct factorization for a
+system small enough to assemble, restarted GMRES otherwise.
 
 This file pins:
-  1. solver-level correctness: ``_neumann_e_adjoint`` converges on a contraction operator
-     ``A = I - J`` and matches both ``_gmres`` and a direct dense solve to tight tolerance,
-  2. the key correctness check -- gradient parity: on a small model where GMRES converges, the
-     Neumann-computed theta/receiver gradient matches the GMRES-computed gradient to tight
-     relative tolerance (both solve the SAME linear system, so a mismatch indicates a bug),
-  3. the default is unchanged: ``SolverOptions().e_adjoint_solver == "gmres"`` and invalid
-     values are rejected.
+  1. the series converges on a contraction and matches a direct solve,
+  2. the dtype-matched residual contract: float32 default, tight float64, sub-floor ``tol``
+     warns and is raised to the floor, ``tol=None`` warns not at all,
+  3. a zero right-hand side returns zero,
+  4. a NON-contracting operator no longer raises: the fallback returns the true solution, on both
+     the small (direct factorization) and the large (GMRES) side of the size threshold
+     (``_gmres_e_adjoint`` itself is pinned in test_gmres_e_adjoint.py),
+  5. an operator so far from solvable that the fallback cannot reach the floor within its matvec
+     budget still raises, naming both stages.
 """
 import warnings
 
@@ -23,30 +28,37 @@ import torch
 
 try:
     from gpurec.api._implicit_grad import (
-        _gmres,
+        _E_ADJOINT_DENSE_SOLVE_LIMIT,
+        _e_adjoint_rel_tol_default,
         _neumann_e_adjoint,
-        _bicgstab_rel_tol_default,
-        _bicgstab_rel_tol_floor,
     )
 except Exception as exc:  # pragma: no cover - import guard for triton-less envs
     pytest.skip(f"gpurec.api._implicit_grad unavailable: {exc}", allow_module_level=True)
 
-from gpurec.api.solver_options import SolverOptions
 
+def _e_adjoint_like(n: int, rho: float, dtype: torch.dtype, seed: int) -> torch.Tensor:
+    """``A = I - J`` with ``||J||_2 = rho`` and a NON-symmetric J.
 
-def _e_adjoint_like(n: int, rho: float, dtype: torch.dtype, seed: int = 0) -> torch.Tensor:
-    """``A = I - J`` with ``spectral_radius(J) = rho`` and a NON-symmetric J.
-
-    Mirrors the helper in ``test_gmres_e_adjoint.py``: this is the regime of the real E-adjoint
-    ``I - J_E^T`` (rho(J_E) ~ 0.24) -- eigenvalues clustered near 1, small condition number, but
-    non-symmetric.
+    ``rho`` below 1 is the healthy E-adjoint regime (the real operator measures about 0.05 on a
+    2013-species tree): eigenvalues clustered near 1, small condition number, but non-symmetric.
+    ``rho`` above 1 is the regime the fallback exists for.
     """
-    g = torch.Generator().manual_seed(seed)
-    J = torch.randn(n, n, generator=g, dtype=torch.float64)
-    J = J - torch.diag(torch.diagonal(J))          # zero the diagonal for asymmetry
-    J = rho * J / float(torch.linalg.matrix_norm(J, ord=2))  # scale so ||J||_2 = rho
-    A = torch.eye(n, dtype=torch.float64) - J
-    return A.to(dtype)
+    generator = torch.Generator().manual_seed(seed)
+    J = torch.randn(n, n, generator=generator, dtype=torch.float64)
+    J = J - torch.diag(torch.diagonal(J))                      # zero the diagonal for asymmetry
+    J = rho * J / float(torch.linalg.matrix_norm(J, ord=2))    # scale so ||J||_2 = rho
+    return (torch.eye(n, dtype=torch.float64) - J).to(dtype)
+
+
+def _non_contracting_banded(n: int) -> torch.Tensor:
+    """``A = I - J`` with a banded J whose spectral radius is 1.64 but whose spectrum is a tight
+    cluster, so ``A`` stays well conditioned -- the shape the real E-adjoint has when it is not a
+    contraction, and the shape a Krylov method is meant for."""
+    diagonal = torch.full((n,), -1.2, dtype=torch.float64)
+    off = torch.full((n - 1,), 0.4, dtype=torch.float64)
+    J = torch.diag(diagonal) + torch.diag(off, 1) + torch.diag(0.3 * off, -1)
+    assert float(torch.linalg.eigvals(J).abs().max()) > 1.0    # genuinely not a contraction
+    return torch.eye(n, dtype=torch.float64) - J
 
 
 def _matvec(A):
@@ -58,55 +70,53 @@ def _rel_res(A, x, b):
 
 
 # ----------------------------------------------------------------------------
-# 1. Solver-level: converges on a contraction operator, matches GMRES + direct solve.
+# 1. converges on a contraction and matches a direct solve
 # ----------------------------------------------------------------------------
 
-def test_neumann_matches_gmres_and_direct_solve():
+def test_matches_direct_solve_on_a_contraction():
     for dtype, bar in ((torch.float32, 5e-6), (torch.float64, 1e-10)):
         A = _e_adjoint_like(71, rho=0.24, dtype=dtype, seed=7)
-        assert float(torch.linalg.cond(A.double())) < 2.0  # ~1.6, like the real operator
+        assert float(torch.linalg.cond(A.double())) < 2.0   # ~1.6, like the real operator
         b = A @ torch.randn(71, dtype=dtype, generator=torch.Generator().manual_seed(8))
 
-        x_neumann = _neumann_e_adjoint(_matvec(A), b)
-        x_gmres = _gmres(_matvec(A), b)
-        x_direct = torch.linalg.solve(A.double(), b.double())
+        x = _neumann_e_adjoint(_matvec(A), b)
+        direct = torch.linalg.solve(A.double(), b.double())
 
-        assert _rel_res(A, x_neumann, b) < bar
-        rel_vs_gmres = float(
-            torch.linalg.vector_norm(x_neumann.double() - x_gmres.double())
-            / torch.linalg.vector_norm(x_gmres.double())
+        assert _rel_res(A, x, b) < bar
+        relative = float(
+            torch.linalg.vector_norm(x.double() - direct)
+            / torch.linalg.vector_norm(direct)
         )
-        rel_vs_direct = float(
-            torch.linalg.vector_norm(x_neumann.double() - x_direct)
-            / torch.linalg.vector_norm(x_direct)
-        )
-        assert rel_vs_gmres < 10 * bar, f"dtype={dtype}: neumann vs gmres rel={rel_vs_gmres:.3e}"
-        assert rel_vs_direct < 10 * bar, f"dtype={dtype}: neumann vs direct rel={rel_vs_direct:.3e}"
+        assert relative < 10 * bar, f"dtype={dtype}: solver vs direct solve rel={relative:.3e}"
 
+
+# ----------------------------------------------------------------------------
+# 2. the dtype-matched residual contract
+# ----------------------------------------------------------------------------
 
 def test_fp32_default_residual():
     A = _e_adjoint_like(64, rho=0.3, dtype=torch.float32, seed=11)
     b = A @ torch.randn(64, dtype=torch.float32, generator=torch.Generator().manual_seed(1))
     x = _neumann_e_adjoint(_matvec(A), b)
-    assert _rel_res(A, x, b) <= _bicgstab_rel_tol_default(torch.float32)
+    assert _rel_res(A, x, b) <= _e_adjoint_rel_tol_default(torch.float32)
 
 
 def test_fp64_reaches_tight_residual():
     A = _e_adjoint_like(48, rho=0.2, dtype=torch.float64, seed=12)
-    xtrue = torch.randn(48, dtype=torch.float64, generator=torch.Generator().manual_seed(2))
-    b = A @ xtrue
+    exact = torch.randn(48, dtype=torch.float64, generator=torch.Generator().manual_seed(2))
+    b = A @ exact
     x = _neumann_e_adjoint(_matvec(A), b, tol=1e-12)
     assert _rel_res(A, x, b) <= 1e-10
-    assert float(torch.linalg.vector_norm(x - xtrue) / torch.linalg.vector_norm(xtrue)) < 1e-8
+    assert float(torch.linalg.vector_norm(x - exact) / torch.linalg.vector_norm(exact)) < 1e-8
 
 
-def test_subfloor_tol_warns_and_clamps():
+def test_subfloor_tol_warns_and_is_raised_to_the_floor():
     A = _e_adjoint_like(48, rho=0.2, dtype=torch.float32, seed=13)
     b = A @ torch.randn(48, dtype=torch.float32, generator=torch.Generator().manual_seed(3))
-    with warnings.catch_warnings(record=True) as w:
+    with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        x = _neumann_e_adjoint(_matvec(A), b, tol=1e-12)  # unreachable in fp32
-    assert any("below the" in str(wi.message) for wi in w)
+        x = _neumann_e_adjoint(_matvec(A), b, tol=1e-12)     # unreachable in float32
+    assert any("below the" in str(entry.message) for entry in caught)
     assert _rel_res(A, x, b) < 5e-6
 
 
@@ -114,10 +124,14 @@ def test_none_tol_uses_dtype_default_no_warning():
     A = _e_adjoint_like(48, rho=0.2, dtype=torch.float32, seed=14)
     b = A @ torch.randn(48, dtype=torch.float32, generator=torch.Generator().manual_seed(5))
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # any warning fails the test
+        warnings.simplefilter("error")                        # any warning fails the test
         x = _neumann_e_adjoint(_matvec(A), b, tol=None)
-    assert _rel_res(A, x, b) <= _bicgstab_rel_tol_default(torch.float32)
+    assert _rel_res(A, x, b) <= _e_adjoint_rel_tol_default(torch.float32)
 
+
+# ----------------------------------------------------------------------------
+# 3. zero right-hand side
+# ----------------------------------------------------------------------------
 
 def test_zero_rhs_returns_zero():
     A = _e_adjoint_like(16, rho=0.1, dtype=torch.float64, seed=15)
@@ -126,132 +140,56 @@ def test_zero_rhs_returns_zero():
     assert float(torch.linalg.vector_norm(x)) == 0.0
 
 
-def test_non_contraction_raises():
-    """rho >= 1 -> not a contraction -> the Neumann series must not silently converge."""
-    A = _e_adjoint_like(32, rho=1.5, dtype=torch.float64, seed=16)
-    b = A @ torch.randn(32, dtype=torch.float64, generator=torch.Generator().manual_seed(6))
-    with pytest.raises(RuntimeError):
-        _neumann_e_adjoint(_matvec(A), b, max_iter=64)
+# ----------------------------------------------------------------------------
+# 4. a non-contracting operator falls back instead of raising
+# ----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("rho", [1.5, 4.0])
+def test_non_contraction_falls_back_to_a_direct_solve(rho):
+    """Below the assemble-and-factorize size the fallback is exact, whatever the growth rate."""
+    n = 32
+    assert n <= _E_ADJOINT_DENSE_SOLVE_LIMIT
+    A = _e_adjoint_like(n, rho=rho, dtype=torch.float64, seed=16)
+    b = A @ torch.randn(n, dtype=torch.float64, generator=torch.Generator().manual_seed(6))
+    x = _neumann_e_adjoint(_matvec(A), b, max_iter=64)
+    direct = torch.linalg.solve(A, b)
+    assert _rel_res(A, x, b) < 1e-12
+    relative = float(torch.linalg.vector_norm(x - direct) / torch.linalg.vector_norm(direct))
+    assert relative < 1e-10, f"rho={rho}: fallback vs direct solve rel={relative:.3e}"
+
+
+def test_non_contraction_above_the_dense_limit_uses_gmres():
+    """Above the assemble-and-factorize size the fallback is GMRES on the same matvec.
+
+    The operator is built with a sparse (tridiagonal-plus-transfer) J so that GMRES converges in
+    far fewer than ``n`` Krylov vectors, which is the structure the real E-adjoint has; a dense
+    random J of this size needs the whole space and no restarted method would finish.
+    """
+    n = _E_ADJOINT_DENSE_SOLVE_LIMIT + 128
+    generator = torch.Generator().manual_seed(21)
+    A = _non_contracting_banded(n)
+    b = A @ torch.randn(n, dtype=torch.float64, generator=generator)
+
+    x = _neumann_e_adjoint(_matvec(A), b, max_iter=400)
+    direct = torch.linalg.solve(A, b)
+    assert _rel_res(A, x, b) <= 1e-12
+    relative = float(torch.linalg.vector_norm(x - direct) / torch.linalg.vector_norm(direct))
+    assert relative < 1e-9, f"fallback vs direct solve rel={relative:.3e}"
 
 
 # ----------------------------------------------------------------------------
-# 2. SolverOptions: default unchanged, validation.
+# 5. fail-loud when neither stage can reach the floor
 # ----------------------------------------------------------------------------
 
-def test_solver_options_default_is_gmres():
-    assert SolverOptions().e_adjoint_solver == "gmres"
+def test_still_raises_when_the_budget_cannot_solve_it():
+    """A dense non-contracting operator too big to assemble, with a four-matvec budget.
 
-
-def test_solver_options_accepts_neumann():
-    options = SolverOptions(e_adjoint_solver=" NEUMANN ")
-    options.validate()
-    assert options.e_adjoint_solver == "neumann"
-
-
-def test_solver_options_rejects_invalid_e_adjoint_solver():
-    options = SolverOptions(e_adjoint_solver="bad")
-    with pytest.raises(ValueError):
-        options.validate()
-
-
-# ----------------------------------------------------------------------------
-# 3. Gradient parity: the key correctness check on a real small model.
-# ----------------------------------------------------------------------------
-
-_D = "tests/data/alerax/test_trees_1"
-
-
-def _build_small_static(*, n_fam=5, dtype=torch.float64):
-    """A small GeneReconModel (15 species / n_fam families) where GMRES converges cleanly."""
-    from gpurec import GeneReconModel
-
-    so = SolverOptions(
-        e_max_iter=2000, e_tol=1e-12, pi_iters=128,
-        neumann_terms=64,
-        bicgstab_max_iter=200, bicgstab_tol=1e-12, bicgstab_breakdown_tol=1e-30,
-        adjoint_pruning_threshold=0.0, use_adjoint_pruning=False, pibar_side_threshold=0.0,
-    )
-    so.validate()
-    m = GeneReconModel(
-        f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * n_fam,
-        mode="global", device="cuda", dtype=dtype, solver_options=so,
-    )
-    assert len(m.batch_statics) == 1
-    return m
-
-
-@pytest.mark.gpu
-def test_neumann_gradient_matches_gmres():
-    """Both solvers solve the SAME linear system (I-J)wE=q -- their gradients must match."""
-    import math
-    from gpurec.api._execution import evaluate_static_loss_grad
-
-    m = _build_small_static()
-    static = m.batch_statics[0]
-    S = int(m.species_helpers["S"])
-    theta = torch.full((3,), math.log2(0.1), device="cuda", dtype=torch.float64)
-    receiver_weights = torch.zeros(S, device="cuda", dtype=torch.float64)
-    origination_weights = torch.zeros(S, device="cuda", dtype=torch.float64)
-
-    grads = {}
-    for solver_name in ("gmres", "neumann"):
-        static.solver_options.e_adjoint_solver = solver_name
-        loss, grad_theta, grad_receiver, _ = evaluate_static_loss_grad(
-            static, theta, receiver_weights, origination_weights, need_grad=True,
-        )
-        grads[solver_name] = (loss.clone(), grad_theta.clone(), grad_receiver.clone())
-
-    loss_g, gtheta_g, grecv_g = grads["gmres"]
-    loss_n, gtheta_n, grecv_n = grads["neumann"]
-
-    assert torch.isfinite(gtheta_g).all() and torch.isfinite(gtheta_n).all()
-    assert float(torch.linalg.vector_norm(gtheta_g)) > 0.0, "degenerate all-zero gradient probe"
-
-    loss_rel = abs(float(loss_g) - float(loss_n)) / max(abs(float(loss_g)), 1e-30)
-    theta_rel = float(torch.linalg.vector_norm(gtheta_g - gtheta_n)) / max(
-        float(torch.linalg.vector_norm(gtheta_g)), 1e-30
-    )
-    recv_abs = float(torch.linalg.vector_norm(grecv_g - grecv_n))
-    recv_scale = max(float(torch.linalg.vector_norm(grecv_g)), 1e-30)
-
-    assert loss_rel < 1e-10, f"loss mismatch: gmres={float(loss_g):.6e} neumann={float(loss_n):.6e}"
-    assert theta_rel < 1e-6, (
-        f"theta gradient mismatch: rel={theta_rel:.3e}\ngmres={gtheta_g}\nneumann={gtheta_n}"
-    )
-    assert recv_abs / recv_scale < 1e-6 or recv_abs < 1e-10, (
-        f"receiver gradient mismatch: abs={recv_abs:.3e} scale={recv_scale:.3e}"
-    )
-
-
-@pytest.mark.gpu
-def test_default_e_adjoint_solver_path_is_gmres():
-    """When ``e_adjoint_solver`` is not set (default SolverOptions), the solve uses GMRES --
-    i.e. omitting the new option reproduces the pre-existing gradient exactly."""
-    import math
-    from gpurec.api._execution import evaluate_static_loss_grad
-
-    m = _build_small_static()
-    static = m.batch_statics[0]
-    assert static.solver_options.e_adjoint_solver == "gmres"
-    S = int(m.species_helpers["S"])
-    theta = torch.full((3,), math.log2(0.1), device="cuda", dtype=torch.float64)
-    receiver_weights = torch.zeros(S, device="cuda", dtype=torch.float64)
-    origination_weights = torch.zeros(S, device="cuda", dtype=torch.float64)
-
-    static.warm_E = None
-    loss1, gtheta1, grecv1, _ = evaluate_static_loss_grad(
-        static, theta, receiver_weights, origination_weights, need_grad=True,
-    )
-    # explicit gmres must reproduce the default (no e_adjoint_solver passed upstream) from the
-    # same cold start. Not asserted bit-identical: Triton atomic-add reductions in the E-step /
-    # backward accumulate in nondeterministic order across separate kernel launches (see
-    # docs/backward_atomics_profiling.md), so re-running the *unchanged* gmres path twice is
-    # already not bit-exact -- allclose at a tight tolerance is the correct no-regression bar.
-    static.solver_options.e_adjoint_solver = "gmres"
-    static.warm_E = None
-    loss2, gtheta2, grecv2, _ = evaluate_static_loss_grad(
-        static, theta, receiver_weights, origination_weights, need_grad=True,
-    )
-    assert torch.allclose(gtheta1, gtheta2, rtol=1e-10, atol=1e-12)
-    assert torch.allclose(grecv1, grecv2, rtol=1e-10, atol=1e-12)
-    assert torch.allclose(loss1, loss2, rtol=1e-10, atol=1e-12)
+    Below ``_E_ADJOINT_DENSE_SOLVE_LIMIT`` the fallback assembles and factorizes the operator, so
+    it always succeeds and the budget never bites; above it the budget is GMRES's matvec count,
+    and four Krylov vectors cannot solve a dense 640-wide system to 1e-12.
+    """
+    n = _E_ADJOINT_DENSE_SOLVE_LIMIT + 128
+    A = _e_adjoint_like(n, rho=3.0, dtype=torch.float64, seed=17)
+    b = A @ torch.randn(n, dtype=torch.float64, generator=torch.Generator().manual_seed(18))
+    with pytest.raises(RuntimeError, match="GMRES fallback"):
+        _neumann_e_adjoint(_matvec(A), b, max_iter=4)

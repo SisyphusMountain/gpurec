@@ -1,57 +1,39 @@
-"""Robustness contract for the GMRES E-adjoint solver (``_gmres``).
+"""Robustness contract for the E-adjoint GMRES fallback (``_gmres_e_adjoint``).
 
-Pure linear-algebra tests -- no CUDA / triton / model needed. GMRES replaced
-BiCGSTAB as the E-adjoint / GGN linear solver because BiCGSTAB can break down
-(lose bi-orthogonality) on a *well-conditioned* but moderately non-symmetric
-operator ``A = I - J_E^T`` and then raise a spurious "singular/ill-conditioned"
-error. GMRES minimizes the residual over the Krylov subspace and cannot break
-down on a nonsingular operator, so these tests pin:
+Pure linear-algebra tests -- no CUDA / triton / model needed.
 
-  * it solves the E-adjoint-shaped non-symmetric operator (``I - J`` with
-    spectral radius ~0.24, cond ~1.6 -- exactly the case that trips BiCGSTAB),
-  * it reaches the dtype-matched default residual (fp32 1e-6 / fp64 1e-12),
-  * a sub-floor ``tol`` is clamped up with a warning,
-  * a genuinely under-resourced solve (too few iterations for an
-    ill-conditioned system) still raises (fail-loud),
-  * ``tol=None`` converges to the dtype default without warning.
+``_neumann_e_adjoint`` sums the Neumann series ``sum_k J^k b`` for ``(I - J) x = b``, which needs
+``J`` to shrink a vector. When it does not, the series is the wrong method and no iteration budget
+saves it, so ``_neumann_e_adjoint`` hands the same matvec to this function instead: GMRES
+minimizes the residual over the Krylov subspace and cannot break down on a nonsingular operator.
+
+These tests pin:
+  * it solves a non-contracting operator that the series cannot touch, from a zero start and from
+    a warm start,
+  * it reaches the residual it is asked for, in float64 and in float32,
+  * it reports the residual it actually achieved rather than raising -- the caller decides,
+  * a zero right-hand side returns zero,
+  * an exhausted matvec budget comes back with the honest (large) residual,
+  * the answer does not depend on the initial guess.
 """
-import warnings
-
 import pytest
 import torch
 
 try:
-    from gpurec.api._implicit_grad import (
-        _gmres,
-        _bicgstab_rel_tol_default,
-        _bicgstab_rel_tol_floor,
-    )
+    from gpurec.api._implicit_grad import _gmres_e_adjoint
 except Exception as exc:  # pragma: no cover - import guard for triton-less envs
     pytest.skip(f"gpurec.api._implicit_grad unavailable: {exc}", allow_module_level=True)
 
 
-def _spd(n: int, cond: float, dtype: torch.dtype, seed: int = 0) -> torch.Tensor:
-    """Symmetric positive-definite operator with a target condition number."""
-    g = torch.Generator().manual_seed(seed)
-    Q, _ = torch.linalg.qr(torch.randn(n, n, generator=g, dtype=torch.float64))
-    eig = torch.logspace(0, float(torch.log10(torch.tensor(float(cond)))), n, dtype=torch.float64)
-    A = (Q * eig) @ Q.T
-    return (0.5 * (A + A.T)).to(dtype)
-
-
-def _e_adjoint_like(n: int, rho: float, dtype: torch.dtype, seed: int = 0) -> torch.Tensor:
-    """``A = I - J`` with ``spectral_radius(J) = rho`` and a NON-symmetric J.
-
-    This mirrors the real E-adjoint ``I - J_E^T`` (rho(J_E) ~ 0.24): eigenvalues
-    clustered near 1, tiny condition number, but decidedly non-symmetric -- the
-    regime where BiCGSTAB breaks down and GMRES does not.
-    """
-    g = torch.Generator().manual_seed(seed)
-    J = torch.randn(n, n, generator=g, dtype=torch.float64)
-    J = J - torch.diag(torch.diagonal(J))          # zero the diagonal for asymmetry
-    J = rho * J / float(torch.linalg.matrix_norm(J, ord=2))  # scale so ||J||_2 = rho
-    A = torch.eye(n, dtype=torch.float64) - J
-    return A.to(dtype)
+def _non_contracting_banded(n: int, dtype: torch.dtype) -> torch.Tensor:
+    """``A = I - J`` with a banded J of spectral radius 1.64 -- not a contraction, so the Neumann
+    series diverges on it, but with a tightly clustered spectrum that leaves ``A`` well
+    conditioned. That is the shape the real E-adjoint operator has."""
+    diagonal = torch.full((n,), -1.2, dtype=torch.float64)
+    off = torch.full((n - 1,), 0.4, dtype=torch.float64)
+    J = torch.diag(diagonal) + torch.diag(off, 1) + torch.diag(0.3 * off, -1)
+    assert float(torch.linalg.eigvals(J).abs().max()) > 1.0
+    return (torch.eye(n, dtype=torch.float64) - J).to(dtype)
 
 
 def _matvec(A):
@@ -59,64 +41,81 @@ def _matvec(A):
 
 
 def _rel_res(A, x, b):
-    return float(torch.linalg.vector_norm(A @ x - b) / torch.linalg.vector_norm(b))
+    return float(torch.linalg.vector_norm((A @ x - b).double())
+                 / torch.linalg.vector_norm(b.double()))
 
 
-def test_e_adjoint_like_nonsymmetric_solves():
-    """The BiCGSTAB-breakdown regime: well-conditioned, non-symmetric ``I - J``."""
-    for dtype, bar in ((torch.float32, 5e-6), (torch.float64, 1e-10)):
-        A = _e_adjoint_like(71, rho=0.24, dtype=dtype, seed=7)
-        assert float(torch.linalg.cond(A.double())) < 2.0  # ~1.6, like the real operator
-        b = A @ torch.randn(71, dtype=dtype, generator=torch.Generator().manual_seed(8))
-        x = _gmres(_matvec(A), b)
-        assert _rel_res(A, x, b) < bar
+def test_solves_a_non_contracting_operator_from_zero():
+    A = _non_contracting_banded(192, torch.float64)
+    b = A @ torch.randn(192, dtype=torch.float64, generator=torch.Generator().manual_seed(24))
+    x, residual = _gmres_e_adjoint(
+        _matvec(A), b, x0=torch.zeros_like(b), tol=1e-12, max_matvecs=400, restart=48,
+    )
+    assert residual <= 1e-12
+    assert _rel_res(A, x, b) <= 1e-12
+    direct = torch.linalg.solve(A, b)
+    assert float(torch.linalg.vector_norm(x - direct)
+                 / torch.linalg.vector_norm(direct)) < 1e-9
 
 
-def test_fp32_default_residual():
-    A = _spd(64, cond=50.0, dtype=torch.float32)
-    b = A @ torch.randn(64, dtype=torch.float32, generator=torch.Generator().manual_seed(1))
-    x = _gmres(_matvec(A), b)
-    assert _rel_res(A, x, b) <= _bicgstab_rel_tol_default(torch.float32)
+def test_warm_start_reaches_the_same_answer():
+    """The Neumann iterate it is warm-started from must not steer the answer."""
+    A = _non_contracting_banded(192, torch.float64)
+    b = A @ torch.randn(192, dtype=torch.float64, generator=torch.Generator().manual_seed(25))
+    direct = torch.linalg.solve(A, b)
+    guesses = (
+        torch.zeros_like(b),
+        b.clone(),
+        1e6 * torch.randn(192, dtype=torch.float64,
+                          generator=torch.Generator().manual_seed(26)),
+    )
+    for guess in guesses:
+        x, residual = _gmres_e_adjoint(
+            _matvec(A), b, x0=guess, tol=1e-12, max_matvecs=600, restart=48,
+        )
+        assert residual <= 1e-12
+        assert float(torch.linalg.vector_norm(x - direct)
+                     / torch.linalg.vector_norm(direct)) < 1e-9
 
 
-def test_fp64_reaches_tight_residual():
-    A = _spd(48, cond=1e3, dtype=torch.float64)
-    xtrue = torch.randn(48, dtype=torch.float64, generator=torch.Generator().manual_seed(2))
-    b = A @ xtrue
-    x = _gmres(_matvec(A), b, tol=1e-12)
-    assert _rel_res(A, x, b) <= 1e-10
-    assert float(torch.linalg.vector_norm(x - xtrue) / torch.linalg.vector_norm(xtrue)) < 1e-8
-
-
-def test_subfloor_tol_warns_and_clamps():
-    A = _spd(48, cond=1e3, dtype=torch.float32)
-    b = A @ torch.randn(48, dtype=torch.float32, generator=torch.Generator().manual_seed(3))
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        x = _gmres(_matvec(A), b, tol=1e-12)  # unreachable in fp32
-    assert any("below the" in str(wi.message) for wi in w)
-    assert _rel_res(A, x, b) < 5e-6
-
-
-def test_genuine_nonconvergence_still_raises():
-    A = _spd(64, cond=1e8, dtype=torch.float64)
-    b = A @ torch.randn(64, dtype=torch.float64, generator=torch.Generator().manual_seed(4))
-    with pytest.raises(RuntimeError):
-        _gmres(_matvec(A), b, tol=1e-14, max_iter=2)  # 2 Krylov vectors can't reach 1e-14
-
-
-def test_none_tol_uses_dtype_default_no_warning():
-    """tol=None must converge to the dtype default without warning."""
-    A = _spd(48, cond=1e3, dtype=torch.float32)
-    b = A @ torch.randn(48, dtype=torch.float32, generator=torch.Generator().manual_seed(5))
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # any warning fails the test
-        x = _gmres(_matvec(A), b, tol=None)
-    assert _rel_res(A, x, b) <= _bicgstab_rel_tol_default(torch.float32)
+def test_fp32_matvec_still_reaches_the_fp32_floor():
+    """Arnoldi runs in float64 even when the matvec is float32, so the residual floor is the
+    matvec's precision and not the orthogonalization's."""
+    A = _non_contracting_banded(192, torch.float32)
+    b = A @ torch.randn(192, dtype=torch.float32, generator=torch.Generator().manual_seed(27))
+    x, residual = _gmres_e_adjoint(
+        _matvec(A), b, x0=torch.zeros_like(b), tol=1e-6, max_matvecs=400, restart=48,
+    )
+    assert x.dtype == torch.float32
+    assert residual <= 1e-6
 
 
 def test_zero_rhs_returns_zero():
-    A = _spd(16, cond=10.0, dtype=torch.float64)
-    b = torch.zeros(16, dtype=torch.float64)
-    x = _gmres(_matvec(A), b)
+    A = _non_contracting_banded(64, torch.float64)
+    b = torch.zeros(64, dtype=torch.float64)
+    x, residual = _gmres_e_adjoint(
+        _matvec(A), b, x0=torch.ones_like(b), tol=1e-12, max_matvecs=64, restart=16,
+    )
     assert float(torch.linalg.vector_norm(x)) == 0.0
+    assert residual == 0.0
+
+
+def test_exhausted_budget_reports_its_residual_instead_of_raising():
+    A = _non_contracting_banded(192, torch.float64)
+    b = A @ torch.randn(192, dtype=torch.float64, generator=torch.Generator().manual_seed(28))
+    _, residual = _gmres_e_adjoint(
+        _matvec(A), b, x0=torch.zeros_like(b), tol=1e-12, max_matvecs=3, restart=48,
+    )
+    assert residual > 1e-12          # honest: three matvecs cannot solve it
+    assert residual < float("inf")
+
+
+def test_rejects_nonsense_budgets():
+    A = _non_contracting_banded(32, torch.float64)
+    b = torch.randn(32, dtype=torch.float64, generator=torch.Generator().manual_seed(29))
+    with pytest.raises(ValueError):
+        _gmres_e_adjoint(_matvec(A), b, x0=torch.zeros_like(b), tol=1e-12,
+                         max_matvecs=0, restart=8)
+    with pytest.raises(ValueError):
+        _gmres_e_adjoint(_matvec(A), b, x0=torch.zeros_like(b), tol=1e-12,
+                         max_matvecs=8, restart=0)
