@@ -66,7 +66,8 @@ def test_streaming_grad_matches_central_fd_with_fraction_missing(tmp_path, mode)
 
     static.warm_E = None
     _, grad_theta, _, _ = evaluate_static_loss_grad(
-        static, theta, receiver_weights, origination_weights, need_grad=True)
+        static, theta, receiver_weights, origination_weights, need_grad=True,
+        need_receiver_grad=True)
     analytic = grad_theta.reshape(-1)
     assert torch.isfinite(analytic).all()
     assert float(analytic.abs().max()) > 1e-3, "degenerate probe: the gradient is ~0 everywhere"
@@ -80,12 +81,12 @@ def test_streaming_grad_matches_central_fd_with_fraction_missing(tmp_path, mode)
         static.warm_E = None
         up = float(evaluate_static_loss_grad(
             static, shifted.view_as(theta), receiver_weights, origination_weights,
-            need_grad=False)[0])
+            need_grad=False, need_receiver_grad=False)[0])
         shifted[index] = flat[index] - step
         static.warm_E = None
         down = float(evaluate_static_loss_grad(
             static, shifted.view_as(theta), receiver_weights, origination_weights,
-            need_grad=False)[0])
+            need_grad=False, need_receiver_grad=False)[0])
         finite = (up - down) / (2 * step)
         relative = abs(finite - float(analytic[index])) / max(1.0, abs(finite))
         worst = max(worst, relative)

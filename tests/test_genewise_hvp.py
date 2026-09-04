@@ -195,7 +195,8 @@ def make_joint_value_and_grad(static, theta_shape, S, G):
         om = x[nt + S:nt + S + G * S].reshape(G, S)
         # NOTE need_grad=True is REQUIRED (origination grad is only produced on that path; see _execution.py early return)
         l, g_th, g_al, g_om = evaluate_static_loss_grad(
-            static, th, al, om, need_grad=True, need_origination_grad=True)
+            static, th, al, om, need_grad=True, need_receiver_grad=True,
+            need_origination_grad=True)
         g = torch.cat([g_th.reshape(-1), g_al.reshape(-1), g_om.reshape(-1)]).double()
         return float(l), g, None, None
 
@@ -309,9 +310,12 @@ def test_origination_grad_matches_fd():
     rw = torch.zeros(S, device="cuda", dtype=torch.float64)
     om = torch.randn(G, S, device="cuda", dtype=torch.float64) * 0.1
     def loss_only(omega):
-        l, *_ = evaluate_static_loss_grad(st, th, rw, omega, need_grad=False)
+        l, *_ = evaluate_static_loss_grad(st, th, rw, omega, need_grad=False,
+                                          need_receiver_grad=False)
         return float(l)
-    _l, _gt, _gr, g_om = evaluate_static_loss_grad(st, th, rw, om, need_grad=True, need_origination_grad=True)
+    _l, _gt, _gr, g_om = evaluate_static_loss_grad(st, th, rw, om, need_grad=True,
+                                                   need_receiver_grad=True,
+                                                   need_origination_grad=True)
     assert tuple(g_om.shape) == (G, S)
     eps = 1e-5; g, k = 0, S // 3          # probe one (family, species) entry
     d = torch.zeros(G, S, device="cuda", dtype=torch.float64); d[g, k] = eps
@@ -451,7 +455,8 @@ def test_stream_batches_multibatch_origination_grad():
     rw = torch.zeros(S, device="cuda", dtype=torch.float64)
     om = torch.randn(G, S, device="cuda", dtype=torch.float64) * 0.1
     loss, g_th, g_rw, g_om = stream_batches(
-        m.batch_statics, th, rw, om, genewise=True, need_grad=True, need_origination_grad=True)
+        m.batch_statics, th, rw, om, genewise=True, need_grad=True,
+        need_receiver_grad=True, need_origination_grad=True)
     assert tuple(g_om.shape) == (G, S)
     assert torch.isfinite(g_om).all()
 

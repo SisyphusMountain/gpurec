@@ -284,15 +284,18 @@ def newton_joint_genewise(static, theta0, alpha0, omega0, *, sigma=None, sigma_f
                 free_cuda_cache_if_tight()
                 loss, g_z, _, _ = _mb_vg(zv)
                 return float(loss), g_z.double(), None, None
-            loss, _, _, _ = stream_batches(statics, th, al, om, genewise=True, need_grad=False)
+            loss, _, _, _ = stream_batches(statics, th, al, om, genewise=True, need_grad=False,
+                                           need_receiver_grad=False)
             return float(loss), None, None, None
         if want_grad:
             free_cuda_cache_if_tight()
             loss, g_th, g_al, g_om = evaluate_static_loss_grad(
-                single, th, al, om, need_grad=True, need_origination_grad=True)
+                single, th, al, om, need_grad=True, need_receiver_grad=True,
+                need_origination_grad=True)
             g_z = torch.cat([g_th.reshape(-1), g_al.reshape(-1), g_om.reshape(-1)]).double()
             return float(loss), g_z, None, None
-        loss, _, _, _ = evaluate_static_loss_grad(single, th, al, om, need_grad=False)
+        loss, _, _, _ = evaluate_static_loss_grad(single, th, al, om, need_grad=False,
+                                                  need_receiver_grad=False)
         return float(loss), None, None, None
 
     def build_hvp(zv):
@@ -445,7 +448,8 @@ def multibatch_joint_vg_genewise(batch_statics, theta_shape, S, G):
             fam_b = static_b.family_index_tensor.to(device=dev)
             theta_b = th.index_select(0, fam_b).contiguous()   # [G_b,3]; omega stays FULL (re-selected inside)
             loss_b, gth_b, gal_b, gom_b = evaluate_static_loss_grad(
-                static_b, theta_b, al, om, need_grad=True, need_origination_grad=True)
+                static_b, theta_b, al, om, need_grad=True, need_receiver_grad=True,
+                need_origination_grad=True)
             loss = loss + float(loss_b)
             g_theta.index_add_(0, fam_b, gth_b.to(dtype=dt))
             g_omega.index_add_(0, fam_b, gom_b.to(dtype=dt))

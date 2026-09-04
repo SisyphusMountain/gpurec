@@ -237,12 +237,14 @@ def main() -> int:
             model.configure_solver(e_max_iter=128)
             short = stream_genewise_loss_vector_grad(
                 model.batch_statics, theta, receiver, origination,
-                need_grad=False, update_warm_starts=False, need_origination_grad=False,
+                need_grad=False, need_receiver_grad=False, update_warm_starts=False,
+                need_origination_grad=False,
             )[0]
             model.configure_solver(e_max_iter=4096)
             long = stream_genewise_loss_vector_grad(
                 model.batch_statics, theta, receiver, origination,
-                need_grad=False, update_warm_starts=False, need_origination_grad=False,
+                need_grad=False, need_receiver_grad=False, update_warm_starts=False,
+                need_origination_grad=False,
             )[0]
             forward_move = float((long - short).abs().max())
             model.configure_solver(e_max_iter=512)
@@ -251,7 +253,8 @@ def main() -> int:
             start = time.perf_counter()
             stream_genewise_loss_vector_grad(
                 model.batch_statics, theta, receiver, origination,
-                need_grad=True, update_warm_starts=False, need_origination_grad=True,
+                need_grad=True, need_receiver_grad=True, update_warm_starts=False,
+                    need_origination_grad=True,
             )
             torch.cuda.synchronize()
             elapsed = time.perf_counter() - start
@@ -328,7 +331,8 @@ def main() -> int:
                 history.clear()
                 stream_genewise_loss_vector_grad(
                     model.batch_statics, theta, receiver, origination,
-                    need_grad=True, update_warm_starts=False, need_origination_grad=True,
+                    need_grad=True, need_receiver_grad=True, update_warm_starts=False,
+                    need_origination_grad=True,
                 )
                 torch.cuda.synchronize()
                 worst = max(

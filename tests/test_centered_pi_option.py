@@ -298,6 +298,7 @@ def test_streamed_scalar_loss_uses_configured_accumulator(
         torch.zeros(2, dtype=torch.float32),
         genewise=False,
         need_grad=False,
+        need_receiver_grad=False,
     )
 
     assert loss.dtype == accumulator_dtype
@@ -319,6 +320,7 @@ def test_streamed_scalar_loss_without_policy_derives_theta_dtype(monkeypatch):
         torch.zeros(2, dtype=torch.float32),
         genewise=False,
         need_grad=False,
+        need_receiver_grad=False,
     )
 
     assert loss.dtype == torch.float32
@@ -349,6 +351,7 @@ def test_streamed_genewise_loss_uses_configured_accumulator(
         torch.zeros(2, dtype=torch.float32),
         torch.zeros((2, 2), dtype=torch.float32),
         need_grad=False,
+        need_receiver_grad=False,
     )
 
     assert loss.dtype == accumulator_dtype
@@ -370,4 +373,5 @@ def test_streaming_rejects_mixed_accumulator_dtypes():
             torch.zeros(2),
             genewise=False,
             need_grad=False,
+            need_receiver_grad=False,
         )

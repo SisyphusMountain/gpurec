@@ -146,6 +146,13 @@ class _GeneReconFunction(torch.autograd.Function):
             max_transfer_mat=max_transfer_vec,
             receiver_log_probs=receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
+            # autograd already knows which inputs need a gradient; slot 1 is receiver_weights.
+            # When it does not, the receiver-side backward kernels are skipped and None is
+            # returned for that slot below -- which is what autograd expects anyway.
+            need_receiver_grad=bool(ctx.needs_input_grad[1]),
+            # The forward ran in this Function's forward(), possibly many steps back, and its
+            # gene-split rows are long gone by the time autograd calls this: recompute them.
+            forward_gene_split=None,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
@@ -169,8 +176,12 @@ class _GeneReconFunction(torch.autograd.Function):
         # Kernels return cotangents in the primal matrix dtype. Match the
         # configured autograd input dtype explicitly.
         grad_theta = grad_theta.to(device=theta.device, dtype=theta.dtype)
-        grad_receiver_weights = grad_receiver_weights.to(
-            device=receiver_weights.device, dtype=receiver_weights.dtype
+        grad_receiver_weights = (
+            None
+            if grad_receiver_weights is None
+            else grad_receiver_weights.to(
+                device=receiver_weights.device, dtype=receiver_weights.dtype
+            )
         )
         grad_origination = None
         if ctx.needs_input_grad[2]:
@@ -185,7 +196,9 @@ class _GeneReconFunction(torch.autograd.Function):
             )
         return (
             grad_theta * grad_output.to(device=grad_theta.device, dtype=grad_theta.dtype),
-            grad_receiver_weights
+            None
+            if grad_receiver_weights is None
+            else grad_receiver_weights
             * grad_output.to(
                 device=grad_receiver_weights.device,
                 dtype=grad_receiver_weights.dtype,
@@ -199,19 +212,31 @@ class _GeneReconFullLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, theta: torch.Tensor, receiver_weights: torch.Tensor, origination_weights: torch.Tensor, model):
         need_origination_grad = bool(origination_weights.requires_grad)
+        # Same question for the receiver weights, asked of the tensor rather than of ctx because
+        # this Function decides it in forward(): a frozen receiver weight (requires_grad False)
+        # skips the receiver-side backward kernels and gets None for its gradient slot.
+        need_receiver_grad = bool(receiver_weights.requires_grad)
         loss, grad_theta, grad_receiver, grad_origination = model._stream_batches(
             theta,
             receiver_weights,
             origination_weights,
             need_grad=True,
+            need_receiver_grad=need_receiver_grad,
             need_origination_grad=need_origination_grad,
         )
-        if grad_theta is None or grad_receiver is None:
+        if grad_theta is None:
             raise RuntimeError("missing streamed gradient")
+        if need_receiver_grad and grad_receiver is None:
+            raise RuntimeError("missing streamed receiver gradient")
         ctx.save_for_backward(
             grad_theta.to(device=theta.device, dtype=theta.dtype),
-            grad_receiver.to(device=receiver_weights.device, dtype=receiver_weights.dtype),
+            (
+                torch.zeros_like(receiver_weights)
+                if grad_receiver is None
+                else grad_receiver.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
+            ),
         )
+        ctx.need_receiver_grad = need_receiver_grad
         ctx.grad_origination = (
             None
             if grad_origination is None
@@ -227,7 +252,9 @@ class _GeneReconFullLossFunction(torch.autograd.Function):
         grad_origination = ctx.grad_origination
         return (
             grad_theta * grad_output.to(device=grad_theta.device, dtype=grad_theta.dtype),
-            grad_receiver * grad_output.to(device=grad_receiver.device, dtype=grad_receiver.dtype),
+            None
+            if not ctx.need_receiver_grad
+            else grad_receiver * grad_output.to(device=grad_receiver.device, dtype=grad_receiver.dtype),
             None
             if grad_origination is None
             else grad_origination * grad_output.to(device=grad_origination.device, dtype=grad_origination.dtype),

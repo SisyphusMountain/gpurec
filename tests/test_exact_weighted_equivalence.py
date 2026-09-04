@@ -192,6 +192,7 @@ def _value_and_grads(model, theta, receiver, origination):
         receiver,
         origination,
         need_grad=True,
+        need_receiver_grad=True,
         update_warm_starts=False,
         need_origination_grad=True,
     )

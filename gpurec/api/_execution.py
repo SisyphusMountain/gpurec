@@ -104,9 +104,22 @@ def evaluate_static_loss_grad(
     origination_weights: torch.Tensor,
     *,
     need_grad: bool,
+    need_receiver_grad: bool,
     need_origination_grad: bool = False,
 ):
     accumulator_dtype = _static_accumulator_dtype(static, theta.dtype)
+    # An empty dict here asks the forward below to KEEP each split wave's gene-split (DTS) rows so
+    # the backward reads them instead of reducing them a second time (three Triton launches per
+    # wave, 11 % of one gradient on the 200-family Coleman batch). Only when a backward is
+    # actually coming and the build-time memory gate said one more [clades x species] tensor fits;
+    # None restores the behaviour of always recomputing.
+    static.forward_gene_split = (
+        {}
+        # getattr, like the warm-adjoint gate above it, because a hand-built static (tests,
+        # probes) has no such field and must keep the recompute path.
+        if (need_grad and bool(getattr(static, "forward_gene_split_ok", False)))
+        else None
+    )
     with torch.no_grad():
         (
             E,
@@ -150,6 +163,10 @@ def evaluate_static_loss_grad(
             _warm_v = static.warm_v
         else:
             _warm_v = None
+        # Hand the kept rows over as a local and drop the static's reference before the backward
+        # starts, so nothing keeps that block alive past this call -- including on an exception.
+        gene_split_rows = static.forward_gene_split
+        static.forward_gene_split = None
         grad_theta, grad_receiver = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -165,6 +182,8 @@ def evaluate_static_loss_grad(
             max_transfer_mat=max_transfer_vec,
             receiver_log_probs=receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
+            need_receiver_grad=need_receiver_grad,
+            forward_gene_split=gene_split_rows,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
@@ -188,7 +207,9 @@ def evaluate_static_loss_grad(
             **_backward_offsets(static),
         )
         grad_theta = grad_theta.detach()
-        grad_receiver = grad_receiver.detach()
+        # None whenever need_receiver_grad was False: the receiver gradient was not computed, and
+        # handing back None makes a caller that uses it fail instead of reading a half-formed value.
+        grad_receiver = None if grad_receiver is None else grad_receiver.detach()
         grad_origination = (
             origination_grad_from_root_rows(
                 root_rows,
@@ -251,6 +272,12 @@ def evaluate_static_convergence(
             max_transfer_mat=max_transfer_vec,
             receiver_log_probs=receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
+            # This call returns only the per-wave residual diagnostics (collect_backward_relres
+            # below short-circuits before any parameter gradient is formed), so no receiver
+            # gradient is ever read from it.
+            need_receiver_grad=False,
+            # This diagnostic runs its own forward above with no gene-split cache installed.
+            forward_gene_split=None,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
@@ -278,12 +305,25 @@ def evaluate_static_loss_vector_grad(
     origination_weights: torch.Tensor,
     *,
     need_grad: bool,
+    need_receiver_grad: bool,
     update_warm_start: bool,
     need_origination_grad: bool = False,
 ):
     if not static.genewise:
         raise ValueError("per-family loss vectors require genewise mode")
     accumulator_dtype = _static_accumulator_dtype(static, theta.dtype)
+    # An empty dict here asks the forward below to KEEP each split wave's gene-split (DTS) rows so
+    # the backward reads them instead of reducing them a second time (three Triton launches per
+    # wave, 11 % of one gradient on the 200-family Coleman batch). Only when a backward is
+    # actually coming and the build-time memory gate said one more [clades x species] tensor fits;
+    # None restores the behaviour of always recomputing.
+    static.forward_gene_split = (
+        {}
+        # getattr, like the warm-adjoint gate above it, because a hand-built static (tests,
+        # probes) has no such field and must keep the recompute path.
+        if (need_grad and bool(getattr(static, "forward_gene_split_ok", False)))
+        else None
+    )
     with torch.no_grad():
         (
             E,
@@ -328,6 +368,10 @@ def evaluate_static_loss_vector_grad(
             _warm_v = static.warm_v
         else:
             _warm_v = None
+        # Hand the kept rows over as a local and drop the static's reference before the backward
+        # starts, so nothing keeps that block alive past this call -- including on an exception.
+        gene_split_rows = static.forward_gene_split
+        static.forward_gene_split = None
         grad_theta, grad_receiver = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -343,6 +387,8 @@ def evaluate_static_loss_vector_grad(
             max_transfer_mat=max_transfer_vec,
             receiver_log_probs=receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
+            need_receiver_grad=need_receiver_grad,
+            forward_gene_split=gene_split_rows,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
@@ -366,7 +412,9 @@ def evaluate_static_loss_vector_grad(
             **_backward_offsets(static),
         )
         grad_theta = grad_theta.detach()
-        grad_receiver = grad_receiver.detach()
+        # None whenever need_receiver_grad was False: the receiver gradient was not computed, and
+        # handing back None makes a caller that uses it fail instead of reading a half-formed value.
+        grad_receiver = None if grad_receiver is None else grad_receiver.detach()
         grad_origination = (
             origination_grad_from_root_rows(
                 root_rows,
@@ -404,12 +452,15 @@ def stream_batches(
     *,
     genewise: bool,
     need_grad: bool,
+    need_receiver_grad: bool,
     need_origination_grad: bool = False,
 ):
     loss_dtype = _stream_accumulator_dtype(batch_statics, theta.dtype)
     total = torch.zeros((), dtype=loss_dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None
-    grad_receiver_total = torch.zeros_like(receiver_weights) if need_grad else None
+    grad_receiver_total = (
+        torch.zeros_like(receiver_weights) if (need_grad and need_receiver_grad) else None
+    )
     grad_origination_total = (
         torch.zeros_like(origination_weights) if (need_grad and need_origination_grad) else None
     )
@@ -421,19 +472,23 @@ def stream_batches(
             receiver_weights,
             origination_weights,
             need_grad=need_grad,
+            need_receiver_grad=need_receiver_grad,
             need_origination_grad=need_origination_grad,
         )
         total = total + loss_i.to(device=theta.device, dtype=loss_dtype)
         if need_grad:
-            if grad_i is None or grad_total is None or grad_receiver_i is None or grad_receiver_total is None:
+            if grad_i is None or grad_total is None:
                 raise RuntimeError("missing batch gradient")
+            if need_receiver_grad and (grad_receiver_i is None or grad_receiver_total is None):
+                raise RuntimeError("missing batch receiver gradient")
             if genewise:
                 grad_total.index_add_(0, static.family_index_tensor, grad_i.to(device=theta.device, dtype=theta.dtype))
             else:
                 grad_total.add_(grad_i.to(device=theta.device, dtype=theta.dtype))
-            grad_receiver_total.add_(
-                grad_receiver_i.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
-            )
+            if grad_receiver_total is not None:
+                grad_receiver_total.add_(
+                    grad_receiver_i.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
+                )
             if grad_origination_total is not None and grad_origination_i is not None:
                 grad_origination_i = grad_origination_i.to(
                     device=origination_weights.device, dtype=origination_weights.dtype
@@ -457,6 +512,7 @@ def stream_genewise_loss_vector_grad(
     origination_weights: torch.Tensor,
     *,
     need_grad: bool,
+    need_receiver_grad: bool,
     update_warm_starts: bool = False,
     need_origination_grad: bool = False,
 ):
@@ -465,7 +521,9 @@ def stream_genewise_loss_vector_grad(
     loss_dtype = _stream_accumulator_dtype(batch_statics, theta.dtype)
     loss_total = torch.empty((int(theta.shape[0]),), dtype=loss_dtype, device=theta.device)
     grad_total = torch.zeros_like(theta) if need_grad else None
-    grad_receiver_total = torch.zeros_like(receiver_weights) if need_grad else None
+    grad_receiver_total = (
+        torch.zeros_like(receiver_weights) if (need_grad and need_receiver_grad) else None
+    )
     grad_origination_total = (
         torch.zeros_like(origination_weights) if (need_grad and need_origination_grad) else None
     )
@@ -479,6 +537,7 @@ def stream_genewise_loss_vector_grad(
             receiver_weights,
             origination_weights,
             need_grad=need_grad,
+            need_receiver_grad=need_receiver_grad,
             update_warm_start=update_warm_starts,
             need_origination_grad=need_origination_grad,
         )
@@ -488,12 +547,15 @@ def stream_genewise_loss_vector_grad(
             loss_i.to(device=theta.device, dtype=loss_dtype),
         )
         if need_grad:
-            if grad_i is None or grad_total is None or grad_receiver_i is None or grad_receiver_total is None:
+            if grad_i is None or grad_total is None:
                 raise RuntimeError("missing batch gradient")
+            if need_receiver_grad and (grad_receiver_i is None or grad_receiver_total is None):
+                raise RuntimeError("missing batch receiver gradient")
             grad_total.index_add_(0, static.family_index_tensor, grad_i.to(device=theta.device, dtype=theta.dtype))
-            grad_receiver_total.add_(
-                grad_receiver_i.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
-            )
+            if grad_receiver_total is not None:
+                grad_receiver_total.add_(
+                    grad_receiver_i.to(device=receiver_weights.device, dtype=receiver_weights.dtype)
+                )
             if grad_origination_total is not None and grad_origination_i is not None:
                 grad_origination_i = grad_origination_i.to(
                     device=origination_weights.device, dtype=origination_weights.dtype

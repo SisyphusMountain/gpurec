@@ -34,6 +34,16 @@ class _BatchStatic:
     # Per-species fraction-missing leaf boundary (log2(fraction_missing_s), -inf
     # off-leaf/observed). Shared across batches; None => every gene observed.
     leaf_fm_log: torch.Tensor | None = None
+    # Memory gate: may the forward keep its per-wave gene-split (DTS) rows so the backward reads
+    # them instead of recomputing them? Resolved once per (re)build by
+    # GeneReconModel._resolve_forward_gene_split_gate. False here is the historical behaviour
+    # (always recompute), which is what a static built outside the model gets.
+    forward_gene_split_ok: bool = False
+    # The kept rows themselves, {wave start: (rows [W,S], row offsets [W])}. The GRADIENT entry
+    # points install an empty dict before the forward solve (which is the request: a dict means
+    # "fill me"), read it in the backward, and drop it again straight after -- a pure-forward call
+    # leaves it None and the forward frees each wave's block as it always did.
+    forward_gene_split: dict | None = None
 
 
 def build_batch_static(

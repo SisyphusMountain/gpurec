@@ -108,6 +108,10 @@ def solve_resident_e_pi(
         # Exact-solve pivot-guard counts are a benchmarking probe, not production state; the
         # benchmark wraps ``pi_wave_forward`` to pass its own tensor.
         exact_guard_trips_out=None,
+        # A dict here is the gradient path asking the forward to keep its gene-split rows so the
+        # backward can read them; None (the pure-forward path, and any batch the memory gate
+        # turned down) frees each wave's block as before. See _BatchStatic.forward_gene_split.
+        gene_split_out=getattr(static, "forward_gene_split", None),
         # E-only fraction-missing (AleRax v1.4.0 model): fraction-missing enters
         # ONLY the extinction E-step above; the Pi/reconciliation numerator gets
         # no fraction-missing leaf term, so None here (never `static.leaf_fm_log`).

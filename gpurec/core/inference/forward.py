@@ -130,6 +130,13 @@ def pi_wave_forward(
     self_loop_mode: str,
     exact_range_log2: float,
     exact_guard_trips_out: torch.Tensor | None,
+    # ``None``: each split wave's gene-split (DTS) rows are freed as soon as that wave is done,
+    # and whoever needs them later recomputes them. A dict: every split wave's rows and row
+    # offsets are stored in it under the wave's start row, so the backward can read the numbers
+    # this forward already produced instead of running the three reduction kernels again. The
+    # caller decides, because the caller is the one who knows both whether a backward is coming
+    # and whether the memory is there (gpurec/core/memory_policy.forward_gene_split_cache_fits).
+    gene_split_out: dict | None,
 ):
     pi_iters = int(pi_iters)
     if pi_iters < 2 or pi_iters % 2 != 0:
@@ -151,6 +158,11 @@ def pi_wave_forward(
     S = int(species_helpers["S"])
     device = e.device
     dtype = e.dtype
+
+    if gene_split_out is not None:
+        # Start from empty: a caller that hands the same dict to two solves must get the second
+        # solve's rows, never a mixture with the first's.
+        gene_split_out.clear()
 
     pi = torch.empty((C, S), dtype=dtype, device=device)
     pibar = torch.empty((C, S), dtype=dtype, device=device)
@@ -281,6 +293,12 @@ def pi_wave_forward(
                 # Virtual gauge used only by the forward wave consumer. DTS
                 # residual/offset inputs remain immutable for deterministic reads.
                 dts_center_offset = dts_center_offset_buffer[:W]
+                if gene_split_out is not None:
+                    # Keeping the reference is all it takes: nothing below writes into these two
+                    # (the wave step and the exact solve read them and publish their virtual gauge
+                    # into ``dts_center_offset``), so the block the backward reads is bit-for-bit
+                    # what this wave used. A redo of the batch (flagged rows) rewrites the same keys.
+                    gene_split_out[int(ws)] = (dts_r, dts_offset)
             else:
                 dts_r = None
                 dts_offset = None

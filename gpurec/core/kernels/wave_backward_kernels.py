@@ -755,6 +755,15 @@ def _reconciliation_self_loop_transpose_series_kernel(
     else:
         row_active = row_valid
     row_mask = row_valid & row_active
+    if SKIP_INACTIVE_SCRATCH_ZERO:
+        # Nothing to write, so nothing to compute. Without this the series still walks the whole
+        # species tree once per program with every load and store masked off -- and on the exact
+        # adjoint path that is EVERY launch, because the elimination almost never spills a row:
+        # 66 ms of one 200-family Coleman gradient (2.7 %) spent producing nothing. Only legal
+        # when the inactive rows are not supposed to be written: with SKIP_INACTIVE_SCRATCH_ZERO
+        # off the caller is asking this kernel to zero them, which returning early would skip.
+        if tl.sum(row_mask.to(tl.int32), axis=0) == 0:
+            return
     mask = species_valid[:, None] & row_mask[None, :]
     if SKIP_INACTIVE_SCRATCH_ZERO:
         store_mask = mask
@@ -1031,6 +1040,7 @@ def _exact_tree_self_loop_transpose_kernel(
     v_k_ptr,
     guard_trips_ptr,
     spill_ptr,
+    spill_count_ptr,
     conditioning_floor,
     W,
     S: tl.constexpr,
@@ -1040,6 +1050,7 @@ def _exact_tree_self_loop_transpose_kernel(
     N_LEVELS: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     WRITE_GUARD_TRIPS: tl.constexpr,
+    COUNT_SPILLS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Solve the transposed self-loop EXACTLY, by elimination on the species tree.
@@ -1239,6 +1250,15 @@ def _exact_tree_self_loop_transpose_kernel(
     # the prepare kernel left it (the rhs), which is what the series' cold branch starts from.
     spill = (smallest_pivot < conditioning_floor) | (smallest_den < conditioning_floor)
     tl.store(spill_ptr + rows, tl.full([BLOCK_W], value=1, dtype=tl.int8), mask=row_mask & spill)
+    if COUNT_SPILLS:
+        # One number per wave saying whether ANY row was handed to the series, so the host can
+        # skip the series launch entirely. An atomic per spilled row costs nothing: spilling is
+        # rare (it needs a badly conditioned pivot), and a wave that spills nothing does one
+        # atomic_add of zero per program.
+        tl.atomic_add(
+            spill_count_ptr,
+            tl.sum(tl.where(row_mask & spill, 1, 0).to(tl.int32), axis=0),
+        )
     if WRITE_GUARD_TRIPS:
         tl.store(guard_trips_ptr + rows * 2, nonpositive_pivots, mask=row_valid)
         tl.store(

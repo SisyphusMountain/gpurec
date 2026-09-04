@@ -59,6 +59,14 @@ def vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, *, drop_no
         log_pS=sv["log_pS"], log_pD=sv["log_pD"], log_pL=sv["log_pL"],
         max_transfer_mat=sv["max_transfer"], receiver_log_probs=sv["receiver_log_probs"],
         use_receiver_weights=not receiver_weights_are_uniform(receiver_weights),
+        # Always True on this path, and not a knob: every consumer of this VJP contracts the
+        # receiver cotangent. build_point_cache stores it as cache["accum"]["grad_col"] and
+        # gpurec/solver/hvp/exact.py reads it back into the second-order receiver cotangent, and
+        # the regression path returns it as the receiver half of the plain gradient.
+        need_receiver_grad=True,
+        # The HVP re-solves the forward itself (``sv``) and does not keep its gene-split rows,
+        # so this VJP reduces them from that solve's Pi/Pibar as it always has.
+        forward_gene_split=None,
         theta=theta, receiver_weights=receiver_weights,
         uniform_pibar_row_max=sv["pibar_row_max"], family_idx=static.rate_family_idx,
         leaf_fm_log=leaf_fm_log,

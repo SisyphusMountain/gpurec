@@ -377,6 +377,20 @@ def implicit_grad_loglik_vjp_wave(
     log_pD: torch.Tensor, log_pL: torch.Tensor, max_transfer_mat: torch.Tensor,
     receiver_log_probs: torch.Tensor,
     use_receiver_weights: bool,
+    # Whether the caller is going to USE the returned receiver-weight gradient. Every caller says
+    # so explicitly (no default) because getting it wrong is silent: the receiver gradient still
+    # comes back with the right shape, only missing the reconciliation (Pi) half of its value.
+    # False skips two per-wave Triton launches -- the receiver-log-probability VJP kernel and the
+    # receiver-gradient accumulation inside the transfer-subtree VJP -- which together were 6.4 %
+    # of one gradient on the 200-family Coleman batch. A genewise rate fit freezes the receiver
+    # weights, so it passes False; anything that trains them (map_cv, the specieswise joint
+    # theta+alpha solves) passes True.
+    need_receiver_grad: bool,
+    # The forward's kept gene-split (DTS) rows, {wave start: (rows, row offsets)}, or None to
+    # recompute them here. Every caller says which (no default): reading rows that do NOT come
+    # from the matching forward solve would be silently wrong, so there is no safe fallback to
+    # guess at. See gpurec/core/inference/forward.pi_wave_forward's ``gene_split_out``.
+    forward_gene_split: dict | None,
     theta: torch.Tensor, receiver_weights: torch.Tensor, uniform_pibar_row_max: torch.Tensor,
     family_idx: torch.Tensor,
     leaf_fm_log: torch.Tensor | None = None,
@@ -461,7 +475,12 @@ def implicit_grad_loglik_vjp_wave(
     accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
     grad_log_pD, grad_log_pS = (torch.zeros_like(x) for x in (log_pD_param, log_pS_param))
     grad_max_transfer_mat = torch.zeros_like(max_transfer_family)
-    grad_receiver_log_probs = torch.zeros((S,), device=device, dtype=dtype)
+    # None means "nobody asked for this gradient": every kernel below reads that as a switch and
+    # skips the receiver-side work entirely, and the theta VJP at the end drops the term that
+    # would have consumed it.
+    grad_receiver_log_probs = (
+        torch.zeros((S,), device=device, dtype=dtype) if need_receiver_grad else None
+    )
     grad_E_acc, grad_Ebar_acc, grad_E_s1_acc, grad_E_s2_acc = (
         torch.zeros_like(x) for x in (E_star, Ebar, E_star, E_star)
     )
@@ -532,7 +551,15 @@ def implicit_grad_loglik_vjp_wave(
         ).contiguous()
         has_splits = bool(meta.get("has_splits", "sl" in meta))
         has_leaf_term = int(meta.get("phase", 1 if not has_splits else 2)) == 1
-        if has_splits:
+        kept_gene_split = None if forward_gene_split is None else forward_gene_split.get(ws)
+        if has_splits and kept_gene_split is not None:
+            # The forward already reduced these rows from the very same Pi/Pibar child rows this
+            # wave reads (a child's rows are written by its own, earlier wave and never touched
+            # again), so recomputing them here reproduces them exactly. The forward's copy covers
+            # every parent row while this wave's may prune some; the extra rows are never read,
+            # because every consumer below is masked by ``active_mask``.
+            dts_r, dts_offset = kept_gene_split
+        elif has_splits:
             dts_r, dts_offset = compute_dts_forward(
                 Pi_star_wave.detach(),
                 pi_offset,
@@ -884,8 +911,14 @@ def _e_adjoint_and_theta_vjp(
             (log_pS_param * grad_log_pS).sum()
             + (log_pD_param * grad_log_pD).sum()
             + (mt_r * grad_max_transfer_mat).sum()
-            + (receiver_log_probs_r * grad_receiver_log_probs).sum()
         )
+        if grad_receiver_log_probs is not None:
+            # Only present when the caller asked for the receiver-weight gradient; without it the
+            # reconciliation half of dNLL/d(receiver logits) was never accumulated, so there is
+            # nothing to contract here. theta itself is unaffected either way: the receiver
+            # log-probabilities are a softmax of the receiver weights alone, so this term
+            # contributes to grad_receiver and to nothing else.
+            param_loss = param_loss + (receiver_log_probs_r * grad_receiver_log_probs).sum()
         E_from_params, _, _, Ebar_from_params = e_step_triton_autograd(
             E_star.detach(),
             log_pS_r,
@@ -897,9 +930,16 @@ def _e_adjoint_and_theta_vjp(
             use_receiver_weights=use_receiver_weights,
             leaf_fm_log=leaf_fm_log,
         )
-        grad_theta, grad_receiver = torch.autograd.grad(
+        # ``grad_receiver_log_probs is None`` is the caller's "I will not use the receiver
+        # gradient": ask autograd for theta alone (which also skips the receiver branch of this
+        # graph) and hand back None, so a caller that uses it anyway fails at once instead of
+        # silently reading a value that is missing its reconciliation half.
+        wanted = (theta_req,) if grad_receiver_log_probs is None else (theta_req, receiver_req)
+        grads = torch.autograd.grad(
             (param_loss, Ebar_from_params, E_from_params),
-            (theta_req, receiver_req),
+            wanted,
             grad_outputs=(torch.ones_like(param_loss), grad_Ebar, wE),
         )
-    return grad_theta, grad_receiver
+    if grad_receiver_log_probs is None:
+        return grads[0], None
+    return grads[0], grads[1]
