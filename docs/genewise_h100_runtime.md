@@ -474,6 +474,105 @@ The full after-profile is in `results/profile_kernels_rtx4090_200fam_round4.txt`
 the shared card, so its per-kernel milliseconds are inflated by about a quarter while its launch
 counts are exact.
 
+## Round five: the two host-side stalls that were left, and what turned out not to matter (RTX 4090, 2026-09-04)
+
+Round four removed backward work the card was doing for nothing. What was left in the gap between
+"the card is busy" and "the wall clock" was the HOST: places where python stops and waits for the
+driver, so the queue drains and the card has nothing to run. Same 200-family Coleman batch
+throughout (RTX 4090, 15 batches of ~100,000 clades, 2013 species, float32, exact forward and exact
+adjoint, 1977 waves, flat theta -6/-3/-6), timings taken on a genuinely idle card.
+
+**How "GPU idle" is measured here.** `torch.profiler` with CPU **and** CUDA activities, exported as
+a chrome trace; the kernel/memcpy intervals are unioned on the GPU timeline and compared against the
+span, so "idle" means the card had nothing queued. The profiler adds host overhead, which inflates
+idle, so the wall clock and the CUDA-only per-kernel total are quoted alongside it.
+
+**1. The free-memory reading taken once per wave (commit dbfa8839).** Before allocating a wave's
+self-loop scratch the backward asked "does this fit?", and on the cold path -- no resident
+warm-adjoint cache, which is the production path whenever that cache does not fit, as it does not
+here (44.7 GiB of cache wanted against an 18.5 GiB budget) -- answering meant reading free memory
+from the driver on the spot: one blocking `cudaMemGetInfo` plus two `torch.cuda.memory_stats()`
+nested-dict builds, 1977 times per gradient. The answer cannot move between waves, because each
+wave's scratch is allocated and freed inside that wave. `memory_policy.wave_scratch_budget_bytes`
+now reads it once at the top of the reverse sweep and hands the number down as the reservation the
+warm path already used, so the gate makes the identical comparison (`scratch <= budget`; these
+callers pass no `already_live_bytes`) and a wave that genuinely does not fit is still rejected. Both
+reverse sweeps got it: the gradient (`gpurec/api/_implicit_grad.py`) and the exact Hessian's own
+loop (`gpurec/solver/hvp/exact.py`).
+
+**2. The extinction fixed point's convergence test (commit 768eab6c).** `e_fixed_point_triton` read
+its residual back from the card at the end of every iteration -- 195 of the 240 device-to-host reads
+in one forward, each stopping the host until that iteration's kernel had finished. It now reads the
+residual one iteration LATE: iteration k's residual is copied into pinned host memory right after
+iteration k's kernel (stream-ordered, so it captures that kernel's value before the next iteration
+overwrites the buffer) and is only looked at once iteration k+1 has been queued. The iterate handed
+back is the same one bit for bit -- the double buffer already holds it, so when the late test says
+iterate k converged we swap back and return exactly what the immediate test returned. The cost is
+one extra e-step launch per solve; the 195 max-reduction launches it replaces make the forward's
+launch count go DOWN, 15,751 -> 15,571.
+
+| 200 families, idle card | before | after |
+|---|---|---|
+| `cudaMemGetInfo` per gradient | 1977 | 15 |
+| blocking device-to-host reads, one forward | 240 | 45 |
+| blocking device-to-host reads, one gradient | 375 | 180 |
+| GPU idle, one forward (profiled span) | 35.7 ms of 794.3 (4.5 %) | 35.2 ms of 792.6 (4.4 %) |
+| GPU idle, one gradient (profiled span) | 565.1 ms of 2493.4 (22.7 %) | 238.7 ms of 2163.0 (11.0 %) |
+| wall, one forward (median of 5) | 782.1 ms (min 781.1) | 780.2 ms (min 777.6) |
+| wall, one forward+gradient (median of 5) | 2175.3 ms (min 2157.5) | 2030.8 ms (min 2023.4) |
+
+The forward's wall clock does not move, which is the control that says nothing was disturbed: the
+forward is GPU-bound on this card (756 ms of CUDA time inside 780 ms of wall), so its 35 ms of idle
+was never the E-step's stalls -- those were absorbed by work already queued. The stalls and the
+launches are gone all the same, which is what a card roughly twice as fast would have been starved
+by. The gradient is the one that pays: **-144 ms, -6.6 %.** A second before/after pair taken while
+another process shared the card gave 2407.8 -> 2150.8 ms, same direction.
+
+**The gradient did not move.** `benchmark/cc/save_gradient_snapshot.py`, before against after: the
+per-family NLL vector is identical to the last bit, and the theta gradient's max absolute difference
+divided by max absolute gradient is 5.9e-7 against a 7.9e-7 run-to-run noise floor measured from two
+runs of the same code (float32 atomics are not bit-reproducible run to run). `pytest -q tests/` is
+441 passed, 14 skipped, unchanged.
+
+**3. What is left of the per-wave zero-fills, and why none of it should go.** One gradient does 6322
+CUDA zero-fills writing 23,009 MiB. Two buffers are essentially all of those bytes and both must
+start at zero: `accumulated_rhs` (`_implicit_grad.py`, one `[batch clades x species]` per batch, 15
+launches, ~11.5 GiB -- the reverse sweep accumulates each clade's children into it, and a clade that
+is neither a root nor anybody's child must read zero) and `v_k` (`wave_backward.py`, 1977 launches,
+~11.5 GiB -- already argued in round four: the prepare kernel seeds active rows only and
+`_scatter_accum` sums every row). Together they are the 4735 `FillFunctor<float>` launches costing
+25.7 ms, 1.3 % of the 1921 ms the card is busy, and at 23 GiB in 25.7 ms that is ~900 GB/s, i.e.
+write bandwidth rather than overhead. Everything else is small: `series_rows` (1977 int8 fills,
+2.0 ms), float64 fills (2247, 2.4 ms), int64 fills (525, 0.5 ms) -- 5 ms, 0.26 % of GPU time, and
+each one is read by a kernel that expects zeros where the pruner skipped a row. Nothing here is
+provably redundant, so nothing was removed. The `torch.empty` calls are a different animal: 35,857
+per gradient, no kernel at all, ~21 ms of pure host time -- see the next point for why that does not
+show up either.
+
+**4. The per-launch validation helpers cost host time and buy no wall clock here.**
+`_validate_residual_tensors`, `_validate_offset_tensor` and `_prepare_wave_launch`
+(`gpurec/core/kernels/pi_forward.py`, re-exported into the backward and tangent kernel modules) run
+5916 + 23,604 + 3954 times in one forward and 11,817 + 33,444 + 3954 times in one gradient.
+Microbenchmarked at the real argument shapes they are 1.79 / 0.36 / 0.82 microseconds a call, so
+**22.4 ms of host time per forward and 36.6 ms per gradient**. Replacing all three with do-nothing
+stubs and timing forward and gradient alternately against the real ones (5 pairs,
+`stub_validators`-style A/B) changed the wall clock by **-0.4 ms on the forward and -4.9 ms on the
+gradient -- both inside the run-to-run noise, and the gradient's is negative**. They were therefore
+left alone: the host time they cost overlaps GPU work that is already queued, and the
+behaviour-preserving version of "hoist them" is not free either (each wave validates different
+tensors -- its own row slices and its own offsets -- so checking only the first wave would stop
+checking the rest, which is a behaviour change, not a hoist). If a faster card makes the host the
+critical path, the cheap fix is to make the checks cheaper, not fewer.
+
+**Where the headroom stands after this round.** CUDA-only per-kernel totals
+(`benchmark/cc/profile_gradient_kernels.py`, idle card): forward **756 ms** of GPU time inside
+780 ms of wall (96.9 % GPU-bound, 24 ms of host headroom left); forward+gradient **1921 ms** inside
+2031 ms of wall (94.6 % GPU-bound, 110 ms left). Before this round the same 1921 ms of GPU work sat
+inside 2175 ms of wall, i.e. 254 ms of headroom, of which 144 ms is now gone. The remaining 110 ms is
+spread over ~46,000 sub-microsecond gaps between 67,680 kernel launches (python and Triton dispatch
+between launches), not over a few big stalls, so it will not come back from removing any one call
+site -- it needs fewer launches or bigger ones.
+
 ## What is left
 
 With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs
@@ -481,7 +580,10 @@ With both self-loops and the tangent solved exactly, one full-dataset gradient a
 VJP, gene-split VJP), the exact forward and adjoint solves (~15 % each), the DTS forward reduction and the
 `index_add` scatter; all are latency-bound at low occupancy rather than compute- or bandwidth-bound, so
 further gains need occupancy/tiling work per kernel. Round four removed the backward work that was
-producing nothing at all (see above); what is left in the backward is genuine arithmetic. The warm-up (5 Adam gradients, ~125 s) and the tail
+producing nothing at all (see above); what is left in the backward is genuine arithmetic. Round five
+removed the host-side stalls that drained the queue around it, and the 200-family gradient is now
+94.6 % GPU-bound, so the next gain has to come from the kernels themselves rather than from the
+python driving them. The warm-up (5 Adam gradients, ~125 s) and the tail
 of a few families iterating to `max_iter` (30-120 s, run-dependent) are the remaining recipe-level costs;
 the stall rule (`stall_patience`) trades the tail against 3-4 certified families and is off by default.
 Timings on the shared GPU nodes vary by ±100 s with other users' CPU load; pin a quiet node

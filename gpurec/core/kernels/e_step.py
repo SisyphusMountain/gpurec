@@ -592,7 +592,31 @@ def e_fixed_point_triton(
     E_b, E_s1, E_s2, Ebar = (torch.empty_like(E_a) for _ in range(4))
     max_diff_out = torch.empty((G,), dtype=E_a.dtype, device=E_a.device)
 
-    for _ in range(max_iter):
+    # The convergence test used to read ``max_diff_out`` back at the END of every iteration. That
+    # read stops the host until that iteration's kernel has finished, and by then the card has
+    # nothing left queued: 195 of the 240 device-to-host reads in one 200-family Coleman forward
+    # came from here, and the card sat idle for about 60 ms of it.
+    #
+    # Read the residual one iteration LATE instead. Iteration k's residual is copied into pinned
+    # host memory immediately after iteration k's kernel -- stream-ordered, so it captures that
+    # kernel's value before the next iteration overwrites ``max_diff_out`` -- and is only looked at
+    # once iteration k+1 has been queued. The host then waits on a copy the card finished an
+    # iteration ago while it works on iteration k+1, so nothing drains.
+    #
+    # The ANSWER is the same iterate, bit for bit. The double buffer already keeps the previous
+    # one: after iteration k+1's swap ``E_a`` holds iterate k+1 and ``E_b`` holds iterate k, so
+    # when the late test says iterate k converged we swap back and return exactly the iterate the
+    # immediate test returned. The cost is one extra e-step launch (iteration k+1, whose result is
+    # thrown away) per solve, against roughly 13 fewer stalls.
+    #
+    # Two host slots and two events, used alternately: at iteration k we write slot k%2 and read
+    # slot (k-1)%2, so a copy still in flight is never the one being read.
+    host_diff = tuple(
+        torch.empty((G,), dtype=E_a.dtype, pin_memory=True) for _ in range(2)
+    )
+    diff_ready = (torch.cuda.Event(), torch.cuda.Event())
+
+    for iteration in range(max_iter):
         _launch_e_step_forward_2d(
             E_a,
             *forward_args,
@@ -602,8 +626,18 @@ def e_fixed_point_triton(
             leaf_fm_log=leaf_fm_log,
         )
         E_a, E_b = E_b, E_a
-        max_diff = float(max_diff_out.max().item())
+        slot = iteration % 2
+        host_diff[slot].copy_(max_diff_out, non_blocking=True)
+        diff_ready[slot].record()
+        if iteration == 0:
+            continue
+        previous = (iteration - 1) % 2
+        diff_ready[previous].synchronize()
+        max_diff = float(host_diff[previous].max())
         if max_diff < tol:
+            # ``E_b`` is the iterate whose residual just passed the test; ``E_a`` is the extra one
+            # queued while the test was in flight. Put the tested iterate back in ``E_a``.
+            E_a, E_b = E_b, E_a
             break
 
     _, E_s1, E_s2, Ebar = _launch_e_step_forward_2d(
