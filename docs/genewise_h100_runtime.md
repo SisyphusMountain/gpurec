@@ -399,7 +399,80 @@ even though the receiver weights are frozen in a genewise fit: `_implicit_grad.p
 its output), prepare kernel 5.0 %, `index_add` scatters 4.5 %, zero-fills 3.6 % (18,620 launches),
 event VJP 3.5 %, series adjoint kernel 2.7 % (launched for spilled rows even when no row spilled).
 Cheap wins visible here: skip the receiver-weight VJP when the weights need no gradient (6.4 %), skip
-the series launch when the spill mask is empty (2.7 %), and stop zero-filling per wave (3.6 %).
+the series launch when the spill mask is empty (2.7 %), stop zero-filling per wave (3.6 %), and keep
+the forward's gene-split rows for the backward (11.3 %). All four are done -- see the next section.
+
+## Round four: four pieces of backward work that produced nothing (RTX 4090, 2026-09-04)
+
+The profile above named four avoidable items in the gradient. All four are now gone. Everything
+below is the same 200-family Coleman batch (RTX 4090, 15 batches of ~100,000 clades, 2013 species,
+float32, exact forward and exact adjoint, 1977 waves). Another process shared the card for most of
+the session, so each comparison ALTERNATES before and after one measurement at a time -- a single
+ordered pass would compare them at two different loads -- and the headline wall clock was taken in
+a window when the card was genuinely idle.
+
+**1. The receiver-weight gradient nobody asked for (6.4 %).** A genewise rate fit freezes the
+receiver weights, but `_implicit_grad.py` always allocated their cotangent vector, and every kernel
+that can add into it reads "the vector exists" as "accumulate into me". `need_receiver_grad` now
+travels from the entry points down, with no default anywhere -- getting it wrong would be silent,
+because the receiver gradient would still come back with the right shape and only the wrong value.
+When it is not asked for, the gradient is None and
+`_accumulate_transfer_receiver_log_probability_vjp_kernel` (1977 launches, 160 ms) is never
+launched; the receiver branch inside the transfer-subtree VJP also switches off.
+
+**2. The Neumann series with no rows to solve (2.7 %).** The exact transposed solve hands a clade
+row to the series only when its elimination is badly conditioned, which almost never happens -- yet
+the series ran 1977 times per gradient on an empty mask, and "empty" was not cheap: with every load
+and store masked off it still walked the whole species tree once per program, 66.4 ms. The kernel
+now returns on its first load when its row is not in the mask: 3.9 ms for the same 1977 launches,
+2 microseconds each. Skipping the launch outright was measured too (the exact kernel counts its
+spills with an atomic, `ADJOINT_SERIES_SPILL_DECISIONS` switches between reading that count back
+per wave and launching regardless, `benchmark/cc/test_adjoint_series_cost.py`): reading it back was
+**1.15 s per gradient SLOWER** (median of the per-rep difference, 5 of 7 reps slower), because 1977
+stream drains stop the host running ahead. "always" stays the default.
+
+**3. The zero-fills (3.6 %).** Six of the seven `[wave clades x species]` buffers the wave solve
+returns were zero-filled on the host so pruned rows would come back clean -- 11,862 memsets per
+gradient. `_accumulate_reconciliation_event_vjp_kernel`, the last kernel to write all six, already
+stores `where(row active, value, 0)` over every valid row, so the zero was written twice, and the
+kernels in between only read those rows behind the same active mask. `FillFunctor<float>` launches
+drop from 18,620 (86.7 ms) to 4,735 (26.3 ms). `v_k` keeps its memset: the prepare kernel seeds it
+for active rows only and nothing rewrites the pruned ones.
+
+**4. The gene-split (DTS) reduction, run twice (11.3 %).** The forward reduces each split wave's
+gene-split row block and throws it away; the backward reduced the same numbers again from the same
+Pi/Pibar rows. They are reusable because a child clade's rows are written by the child's own,
+earlier wave and never touched again. Checked directly on an 8-family model: over all 132 split
+waves, kept minus recomputed is **0 in every element** of both the rows and their row offsets.
+`pi_wave_forward` now takes a dict to fill (or None to keep freeing), `implicit_grad_loglik_vjp_wave`
+a dict to read (or None to recompute), and the two gradient entry points install one and drop it
+straight after. The three reduction kernels go from 3894/3878/3894 launches to 1947/1939/1947.
+`memory_policy.forward_gene_split_cache_fits` gates it at build time against the largest batch: it
+is one more `[batch clades x species]` tensor, and peak allocated goes **3315 MiB -> 4037 MiB**
+(+722 MiB) with peak reserved 6210 MiB -> 6240 MiB. A card that cannot afford it says so on stdout
+and keeps recomputing.
+
+**What it bought.** On an idle card, `benchmark/cc/time_exact_vs_iterated.py --limit 200 --reps 5`
+(median of 5, min in brackets): one forward is unchanged at **892.9 ms (890.7) before, 891.1 ms
+(890.7) after** -- the control that says the forward was not disturbed -- and one
+forward-plus-gradient goes **2720.7 ms (2696.2) -> 2326.2 ms (2295.3), -14.5 %**. The backward half
+alone is 1828 ms -> 1435 ms, **-21.5 %**. Per-kernel GPU time agrees, measured alternating on the
+shared card: forward 776/777 ms -> 767/776 ms, forward+gradient 2855/2865 ms -> 2234/2269 ms, -21 %.
+
+**The gradient did not move.** `benchmark/cc/save_gradient_snapshot.py` saves the float64 copy of
+the 200-family theta gradient and compares two snapshots. Before against after: max absolute
+difference divided by max absolute gradient is 3.2e-7 and 4.7e-7 on two measurements of the final
+code (3.6e-7 and 7.5e-7 at the intermediate stages, and the per-family NLL vector itself is
+identical to the last bit throughout). Two runs of the SAME code differ by 2.8e-7 on the same
+measure, because the parameter
+gradients are accumulated with float32 atomics and are therefore not bit-reproducible run to run --
+so the change sits inside the noise the code already had. The receiver-weight gradient, on a model
+that asks for it (`receiver_weights.requires_grad_(True)`), moves by 8.3e-7 against an 8.4e-7
+run-to-run noise floor. `pytest -q tests/` is 441 passed, 14 skipped, unchanged.
+
+The full after-profile is in `results/profile_kernels_rtx4090_200fam_round4.txt`; it was taken on
+the shared card, so its per-kernel milliseconds are inflated by about a quarter while its launch
+counts are exact.
 
 ## What is left
 
@@ -407,7 +480,8 @@ With both self-loops and the tangent solved exactly, one full-dataset gradient a
 ~30 s (79 batches x 0.4 s) and is spread over the per-wave backward kernels (prepare-VJP, transfer-subtree
 VJP, gene-split VJP), the exact forward and adjoint solves (~15 % each), the DTS forward reduction and the
 `index_add` scatter; all are latency-bound at low occupancy rather than compute- or bandwidth-bound, so
-further gains need occupancy/tiling work per kernel. The warm-up (5 Adam gradients, ~125 s) and the tail
+further gains need occupancy/tiling work per kernel. Round four removed the backward work that was
+producing nothing at all (see above); what is left in the backward is genuine arithmetic. The warm-up (5 Adam gradients, ~125 s) and the tail
 of a few families iterating to `max_iter` (30-120 s, run-dependent) are the remaining recipe-level costs;
 the stall rule (`stall_patience`) trades the tail against 3-4 certified families and is off by default.
 Timings on the shared GPU nodes vary by ±100 s with other users' CPU load; pin a quiet node

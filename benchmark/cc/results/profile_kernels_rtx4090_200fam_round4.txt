@@ -1,0 +1,37 @@
+[gpurec] warm-adjoint disabled (running cold): cache 44.7 GiB + scratch 7.5 GiB > budget 12.0 GiB [1,491,100 clades x 2013 species, 15 batches]
+USDT:2026-09-04 20:18:45 1873869:1873869 SyncActivityProfilerHandler.cpp:52] profiler_start
+USDT:2026-09-04 20:18:47 1873869:1873869 SyncActivityProfilerHandler.cpp:59] profiler_stop
+[prof] forward only: total GPU time 775 ms over 58 distinct kernels
+[prof]    60.2%     466.5 ms    1977 launches  _exact_tree_pi_self_loop_kernel
+[prof]    21.7%     168.0 ms    1947 launches  _stage_multiple_gene_split_event_reduction_kernel
+[prof]    10.0%      77.5 ms    1962 launches  _update_reconciliation_likelihood_kernel
+[prof]     4.1%      31.7 ms    1939 launches  _reduce_single_gene_split_events_kernel
+[prof]     1.3%      10.0 ms    1947 launches  _finalize_multiple_gene_split_event_reduction_kernel
+[prof]     0.9%       6.8 ms    2007 launches  void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::arr
+[prof]     0.6%       4.5 ms     210 launches  _update_extinction_log_probabilities_kernel
+[prof]     0.3%       2.6 ms    2082 launches  void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<double>, std::ar
+[prof]     0.3%       2.0 ms    2202 launches  Memcpy DtoH (Device -> Pinned)
+[prof]     0.2%       1.8 ms      15 launches  _initialize_leaf_reconciliation_likelihood_kernel
+[prof]     0.1%       0.4 ms     195 launches  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrappe
+[prof]     0.0%       0.4 ms      75 launches  exp2_kernel_vectorized2_kernel
+[prof]     0.0%       0.3 ms      15 launches  void at::native::radixSortKVInPlace<-2, -1, 64, 32, long, long, unsigned int>(at::cuda::de
+[prof]     0.0%       0.3 ms      15 launches  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<double, at::native::MaxOps<dou
+/home/enzo/miniforge3/envs/h100/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: RuntimeWarning: neumann tol=1.00e-07 is below the torch.float32 finite-precision residual floor 4.77e-07; clamping to the floor. A tighter relative residual is unreachable in this precision -- use fp64.
+  return func(*args, **kwargs)
+USDT:2026-09-04 20:18:53 1873869:1873869 SyncActivityProfilerHandler.cpp:52] profiler_start
+USDT:2026-09-04 20:18:58 1873869:1873869 SyncActivityProfilerHandler.cpp:59] profiler_stop
+[prof] forward+gradient: total GPU time 2483 ms over 103 distinct kernels
+[prof]    18.8%     466.0 ms    1977 launches  _exact_tree_pi_self_loop_kernel
+[prof]    16.1%     400.6 ms    1962 launches  _accumulate_transfer_subtree_vjp_kernel
+[prof]    15.8%     393.3 ms    1962 launches  _accumulate_gene_split_event_vjp_kernel
+[prof]    12.6%     314.1 ms    1977 launches  _exact_tree_self_loop_transpose_kernel
+[prof]     6.9%     172.2 ms    1977 launches  _prepare_reconciliation_self_loop_vjp_kernel
+[prof]     6.8%     168.9 ms    1947 launches  _stage_multiple_gene_split_event_reduction_kernel
+[prof]     5.9%     145.3 ms    9734 launches  void at::native::indexFuncLargeIndex<float, long, unsigned int, 2, 2, -2, true, at::native
+[prof]     5.2%     129.9 ms    1977 launches  _accumulate_reconciliation_event_vjp_kernel
+[prof]     3.1%      78.0 ms    1962 launches  _update_reconciliation_likelihood_kernel
+[prof]     1.4%      34.3 ms    4074 launches  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrappe
+[prof]     1.3%      32.0 ms    1939 launches  _reduce_single_gene_split_events_kernel
+[prof]     1.1%      26.3 ms    4735 launches  void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::arr
+[prof]     0.9%      22.6 ms    1977 launches  _select_active_adjoint_rows_kernel
+[prof]     0.8%      20.1 ms    2532 launches  void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<float>, std:
