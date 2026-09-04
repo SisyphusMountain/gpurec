@@ -383,9 +383,9 @@ def test_cli_self_loop_flags_reach_solver_options():
     assert chosen.adjoint_self_loop == "series"
     assert (chosen.pi_iters, chosen.neumann_terms) == (32, 8)
 
-    linear = make_solver_options(parser.parse_args(base + ["--forward-self-loop", "linear"]))
-    assert linear.forward_self_loop == "linear"
-    assert linear.adjoint_self_loop == "exact"   # untouched flag keeps the default
+    forward_only = make_solver_options(parser.parse_args(base + ["--forward-self-loop", "log"]))
+    assert forward_only.forward_self_loop == "log"
+    assert forward_only.adjoint_self_loop == "exact"   # untouched flag keeps the default
 
 
 def test_cli_rejects_unknown_self_loop_mode():

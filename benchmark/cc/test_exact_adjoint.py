@@ -157,7 +157,7 @@ def main() -> int:
     parser.add_argument("--neumann-term-tol", required=True, type=float)
     parser.add_argument("--theta", required=True, type=float)
     parser.add_argument("--reps", required=True, type=int)
-    parser.add_argument("--forward-self-loop", required=True, choices=("log", "linear", "exact"))
+    parser.add_argument("--forward-self-loop", required=True, choices=("log", "exact"))
     args = parser.parse_args()
     dtype = torch.float32
 

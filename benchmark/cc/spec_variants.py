@@ -36,7 +36,7 @@ REPORTED_KERNELS = (
     "_transfer_subtree_vjp_directional_derivative_kernel",
     "_accumulate_transfer_subtree_vjp_kernel",
     "_stage_multiple_gene_split_event_reduction_kernel",
-    "_fused_linear_pi_self_loop_kernel",
+    "_exact_tree_pi_self_loop_kernel",
     "_update_reconciliation_likelihood_kernel",
     "_finalize_multiple_gene_split_event_reduction_kernel",
     "_reduce_single_gene_split_events_kernel",

@@ -1,7 +1,7 @@
 """Replay one dumped failing batch (see gpurec/api/_failure_dump.py) in isolation.
 
 Rebuilds a model over just that batch's families at the rates it failed at, then:
-  * runs the forward with forward_self_loop="log" and "linear" and reports every non-finite
+  * runs the forward with forward_self_loop="log" and "exact" and reports every non-finite
     tensor, the count of clade rows that came out entirely -inf, and the largest absolute Pi
     disagreement inside a window of each row's maximum;
   * runs the per-family loss and gradient in both modes;
@@ -71,7 +71,7 @@ def main() -> int:
         absolute = {}
         offsets = {}
         pibar_absolute = {}
-        for mode in ("log", "linear"):
+        for mode in ("log", "exact"):
             result = _forward(static, theta_static, receiver_weights, mode)
             state = static.pi_forward_state
             absolute[mode] = result[5].to(state.pi_offset.dtype) + state.pi_offset.unsqueeze(1)
@@ -84,21 +84,21 @@ def main() -> int:
         # Pibar is mt * (total receiver mass - the lane's ancestor mass): a lane that is -inf in
         # one path and finite in the other is that subtraction cancelling to zero or below, which
         # is what makes the second-order kernel's 1/valid_receiver_mass blow up.
-        for mode in ("log", "linear"):
-            other = "linear" if mode == "log" else "log"
+        for mode in ("log", "exact"):
+            other = "exact" if mode == "log" else "log"
             only_here = (
                 torch.isfinite(pibar_absolute[mode]) & ~torch.isfinite(pibar_absolute[other])
             )
             print(f"[replay] batch {index}: Pibar lanes finite in {mode} but not in {other}: "
                   f"{int(only_here.sum())}", flush=True)
-        both_pibar = torch.isfinite(pibar_absolute["log"]) & torch.isfinite(pibar_absolute["linear"])
+        both_pibar = torch.isfinite(pibar_absolute["log"]) & torch.isfinite(pibar_absolute["exact"])
         if bool(both_pibar.any()):
             print(f"[replay] batch {index}: max|dPibar| where both finite = "
-                  f"{float((pibar_absolute['linear'] - pibar_absolute['log']).abs()[both_pibar].max()):.3e} log2",
+                  f"{float((pibar_absolute['exact'] - pibar_absolute['log']).abs()[both_pibar].max()):.3e} log2",
                   flush=True)
         del pibar_absolute
         torch.cuda.empty_cache()
-        reference, candidate = absolute["log"], absolute["linear"]
+        reference, candidate = absolute["log"], absolute["exact"]
         finite_reference = torch.isfinite(reference)
         row_max = torch.where(
             finite_reference, reference, torch.full_like(reference, -float("inf"))
@@ -108,22 +108,22 @@ def main() -> int:
         lost = int((inside & ~torch.isfinite(candidate)).sum())
         worst = float((candidate - reference).abs()[both].max()) if bool(both.any()) else float("nan")
         print(f"[replay] batch {index}: max|dPi| in window = {worst:.3e} log2, "
-              f"in-window lanes the linear path lost = {lost}, "
+              f"in-window lanes the exact path lost = {lost}, "
               f"max|log2 Pi| = {float(reference[finite_reference].abs().max()):.4g}", flush=True)
 
         # Which rows, and is it the row gauge or the row's dynamic range? ``Pi_offset`` under the
-        # linear path IS the scale the kernel exponentiated against, so comparing it with the log
+        # exact path IS the scale the kernel exponentiated against, so comparing it with the log
         # path's own row maximum says directly whether the scale is the problem.
         row_difference = torch.where(
             both, (candidate - reference).abs(), torch.zeros_like(reference)
         ).amax(dim=1)
         worst_rows = torch.argsort(row_difference, descending=True)[:8]
         log_offset = offsets["log"]
-        linear_offset = offsets["linear"]
+        exact_offset = offsets["exact"]
         finite_row_max = row_max.squeeze(1)
-        print(f"[replay] batch {index}: linear Pi_offset minus the log path's own row maximum: "
-              f"max {float((linear_offset - finite_row_max).max()):.4g}, "
-              f"min {float((linear_offset - finite_row_max).min()):.4g}", flush=True)
+        print(f"[replay] batch {index}: exact Pi_offset minus the log path's own row maximum: "
+              f"max {float((exact_offset - finite_row_max).max()):.4g}, "
+              f"min {float((exact_offset - finite_row_max).min()):.4g}", flush=True)
         for row in worst_rows.tolist():
             reference_row = reference[row]
             finite_lanes = torch.isfinite(reference_row)
@@ -133,51 +133,12 @@ def main() -> int:
             )
             print(f"[replay]   row {row}: max|dPi| {float(row_difference[row]):.3e} | "
                   f"log row max {float(finite_row_max[row]):.6g}, log offset "
-                  f"{float(log_offset[row]):.6g}, linear offset {float(linear_offset[row]):.6g} | "
-                  f"log finite lanes {int(finite_lanes.sum())}, linear finite lanes "
+                  f"{float(log_offset[row]):.6g}, exact offset {float(exact_offset[row]):.6g} | "
+                  f"log finite lanes {int(finite_lanes.sum())}, exact finite lanes "
                   f"{int(torch.isfinite(candidate[row]).sum())}, log value span {span:.4g} log2",
                   flush=True)
         del reference, candidate, absolute
         torch.cuda.empty_cache()
-
-    # Where does the disagreement come from: per-iteration arithmetic, or the linear path's
-    # early exit stopping a row the log path keeps iterating? Sweep both.
-    base_iters = int(options.pi_iters)
-    for iters in (4, 8, base_iters):
-        for tol in (float(options.pi_linear_tol), 0.0):
-            worst_over_batches = 0.0
-            lost_over_batches = 0
-            for static in model.batch_statics:
-                theta_static = model._theta_for_static(static, theta)
-                static.solver_options.pi_iters = iters
-                static.solver_options.pi_linear_tol = tol
-                reference_result = _forward(static, theta_static, receiver_weights, "log")
-                reference = reference_result[5].to(static.pi_forward_state.pi_offset.dtype) + \
-                    static.pi_forward_state.pi_offset.unsqueeze(1)
-                del reference_result
-                candidate_result = _forward(static, theta_static, receiver_weights, "linear")
-                candidate = candidate_result[5].to(static.pi_forward_state.pi_offset.dtype) + \
-                    static.pi_forward_state.pi_offset.unsqueeze(1)
-                del candidate_result
-                finite_reference = torch.isfinite(reference)
-                row_max = torch.where(
-                    finite_reference, reference, torch.full_like(reference, -float("inf"))
-                ).amax(dim=1, keepdim=True)
-                inside = finite_reference & torch.isfinite(row_max) & (reference >= row_max - args.window)
-                both = inside & torch.isfinite(candidate)
-                if bool(both.any()):
-                    worst_over_batches = max(
-                        worst_over_batches, float((candidate - reference).abs()[both].max())
-                    )
-                lost_over_batches += int((inside & ~torch.isfinite(candidate)).sum())
-                del reference, candidate
-                torch.cuda.empty_cache()
-            print(f"[replay] pi_iters={iters} pi_linear_tol={tol:g}: max|dPi| in window = "
-                  f"{worst_over_batches:.3e} log2, in-window lanes lost = {lost_over_batches}",
-                  flush=True)
-    for static in model.batch_statics:
-        static.solver_options.pi_iters = base_iters
-        static.solver_options.pi_linear_tol = float(options.pi_linear_tol)
 
     if args.oracle:
         # The float32 log path is not a correctness reference here: its valid-receiver-mass
@@ -210,7 +171,7 @@ def main() -> int:
             inside = finite_oracle & torch.isfinite(oracle_row_max) & (
                 oracle_absolute >= oracle_row_max - args.window
             )
-            for mode in ("log", "linear"):
+            for mode in ("log", "exact"):
                 static32 = model.batch_statics[index]
                 candidate_result = _forward(
                     static32, model._theta_for_static(static32, theta), receiver_weights, mode
@@ -237,7 +198,7 @@ def main() -> int:
         del oracle_model
         torch.cuda.empty_cache()
 
-    for mode in ("log", "linear"):
+    for mode in ("log", "exact"):
         model.configure_solver(forward_self_loop=mode)
         loss, grad, _ = model.genewise_loss_vector_and_grad(theta=theta, need_grad=True)
         print(f"[replay] {mode}: NLL sum {float(loss.sum()):.4f} bits, "
@@ -247,7 +208,7 @@ def main() -> int:
     if args.run_hessian:
         from gpurec.fit.genewise_fit import _analytic_hessian
 
-        for mode in ("log", "linear"):
+        for mode in ("log", "exact"):
             model.configure_solver(forward_self_loop=mode)
             try:
                 curvature = _analytic_hessian(

@@ -4,25 +4,20 @@ from ..pi_state import PiState
 from ..kernels.pi_forward import (
     compute_dts_forward,
     compute_exact_tree_self_loop,
-    compute_fused_linear_self_loop,
     compute_leaf_initial_wave_step,
     compute_wave_step,
     _EXACT_TREE_SCRATCH_SLOTS,
     _select_log_split_probs,
 )
 from ..parameters.extract_parameters import as_family_param, as_family_species
-from ..valid_receivers import valid_receiver_index_tables
-from gpurec.api.solver_options import dtype_scaled_self_loop_tol
 
-# The three self-loop implementations selectable through ``SolverOptions.forward_self_loop``.
+# The two self-loop implementations selectable through ``SolverOptions.forward_self_loop``.
 # "log": one ``compute_wave_step`` launch per fixed-point iteration, arithmetic in log2 space.
-# "linear": the same recurrence, but one ``compute_fused_linear_self_loop`` launch runs every
-# remaining iteration per row in scaled linear space with a per-row early exit.
 # "exact": one ``compute_exact_tree_self_loop`` launch SOLVES the fixed point instead of
 # iterating it (the ``max`` in the transfer complement is never active, so the fixed point is a
 # linear system on the species tree). Its answer is what "log" converges to as ``pi_iters`` grows,
 # so ``pi_iters`` has no effect on it beyond the shared log-space prologue below.
-SELF_LOOP_MODES = ("log", "linear", "exact")
+SELF_LOOP_MODES = ("log", "exact")
 
 # How the exact forward decides, per wave, whether to run the log-space range fallback at all.
 #   "sync":   read that wave's flagged-row count back to the host and run the sweeps only when it
@@ -48,24 +43,20 @@ def set_exact_range_fallback_decision(mode):
 
 
 def _linear_event_multipliers(
-    duplication_loss_const,
-    extinction_complement,
-    extinction,
     speciation_child1_const,
     speciation_child2_const,
     max_transfer,
     receiver_log_probs,
 ):
-    """Linear-space copies of the per-species event constants the self-loop multiplies by.
+    """Linear-space copies of the per-species event constants the exact solve multiplies by.
 
     Each is ``2**(its log2 value)``. They are gauge-free (no row offset enters them), so one
-    conversion per forward solve serves every wave and every fixed-point iteration; see
-    :func:`gpurec.core.kernels.pi_forward._fused_linear_pi_self_loop_kernel` for how they combine.
+    conversion per forward solve serves every wave; see
+    :func:`gpurec.core.kernels.pi_forward._exact_tree_pi_self_loop_kernel` for how they combine.
+    The duplication, extinction-complement and extinction constants are NOT here: the exact solve
+    sees them only folded into the two coefficients :func:`_exact_tree_coefficients` builds.
     """
     return (
-        torch.exp2(duplication_loss_const),
-        torch.exp2(extinction_complement),
-        torch.exp2(extinction),
         torch.exp2(speciation_child1_const),
         torch.exp2(speciation_child2_const),
         torch.exp2(max_transfer),
@@ -135,9 +126,7 @@ def pi_wave_forward(
     accumulator_dtype: torch.dtype | None = None,
     leaf_fm_log: torch.Tensor | None = None,
     self_loop_mode: str,
-    linear_tol: float,
     exact_range_log2: float,
-    linear_iterations_out: torch.Tensor | None,
     exact_guard_trips_out: torch.Tensor | None,
 ):
     pi_iters = int(pi_iters)
@@ -145,9 +134,6 @@ def pi_wave_forward(
         raise ValueError("pi_iters must be an even integer at least 2")
     if self_loop_mode not in SELF_LOOP_MODES:
         raise ValueError(f"self_loop_mode must be one of {SELF_LOOP_MODES}, got {self_loop_mode!r}")
-    linear_tol = float(linear_tol)
-    if linear_tol < 0.0:
-        raise ValueError("linear_tol must be non-negative")
     if e.device.type != "cuda":
         raise RuntimeError("Pi forward requires CUDA")
     if e.dtype not in (torch.float32, torch.float64):
@@ -163,10 +149,6 @@ def pi_wave_forward(
     S = int(species_helpers["S"])
     device = e.device
     dtype = e.dtype
-    # linear_tol is written in units of float32 precision; carry that meaning to
-    # the dtype this solve actually runs in, so a float64 solve is not stopped at
-    # float32 resolution (see gpurec.api.solver_options.dtype_scaled_self_loop_tol).
-    linear_tol = dtype_scaled_self_loop_tol(linear_tol, dtype)
 
     pi = torch.empty((C, S), dtype=dtype, device=device)
     pibar = torch.empty((C, S), dtype=dtype, device=device)
@@ -196,36 +178,22 @@ def pi_wave_forward(
     sl1_const = log_p_s_family + e_s2_family
     sl2_const = log_p_s_family + e_s1_family
 
-    use_linear_self_loop = self_loop_mode == "linear"
     use_exact_self_loop = self_loop_mode == "exact"
-    if use_linear_self_loop or use_exact_self_loop:
+    if use_exact_self_loop:
         (
-            dl_lin,
-            e_bar_lin,
-            e_lin,
             sl1_lin,
             sl2_lin,
             max_transfer_lin,
             receiver_lin,
         ) = _linear_event_multipliers(
-            dl_const,
-            e_bar_family,
-            e_family,
             sl1_const,
             sl2_const,
             max_transfer_family,
             receiver_log_probs,
         )
-        valid_receiver_tables = valid_receiver_index_tables(sp_subtree_start, sp_subtree_end, S)
         max_wave_rows = max(
             (int(meta["W"]) for meta in wave_layout["wave_metas"]), default=1
         )
-    if use_linear_self_loop:
-        # Four slots, one allocation reused by every wave: 0 and 1 ping-pong the iterate (the
-        # update is Jacobi, so a source and a destination row are both live), 2 and 3 hold the two
-        # running sums the valid receiver mass is built from.
-        linear_scratch = torch.empty((4, max_wave_rows, S), dtype=dtype, device=device)
-    if use_exact_self_loop:
         self_diag_lin, transfer_coefficient_lin = _exact_tree_coefficients(
             dl_const,
             e_bar_family,
@@ -293,21 +261,15 @@ def pi_wave_forward(
             dts_offset = None
             dts_center_offset = None
         has_leaf_term = "sl" not in meta
-        # Log-space prologue: the leaf initializer (iteration 0) for a leaf wave, plus the
-        # gene-split-input step (iteration 1) for a split wave, which is also what publishes
-        # ``dts_center_offset``. The linear kernel takes over from there.
+        # Log-space prologue, run by both modes: the leaf initializer (iteration 0) for a leaf
+        # wave, plus the gene-split-input step (iteration 1) for a split wave, which is also what
+        # publishes ``dts_center_offset``.
         prologue_iters = pi_iters
-        fused_iters = 0
-        if use_linear_self_loop:
-            candidate_prologue = 1 if has_leaf_term else 2
-            if pi_iters - candidate_prologue >= 1:
-                prologue_iters = candidate_prologue
-                fused_iters = pi_iters - candidate_prologue
-        elif use_exact_self_loop:
-            # Same prologue as "linear": the leaf initializer for a leaf wave, and for a split
-            # wave the gene-split-input step, which is what publishes ``dts_center_offset`` (the
-            # DTS row's absolute maximum, part of the exact solve's entry gauge). ``pi_iters``
-            # plays no other role here -- the solve is not an iteration.
+        if use_exact_self_loop:
+            # The exact solve needs only that prologue: the leaf initializer for a leaf wave, and
+            # for a split wave the gene-split-input step, which publishes ``dts_center_offset``
+            # (the DTS row's absolute maximum, part of the exact solve's entry gauge).
+            # ``pi_iters`` plays no other role here -- the solve is not an iteration.
             prologue_iters = 1 if has_leaf_term else 2
         for local_iter in range(prologue_iters):
             pi_in = pi if (local_iter % 2 == 0) else pibar
@@ -380,51 +342,9 @@ def pi_wave_forward(
                     leaf_fm_log=leaf_fm_log,
                     row_mask=None,
                 )
-        if fused_iters > 0:
-            # The prologue's last write lands in ``pibar`` for a leaf wave (iteration 0) and in
-            # ``pi`` for a split wave (iteration 1); the fused kernel always publishes into
-            # ``pi``/``pibar``.
-            fused_input = pibar if has_leaf_term else pi
-            fused_input_offset = pibar_offset if has_leaf_term else pi_offset
-            compute_fused_linear_self_loop(
-                fused_input,
-                fused_input_offset,
-                pi,
-                pi_offset,
-                pibar,
-                pibar_offset,
-                linear_scratch,
-                ws,
-                W,
-                S,
-                fused_iters,
-                linear_tol,
-                dl_lin,
-                e_bar_lin,
-                e_lin,
-                sl1_lin,
-                sl2_lin,
-                max_transfer_lin,
-                receiver_lin,
-                sp_child1,
-                sp_child2,
-                valid_receiver_tables,
-                dts_r,
-                dts_offset,
-                dts_center_offset,
-                leaf_species_idx=wave_layout["leaf_species_index"],
-                leaf_logp=log_p_s_family,
-                family_idx=family_idx,
-                pibar_row_max=uniform_pibar_row_max,
-                has_leaf_term=has_leaf_term,
-                use_receiver_weights=use_receiver_weights,
-                pi_residual_out=pi_residual_out,
-                iterations_used=linear_iterations_out,
-                leaf_fm_log=leaf_fm_log,
-            )
         if use_exact_self_loop:
-            # Same handover as the linear path: the prologue's last write lands in ``pibar`` for a
-            # leaf wave (iteration 0) and in ``pi`` for a split wave (iteration 1).
+            # The prologue's last write lands in ``pibar`` for a leaf wave (iteration 0) and in
+            # ``pi`` for a split wave (iteration 1).
             exact_input = pibar if has_leaf_term else pi
             exact_input_offset = pibar_offset if has_leaf_term else pi_offset
             compute_exact_tree_self_loop(

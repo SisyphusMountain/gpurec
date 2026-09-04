@@ -197,6 +197,12 @@ already closed), with no subtraction and no 34-step ancestor walk. That made the
 orders below its row maximum is zero in float32; the log path (`forward_self_loop = "log"`) keeps
 it and remains the reference implementation.
 
+*This mode has since been removed.* D3's exact solve replaced it: it is faster, it has the same
+one-scale-per-row range limit (and handles it automatically, by handing wide rows back to the log
+sweeps), and no default selected the linear path any more. `forward_self_loop` is now `"log"` or
+`"exact"`, and `pi_linear_tol` is gone. The additive prefix-scan construction of the transfer mass
+described above survives, in the backward self-loop kernel.
+
 **D3. Exact tree solves (the largest kernel gain).** In the update above the `max(T - X, 0)` of the
 original code never clips, because every value is a likelihood and hence non-negative. So the
 fixed point is a **linear system on the species tree**: species s is coupled to its two children
@@ -236,10 +242,11 @@ Kernel 174 to 61 microseconds, gradient 13 to 17 % faster; in float64 both formu
 reordering a reduction no longer moves the gradient by O(1), which made a warp-count change on the
 transfer-subtree kernel safe (+5 %).
 
-**D5. Float64 kept exact.** The two early-exit tolerances (`neumann_term_tol`, `pi_linear_tol`) are
-written in units of float32 precision and are rescaled by the ratio of machine epsilons for the
-dtype in use (`dtype_scaled_self_loop_tol`), so float64 runs exit only below one fp64 ulp; float32
-behaviour is bit-identical. Without this, the fp64 curvature-symmetry test lost eight digits.
+**D5. Float64 kept exact.** The early-exit tolerances of the day (`neumann_term_tol`, and
+`pi_linear_tol` before the linear forward was removed) are written in units of float32 precision
+and are rescaled by the ratio of machine epsilons for the dtype in use
+(`dtype_scaled_self_loop_tol`), so float64 runs exit only below one fp64 ulp; float32 behaviour is
+bit-identical. Without this, the fp64 curvature-symmetry test lost eight digits.
 
 **D6. Things measured and left alone.** Python's garbage collector (no effect), larger batches
 (9 % at most; the work is GPU-bound), warm versus cold adjoint (same speed), and a full `num_warps`
@@ -328,7 +335,7 @@ shared, pin a quiet one with `--nodelist` for timings). Drivers: `run_genewise.p
 JSON + fitted rates), `run_genewise_sharded.py` (N GPUs), `compare_fit_thetas.py` (per-family
 likelihood comparison of two fits), `profile_phases.py`, `nsys_theta.py` / `run_nsys_theta.sh`
 (Nsight Systems), `run_ncu_bwd.sh` (Nsight Compute), `test_exact_forward.py`,
-`test_exact_adjoint.py`, `test_exact_tangent.py`, `test_neumann_exit.py`, `test_linear_forward.py`
+`test_exact_adjoint.py`, `test_exact_tangent.py`, `test_neumann_exit.py`
 (kernel equivalence tests against converged references).
 
 Locally: build both Rust crates in release mode before anything else (`cargo build --release
@@ -340,9 +347,9 @@ the `.so` files are gitignored and the ones previously in the tree were debug bu
 
 | where | knob | meaning |
 |---|---|---|
-| `SolverOptions` | `forward_self_loop` = "log" / "linear" / "exact" (default) | which forward self-loop kernel runs |
+| `SolverOptions` | `forward_self_loop` = "log" / "exact" (default) | which forward self-loop kernel runs (a third value, "linear", existed for a while and was removed) |
 | `SolverOptions` | `adjoint_self_loop` = "series" / "exact" (default) | which adjoint solve runs (the exact tangent follows "exact") |
-| `SolverOptions` | `pi_linear_tol` (1e-6), `neumann_term_tol` (1e-7) | early-exit tolerances of the linear forward and the fused series, in float32 units |
+| `SolverOptions` | `neumann_term_tol` (1e-7) | early-exit tolerance of the fused adjoint series, in float32 units |
 | `fit_genewise` (required keywords, set by `fit_dtl`) | `min_drop` 32, `rebuild_frac` 0.25, `hessian_refresh` 15, `certify_curvature` False, `init_log2_rates` (log2 0.01, log2 0.1, log2 0.01), `stall_patience` 120 | recipe controls described in section C |
 | `GeneReconModel` | `parsed_families`, `family_indices` | build from an already parsed dataset |
 | `run_genewise.py` | `--forward-self-loop`, `--adjoint-self-loop`, `--init-rate`, `--debug-dump-dir` | driver flags |

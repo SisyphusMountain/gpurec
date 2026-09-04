@@ -7,11 +7,11 @@ therefore compared against the log-space path run to convergence (``pi_iters`` g
 against the same reference here too, to show how far from converged the truncated iteration is.
 
   A. per-entry absolute Pi (residual + offset, entries within ``--window`` log2 units of their row
-     maximum) and per-family NLL, for "exact" and for "linear" at ``--pi-iters``;
+     maximum) and per-family NLL, for "exact" and for "log" at the production ``--pi-iters``;
   B. per-family gradients of "exact" against the same reference, sized against the run-to-run
      atomics noise of two identical reference calls;
-  C. wall time of one loss+gradient call at ``--limit-time`` families, "exact" vs "linear" vs
-     "log", mean of ``--reps`` warm calls;
+  C. wall time of one loss+gradient call at ``--limit-time`` families, "exact" vs "log", mean of
+     ``--reps`` warm calls;
   D. exact-solve guard trips: elimination pivots that were not positive, and rows whose transfer
      loop gain reached 1. Both should be zero.
 
@@ -35,7 +35,7 @@ import time
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_linear_forward import _compare_pi, _forward_abs_pi  # noqa: E402
+from pi_compare import _compare_pi, _forward_abs_pi  # noqa: E402
 
 
 def _build(species, paths, clade_budget, pi_iters, neumann_terms, mode, dtype):
@@ -183,7 +183,7 @@ def main() -> int:
     parser.add_argument("--limit-time", required=True, type=int)
     parser.add_argument("--clade-budget", required=True, type=int)
     parser.add_argument("--pi-iters", required=True, type=int,
-                        help="production self-loop iteration cap, used for 'linear' and 'log'")
+                        help="production self-loop iteration cap, used for 'log'")
     parser.add_argument("--reference-pi-iters", required=True, type=int,
                         help="iteration cap for the CONVERGED log-space reference")
     parser.add_argument("--neumann-terms", required=True, type=int)
@@ -222,7 +222,6 @@ def main() -> int:
         f"batches={len(model.batch_statics)} S={species_count} "
         f"max_ancestor_depth={int(model.species_helpers['max_ancestor_depth'])} "
         f"species_tree_levels={n_levels} dtype={args.dtype} max_wave_rows={wave_rows} "
-        f"linear_buffer={2 * wave_rows * species_count * element_bytes / 2**30:.2f} GiB "
         f"exact_buffer="
         f"{_EXACT_TREE_SCRATCH_SLOTS * wave_rows * species_count * element_bytes / 2**30:.2f} GiB",
         flush=True,
@@ -259,8 +258,8 @@ def main() -> int:
         )
         _compare_against_reference(
             model, theta, receiver_weights, reference_rows, reference_loss, reference_grad,
-            grad_noise, "linear", args.pi_iters, args.window, eps,
-            f"A linear(pi_iters={args.pi_iters}) {rate_label}", with_grad=True, collect_guards=False,
+            grad_noise, "log", args.pi_iters, args.window, eps,
+            f"A log(pi_iters={args.pi_iters}) {rate_label}", with_grad=True, collect_guards=False,
         )
         del reference_rows
         torch.cuda.empty_cache()
@@ -271,7 +270,7 @@ def main() -> int:
     # ---------------- C: timing on --limit-time families ----------------
     paths = all_paths[: args.limit_time]
     timings: dict[tuple[str, str], list[float]] = {}
-    for mode in ("log", "linear", "exact"):
+    for mode in ("log", "exact"):
         build_start = time.perf_counter()
         model = _build(
             args.species, paths, args.clade_budget, args.pi_iters, args.neumann_terms, mode, dtype,
@@ -306,18 +305,10 @@ def main() -> int:
 
     for rate_label in {key[1] for key in timings}:
         base = statistics.mean(timings[("log", rate_label)])
-        for mode in ("linear", "exact"):
-            mean = statistics.mean(timings[(mode, rate_label)])
-            print(
-                f"[time] {rate_label}: {mode} is {base / mean:.2f}x the log path "
-                f"({mean:.3f}s vs {base:.3f}s)",
-                flush=True,
-            )
-        linear_mean = statistics.mean(timings[("linear", rate_label)])
         exact_mean = statistics.mean(timings[("exact", rate_label)])
         print(
-            f"[time] {rate_label}: exact is {linear_mean / exact_mean:.2f}x the linear path "
-            f"({exact_mean:.3f}s vs {linear_mean:.3f}s)",
+            f"[time] {rate_label}: exact is {base / exact_mean:.2f}x the log path "
+            f"({exact_mean:.3f}s vs {base:.3f}s)",
             flush=True,
         )
     return 0

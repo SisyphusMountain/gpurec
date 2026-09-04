@@ -1,6 +1,6 @@
 """Does the exact path, with its range fallback, hold up across the rate box like the log path?
 
-The exact and linear self-loops keep ONE scale per clade row, so a species lane far enough below
+The exact self-loop keeps ONE scale per clade row, so a species lane far enough below
 that scale is an exact zero in float32 where the log path still carries it. ``exact_range_log2``
 is meant to close that gap: the forward hands such a row to the log-space sweeps, and its adjoint
 and tangent to the Neumann series and the tangent sweeps.

@@ -72,7 +72,6 @@ _SHARED_SOLVER = dict(
     adjoint_pruning_threshold=1e-6,
     use_adjoint_pruning=False,
     pibar_side_threshold=0.0,
-    pi_linear_tol=0.0,
 )
 
 # Convergence target for the extinction-probability fixed point, per model dtype. It has to sit just

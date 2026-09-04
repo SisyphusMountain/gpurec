@@ -11,7 +11,7 @@ happens when a subcommand executes.
 gpurec reconcile --species sp.nwk --gene g.nwk [g2.nwk ...] \
   --delta 0.1 --tau 0.05 --lambda 0.1 [--mode global|genewise] \
   [--device cuda] [--config run.toml] [--dtype float32|float64] \
-  [--forward-self-loop exact|log|linear] [--adjoint-self-loop exact|series] \
+  [--forward-self-loop exact|log] [--adjoint-self-loop exact|series] \
   [--pi-iters N] [--neumann-terms N] [--e-max-iter N] \
   [--out per_fam.txt]
 ```
@@ -29,7 +29,7 @@ returns NLL in bits; the CLI converts (`logL_nats = -loss_bits * ln 2`).
 gpurec fit --species sp.nwk --gene DIR_OR_GLOB \
   --mode global|specieswise|genewise [--steps 300] [--init-rate 0.1] \
   [--device cuda] [--config run.toml] [--dtype float32|float64] \
-  [--forward-self-loop exact|log|linear] [--adjoint-self-loop exact|series] \
+  [--forward-self-loop exact|log] [--adjoint-self-loop exact|series] \
   [--pi-iters N] [--neumann-terms N] [--e-max-iter N] \
   [--out rates.txt]
 ```
@@ -50,7 +50,6 @@ copy is lost". That is the **self-loop**, and these two flags choose how it is s
 |---|---|---|
 | `--forward-self-loop` | `exact` (default) | Solves the fixed point outright. Every entry is a likelihood, so the equation is a linear system on the species tree and is eliminated in a fixed number of passes. |
 | | `log` | Iterates it in log2 space, `--pi-iters` times. The reference implementation. |
-| | `linear` | Iterates it in scaled linear space with an early exit. Holds one scale per row, so it cannot represent a row spanning more than ~126 binary orders in float32. |
 | `--adjoint-self-loop` | `exact` (default) | Solves the transposed system outright. The Hessian-probe tangent follows this setting. |
 | | `series` | Sums up to `--neumann-terms` Neumann terms, stopping early once a term can no longer move the result. |
 

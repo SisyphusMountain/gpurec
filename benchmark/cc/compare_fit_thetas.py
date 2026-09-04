@@ -32,7 +32,7 @@ def main() -> int:
     parser.add_argument("--clade-budget", required=True, type=int)
     parser.add_argument("--pi-iters", required=True, type=int)
     parser.add_argument("--neumann-terms", required=True, type=int)
-    parser.add_argument("--forward-self-loop", required=True, choices=("log", "linear", "exact"))
+    parser.add_argument("--forward-self-loop", required=True, choices=("log", "exact"))
     parser.add_argument("--top", required=True, type=int)
     args = parser.parse_args()
 

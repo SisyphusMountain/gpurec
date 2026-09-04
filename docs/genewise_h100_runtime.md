@@ -198,6 +198,12 @@ dependence, zero pivot guard trips over 1.2M row solves. Against the converged l
 8.94 s, exact **5.96 s** at fitted rates (log 8.35 / linear 5.72 / exact 4.71 at a flat theta).
 500-family fit: **231 s** (linear 305 s, log 365 s), 499/500 converged. 40 families: 29 s.
 
+*Later: the linear forward was removed.* The exact solve beat it on every timing above, shares its
+one-scale-per-row range limit (and falls back to the log sweeps by itself for rows that do not fit),
+and no default selected it. `SolverOptions.forward_self_loop` now takes `"log"` or `"exact"` only,
+and `pi_linear_tol` no longer exists. Entries above that mention `"linear"` are the record of the
+period when it did.
+
 **Full dataset with the exact forward (job full_v9exact, main partition): 1101 s**, NLL 9048938.42 bits
 (the lowest so far, 18 bits below the first-round value), 5119/5123 converged (4 unconverged, worst
 projected gradient 3.6), 220 Newton steps. Split: warm-up 162 s, Newton gradients 570 s, curvature

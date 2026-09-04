@@ -54,7 +54,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--dtype", default="float32")
-    parser.add_argument("--modes", default="log,linear,exact")
+    parser.add_argument("--modes", default="log,exact")
     parser.add_argument("--warm-start", type=int, default=1)
     parser.add_argument("--fresh-model", type=int, default=0)
     parser.add_argument("--trials", type=int, default=1)

@@ -92,10 +92,8 @@ def test_pi_wave_forward_rejects_accumulator_narrower_than_residual() -> None:
             value.reshape(-1),
             family_idx=torch.zeros(1, device="cuda", dtype=torch.long),
             accumulator_dtype=torch.float32,
-            self_loop_mode="linear",
-            linear_tol=1e-6,
+            self_loop_mode="exact",
             exact_range_log2=100.0,
-            linear_iterations_out=None,
             exact_guard_trips_out=None,
         )
 
@@ -922,8 +920,8 @@ def test_exact_tree_self_loop_matches_converged_log_self_loop(
     is about the two algorithms, not about float32 rounding.
 
     Compared only WITHIN ``window`` log2 units of each row's maximum, for a reason that is a
-    property of the representation and not of this kernel. The exact solve, like the fused linear
-    one, works on a row rescaled so its largest entry is 1; a lane whose true value is further
+    property of the representation and not of this kernel. The exact solve works on a row rescaled
+    so its largest entry is 1; a lane whose true value is further
     below that maximum than the dtype's roundoff (about 53 log2 units in float64) is built
     entirely out of terms that round to nothing, so it comes out as an exact zero and is
     published as -inf. The log-space path has no such floor. ``window`` stays well inside it.

@@ -56,7 +56,6 @@ _SHARED_SOLVER = dict(
     adjoint_pruning_threshold=1e-6,
     use_adjoint_pruning=False,
     pibar_side_threshold=0.0,
-    pi_linear_tol=0.0,
 )
 
 # Iteration counts for the "iterated" arm. The self-loop operator is a strong contraction (spectral

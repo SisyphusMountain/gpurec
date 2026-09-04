@@ -3,11 +3,11 @@
 ``test_exact_forward.py`` reports, at the fitted theta, a small number of Pi entries where the
 exact tree solve and the log path at ``pi_iters=256`` differ by over 10 log2 units even though
 the NLL and the gradient agree. Three things could explain that: the log path is still moving at
-256 iterations (so the "reference" is not the fixed point), the exact solve is wrong, or neither
-linear-space path can represent those entries. This script separates them by making the log path
-itself the moving part: it compares the log path at ``--reference-pi-iters`` and at
-``--long-pi-iters`` (a multiple of it) against each other, and both against "exact" and "linear",
-on the same batch, same theta.
+256 iterations (so the "reference" is not the fixed point), the exact solve is wrong, or
+scaled linear space cannot represent those entries. This script separates them by making the log
+path itself the moving part: it compares the log path at ``--reference-pi-iters`` and at
+``--long-pi-iters`` (a multiple of it) against each other, and both against "exact", on the same
+batch, same theta.
 
 For each pair it prints the number of entries past a few log2-distance thresholds and the full
 profile of the single worst-disagreeing entry (its row, its species, its row maximum and its value
@@ -18,14 +18,15 @@ What it established (100 families, fitted theta, batch 0, 6.2e8 entries, H100):
   * The reference IS converged. log@256 against log@2048 differ by at most 2.1e-2 log2, with 9
     entries past 1e-3 and none past 1e-2.
   * The exact solve IS the fixed point. Re-run at ``--dtype float64``, it matches log@512 to
-    2.5e-7 log2 with nothing past 1e-3 -- a thousand times closer than the truncated linear path
-    at the same precision (2.5e-4). The elimination is right; only its float32 arithmetic is not.
-  * What is left in float32 belongs to the representation, not to either solver. Both linear-space
-    paths rescale a row so its largest entry is 1, so a lane whose share of the row's transfer
-    mass is under float32 roundoff gets the roundoff instead of its value -- and comes out too
-    LARGE. On the worst entry the two paths land on the SAME wrong value (-6281.3 and -6281.4
-    against the log path's -6293.9, a lane 36.6 log2 below its row maximum). Only the log path
-    is free of that floor.
+    2.5e-7 log2 with nothing past 1e-3 -- a thousand times closer than the truncated linear-space
+    iteration that used to be selectable alongside it (2.5e-4). The elimination is right; only its
+    float32 arithmetic is not.
+  * What is left in float32 belongs to the representation, not to the solver. Scaled linear space
+    rescales a row so its largest entry is 1, so a lane whose share of the row's transfer mass is
+    under float32 roundoff gets the roundoff instead of its value -- and comes out too LARGE. On
+    the worst entry the exact solve and that iteration landed on the SAME wrong value (-6281.3 and
+    -6281.4 against the log path's -6293.9, a lane 36.6 log2 below its row maximum), which is what
+    identifies the floor as the representation's. Only the log path is free of it.
 
 Usage:
   python benchmark/cc/diagnose_exact_forward.py --species S --families LIST \
@@ -44,7 +45,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_exact_forward import _build, _fitted_theta  # noqa: E402
-from test_linear_forward import _forward_abs_pi  # noqa: E402
+from pi_compare import _forward_abs_pi  # noqa: E402
 
 _THRESHOLDS = (1e-3, 1e-2, 1e-1, 1.0, 5.0)
 
@@ -136,7 +137,6 @@ def main() -> int:
     for name, mode, pi_iters in (
         (f"log@{args.long_pi_iters}", "log", args.long_pi_iters),
         (f"log@{args.reference_pi_iters}", "log", args.reference_pi_iters),
-        (f"linear@{args.pi_iters}", "linear", args.pi_iters),
         ("exact", "exact", args.pi_iters),
     ):
         model.configure_solver(forward_self_loop=mode, pi_iters=pi_iters)

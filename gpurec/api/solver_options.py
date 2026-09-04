@@ -3,9 +3,9 @@ from typing import Optional
 
 import torch
 
-# The self-loop early-exit tolerances below (``neumann_term_tol``, ``pi_linear_tol``)
-# are written in units of FLOAT32 precision, because float32 is the production model
-# dtype. Applied unchanged in float64 they would stop an iteration about nine orders
+# The self-loop early-exit tolerance below (``neumann_term_tol``) is written in units
+# of FLOAT32 precision, because float32 is the production model
+# dtype. Applied unchanged in float64 it would stop an iteration about nine orders
 # of magnitude before float64's own resolution and silently cap its accuracy -- which
 # is exactly what tests/test_origination_curvature.py caught: a Hessian that must be
 # symmetric to 1e-10 came out at 2.6e-8. ``dtype_scaled_self_loop_tol`` rescales them
@@ -87,24 +87,20 @@ class SolverOptions:
     e_tangent_tol: float = 1e-9
     # Which implementation runs the forward Pi self-loop inside a wave
     # (`gpurec.core.inference.forward.SELF_LOOP_MODES`).
-    #   "linear" -- one fused kernel launch per wave; the fixed point is iterated in scaled
-    #               linear space (multiply-adds, no per-lane exp2/log2) with a per-row early
-    #               exit at `pi_linear_tol`. Same recurrence, same published log2 state.
-    #   "log"    -- the original one-launch-per-iteration log2-space path, kept selectable so
-    #               the two can be compared on identical inputs, and as the escape hatch for the
-    #               one thing "linear" cannot do: hold a clade row whose values span more than the
-    #               model dtype's exponent range (about 126 binary orders in fp32), since it keeps
-    #               one scale per row rather than one exponent per lane. Only reachable with the
-    #               loss rate pinned at the box floor together with a high transfer rate; see
-    #               _fused_linear_pi_self_loop_kernel's "KNOWN LIMIT".
+    #   "log"    -- the original one-launch-per-iteration log2-space path, one exponent per
+    #               species lane, kept selectable as the reference the exact solve is checked
+    #               against and because it is the only path with no dynamic-range limit at all.
+    #               It runs `pi_iters` iterations and stops there, converged or not.
     #   "exact"  -- one fused kernel launch per wave that SOLVES the fixed point instead of
     #               iterating it. Every Pi entry is a likelihood, so the `max` in the transfer
     #               complement is never active and the fixed point is a linear system on the
     #               species tree; the kernel eliminates it with a leaves-to-root pass, one scalar
     #               equation for the row's total transfer mass, and a root-to-leaves pass. Its
     #               answer is what "log" converges to as `pi_iters` grows, so `pi_iters` does not
-    #               affect it (beyond the one- or two-step log-space prologue all three modes
-    #               share) and there is nothing for `pi_linear_tol` to stop.
+    #               affect it, beyond the one- or two-step log-space prologue both modes share.
+    #               It carries one scale per clade row, so a row spanning more than
+    #               `exact_range_log2` binary orders is handed back to the log-space sweeps
+    #               automatically -- the range limit needs no mode switch.
     forward_self_loop: str = "exact"
     # Which adjoint self-loop the wave backward runs, per clade row
     # (`gpurec.core.kernels.wave_backward.ADJOINT_SELF_LOOP_MODES`).
@@ -117,7 +113,7 @@ class SolverOptions:
     #               `neumann_terms`, `neumann_term_tol` and any warm start have no effect on it.
     adjoint_self_loop: str = "exact"
     # Rows whose lanes span more than this many binary orders below their maximum are solved in
-    # log space. The exact and linear paths carry one scale per clade row in scaled linear space,
+    # log space. The exact path carries one scale per clade row in scaled linear space,
     # so a species lane this far under the row maximum is zero in float32 (whose exponent floor is
     # 126 binary orders, denormals aside) where the log path still carries it. Such a row is
     # flagged by the exact forward and handed to the log-space sweeps, and its adjoint and tangent
@@ -126,14 +122,6 @@ class SolverOptions:
     # entry range. In float64 the kernels scale it by the ratio of exponent ranges, 1022/126 (see
     # ``gpurec.core.kernels.pi_forward.exact_range_for_dtype``), so one number covers both.
     exact_range_log2: float = 100.0
-    # Stopping test for the "linear" self-loop, applied per clade row: the row stops once EVERY
-    # species lane has settled relative to ITSELF, |p_new[s] - p[s]| <= pi_linear_tol * p_new[s],
-    # where p is the row's linear iterate. 1e-6 is fp32's usable relative floor (~8x eps 1.19e-7),
-    # the same target `dtype_rel_tol_default` uses for the other fp32 solves. Like
-    # `neumann_term_tol` it is written in units of float32 precision and rescaled by
-    # `dtype_scaled_self_loop_tol` for the dtype a solve runs in. 0.0 disables the
-    # early exit, so every row runs the full `pi_iters` count.
-    pi_linear_tol: float = 1e-6
 
     def validate(self) -> None:
         if int(self.e_max_iter) < 1:
@@ -154,11 +142,9 @@ class SolverOptions:
             raise ValueError("adjoint_pruning_threshold must be non-negative")
         if float(self.pibar_side_threshold) < 0.0:
             raise ValueError("pibar_side_threshold must be non-negative")
-        if self.forward_self_loop not in ("log", "linear", "exact"):
-            raise ValueError('forward_self_loop must be "log", "linear" or "exact"')
+        if self.forward_self_loop not in ("log", "exact"):
+            raise ValueError('forward_self_loop must be "log" or "exact"')
         if self.adjoint_self_loop not in ("series", "exact"):
             raise ValueError('adjoint_self_loop must be "series" or "exact"')
         if float(self.exact_range_log2) <= 0.0:
             raise ValueError("exact_range_log2 must be positive")
-        if float(self.pi_linear_tol) < 0.0:
-            raise ValueError("pi_linear_tol must be non-negative")

@@ -26,7 +26,7 @@ def add_common_args(parser) -> None:
     # config/default already has" -- an explicitly-passed flag must win over --config.
     parser.add_argument("--pi-iters", type=int, default=None,
                         help="forward self-loop iteration count. ONLY applies to "
-                             "--forward-self-loop log/linear; the default 'exact' solves the "
+                             "--forward-self-loop log; the default 'exact' solves the "
                              "self-loop outright and ignores it")
     parser.add_argument("--neumann-terms", type=int, default=None,
                         help="adjoint self-loop Neumann term count. ONLY applies to "
@@ -34,10 +34,10 @@ def add_common_args(parser) -> None:
                              "outright and ignores it")
     parser.add_argument("--e-max-iter", type=int, default=None,
                         help="max iterations of the resident E (survival) fixed-point solve")
-    parser.add_argument("--forward-self-loop", choices=["log", "linear", "exact"], default=None,
+    parser.add_argument("--forward-self-loop", choices=["log", "exact"], default=None,
                         help="how the forward Pi self-loop is solved inside a wave. 'exact' "
-                             "(default) eliminates the fixed point on the species tree; 'log' and "
-                             "'linear' iterate it for --pi-iters steps")
+                             "(default) eliminates the fixed point on the species tree; 'log' "
+                             "iterates it for --pi-iters steps")
     parser.add_argument("--adjoint-self-loop", choices=["series", "exact"], default=None,
                         help="how the backward self-loop is solved. 'exact' (default) solves "
                              "(I - J^T) v = rhs outright; 'series' sums --neumann-terms Neumann "

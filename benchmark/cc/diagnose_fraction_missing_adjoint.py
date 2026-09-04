@@ -72,7 +72,7 @@ def _solver_options(e_adjoint_max_iter):
     """Converged float64 solver settings, keeping only the fields THIS checkout actually has.
 
     The point of the filter is that the same file has to run against the older checkout, whose
-    ``SolverOptions`` has no ``forward_self_loop`` / ``adjoint_self_loop`` / ``pi_linear_tol``
+    ``SolverOptions`` has no ``forward_self_loop`` / ``adjoint_self_loop``
     fields at all -- passing them there is a TypeError. Dropping a field the old code does not know
     about is safe here because the extinction-adjoint solve this script measures is upstream of the
     wave self-loop those fields select: both checkouts run the same linear solve either way.
@@ -92,7 +92,6 @@ def _solver_options(e_adjoint_max_iter):
         "pibar_side_threshold": 0.0,
         "forward_self_loop": "exact",
         "adjoint_self_loop": "exact",
-        "pi_linear_tol": 0.0,
     }
     available = set(vars(SolverOptions()).keys())
     dropped = sorted(name for name in wanted if name not in available)

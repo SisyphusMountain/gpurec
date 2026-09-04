@@ -7,7 +7,6 @@ import triton.language as tl
 __all__ = [
     "compute_dts_forward",
     "compute_exact_tree_self_loop",
-    "compute_fused_linear_self_loop",
     "compute_leaf_initial_wave_step",
     "compute_wave_step",
     "_load_event_log_probability",
@@ -27,15 +26,16 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64)
 # property of the GPU the kernel runs on, measured by benchmark/cc/sweep_num_warps.py.
 _NUM_WARPS_UPDATE_RECONCILIATION = 8
 
-# Species lanes per tile inside ``_fused_linear_pi_self_loop_kernel``. Launch-shape tuning only:
+# Species lanes per tile inside ``_exact_tree_pi_self_loop_kernel``. Launch-shape tuning only:
 # the tile loop covers the whole species row either way, so the same terms are summed. Not a user
-# setting -- it is a property of the GPU the kernel runs on, measured by
-# benchmark/cc/test_linear_forward.py's --fused-blocks sweep. H100 NVL, S=2013, 500 families, one
-# loss+gradient call: 256 -> 7.35 s, 512 -> 7.68 s, 1024 -> 7.98 s, 2048 -> 8.60 s. Wider tiles
-# lose because each thread then has more of the 34-deep ancestor gather in flight at once. 256
-# also keeps the row summation order closest to the log-space kernel's, which uses the same tile
-# width, so the two paths agree to fp32 rounding rather than a few times it.
-_BLOCK_SPECIES_FUSED_LINEAR = 256
+# setting -- it is a property of the GPU the kernel runs on. Measured on the fused linear-space
+# self-loop that used to share this tile loop, since the two ran the same row sweep: H100 NVL,
+# S=2013, 500 families, one loss+gradient call, 256 -> 7.35 s, 512 -> 7.68 s, 1024 -> 7.98 s,
+# 2048 -> 8.60 s. Wider tiles lose because each thread then has more of the 34-deep ancestor
+# gather in flight at once. 256 also keeps the row summation order closest to the log-space
+# kernel's, which uses the same tile width, so the two paths agree to fp32 rounding rather than a
+# few times it.
+_BLOCK_SPECIES_SELF_LOOP = 256
 
 # Species-tree nodes per tile inside ``_exact_tree_pi_self_loop_kernel``'s two level walks, and
 # that kernel's warps per program. Launch-shape tuning only: the walks visit every node of a level
@@ -878,406 +878,6 @@ def _write_valid_receiver_prefix_sums(
 # ``ws`` is the wave's start row and ``slot_span`` the scratch stride; both change per
 # wave or per batch. Keeping them out of the specialization key avoids one JIT compile
 # per new "== 1" / divisible-by-16 state (see README.md).
-@triton.jit(do_not_specialize=["ws", "slot_span"])
-def _fused_linear_pi_self_loop_kernel(
-    Pi_in_ptr,
-    Pi_in_offset_ptr,
-    scratch_ptr,
-    Pi_out_ptr,
-    Pi_out_offset_ptr,
-    Pibar_out_ptr,
-    Pibar_offset_ptr,
-    pibar_row_max_ptr,
-    pi_residual_out_ptr,
-    iterations_used_ptr,
-    duplication_loss_lin_ptr,
-    extinction_complement_lin_ptr,
-    extinction_lin_ptr,
-    speciation_child1_lin_ptr,
-    speciation_child2_lin_ptr,
-    max_transfer_lin_ptr,
-    receiver_lin_ptr,
-    species_child1_ptr,
-    species_child2_ptr,
-    not_open_source_ptr,
-    closed_source_ptr,
-    not_open_index_ptr,
-    closed_index_ptr,
-    leaf_species_ptr,
-    leaf_logp_ptr,
-    leaf_fm_log_ptr,
-    family_idx_ptr,
-    gene_split_log_likelihood_ptr,
-    gene_split_offset_ptr,
-    gene_split_center_offset_ptr,
-    ws,
-    slot_span,
-    n_iters,
-    tol,
-    S: tl.constexpr,
-    stride: tl.constexpr,
-    CONST_ROW_STRIDE: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    HAS_SPLITS: tl.constexpr,
-    USE_LEAF_INDEX: tl.constexpr,
-    USE_FRACTION_MISSING: tl.constexpr,
-    COMPUTE_DIFF: tl.constexpr,
-    WRITE_ITERATIONS: tl.constexpr,
-    USE_RECEIVER_WEIGHTS: tl.constexpr,
-    DTYPE: tl.constexpr,
-    ACC_DTYPE: tl.constexpr,
-):
-    """Run one clade row's whole Pi self-loop in ONE launch, in scaled linear space.
-
-    Published storage stays log2 residual + row offset (docs/centered_state_contract.md). On
-    entry the row is converted once to linear values
-
-        p[s] = 2**(Pi_abs[c, s] - scale),      scale = max_s Pi_abs[c, s]
-
-    and on exit it is converted back with ``Pi_residual = log2(p)`` and ``Pi_offset = scale``.
-    Between those two points the fixed point is iterated with multiply-adds only: the per-lane
-    ``exp2``/``log2`` of the log-space kernel disappear, except for the single exponentiation of
-    the iteration-invariant leaf / gene-split source term.
-
-    Linear per-species multipliers (built once per forward solve by
-    ``_linear_event_multipliers``, same ``[family, species]`` layout as their log2 originals):
-
-        dl_lin[s]   = 2**(1 + log_pD[s] + E[s])       duplicate, then lose one copy
-        ebar_lin[s] = 2**Ebar[s]                      stay in place, transferred copy lost
-        e_lin[s]    = 2**E[s]                         transfer out, donor copy lost
-        sl1_lin[s]  = 2**(log_pS[s] + E_child2[s])    speciate, follow child 1, child 2 lost
-        sl2_lin[s]  = 2**(log_pS[s] + E_child1[s])    speciate, follow child 2, child 1 lost
-        mt_lin[s]   = 2**max_transfer[s]              per-donor transfer normalizer
-        recv_lin[s] = 2**receiver_log_prob[s]         receiver weight (unused when weights are off)
-
-    One iteration, for every species lane ``s``:
-
-        A[s]     = recv_lin[s] * p[s]
-        V[s]     = sum of A over every species that is neither s nor an ancestor of s
-        pbar[s]  = mt_lin[s] * V[s]
-        p_new[s] = leaf_lin[s] + dts_lin[s]
-                 + dl_lin[s]   * p[s]
-                 + ebar_lin[s] * p[s]
-                 + e_lin[s]    * pbar[s]
-                 + sl1_lin[s]  * p[child1(s)]
-                 + sl2_lin[s]  * p[child2(s)]
-
-    Term for term this is ``_update_reconciliation_likelihood_kernel``'s seven-way log-sum-exp
-    with every ``2**(a + b)`` written as ``2**a * 2**b``. ``leaf_lin`` is the leaf-observation
-    source and ``dts_lin`` the gene-split (DTS) source, each shifted into this row's ``scale``
-    frame.
-
-    ``V[s]`` -- the mass a donor at ``s`` may transfer to -- is NOT built the way
-    ``_compute_transfer_complement`` builds it. That subtracts the donor's own lineage from the
-    row total, and once the transfer rate is high the two are equal to more than fp32's 24 bits,
-    so the difference is noise that even changes sign. Here it is the sum of two disjoint groups
-    of non-negative terms instead (:func:`_write_valid_receiver_prefix_sums`), which cannot
-    cancel; the represented quantity is identical.
-
-    A row stops as soon as EVERY lane has settled relative to itself,
-    ``|p_new[s] - p[s]| <= tol * p_new[s]`` for all ``s``, otherwise after ``n_iters``
-    iterations. After every iteration the row is re-gauged by an exact power of two folded into
-    the next iteration's loads, so ``scale`` absorbs all the drift and the row maximum stays in
-    ``[1, 2)`` -- which leaves the whole model-dtype exponent range below it for the rest of the row.
-
-    KNOWN LIMIT. One scale per row is what buys the multiply-adds, and it costs dynamic range: a
-    lane more than the model dtype's exponent range below the row maximum (about 126 binary orders
-    in fp32, 1022 in fp64) is zero here, where the log path -- one exponent per lane -- still
-    carries it. Measured with benchmark/cc/test_linear_extreme_theta.py over the genewise rate box
-    on the 1007-leaf reference tree, that only bites at one corner: the loss rate pinned at the
-    floor (1e-6) together with a high transfer rate, where a clade row's finite values span more
-    than 126 orders and its bottom lanes are lost. fp64 loses no lanes at any corner, and fitted
-    rates stay far from that corner. Work that needs the full span must use fp64 or
-    ``SolverOptions.forward_self_loop = "log"``.
-    """
-    NEG_LARGE: tl.constexpr = -float("inf")
-
-    # int64: w ranges over the whole batch's clade rows, so the *stride multiplies
-    # below can overflow int32 once total_clades * S exceeds 2^31.
-    w = tl.program_id(0).to(tl.int64)
-    global_row = ws + w
-    global_base = global_row * stride
-    row_base = w * stride
-    # Slots 0 and 1 ping-pong the linear iterate; slots 2 and 3 hold the two running sums the
-    # valid receiver mass is built from.
-    not_open_base = 2 * slot_span + row_base
-    closed_base = 3 * slot_span + row_base
-    family_const = tl.load(family_idx_ptr + global_row)
-    const_base = family_const * CONST_ROW_STRIDE
-
-    # ---- entry pass 1: exact absolute row maximum, which becomes the linear gauge.
-    entry_residual_max = tl.full((), value=NEG_LARGE, dtype=DTYPE)
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        value = tl.load(Pi_in_ptr + global_base + s_offs, mask=mask, other=NEG_LARGE)
-        entry_residual_max = tl.maximum(
-            entry_residual_max, tl.max(tl.where(mask, value, NEG_LARGE), axis=0)
-        )
-    pi_in_offset = tl.load(Pi_in_offset_ptr + global_row)
-    scale = tl.where(
-        entry_residual_max != NEG_LARGE,
-        entry_residual_max.to(ACC_DTYPE) + pi_in_offset,
-        tl.full((), value=NEG_LARGE, dtype=ACC_DTYPE),
-    )
-    if HAS_SPLITS:
-        # Two different gauges, exactly as in the log-space kernel: the DTS row is STORED
-        # against ``gene_split_offset`` (the sum of its two child gauges), while
-        # ``gene_split_center_offset`` is that row's absolute maximum and only picks the frame.
-        gene_split_row_offset = tl.load(gene_split_offset_ptr + w)
-        gene_split_center_offset = tl.load(gene_split_center_offset_ptr + w)
-        scale = tl.maximum(scale, gene_split_center_offset)
-    if USE_LEAF_INDEX:
-        leaf_species = tl.load(leaf_species_ptr + global_row)
-        leaf_observation_log_probability = tl.load(
-            leaf_logp_ptr + family_const * S + leaf_species
-        )
-        scale = tl.maximum(scale, leaf_observation_log_probability.to(ACC_DTYPE))
-    # A wholly impossible row keeps the canonical zero gauge.
-    scale = tl.where(scale != NEG_LARGE, scale, tl.zeros_like(scale))
-
-    # ---- entry pass 2: write the linear row into working slot 0.
-    entry_frame_shift = (pi_in_offset - scale).to(DTYPE)
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        value = tl.load(Pi_in_ptr + global_base + s_offs, mask=mask, other=NEG_LARGE)
-        tl.store(
-            scratch_ptr + row_base + s_offs,
-            tl.exp2(value + entry_frame_shift),
-            mask=mask,
-        )
-
-    iteration = tl.full((), value=0, dtype=tl.int32)
-    converged = tl.full((), value=0, dtype=tl.int32)
-    current_slot = tl.full((), value=0, dtype=tl.int32)
-    # ``current_gain`` / ``previous_gain`` map stored linear values onto the CURRENT ``scale``.
-    # They stay exactly 1.0 unless a row drifts far enough to trigger a re-gauge.
-    current_gain = tl.full((), value=1.0, dtype=DTYPE)
-    previous_gain = tl.full((), value=1.0, dtype=DTYPE)
-
-    while (iteration < n_iters) & (converged == 0):
-        source_base = current_slot.to(tl.int64) * slot_span + row_base
-        destination_base = (1 - current_slot).to(tl.int64) * slot_span + row_base
-
-        _write_valid_receiver_prefix_sums(
-            scratch_ptr, source_base, not_open_base, closed_base, receiver_lin_ptr,
-            not_open_source_ptr, closed_source_ptr, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE,
-        )
-
-        max_absolute_change = tl.full((), value=0.0, dtype=DTYPE)
-        max_updated_value = tl.full((), value=0.0, dtype=DTYPE)
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            mask = s_offs < S
-            const_offsets = const_base + s_offs
-            reconciliation_likelihood = (
-                tl.load(scratch_ptr + source_base + s_offs, mask=mask, other=0.0) * current_gain
-            )
-
-            valid_receiver_mass = _lookup_valid_receiver_mass(
-                scratch_ptr, not_open_base, closed_base, not_open_index_ptr, closed_index_ptr,
-                s_offs, mask, S, BLOCK_S, DTYPE,
-            ) * current_gain
-            max_transfer = tl.load(max_transfer_lin_ptr + const_offsets, mask=mask, other=0.0)
-            transfer_complement_likelihood = max_transfer * tl.where(
-                valid_receiver_mass > 0.0,
-                valid_receiver_mass,
-                tl.zeros([BLOCK_S], dtype=DTYPE),
-            )
-
-            c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
-            c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=0)
-            reconciliation_child1_likelihood = (
-                tl.load(scratch_ptr + source_base + c1, mask=mask & (c1 < S), other=0.0)
-                * current_gain
-            )
-            reconciliation_child2_likelihood = (
-                tl.load(scratch_ptr + source_base + c2, mask=mask & (c2 < S), other=0.0)
-                * current_gain
-            )
-
-            duplication_loss_const = tl.load(
-                duplication_loss_lin_ptr + const_offsets, mask=mask, other=0.0
-            )
-            extinction_complement = tl.load(
-                extinction_complement_lin_ptr + const_offsets, mask=mask, other=0.0
-            )
-            extinction = tl.load(extinction_lin_ptr + const_offsets, mask=mask, other=0.0)
-            speciation_child1_const = tl.load(
-                speciation_child1_lin_ptr + const_offsets, mask=mask, other=0.0
-            )
-            speciation_child2_const = tl.load(
-                speciation_child2_lin_ptr + const_offsets, mask=mask, other=0.0
-            )
-
-            updated = (
-                duplication_loss_const * reconciliation_likelihood
-                + extinction_complement * reconciliation_likelihood
-                + extinction * transfer_complement_likelihood
-            )
-            updated += (
-                speciation_child1_const * reconciliation_child1_likelihood
-                + speciation_child2_const * reconciliation_child2_likelihood
-            )
-            if USE_LEAF_INDEX:
-                leaf_hit = mask & (leaf_species == s_offs)
-                mapped_term = tl.exp2(
-                    (leaf_observation_log_probability.to(ACC_DTYPE) - scale).to(DTYPE)
-                )
-                if USE_FRACTION_MISSING:
-                    # Off-hit leaf-species columns carry the "present-but-unobserved"
-                    # baseline log_pS[s] + log2(fm_s); non-leaf/observed columns stay zero.
-                    leaf_logp_col = tl.load(
-                        leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE
-                    )
-                    fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=mask, other=NEG_LARGE)
-                    # zero where fm_col is -inf
-                    baseline = tl.exp2(leaf_logp_col + fm_col - scale.to(DTYPE))
-                    updated += tl.where(leaf_hit, mapped_term, baseline)
-                else:
-                    updated += tl.where(
-                        leaf_hit, mapped_term, tl.zeros([BLOCK_S], dtype=DTYPE)
-                    )
-            if HAS_SPLITS:
-                gene_split_log_likelihood = tl.load(
-                    gene_split_log_likelihood_ptr + row_base + s_offs,
-                    mask=mask,
-                    other=NEG_LARGE,
-                )
-                updated += tl.exp2(
-                    gene_split_log_likelihood + (gene_split_row_offset - scale).to(DTYPE)
-                )
-
-            updated = tl.where(mask, updated, tl.zeros([BLOCK_S], dtype=DTYPE))
-            tl.store(scratch_ptr + destination_base + s_offs, updated, mask=mask)
-            # Per-lane RELATIVE stopping test, written without a division: a lane is settled
-            # once |change| <= tol * its own new value. Testing the change against the row
-            # maximum instead would call a row converged while lanes a few orders of magnitude
-            # below the maximum were still moving by a large fraction of themselves.
-            max_absolute_change = tl.maximum(
-                max_absolute_change,
-                tl.max(
-                    tl.where(
-                        mask,
-                        tl.abs(updated - reconciliation_likelihood) - tol * updated,
-                        0.0,
-                    ),
-                    axis=0,
-                ),
-            )
-            max_updated_value = tl.maximum(max_updated_value, tl.max(updated, axis=0))
-
-        converged = tl.where(max_absolute_change <= 0.0, 1, 0).to(tl.int32)
-        # Re-gauge on EVERY iteration, not just when the row drifts out of some band: the gain is
-        # an exact power of two, so it costs nothing in accuracy, and it keeps the row maximum in
-        # [1, 2) at all times. That is what leaves the full float32 exponent range underneath the
-        # maximum for the rest of the row; letting the maximum sink to a threshold first spends
-        # that headroom, and a row whose values span more than the remainder loses its bottom
-        # lanes to zero, which the log path (one exponent per lane) never does.
-        safe_max = tl.where(
-            max_updated_value > 0.0, max_updated_value, tl.full((), value=1.0, dtype=DTYPE)
-        )
-        regauge_exponent = tl.floor(tl.log2(safe_max))
-        regauge_gain = tl.exp2(-regauge_exponent)
-        scale = scale + regauge_exponent.to(ACC_DTYPE)
-        previous_gain = current_gain * regauge_gain
-        current_gain = regauge_gain
-        current_slot = 1 - current_slot
-        iteration += 1
-
-    if WRITE_ITERATIONS:
-        tl.store(iterations_used_ptr + global_row, iteration)
-
-    # ---- publish: linear -> log2 residual + offset, plus the final Pibar row.
-    final_base = current_slot.to(tl.int64) * slot_span + row_base
-    previous_base = (1 - current_slot).to(tl.int64) * slot_span + row_base
-
-    final_receiver_max = tl.full((), value=0.0, dtype=DTYPE)
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        stored = tl.load(scratch_ptr + final_base + s_offs, mask=mask, other=0.0)
-        if USE_RECEIVER_WEIGHTS:
-            receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=mask, other=0.0)
-            stored = stored * receiver_weight
-        final_receiver_max = tl.maximum(
-            final_receiver_max, tl.max(tl.where(mask, stored, 0.0), axis=0)
-        )
-    final_receiver_max = final_receiver_max * current_gain
-    _write_valid_receiver_prefix_sums(
-        scratch_ptr, final_base, not_open_base, closed_base, receiver_lin_ptr,
-        not_open_source_ptr, closed_source_ptr, S, BLOCK_S, USE_RECEIVER_WEIGHTS, DTYPE,
-    )
-    tl.store(
-        pibar_row_max_ptr + global_row,
-        tl.where(final_receiver_max > 0.0, tl.log2(final_receiver_max), NEG_LARGE),
-    )
-
-    max_log2_change = tl.full((), value=0.0, dtype=tl.float32)
-    pi_has_finite = tl.full((), value=0, dtype=tl.int32)
-    pibar_has_finite = tl.full((), value=0, dtype=tl.int32)
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        const_offsets = const_base + s_offs
-        final_likelihood = (
-            tl.load(scratch_ptr + final_base + s_offs, mask=mask, other=0.0) * current_gain
-        )
-
-        valid_receiver_mass = _lookup_valid_receiver_mass(
-            scratch_ptr, not_open_base, closed_base, not_open_index_ptr, closed_index_ptr,
-            s_offs, mask, S, BLOCK_S, DTYPE,
-        ) * current_gain
-        max_transfer = tl.load(max_transfer_lin_ptr + const_offsets, mask=mask, other=0.0)
-        transfer_complement_likelihood = max_transfer * tl.where(
-            valid_receiver_mass > 0.0, valid_receiver_mass, tl.zeros([BLOCK_S], dtype=DTYPE)
-        )
-
-        final_residual = tl.where(
-            mask & (final_likelihood > 0.0), tl.log2(final_likelihood), NEG_LARGE
-        )
-        pibar_residual = tl.where(
-            mask & (transfer_complement_likelihood > 0.0),
-            tl.log2(transfer_complement_likelihood),
-            NEG_LARGE,
-        )
-        tl.store(Pi_out_ptr + global_base + s_offs, final_residual, mask=mask)
-        tl.store(Pibar_out_ptr + global_base + s_offs, pibar_residual, mask=mask)
-        pi_has_finite = tl.maximum(
-            pi_has_finite, tl.max(tl.where(final_residual != NEG_LARGE, 1, 0), axis=0)
-        )
-        pibar_has_finite = tl.maximum(
-            pibar_has_finite, tl.max(tl.where(pibar_residual != NEG_LARGE, 1, 0), axis=0)
-        )
-        if COMPUTE_DIFF:
-            previous_likelihood = (
-                tl.load(scratch_ptr + previous_base + s_offs, mask=mask, other=0.0)
-                * previous_gain
-            )
-            both_finite = mask & (final_likelihood > 0.0) & (previous_likelihood > 0.0)
-            change = tl.where(
-                both_finite,
-                tl.abs(
-                    tl.log2(final_likelihood).to(ACC_DTYPE)
-                    - tl.log2(previous_likelihood).to(ACC_DTYPE)
-                ),
-                tl.zeros([BLOCK_S], dtype=ACC_DTYPE),
-            )
-            max_log2_change = tl.maximum(max_log2_change, tl.max(change, axis=0).to(tl.float32))
-
-    tl.store(
-        Pi_out_offset_ptr + global_row,
-        tl.where(pi_has_finite != 0, scale, tl.zeros_like(scale)),
-    )
-    tl.store(
-        Pibar_offset_ptr + global_row,
-        tl.where(pibar_has_finite != 0, scale, tl.zeros_like(scale)),
-    )
-    if COMPUTE_DIFF:
-        tl.store(pi_residual_out_ptr + global_row, max_log2_change)
-
-
 @triton.jit(do_not_specialize=["ws", "slot_span", "n_levels"])
 def _exact_tree_pi_self_loop_kernel(
     Pi_in_ptr,
@@ -1333,11 +933,11 @@ def _exact_tree_pi_self_loop_kernel(
 ):
     """Solve one clade row's Pi self-loop EXACTLY, by elimination on the species tree.
 
-    Same published state as :func:`_fused_linear_pi_self_loop_kernel` (log2 residual + row
-    offset, docs/centered_state_contract.md) and the same entry gauge, but instead of iterating
-    the fixed point it solves it. Where the fused linear kernel runs ``n_iters`` Jacobi sweeps and
-    stops early or at the cap, this kernel returns the CONVERGED row -- the fixed point the
-    log-space path approaches as ``pi_iters`` grows.
+    Published state is the usual log2 residual + row offset (docs/centered_state_contract.md).
+    Instead of iterating the fixed point this kernel SOLVES it in one launch, so it returns the
+    CONVERGED row -- the fixed point the log-space path
+    (:func:`_update_reconciliation_likelihood_kernel`) approaches as ``pi_iters`` grows -- and
+    ``pi_iters`` therefore plays no part in it.
 
     Why an exact solve is possible. In scaled linear space ``p[s] = 2**(Pi_abs[c, s] - scale)``
     the self-loop update is
@@ -1350,6 +950,21 @@ def _exact_tree_pi_self_loop_kernel(
 
     with ``src = leaf observation + gene-split (DTS) source``. Every ``p`` is a likelihood, so
     ``p >= 0`` and ``X[s] <= T``: the ``max`` never clips and the fixed point is a LINEAR system.
+
+    Each per-species multiplier is the linear-space copy of a log2 event constant, ``2**(its log2
+    value)``, built once per forward solve (``gpurec.core.inference.forward``'s
+    ``_linear_event_multipliers`` and ``_exact_tree_coefficients``):
+
+        sl1[s]  = 2**(log_pS[s] + E_child2[s])   speciate, follow child 1, child 2 lost
+        sl2[s]  = 2**(log_pS[s] + E_child1[s])   speciate, follow child 2, child 1 lost
+        mt[s]   = 2**max_transfer[s]             per-donor transfer normalizer
+        recv[s] = 2**receiver_log_prob[s]        receiver weight (1 when weights are off)
+        dl[s]   = 2**(1 + log_pD[s] + E[s])      duplicate, then lose one copy
+        ebar[s] = 2**Ebar[s]                     stay in place, transferred copy lost
+        e[s]    = 2**E[s]                        transfer out, donor copy lost
+
+    The first four arrive as their own pointers; ``dl``, ``ebar`` and ``e`` reach the kernel only
+    folded into ``self_diagonal_lin`` and ``transfer_coefficient_lin`` below.
 
     The whole solve is written in terms of
 
@@ -1421,10 +1036,11 @@ def _exact_tree_pi_self_loop_kernel(
 
     What remains is not this solve's to fix. Scaled linear space carries a row over about 24 log2
     units of range in float32: a lane whose share of the row's transfer mass is below float32's
-    unit roundoff gets that roundoff instead of its true value, and comes out too LARGE. The
-    fused linear kernel has exactly the same floor -- on the fitted-rate benchmark the two paths
-    land on the same wrong value, 12.5 log2 above the log path, for the same entry. Only the
-    log-space path is free of it.
+    unit roundoff gets that roundoff instead of its true value, and comes out too LARGE. That
+    floor belongs to scaled linear space itself rather than to the elimination -- the fused
+    linear-space iteration this kernel replaced landed on the same wrong value, 12.5 log2 above
+    the log path, for the same entry on the fitted-rate benchmark. Only the log-space path is
+    free of it.
 
     Pivots and ``1 - T1`` are the only divisions. Both are positive for any parameter set the
     fixed point converges for (``dl + ebar < 1`` per species, loop gain < 1), and NEITHER is
@@ -2603,188 +2219,6 @@ def compute_wave_step(
     )
 
 
-def compute_fused_linear_self_loop(
-    Pi_in,
-    Pi_in_offset,
-    Pi_out,
-    Pi_out_offset,
-    Pibar,
-    Pibar_offset,
-    scratch,
-    ws,
-    W,
-    S,
-    n_iters,
-    tol,
-    duplication_loss_lin,
-    extinction_complement_lin,
-    extinction_lin,
-    speciation_child1_lin,
-    speciation_child2_lin,
-    max_transfer_lin,
-    receiver_lin,
-    species_child1,
-    species_child2,
-    valid_receiver_tables,
-    gene_split_log_likelihood,
-    gene_split_offset,
-    gene_split_center_offset,
-    *,
-    leaf_species_idx,
-    leaf_logp,
-    family_idx,
-    pibar_row_max,
-    has_leaf_term,
-    use_receiver_weights,
-    pi_residual_out,
-    iterations_used,
-    leaf_fm_log,
-):
-    """Launch :func:`_fused_linear_pi_self_loop_kernel` for one wave.
-
-    Replaces ``n_iters`` back-to-back :func:`compute_wave_step` launches with a single one.
-    ``Pi_in``/``Pi_in_offset`` is the wave's current iterate (the leaf initializer's output for a
-    leaf wave, the gene-split-input log step's output for a split wave); the converged row is
-    published into ``Pi_out``/``Pi_out_offset`` and its Pibar into ``Pibar``/``Pibar_offset``,
-    exactly as the final log-space iteration would.
-
-    ``scratch`` is the four-slot linear working buffer, shape ``[4, rows, S]`` with
-    ``rows >= W``: slots 0 and 1 ping-pong the iterate, slots 2 and 3 hold the two running sums the
-    valid receiver mass is built from. ``rows`` sets the slot stride (passed in as ``rows * S`` so
-    the offset is built in Python rather than in int32 device arithmetic), so one allocation serves
-    every wave. ``valid_receiver_tables`` is the four-tensor tuple from
-    :func:`gpurec.core.valid_receivers.valid_receiver_index_tables`.
-    """
-    if int(n_iters) < 1:
-        raise ValueError("fused linear self-loop needs at least one iteration")
-    _validate_residual_tensors(
-        Pi_in,
-        Pi_out=Pi_out,
-        Pibar=Pibar,
-        scratch=scratch,
-        duplication_loss_lin=duplication_loss_lin,
-        extinction_complement_lin=extinction_complement_lin,
-        extinction_lin=extinction_lin,
-        speciation_child1_lin=speciation_child1_lin,
-        speciation_child2_lin=speciation_child2_lin,
-        max_transfer_lin=max_transfer_lin,
-        receiver_lin=receiver_lin,
-        leaf_logp=leaf_logp,
-        pibar_row_max=pibar_row_max,
-        gene_split_log_likelihood=gene_split_log_likelihood,
-    )
-    if scratch.ndim != 3 or int(scratch.shape[0]) != 4 or int(scratch.shape[2]) != int(S):
-        raise ValueError("linear working buffer must have shape [4, rows, S]")
-    slot_rows = int(scratch.shape[1])
-    if slot_rows < int(W):
-        raise ValueError("linear working buffer has fewer rows than the wave")
-    Pi_in_offset = _validate_offset_tensor(
-        "Pi_in_offset",
-        Pi_in_offset,
-        rows=Pi_in.shape[0],
-        device=Pi_in.device,
-        residual_dtype=Pi_in.dtype,
-    )
-    accumulator_dtype = Pi_in_offset.dtype
-    Pi_out_offset = _validate_offset_tensor(
-        "Pi_out_offset",
-        Pi_out_offset,
-        rows=Pi_out.shape[0],
-        device=Pi_in.device,
-        dtype=accumulator_dtype,
-    )
-    Pibar_offset = _validate_offset_tensor(
-        "Pibar_offset",
-        Pibar_offset,
-        rows=Pibar.shape[0],
-        device=Pi_in.device,
-        dtype=accumulator_dtype,
-    )
-    has_splits = gene_split_log_likelihood is not None
-    if has_splits:
-        if gene_split_offset is None or gene_split_center_offset is None:
-            raise ValueError(
-                "gene_split_offset and gene_split_center_offset are required with split DTS input"
-            )
-        gene_split_offset = _validate_offset_tensor(
-            "gene_split_offset",
-            gene_split_offset,
-            rows=W,
-            device=Pi_in.device,
-            dtype=accumulator_dtype,
-        )
-        gene_split_center_offset = _validate_offset_tensor(
-            "gene_split_center_offset",
-            gene_split_center_offset,
-            rows=W,
-            device=Pi_in.device,
-            dtype=accumulator_dtype,
-        )
-    else:
-        # Unused behind the ``HAS_SPLITS`` constexpr; a valid pointer is still required.
-        gene_split_log_likelihood = Pi_in
-        gene_split_offset = Pi_in_offset
-        gene_split_center_offset = Pi_in_offset
-    compute_diff = pi_residual_out is not None
-    write_iterations = iterations_used is not None
-    use_fraction_missing = leaf_fm_log is not None
-    # When there is no fraction-missing tensor the constexpr short-circuits the
-    # off-hit load, so a valid-but-unused 1-element placeholder is enough.
-    leaf_fm_log_arg = (
-        leaf_fm_log.contiguous()
-        if use_fraction_missing
-        else torch.empty(1, device=Pi_in.device, dtype=Pi_in.dtype)
-    )
-    _, const_row_stride = _prepare_wave_launch(S, duplication_loss_lin)
-    block_s = min(_BLOCK_SPECIES_FUSED_LINEAR, triton.next_power_of_2(S))
-    _fused_linear_pi_self_loop_kernel[(W,)](
-        Pi_in,
-        Pi_in_offset,
-        scratch,
-        Pi_out,
-        Pi_out_offset,
-        Pibar,
-        Pibar_offset,
-        pibar_row_max,
-        pi_residual_out if compute_diff else pibar_row_max,
-        iterations_used if write_iterations else species_child1,
-        duplication_loss_lin,
-        extinction_complement_lin,
-        extinction_lin,
-        speciation_child1_lin,
-        speciation_child2_lin,
-        max_transfer_lin,
-        receiver_lin,
-        species_child1,
-        species_child2,
-        *valid_receiver_tables,
-        leaf_species_idx,
-        leaf_logp,
-        leaf_fm_log_arg,
-        family_idx,
-        gene_split_log_likelihood,
-        gene_split_offset,
-        gene_split_center_offset,
-        ws,
-        slot_rows * int(S),
-        int(n_iters),
-        float(tol),
-        S,
-        stride=S,
-        CONST_ROW_STRIDE=const_row_stride,
-        BLOCK_S=block_s,
-        HAS_SPLITS=has_splits,
-        USE_LEAF_INDEX=bool(has_leaf_term),
-        USE_FRACTION_MISSING=use_fraction_missing,
-        COMPUTE_DIFF=compute_diff,
-        WRITE_ITERATIONS=write_iterations,
-        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
-        DTYPE=_tl_float_dtype(Pi_in.dtype),
-        ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
-        num_warps=_NUM_WARPS_UPDATE_RECONCILIATION,
-    )
-
-
 def compute_exact_tree_self_loop(
     Pi_in,
     Pi_in_offset,
@@ -2828,11 +2262,12 @@ def compute_exact_tree_self_loop(
 ):
     """Launch :func:`_exact_tree_pi_self_loop_kernel` for one wave.
 
-    Same contract as :func:`compute_fused_linear_self_loop` -- one launch per wave, the wave's
-    current iterate in ``Pi_in``/``Pi_in_offset``, the answer published into
-    ``Pi_out``/``Pi_out_offset`` with its Pibar in ``Pibar``/``Pibar_offset`` -- except that the
-    answer is the EXACT fixed point rather than an iterate, so there is no iteration count and no
-    tolerance. ``Pi_in`` only supplies the row gauge and the ``pi_residual_out`` reference point.
+    One launch per wave. The wave's current iterate arrives in ``Pi_in``/``Pi_in_offset`` and
+    the answer is published into ``Pi_out``/``Pi_out_offset`` with its Pibar in
+    ``Pibar``/``Pibar_offset``, exactly where the final log-space iteration would have put them.
+    The answer is the EXACT fixed point rather than an iterate, so there is no iteration count and
+    no tolerance; ``Pi_in`` only supplies the row gauge and the ``pi_residual_out`` reference
+    point.
 
     ``scratch`` is the four-slot per-row working buffer, shape ``[4, rows, S]`` with
     ``rows >= W``; ``rows * S`` is passed as the slot stride so the offset arithmetic is built in
@@ -2949,7 +2384,7 @@ def compute_exact_tree_self_loop(
         else torch.empty(1, device=Pi_in.device, dtype=Pi_in.dtype)
     )
     _, const_row_stride = _prepare_wave_launch(S, self_diagonal_lin)
-    block_s = min(_BLOCK_SPECIES_FUSED_LINEAR, triton.next_power_of_2(S))
+    block_s = min(_BLOCK_SPECIES_SELF_LOOP, triton.next_power_of_2(S))
     _exact_tree_pi_self_loop_kernel[(W,)](
         Pi_in,
         Pi_in_offset,

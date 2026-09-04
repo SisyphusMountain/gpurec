@@ -20,15 +20,12 @@ Two modes, because the measurements interfere with each other:
                     counted through its per-iteration ``Av`` call.
                 Both are capped at ``e_max_iter`` / ``e_adjoint_max_iter`` (128), and each E solve
                 covers a WHOLE batch at once, so one stiff family can hold the whole batch at the cap.
-                It also collects the per-row iteration counts of the two FUSED self-loop kernels,
-                whose loops run inside the kernel with a per-row early exit (so more iterations show
-                up as a longer kernel, not as more launches):
-                  * forward ``_fused_linear_pi_self_loop_kernel`` -- by wrapping
-                    ``gpurec.core.inference.solver.pi_wave_forward`` to pass the
-                    ``linear_iterations_out`` tensor the production caller leaves as None;
-                  * backward ``_reconciliation_self_loop_transpose_series_kernel`` -- through the
-                    library's own ``set_neumann_term_stat_collection`` / ``take_neumann_term_counts``
-                    debug hook.
+                It also collects the per-row Neumann-term counts of the fused BACKWARD self-loop
+                kernel ``_reconciliation_self_loop_transpose_series_kernel``, whose loop runs inside
+                the kernel with a per-row early exit (so more terms show up as a longer kernel, not
+                as more launches), through the library's own ``set_neumann_term_stat_collection`` /
+                ``take_neumann_term_counts`` debug hook. The forward self-loop has no such count:
+                the exact solve eliminates the fixed point rather than iterating it.
 
 Usage:
   python benchmark/cc/nsys_theta.py --species S.nwk --families LIST.txt --limit 500 \
@@ -109,12 +106,10 @@ def _install_counters():
 
     forward_records = []
     adjoint_records = []
-    self_loop_iters = []          # per-wave [W] int32: forward fused self-loop iterations per row
 
     orig_launch = e_step._launch_e_step_forward_2d
     orig_fixed_point = inference_solver.e_fixed_point_triton
     orig_neumann = _implicit_grad._neumann_e_adjoint
-    orig_pi_wave_forward = inference_solver.pi_wave_forward
     launch_calls = [0]
 
     def counting_launch(*a, **k):
@@ -146,32 +141,18 @@ def _install_counters():
         adjoint_records.append((n[0], time.perf_counter() - t0))
         return out
 
-    def counting_pi_wave_forward(*a, **k):
-        # solver.py passes everything by keyword and leaves linear_iterations_out=None, documented
-        # there as "the benchmark wraps pi_wave_forward to pass its own tensor". One int32 per clade
-        # row; each wave's launch writes its own disjoint slice.
-        layout = k["wave_layout"] if "wave_layout" in k else a[0]
-        rows = int(layout["leaf_species_index"].numel())
-        buf = torch.zeros(rows, dtype=torch.int32, device=k["e"].device)
-        k["linear_iterations_out"] = buf
-        out = orig_pi_wave_forward(*a, **k)
-        self_loop_iters.append(buf)
-        return out
-
     e_step._launch_e_step_forward_2d = counting_launch
     inference_solver.e_fixed_point_triton = counting_fixed_point
     _implicit_grad._neumann_e_adjoint = counting_neumann
-    inference_solver.pi_wave_forward = counting_pi_wave_forward
     set_neumann_term_stat_collection(True)
 
     def restore():
         e_step._launch_e_step_forward_2d = orig_launch
         inference_solver.e_fixed_point_triton = orig_fixed_point
         _implicit_grad._neumann_e_adjoint = orig_neumann
-        inference_solver.pi_wave_forward = orig_pi_wave_forward
         set_neumann_term_stat_collection(False)
 
-    return forward_records, adjoint_records, self_loop_iters, restore
+    return forward_records, adjoint_records, restore
 
 
 def _summarize_rows(tensors, cap):
@@ -203,7 +184,7 @@ def _summarize(records, cap):
 
 
 def _run_count(m, thetas, solver_options):
-    forward_records, adjoint_records, self_loop_iters, restore = _install_counters()
+    forward_records, adjoint_records, restore = _install_counters()
     result = {}
     try:
         for label, th in thetas:
@@ -213,19 +194,15 @@ def _run_count(m, thetas, solver_options):
             take_neumann_term_counts()
             forward_records.clear()
             adjoint_records.clear()
-            self_loop_iters.clear()
             t0 = time.perf_counter()
             m.genewise_loss_vector_and_grad(theta=th, need_grad=True)
             torch.cuda.synchronize()
             wall = time.perf_counter() - t0
             fwd = _summarize(forward_records, int(solver_options.e_max_iter))
             adj = _summarize(adjoint_records, int(solver_options.e_adjoint_max_iter))
-            # The fused forward kernel runs pi_iters minus a 1- or 2-step log-space prologue
-            # (leaf wave / split wave), so its real per-row cap is 15 or 14 at pi_iters=16.
-            pi_loop = _summarize_rows(list(self_loop_iters), int(solver_options.pi_iters) - 2)
             neu_loop = _summarize_rows(take_neumann_term_counts(), int(solver_options.neumann_terms))
             result[label] = dict(grad_wall_s=wall, forward_E=fwd, e_adjoint_neumann=adj,
-                                 fused_forward_self_loop=pi_loop, fused_backward_neumann=neu_loop)
+                                 fused_backward_neumann=neu_loop)
             print(f"\n[count] theta={label}  gradient wall {wall:.2f} s", flush=True)
             print(f"[count]   forward E solve : {fwd['solves']} solves, {fwd['total_iters']} iterations "
                   f"total, {fwd['total_s']:.2f} s total; per solve min/median/max = "
@@ -235,7 +212,7 @@ def _run_count(m, thetas, solver_options):
                   f"total, {adj['total_s']:.2f} s total; per solve min/median/max = "
                   f"{adj['min_iters']}/{adj['median_iters']}/{adj['max_iters']}, "
                   f"{adj['at_cap']} solves at the {adj['cap']} cap", flush=True)
-            for tag, d in (("forward fused Pi self-loop", pi_loop), ("backward fused Neumann", neu_loop)):
+            for tag, d in (("backward fused Neumann", neu_loop),):
                 if d.get("rows_run"):
                     print(f"[count]   {tag}: {d['launches']} launches, {d['rows_run']:,} rows ran, "
                           f"{d['total_iters']:,} iterations total; per row mean/median/max = "
@@ -256,7 +233,7 @@ def main() -> int:
     ap.add_argument("--clade-budget", required=True, type=int, help="clades per batch (model clade_budget)")
     ap.add_argument("--theta-pt", required=True, help="run_genewise .pt with {'theta','paths'}")
     ap.add_argument("--mode", required=True, choices=("nsys", "count"))
-    ap.add_argument("--forward-self-loop", required=True, choices=("linear", "log", "exact"))
+    ap.add_argument("--forward-self-loop", required=True, choices=("log", "exact"))
     ap.add_argument("--out", required=True, help="path of the JSON summary to write")
     args = ap.parse_args()
 

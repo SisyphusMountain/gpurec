@@ -44,7 +44,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--dtype", default="float64")
-    parser.add_argument("--modes", default="log,linear,exact")
+    parser.add_argument("--modes", default="log,exact")
     args = parser.parse_args()
     dtype = torch.float32 if args.dtype == "float32" else torch.float64
 

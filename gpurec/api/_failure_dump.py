@@ -56,13 +56,13 @@ def describe_forward_state(static, theta_batch, receiver_weights) -> str:
 
     ``-inf`` is a legal Pi/Pibar value (an impossible species lane), so it is counted separately
     from ``nan``/``+inf``, which are not. The two modes are run back to back on the same inputs so
-    the report says whether the linear self-loop is the source or merely inherits the problem.
+    the report says whether the exact self-loop is the source or merely inherits the problem.
     """
     from gpurec.core.inference.solver import solve_resident_e_pi
 
     lines = []
     original_mode = static.solver_options.forward_self_loop
-    for mode in ("log", "linear"):
+    for mode in ("log", "exact"):
         static.solver_options.forward_self_loop = mode
         try:
             with torch.no_grad():
@@ -87,9 +87,9 @@ def describe_forward_state(static, theta_batch, receiver_weights) -> str:
             "Pibar_offset": None if state is None else state.pibar_offset,
         }
         problems = [text for text in (nonfinite_summary(n, t) for n, t in named.items()) if text]
-        # A whole Pi row of -inf is the shape a linear-space underflow takes: every lane of that
-        # clade lost its mass at once, which the log path cannot do. Count it separately from
-        # single impossible lanes, which are ordinary.
+        # A whole Pi row of -inf is the shape a scaled-linear-space underflow takes: every lane
+        # of that clade lost its mass at once, which the log path cannot do. Count it separately
+        # from single impossible lanes, which are ordinary.
         dead_pi = int((~torch.isfinite(pi_wave)).all(dim=1).sum())
         dead_pibar = int((~torch.isfinite(pibar_wave)).all(dim=1).sum())
         problems.append(

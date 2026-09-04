@@ -96,7 +96,7 @@ def main() -> int:
     parser.add_argument("--neumann-terms", required=True, type=int)
     parser.add_argument("--theta", required=True, type=float)
     parser.add_argument("--reps", required=True, type=int)
-    parser.add_argument("--forward-self-loop", required=True, choices=("log", "linear", "exact"))
+    parser.add_argument("--forward-self-loop", required=True, choices=("log", "exact"))
     parser.add_argument("--dtype", required=True, choices=("float32", "float64"),
                         help="float64 is the control: it separates the elimination's arithmetic "
                              "from float32's own resolution")
