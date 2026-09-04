@@ -838,6 +838,35 @@ that whole row through DRAM. Moving those sums to a node-indexed array costs a w
 kernel) and buys about 9 % of DRAM traffic -- roughly 1.2 % of a gradient, which is why it was
 priced and left.
 
+## Round four on the H100: what the measurements there say (2026-09-05)
+
+The RTX 4090 proxy and the H100 do not move together, so the round's changes were re-measured on the H100
+with the same 200-family / 15-batch setup (`benchmark/cc/profile_gradient_kernels.py`,
+`benchmark/cc/time_exact_vs_iterated.py`, jobs prof200, prof200preD, rowwarps):
+
+| code state | forward wall | forward+gradient wall | gradient GPU time |
+|---|---:|---:|---:|
+| 2620fa3d (dead backward work and the forward's device-to-host reads removed) | 681 ms | 2261 ms | 1715 ms |
+| 09685aa7 (plus host stalls, register-resident adjoint, forward-solve traffic cuts, transfer-VJP stores) | 563 ms | 1898 ms | 1656 ms |
+
+Two of the round's kernel changes behave differently on the two cards. The exact forward solve's traffic
+cuts hold: 386 to 275 ms (-29 %; -38 % on the 4090). The register-resident transposed solve does not:
+400 ms on the H100 against 359 ms for the prepare-plus-elimination pair it replaced (-2 % on the 4090,
++12 % on the H100). A warp sweep on the H100 explains it: 4 warps 491 ms, 8 warps 435, 16 warps (the
+4090's optimum) 400, 32 warps 362, i.e. parity with the old pair only at 32 warps, which is 4 % slower
+than 16 on the 4090. The launch therefore has to choose its warp count by device (32 on compute
+capability 9.x, 16 otherwise).
+
+**Full dataset (job r4c_full, batch node with a normal 24 s build, so the least loaded node of the round):
+650.5 s**, NLL 9048935.150 bits (3.1 bits better than every earlier run), 65 Newton steps, all 5123
+certified, peak 28.4 GiB; split: warm-up (3 Adam gradients) 83 s, Newton gradients 387 s, curvature 64 s,
+verification 45 s, re-plans 14 s, certificate 15 s, build 24 s. One Newton iteration over the whole
+population costs 27.7 s against 32.5 s in the 747 s run (-15 %). Two earlier full runs of intermediate
+states landed on heavily loaded nodes (their three warm-up gradients took 56 to 58 s each) and are not
+comparable; both certified all 5123 families, one with the trust radius allowed to grow to 16 in 48 Newton
+steps, which is why production now allows growth to 8 (16 made one of 200 local families oscillate to the
+iteration cap; 4 and 8 behaved like 2 locally).
+
 ## What is left
 
 With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs
