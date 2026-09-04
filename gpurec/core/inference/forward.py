@@ -25,12 +25,17 @@ SELF_LOOP_MODES = ("log", "exact")
 #
 # The exact kernel flags such a row, returns it untouched, and the log-space sweeps below are the
 # only thing that then fills it in. Deciding wave by wave whether to run those sweeps needs that
-# wave's flagged-row count on the host, and the two ways of paying for it were both measured on
-# the 200-family Coleman gradient (RTX 4090, exact/exact, float32, clade budget 100,000):
-#   * read the count back per wave: one device-to-host copy per wave, 1977 of them, during which
-#     the host cannot queue the next wave -- 245 ms of GPU idle;
+# wave's flagged-row count on the host, and both ways of getting it are expensive on the
+# 200-family Coleman set (1977 waves over 15 batches, RTX 4090, exact/exact, float32, clade
+# budget 100,000):
+#   * read the count back per wave: 1977 device-to-host copies per solve, each of which stops the
+#     host until the GPU has drained, so the host can never queue the next wave while the GPU
+#     works. With them the forward left the GPU idle for 221 ms of a 979 ms run, and 104 ms of
+#     that idle was the GPU waiting with nothing to run while the host sat inside a kernel launch.
+#     Without them that launch-time idle is 4 ms and the total is 88 ms.
 #   * skip the read and launch the masked sweeps on every wave regardless: they return immediately
-#     on every row, but that is 14 extra launches per wave -- 460 ms added to the forward.
+#     on every row, but that is 27,693 more kernel launches per solve, on top of the 15,751 the
+#     forward already issues.
 # Neither is paid. The waves run assuming nothing was flagged, the counts are read back ONCE at
 # the end of the solve, and if any row WAS flagged the whole batch is redone with the sweeps on
 # for every wave, which is exactly the answer the per-wave decision would have produced. The redo
