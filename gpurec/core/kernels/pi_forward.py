@@ -344,6 +344,72 @@ def _lookup_valid_receiver_mass(
 
 
 @triton.jit
+def _read_species_slots(scratch_ptr, slot0_offsets, mask, LANES: tl.constexpr):
+    """Read all four of a species' working numbers of the exact solve in ONE load.
+
+    :func:`_exact_tree_pi_self_loop_kernel` keeps four numbers per species (the elimination's two
+    affine coefficients and two mass accumulators) and stores them side by side, four floats to a
+    species. One load of a ``[LANES, 4]`` tile brings all four in together -- sixteen bytes per
+    lane, inside a single 32-byte cache sector -- where four separate loads asked the cache four
+    separate times for that same sector. In the two tree walks, which read a node's four numbers
+    at scattered species indices, that is one memory request per node instead of four.
+
+    ``slot0_offsets`` holds each lane's offset to its species' slot 0, and every lane whose
+    ``mask`` is false reads zeros, exactly as the four separate masked loads did.
+
+    Unpacking follows Triton's ``split``, which peels the LAST axis: viewing the tile as
+    ``[LANES, 2, 2]`` and splitting once separates the even-numbered slots (0 and 2) from the odd
+    ones (1 and 3), and splitting each of those again gives the four in order.
+    """
+    tile = tl.load(
+        scratch_ptr + slot0_offsets[:, None] + tl.arange(0, 4)[None, :],
+        mask=mask[:, None],
+        other=0.0,
+    )
+    even_slots, odd_slots = tl.split(tl.reshape(tile, [LANES, 2, 2]))
+    slot0, slot2 = tl.split(even_slots)
+    slot1, slot3 = tl.split(odd_slots)
+    return slot0, slot1, slot2, slot3
+
+
+@triton.jit
+def _write_species_slots(
+    scratch_ptr, slot0_offsets, slot0, slot1, slot2, slot3, mask, LANES: tl.constexpr
+):
+    """Write all four of a species' working numbers in ONE store: the inverse of the read above.
+
+    ``join`` appends a new last axis, so joining the even slots, joining the odd slots and joining
+    the two results puts the four numbers back in slot order once the ``[LANES, 2, 2]`` result is
+    flattened. Four scattered stores of one float each became one scattered store of sixteen bytes.
+    """
+    tile = tl.reshape(tl.join(tl.join(slot0, slot2), tl.join(slot1, slot3)), [LANES, 4])
+    tl.store(
+        scratch_ptr + slot0_offsets[:, None] + tl.arange(0, 4)[None, :], tile, mask=mask[:, None]
+    )
+
+
+@triton.jit
+def _read_species_slot_pair(scratch_ptr, first_slot_offsets, mask):
+    """Read two neighbouring slots of a species in one load, for the walks that need only a pair."""
+    pair = tl.load(
+        scratch_ptr + first_slot_offsets[:, None] + tl.arange(0, 2)[None, :],
+        mask=mask[:, None],
+        other=0.0,
+    )
+    return tl.split(pair)
+
+
+@triton.jit
+def _write_species_slot_pair(scratch_ptr, first_slot_offsets, first, second, mask):
+    """Write two neighbouring slots of a species in one store."""
+    tl.store(
+        scratch_ptr + first_slot_offsets[:, None] + tl.arange(0, 2)[None, :],
+        tl.join(first, second),
+        mask=mask[:, None],
+    )
+
+
+@triton.jit
 def _initialize_leaf_reconciliation_likelihood_kernel(
     Pi_new_ptr,
     Pi_new_offset_ptr,
@@ -905,10 +971,10 @@ def _update_reconciliation_likelihood_kernel(
         tl.store(Pibar_offset_ptr + global_row, pibar_offset)
 
 
-# ``ws`` is the wave's start row and ``slot_span`` the scratch stride; both change per
+# ``ws`` is the wave's start row and ``n_levels`` the species tree's height; both change per
 # wave or per batch. Keeping them out of the specialization key avoids one JIT compile
 # per new "== 1" / divisible-by-16 state (see README.md).
-@triton.jit(do_not_specialize=["ws", "slot_span", "n_levels"])
+@triton.jit(do_not_specialize=["ws", "n_levels"])
 def _exact_tree_pi_self_loop_kernel(
     Pi_in_ptr,
     Pi_in_offset_ptr,
@@ -942,7 +1008,6 @@ def _exact_tree_pi_self_loop_kernel(
     wide_row_ptr,
     wide_row_count_ptr,
     ws,
-    slot_span,
     n_levels,
     range_limit,
     conditioning_floor,
@@ -1080,13 +1145,20 @@ def _exact_tree_pi_self_loop_kernel(
     clipped: a non-positive one divides through to an infinity or a NaN that shows up immediately
     in the likelihood. ``guard_trips_ptr`` counts them per row so a run can say so.
 
-    Scratch: ``[4, rows, S]`` in the model dtype, four per-row species arrays, each reused as its
-    first role finishes (a slot's second value is written only once its first is dead):
+    Scratch: ``[rows, S, 4]`` in the model dtype, four working numbers per species, each reused as
+    its first role finishes (a slot's second value is written only once its first is dead):
 
         slot 0  alpha[s]  -> p[s]      (internal nodes; a leaf keeps alpha)
         slot 1  gamma[s]  -> valid[s]  (internal nodes; a leaf keeps gamma)
         slot 2  src[s]    -> mA[s]  -> u[s]
         slot 3  mG[s]     -> R[s]
+
+    The four are stored side by side per species, not as four separate species-long arrays,
+    because the tree walks touch one node at a scattered index and want all four of its numbers.
+    Side by side they are sixteen bytes inside one 32-byte cache sector, so one load brings them
+    all; four separate arrays meant four requests for four sectors far apart. That is the single
+    largest saving in this kernel's memory traffic -- see :func:`_read_species_slots` and
+    :func:`_write_species_slots`, which do the packing and unpacking.
 
     The species-tree walks read values written by other warps of the same program, so every level
     ends in a ``tl.debug_barrier()``, exactly as ``_reconciliation_self_loop_transpose_term`` does
@@ -1102,13 +1174,12 @@ def _exact_tree_pi_self_loop_kernel(
     row_base = w * stride
     family_const = tl.load(family_idx_ptr + global_row)
     const_base = family_const * CONST_ROW_STRIDE
-    span = slot_span.to(tl.int64)
-    alpha_base = row_base
-    gamma_base = span + row_base
-    # slot 2: the source term, then the subtree mass constant mA, then the available mass u.
-    slot2_base = 2 * span + row_base
-    # slot 3: the subtree mass gain mG, then the off-chain mass R.
-    slot3_base = 3 * span + row_base
+    # The four working numbers of a species sit side by side (see the scratch note in the
+    # docstring), so a species' block of four starts at ``species index * 4`` inside the row and a
+    # row is ``S * 4`` numbers long. Slot 0 is alpha then p, slot 1 gamma then the valid receiver
+    # mass, slot 2 the source then the subtree mass constant mA then the available mass u, and
+    # slot 3 the subtree mass gain mG then the off-chain mass R.
+    scratch_row_base = w * (S * 4)
 
     # ---- entry pass 1: exact absolute row maximum, which becomes the linear gauge, and the
     # smallest finite lane, which says whether this row FITS in that single gauge at all.
@@ -1227,22 +1298,26 @@ def _exact_tree_pi_self_loop_kernel(
         )
         leaf_alpha = source / diagonal
         leaf_gamma = transfer_coefficient / diagonal
-        tl.store(scratch_ptr + alpha_base + s_offs, leaf_alpha, mask=is_leaf)
-        tl.store(scratch_ptr + gamma_base + s_offs, leaf_gamma, mask=is_leaf)
         if USE_RECEIVER_WEIGHTS:
             leaf_receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=is_leaf, other=0.0)
         else:
             leaf_receiver_weight = tl.full([BLOCK_S], value=1.0, dtype=DTYPE)
-        # Slot 2 carries the source for the internal nodes, which read it in walk 1b, and the
-        # leaf's own subtree mass for the leaves, whose source is dead the moment it is divided.
-        # One store settles both, where before the source was stored for every lane and the leaf
-        # lanes were then overwritten.
-        tl.store(
-            scratch_ptr + slot2_base + s_offs,
+        # One store settles every lane's four slots. Slot 2 carries the source for the internal
+        # nodes, which read it in walk 1b, and the leaf's own subtree mass for the leaves, whose
+        # source is dead the moment it is divided. An internal node's other three slots are set to
+        # zero here and written for real by walk 1b before anything reads them: every species is
+        # either a leaf or a node of the ``compact_level_*`` tables, so walk 1b covers all of them.
+        zero = tl.zeros([BLOCK_S], dtype=DTYPE)
+        _write_species_slots(
+            scratch_ptr,
+            scratch_row_base + s_offs * 4,
+            tl.where(is_leaf, leaf_alpha, zero),
+            tl.where(is_leaf, leaf_gamma, zero),
             tl.where(is_leaf, leaf_receiver_weight * leaf_alpha, source),
-            mask=mask,
+            tl.where(is_leaf, leaf_receiver_weight * leaf_gamma, zero),
+            mask,
+            BLOCK_S,
         )
-        tl.store(scratch_ptr + slot3_base + s_offs, leaf_receiver_weight * leaf_gamma, mask=is_leaf)
         guard_trips += tl.sum(
             tl.where(is_leaf & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0
         )
@@ -1306,10 +1381,24 @@ def _exact_tree_pi_self_loop_kernel(
             speciation_child2 = tl.load(
                 speciation_child2_lin_ptr + const_offsets, mask=node_mask, other=0.0
             )
-            alpha_child1 = tl.load(scratch_ptr + alpha_base + child1, mask=child1_mask, other=0.0)
-            gamma_child1 = tl.load(scratch_ptr + gamma_base + child1, mask=child1_mask, other=0.0)
-            alpha_child2 = tl.load(scratch_ptr + alpha_base + child2, mask=child2_mask, other=0.0)
-            gamma_child2 = tl.load(scratch_ptr + gamma_base + child2, mask=child2_mask, other=0.0)
+            # Each child's four numbers come in on one load: the two affine coefficients used just
+            # below and the two subtree masses used further down.
+            (
+                alpha_child1,
+                gamma_child1,
+                mass_constant_child1,
+                mass_gain_child1,
+            ) = _read_species_slots(
+                scratch_ptr, scratch_row_base + child1 * 4, child1_mask, BLOCK_NODES
+            )
+            (
+                alpha_child2,
+                gamma_child2,
+                mass_constant_child2,
+                mass_gain_child2,
+            ) = _read_species_slots(
+                scratch_ptr, scratch_row_base + child2 * 4, child2_mask, BLOCK_NODES
+            )
             child_constant = speciation_child1 * alpha_child1 + speciation_child2 * alpha_child2
             child_transfer_gain = (
                 speciation_child1 * gamma_child1 + speciation_child2 * gamma_child2
@@ -1323,41 +1412,32 @@ def _exact_tree_pi_self_loop_kernel(
                 receiver_weight = tl.load(receiver_lin_ptr + parent, mask=node_mask, other=0.0)
             else:
                 receiver_weight = tl.full([BLOCK_NODES], value=1.0, dtype=DTYPE)
-            source = tl.load(scratch_ptr + slot2_base + parent, mask=node_mask, other=0.0)
+            source = tl.load(scratch_ptr + scratch_row_base + parent * 4 + 2, mask=node_mask, other=0.0)
 
             pivot = diagonal + child_transfer_gain * receiver_weight
             parent_alpha = (source + child_constant) / pivot
             parent_gamma = (transfer_coefficient + child_transfer_gain) / pivot
-            tl.store(scratch_ptr + alpha_base + parent, parent_alpha, mask=node_mask)
-            tl.store(scratch_ptr + gamma_base + parent, parent_gamma, mask=node_mask)
             guard_trips += tl.sum(
                 tl.where(node_mask & (pivot <= 0.0), 1, 0).to(tl.int32), axis=0
             )
 
             # The subtree's receiver mass as an affine function of the mass entering it (step 2
-            # of the docstring). The children's coefficients are final; the parent's source, read
-            # above, is dead, so mA takes its slot.
-            mass_constant_child1 = tl.load(
-                scratch_ptr + slot2_base + child1, mask=child1_mask, other=0.0
-            )
-            mass_gain_child1 = tl.load(scratch_ptr + slot3_base + child1, mask=child1_mask, other=0.0)
-            mass_constant_child2 = tl.load(
-                scratch_ptr + slot2_base + child2, mask=child2_mask, other=0.0
-            )
-            mass_gain_child2 = tl.load(scratch_ptr + slot3_base + child2, mask=child2_mask, other=0.0)
+            # of the docstring). The children's coefficients came in with their affine ones above;
+            # the parent's source, read just now, is dead, so mA takes its slot. All four of the
+            # parent's numbers are settled here, so one store publishes them together.
             children_gain_margin = 1.0 - mass_gain_child1 - mass_gain_child2
             own_gain = receiver_weight * parent_gamma
-            tl.store(
-                scratch_ptr + slot3_base + parent,
-                own_gain + (mass_gain_child1 + mass_gain_child2) * (1.0 - own_gain),
-                mask=node_mask,
-            )
-            tl.store(
-                scratch_ptr + slot2_base + parent,
+            _write_species_slots(
+                scratch_ptr,
+                scratch_row_base + parent * 4,
+                parent_alpha,
+                parent_gamma,
                 receiver_weight * parent_alpha * children_gain_margin
                 + mass_constant_child1
                 + mass_constant_child2,
-                mask=node_mask,
+                own_gain + (mass_gain_child1 + mass_gain_child2) * (1.0 - own_gain),
+                node_mask,
+                BLOCK_NODES,
             )
             guard_trips += tl.sum(
                 tl.where(node_mask & (children_gain_margin <= 0.0), 1, 0).to(tl.int32), axis=0
@@ -1376,8 +1456,8 @@ def _exact_tree_pi_self_loop_kernel(
         root = tl.load(level_parents_ptr + tl.load(level_ptr_ptr + n_levels - 1)).to(tl.int64)
     else:
         root = tl.full((), value=0, dtype=tl.int64)
-    root_mass_constant = tl.load(scratch_ptr + slot2_base + root)
-    root_mass_gain = tl.load(scratch_ptr + slot3_base + root)
+    root_mass_constant = tl.load(scratch_ptr + scratch_row_base + root * 4 + 2)
+    root_mass_gain = tl.load(scratch_ptr + scratch_row_base + root * 4 + 3)
     loop_denominator = 1.0 - root_mass_gain
     total_receiver_mass = root_mass_constant / loop_denominator
     smallest_gain_margin = tl.minimum(smallest_gain_margin, loop_denominator)
@@ -1409,8 +1489,8 @@ def _exact_tree_pi_self_loop_kernel(
     # ---- seed the top-down walk: the root's available mass is the whole row's, and nothing
     # hangs off its (empty) ancestor chain. The root's mA and mG were consumed just above, so
     # its two slots are free to take u and R.
-    tl.store(scratch_ptr + slot2_base + root, total_receiver_mass)
-    tl.store(scratch_ptr + slot3_base + root, tl.zeros_like(total_receiver_mass))
+    tl.store(scratch_ptr + scratch_row_base + root * 4 + 2, total_receiver_mass)
+    tl.store(scratch_ptr + scratch_row_base + root * 4 + 3, tl.zeros_like(total_receiver_mass))
     tl.debug_barrier()
 
     # ---- walk 2: the same levels, deepest-subtree level (the root) first, additions only (step
@@ -1432,39 +1512,48 @@ def _exact_tree_pi_self_loop_kernel(
             child1_mask = node_mask & (child1 < S)
             child2_mask = node_mask & (child2 < S)
 
-            parent_alpha = tl.load(scratch_ptr + alpha_base + parent, mask=node_mask, other=0.0)
-            parent_gamma = tl.load(scratch_ptr + gamma_base + parent, mask=node_mask, other=0.0)
-            parent_available = tl.load(scratch_ptr + slot2_base + parent, mask=node_mask, other=0.0)
-            parent_off_chain = tl.load(scratch_ptr + slot3_base + parent, mask=node_mask, other=0.0)
-            mass_constant_child1 = tl.load(
-                scratch_ptr + slot2_base + child1, mask=child1_mask, other=0.0
+            # The node's own four numbers on one load; each child's mass pair, slots 2 and 3, on
+            # one more. Its children's affine coefficients are not needed here.
+            (
+                parent_alpha,
+                parent_gamma,
+                parent_available,
+                parent_off_chain,
+            ) = _read_species_slots(
+                scratch_ptr, scratch_row_base + parent * 4, node_mask, BLOCK_NODES
             )
-            mass_gain_child1 = tl.load(scratch_ptr + slot3_base + child1, mask=child1_mask, other=0.0)
-            mass_constant_child2 = tl.load(
-                scratch_ptr + slot2_base + child2, mask=child2_mask, other=0.0
+            mass_constant_child1, mass_gain_child1 = _read_species_slot_pair(
+                scratch_ptr, scratch_row_base + child1 * 4 + 2, child1_mask
             )
-            mass_gain_child2 = tl.load(scratch_ptr + slot3_base + child2, mask=child2_mask, other=0.0)
+            mass_constant_child2, mass_gain_child2 = _read_species_slot_pair(
+                scratch_ptr, scratch_row_base + child2 * 4 + 2, child2_mask
+            )
 
             children_available = (
                 parent_off_chain + mass_constant_child1 + mass_constant_child2
             ) / (1.0 - mass_gain_child1 - mass_gain_child2)
-            tl.store(
-                scratch_ptr + alpha_base + parent,
+            # The node's own answer goes into slots 0 and 1 as one store, and each child's u and
+            # R into its slots 2 and 3 as one more: three stores where there were six.
+            _write_species_slot_pair(
+                scratch_ptr,
+                scratch_row_base + parent * 4,
                 parent_alpha + parent_gamma * parent_available,
-                mask=node_mask,
+                children_available,
+                node_mask,
             )
-            tl.store(scratch_ptr + gamma_base + parent, children_available, mask=node_mask)
-            tl.store(scratch_ptr + slot2_base + child1, children_available, mask=child1_mask)
-            tl.store(scratch_ptr + slot2_base + child2, children_available, mask=child2_mask)
-            tl.store(
-                scratch_ptr + slot3_base + child1,
+            _write_species_slot_pair(
+                scratch_ptr,
+                scratch_row_base + child1 * 4 + 2,
+                children_available,
                 parent_off_chain + mass_constant_child2 + mass_gain_child2 * children_available,
-                mask=child1_mask,
+                child1_mask,
             )
-            tl.store(
-                scratch_ptr + slot3_base + child2,
+            _write_species_slot_pair(
+                scratch_ptr,
+                scratch_row_base + child2 * 4 + 2,
+                children_available,
                 parent_off_chain + mass_constant_child1 + mass_gain_child1 * children_available,
-                mask=child2_mask,
+                child2_mask,
             )
             node_start += BLOCK_NODES
         tl.debug_barrier()
@@ -1486,10 +1575,9 @@ def _exact_tree_pi_self_loop_kernel(
             entry_residual = tl.load(
                 Pi_in_ptr + global_base + s_offs, mask=mask, other=NEG_LARGE
             )
-        slot0 = tl.load(scratch_ptr + alpha_base + s_offs, mask=mask, other=0.0)
-        slot1 = tl.load(scratch_ptr + gamma_base + s_offs, mask=mask, other=0.0)
-        slot2 = tl.load(scratch_ptr + slot2_base + s_offs, mask=mask, other=0.0)
-        slot3 = tl.load(scratch_ptr + slot3_base + s_offs, mask=mask, other=0.0)
+        slot0, slot1, slot2, slot3 = _read_species_slots(
+            scratch_ptr, scratch_row_base + s_offs * 4, mask, BLOCK_S
+        )
         child1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S).to(tl.int64)
         is_leaf = mask & (child1 >= S)
 
@@ -2272,9 +2360,10 @@ def compute_exact_tree_self_loop(
     no tolerance; ``Pi_in`` only supplies the row gauge and the ``pi_residual_out`` reference
     point.
 
-    ``scratch`` is the four-slot per-row working buffer, shape ``[4, rows, S]`` with
-    ``rows >= W``; ``rows * S`` is passed as the slot stride so the offset arithmetic is built in
-    Python rather than in int32 device arithmetic.
+    ``scratch`` is the per-row working buffer, shape ``[rows, S, 4]`` with ``rows >= W``: four
+    working numbers per species, stored side by side so one memory request fetches all four of a
+    node's (see the kernel's scratch note). Its row stride is ``S * 4``, which the kernel builds
+    from ``S`` and so needs no argument of its own.
 
     ``guard_trips_out`` is an optional tensor of shape ``[clade rows, 4]`` in the model dtype:
     how many of this row's divisors (pivots and per-node ``1 - gain`` factors) were non-positive,
@@ -2308,14 +2397,13 @@ def compute_exact_tree_self_loop(
     )
     if (
         scratch.ndim != 3
-        or int(scratch.shape[0]) != _EXACT_TREE_SCRATCH_SLOTS
-        or int(scratch.shape[2]) != int(S)
+        or int(scratch.shape[1]) != int(S)
+        or int(scratch.shape[2]) != _EXACT_TREE_SCRATCH_SLOTS
     ):
         raise ValueError(
-            f"exact tree working buffer must have shape [{_EXACT_TREE_SCRATCH_SLOTS}, rows, S]"
+            f"exact tree working buffer must have shape [rows, S, {_EXACT_TREE_SCRATCH_SLOTS}]"
         )
-    slot_rows = int(scratch.shape[1])
-    if slot_rows < int(W):
+    if int(scratch.shape[0]) < int(W):
         raise ValueError("exact tree working buffer has fewer rows than the wave")
     # One entry per species-tree height, holding that height's internal nodes; a tree with no
     # internal node at all leaves both walks empty, which is the right answer for it.
@@ -2420,7 +2508,6 @@ def compute_exact_tree_self_loop(
         wide_row,
         wide_row_count,
         ws,
-        slot_rows * int(S),
         n_levels,
         exact_range_for_dtype(range_log2, Pi_in.dtype),
         exact_conditioning_floor(Pi_in.dtype),
