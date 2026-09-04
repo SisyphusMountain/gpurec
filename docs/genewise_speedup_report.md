@@ -255,6 +255,56 @@ stand). The four per-wave backward kernels are latency-bound at low occupancy ra
 compute- or bandwidth-bound; every tiling change tried was either slower or rejected on
 correctness before D4 removed the cancellation.
 
+### E. A rounding floor in every transfer sum (third round)
+
+**What was found.** Two corners of the rate box were left where the exact path disagreed with the
+log path even in float64. Chasing the worse one (duplication and transfer rates at their floor,
+loss at its cap: log2 rates D = -19.9, L = 1, T = -19.9) on the 29,014-clade family COG0009_0 led
+not to a solver bug but to one arithmetic step every kernel shared. A species lane's available
+transfer mass (the receiver-weighted mass of every species that is neither the lane nor one of its
+ancestors) was formed as **the row's total minus the mass on the lane's own ancestor chain**. For
+every species hanging under the lane that holds the row's mass, the true remainder is below the
+rounding unit of the total (2^-24 in float32, 2^-53 in float64), so what came out was rounding
+noise, sometimes turned into "no transfer possible" when the difference went negative. Those lanes
+are 50 to 300 binary orders below their own row maximum and looked harmless, but under high loss a
+lane far under its own row maximum is the dominant factor of a product in the parent clade's
+gene-split source, so the noise climbs the gene tree: a whole-row comparison of the two paths
+(`benchmark/cc/corner_row_probe.py`) showed the first disagreement at exactly 54 binary orders
+below the row maximum in wave 1, growing to 0.08 log2 by wave 25, 11 by wave 32 and 100 by wave
+100; the family's likelihood was off by 8.7 bits. Both paths were fixed points of the log kernel to
+1e-8 (`corner_residual_probe.py`: one more sweep moved neither), which is what gave it away: the
+equation being iterated was itself floor-limited, so the converged log path was not an oracle.
+
+The same construction sat in every derivative kernel, and in the adjoint it is amplified: each
+receiver lane's adjoint coefficient divides by that lane's own valid receiver mass, so for lanes
+under the dominant species it is about 2^depth, and "row total minus own subtree" of those terms,
+for the dominant lane, is a difference of two astronomically large, nearly equal numbers. At the
+corner the float64 gradient was 1e8 times larger than central finite differences of the corrected
+likelihood, for both adjoint solvers (`corner_fd_grad.py`); in a mild regime (D = -6, L = -3,
+T = -6) analytic and finite differences agreed to 8e-5, the step's own truncation error.
+
+**The fix: additions only, everywhere.** A lane's available mass is the mass hanging off its
+ancestor chain plus its children's subtree masses, both sums of non-negative terms built by two
+walks over the species tree (subtree sums from the leaves up, off-chain sums from the root down
+through parent and sibling). In the exact forward solve this is carried as an affine function of
+the mass entering each subtree (two coefficients per species), which replaced three walks by one
+and removed the noisy first pass (commit bacea6b1; a host-side lane-by-lane residual of the
+fixed-point equation, `exact_row_host_check.py`, went from 1.9e-8 to 1.4e-13). The log forward
+sweep now uses two running sums over the depth-first species order instead of a 34-deep ancestor
+walk, and got 8 to 18 % faster (89aab151). The three tangent kernels share one additive helper
+(edc92533, 7f95d53e). The series adjoint term and the exact adjoint solve eliminate on the
+off-subtree adjoint passed down by addition instead of the row total (60a8b993, 8ad9bf49); the two
+transfer VJP kernels followed (e24fd7f4). Second-order (Hessian) kernels: see the log.
+
+**Result.** The float64 log and exact paths now agree to 1e-11 bits on the corner family at every
+depth; the analytic gradient there is -71.944 / +2748.83 / -407.69 (D, L, T) against finite
+differences -71.951 / +2749.09 / -407.73, the truncation floor, identically for both adjoint
+solvers. At fitted rates nothing changed: the full fit with the forward fix alone gave
+9048938.300 bits (previous runs 9048938.28 to 9048938.31), 5119 of 5123 certified; the full fit
+with every kernel converted is reported in the progression table. The point of the change is
+that the rate box is now trustworthy where the fit may wander, for the likelihood and for the
+gradient, in both precisions.
+
 ## Is the likelihood preserved?
 
 Yes in total and for almost every family; a few dozen families with two competing optima changed
@@ -277,9 +327,11 @@ Reproducibility: the gradient is not bitwise reproducible (atomic accumulation),
 convergence flags in the tail can differ by a few families between any two runs, old or new; the
 total NLL varies by about 0.02 bits between runs.
 
-Precision: production runs are float32 with float64 accumulators (unchanged). The exact and linear
-paths hold one scale per row (see D2's known limit); float64 runs are supported by the same kernels
-and were used as the oracle whenever two float32 answers disagreed.
+Precision: production runs are float32 with float64 accumulators (unchanged). The exact path holds
+one scale per row, so a row spanning more than `exact_range_log2` binary orders is handed to the log
+sweeps (see D2); float64 runs are supported by the same kernels and were used as the oracle whenever
+two float32 answers disagreed. Since the third round (section E) the float64 log and exact paths
+agree at every depth of every row, so either is an oracle.
 
 ## The progression of full-dataset runs
 
