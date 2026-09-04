@@ -69,6 +69,16 @@ _THREADS_PER_WARP = 32
 # 64 threads) where 64-wide tiles need 2688 (42 rounds) -- 42% fewer.
 _BLOCK_NODES_SELF_LOOP_TRANSPOSE = _NUM_WARPS_SELF_LOOP_TRANSPOSE * _THREADS_PER_WARP
 
+# Species-tree nodes per tile in the two level walks of
+# ``_accumulate_transfer_subtree_vjp_kernel``, for the same reason and by the same construction.
+# Until now those walks had no width of their own and reused the SPECIES tile, which on this tree
+# happens to be 256 as well -- one node per thread by coincidence, not by construction. It was a
+# coincidence that could break in either direction: the species tile is min(256, next power of two
+# above S), so any tree with fewer than 256 species would have left half the threads holding
+# nothing, and any change to the species tile or the warp count would have silently made every
+# level-walk instruction issue two or four times over.
+_BLOCK_NODES_TRANSFER_SUBTREE_VJP = _NUM_WARPS_TRANSFER_SUBTREE_VJP * _THREADS_PER_WARP
+
 # Warps per program for the register-resident transposed solve
 # (``_solve_reconciliation_self_loop_transpose_row_kernel``). One program holds one clade row's
 # whole species tile, so the warp count decides how many species lanes each thread carries and
@@ -1678,6 +1688,7 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
         S,
         stride_C,
         BLOCK_S,
+        _BLOCK_NODES_TRANSFER_SUBTREE_VJP,
         N_LEVELS=compact_level_ptr.numel() - 1,
         N_COMPACT_NODES=n_compact_nodes,
         USE_ACTIVE_MASK=bool(active_mask is not None),
