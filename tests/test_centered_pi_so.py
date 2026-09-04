@@ -145,7 +145,9 @@ def test_centered_wave_so_matches_reconstructed_absolute(
         species_child1=child1,
         species_child2=child2,
         species_parent=parent,
-        max_ancestor_depth=2,
+        # Species 0 is the root with leaves 1 and 2 below it: heights 1, 0, 0, one level.
+        species_height=torch.tensor([1, 0, 0], device=device, dtype=torch.int32),
+        species_levels=1,
         gene_split_log_likelihood=dts_absolute if has_splits else None,
         d_gene_split_log_likelihood=d_dts if has_splits else None,
         leaf_species_idx=leaf_species,
@@ -338,6 +340,7 @@ def test_centered_dts_so_matches_reconstructed_absolute(
             d_grad_pS,
             d_grad_mt,
             d_grad_receiver_log_probs,
+            species_parent=parent,
             use_receiver_weights=True,
             dreceiver_log_probs=receiver_tangent,
             pi_offset=pi_gauge,

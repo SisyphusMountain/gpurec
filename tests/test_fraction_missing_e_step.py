@@ -28,7 +28,8 @@ def _run(leaf_fm_log):
         max_transfer=max_transfer,
         receiver_log_probs=torch.full((S,), -math.log2(S), dtype=dt, device=dev),
         species_parent=sp_parent, species_child1=sp_child1, species_child2=sp_child2,
-        max_ancestor_depth=3, max_iter=4000, tol=1e-13, use_receiver_weights=False,
+        species_height=torch.tensor([0, 0, 1], dtype=torch.int32, device=dev), species_levels=1,
+        max_iter=4000, tol=1e-13, use_receiver_weights=False,
         leaf_fm_log=leaf_fm_log,
     )
     return E, Ebar

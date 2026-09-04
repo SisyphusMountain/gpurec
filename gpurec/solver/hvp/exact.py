@@ -249,7 +249,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     species_child1 = sh["sp_child1"]
     species_child2 = sh["sp_child2"]
     species_parent = sh["sp_parent"]
-    max_ancestor_depth = int(sh["max_ancestor_depth"])
+    # Each species' height (0 at a leaf) and the tree's height. The additive valid-receiver and
+    # off-subtree sums walk one level per pass and need both; the level count is read off the
+    # compact level tables' shape, so no device-to-host copy.
+    species_height = sh["sp_height"]
+    species_levels = int(sh["compact_level_ptr"].numel()) - 1
     leaf_species_idx = wl["leaf_species_index"].to(device=theta.device, dtype=torch.int32).contiguous()
     root_ids = wl["root_clade_ids"]
     n_fam = int(root_ids.numel())
@@ -317,7 +321,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
         E_new_g, E_s1_g, E_s2_g, Ebar_g = e_step_triton_autograd(
             E_req, sv["log_pS"], sv["log_pD"], sv["log_pL"], sv["max_transfer"],
             receiver_log_probs, species_parent, species_child1, species_child2,
-            max_ancestor_depth, use_receiver_weights=use_receiver_weights,
+            species_height, species_levels, use_receiver_weights=use_receiver_weights,
             leaf_fm_log=leaf_fm_log,
         )
 
@@ -358,7 +362,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             En, _, _, Eb = e_step_triton_autograd(
                 E_star.detach(), pS_r, pD_r, pL_r, max_transfer_req,
                 receiver_log_probs_req, species_parent, species_child1,
-                species_child2, max_ancestor_depth,
+                species_child2, species_height, species_levels,
                 use_receiver_weights=use_receiver_weights,
                 leaf_fm_log=leaf_fm_log,
             )
@@ -596,8 +600,9 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     wave_constants["speciation_child2_const"],
                     tangent_constants["d_speciation_child2_const"],
                     receiver_log_probs, species_child1, species_child2,
-                    species_parent, max_ancestor_depth,
+                    species_parent,
                     gene_split_log_likelihood, d_gene_split_log_likelihood,
+                    species_height=species_height, species_levels=species_levels,
                     leaf_species_idx=leaf_species_idx,
                     leaf_logp=wave_constants["leaf_log_probability"],
                     d_leaf_logp=tangent_constants["d_leaf_log_probability"],
@@ -757,6 +762,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         receiver_log_probs, species_child1, species_child2,
                         pibar_row_max, family_idx,
                         d_rhs, d_grad_log_pD, d_grad_log_pS, d_grad_max_transfer, d_grad_receiver_log_probs,
+                        species_parent=species_parent,
                         compact_level_ptr=sh["compact_level_ptr"],
                         compact_level_parents=sh["compact_level_parents"],
                         compact_level_child1=sh["compact_level_child1"],
@@ -772,7 +778,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             free_cuda_cache_if_tight()
             x_args = (E_star.contiguous(), E_star.contiguous(), sv["E_s1"], sv["E_s2"],
                       sv["Ebar"], pS_m, pD_m, pL_m, receiver_log_probs.contiguous(),
-                      species_parent, species_child1, species_child2, max_ancestor_depth)
+                      species_parent, species_child1, species_child2)
             # S4: the 9th dx slot is dreceiver_log_probs (e_step_backward_so signature ...,dlog_pL, dreceiver_log_probs). Was
             # formerly hardcoded None; thread the S3 seed so the E-step SO contraction
             # carries the receiver-weight dependence. None at a uniform base preserves
@@ -783,6 +789,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             aux_lin = aux_T(d_grad_extinction_child1, d_grad_extinction_child2, d_grad_extinction_complement)
             so_aux = e_step_backward_so(
                 *x_args, zero_g, acc["grad_Ebar"], *dx,
+                species_height=species_height, species_levels=species_levels,
                 use_receiver_weights=use_receiver_weights,
             )
             if origination_log_probs is None:
@@ -799,6 +806,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             dq_E = d_grad_extinction + aux_lin + so_aux[0] + dg_norm
             # tangent E-adjoint solve: same operator, new rhs
             so_w = e_step_backward_so(*x_args, wE, zero_g, *dx,
+                                      species_height=species_height, species_levels=species_levels,
                                       use_receiver_weights=use_receiver_weights)
             rhs_E = (dq_E + so_w[0]).reshape(-1)
             E_shape = E_star.shape
@@ -825,6 +833,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             # e_bwd_params and the primal cotangents/head graph are hoisted (u-independent).
             lin_p = e_bwd_params(dwE, d_grad_extinction_complement)
             so_p = e_step_backward_so(*x_args, wE, acc["grad_Ebar"], *dx,
+                                      species_height=species_height, species_levels=species_levels,
                                       use_receiver_weights=use_receiver_weights)
             # so_p outputs: (d_grad_E, d_grad_pS, d_grad_pD, d_grad_pL, d_grad_mc, d_grad_receiver_log_probs)
 

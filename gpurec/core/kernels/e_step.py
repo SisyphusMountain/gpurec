@@ -4,6 +4,13 @@ import triton.language as tl
 
 from gpurec.api.solver_options import SolverOptions
 from gpurec.core.parameters.extract_parameters import as_family_species
+# The additive species-tree sums; see that module for why the old "row total minus the
+# excluded few" construction had to go.
+from gpurec.core.kernels.species_tree_sums import (
+    off_subtree_sum,
+    species_neighbourhood,
+    valid_receiver_sum,
+)
 
 
 def _tl_float_dtype(dtype):
@@ -31,10 +38,11 @@ def _update_extinction_log_probabilities_kernel(
     species_parent_ptr,
     species_child1_ptr,
     species_child2_ptr,
+    species_height_ptr,
     leaf_fm_log_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    N_LEVELS: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     USE_FRACTION_MISSING: tl.constexpr,
@@ -55,24 +63,17 @@ def _update_extinction_log_probabilities_kernel(
         receiver_weighted_extinction_log_probability = E
     row_max = tl.max(receiver_weighted_extinction_log_probability, axis=0)
     row_max_safe = tl.where(row_max != neg_inf, row_max, tl.zeros([1], dtype=DTYPE))
-    total_receiver_mass = tl.sum(tl.exp2(receiver_weighted_extinction_log_probability - row_max_safe), axis=0)
+    receiver_mass = tl.where(
+        mask, tl.exp2(receiver_weighted_extinction_log_probability - row_max_safe), zero
+    )
 
-    ancestor_species = offs
-    excluded_ancestor_mass = zero
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        ancestor_extinction_log_probability = tl.load(E_ptr + base + ancestor_species, mask=ancestor_valid, other=neg_inf)
-        if USE_RECEIVER_WEIGHTS:
-            ancestor_receiver_log_probability = tl.load(receiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=neg_inf)
-            excluded_ancestor_mass += tl.where(ancestor_valid, tl.exp2(ancestor_receiver_log_probability + ancestor_extinction_log_probability - row_max_safe), zero)
-        else:
-            excluded_ancestor_mass += tl.where(ancestor_valid, tl.exp2(ancestor_extinction_log_probability - row_max_safe), zero)
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
-
-    c1 = tl.load(species_child1_ptr + offs, mask=mask, other=-1)
-    c2 = tl.load(species_child2_ptr + offs, mask=mask, other=-1)
-    c1_valid = mask & (c1 >= 0) & (c1 < S)
-    c2_valid = mask & (c2 >= 0) & (c2 < S)
+    (
+        species_height, c1_valid, c1, c2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    ) = species_neighbourhood(
+        species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
+        offs, mask, S,
+    )
     E_s1 = tl.load(E_ptr + base + c1, mask=c1_valid, other=neg_inf)
     E_s2 = tl.load(E_ptr + base + c2, mask=c2_valid, other=neg_inf)
     if USE_FRACTION_MISSING:
@@ -84,7 +85,15 @@ def _update_extinction_log_probabilities_kernel(
         E_s2 = tl.where(is_missing_leaf, tl.zeros([BLOCK_S], dtype=DTYPE), E_s2)
 
     max_transfer = tl.load(max_transfer_ptr + base + offs, mask=mask, other=0.0)
-    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    # An extinct lineage in species s can transfer into every species that is neither s nor an
+    # ancestor of s. Summed by ADDITION over the tree, never as the whole row's mass minus the
+    # ancestor chain: see gpurec/core/kernels/species_tree_sums.py for why that difference is
+    # rounding noise whenever one lane holds the row.
+    valid_receiver_mass = valid_receiver_sum(
+        receiver_mass, mask, zero, species_height,
+        c1_valid, c1, c2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
     Ebar = tl.where(valid_receiver_mass > 0.0, tl.log2(valid_receiver_mass) + row_max + max_transfer, neg_inf)
 
     speciation_log_probability = tl.load(log_pS_ptr + base + offs, mask=mask, other=neg_inf)
@@ -131,6 +140,7 @@ def _stage_extinction_and_transfer_complement_vjp_kernel(
     species_parent_ptr,
     species_child1_ptr,
     species_child2_ptr,
+    species_height_ptr,
     grad_E_new_ptr,
     grad_E_s1_out_ptr,
     grad_E_s2_out_ptr,
@@ -142,11 +152,10 @@ def _stage_extinction_and_transfer_complement_vjp_kernel(
     grad_max_transfer_ptr,
     grad_receiver_log_probs_ptr,
     receiver_mass_ptr,
-    excluded_donor_adjoint_ptr,
-    total_donor_adjoint_ptr,
+    off_subtree_donor_adjoint_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    N_LEVELS: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
@@ -177,9 +186,7 @@ def _stage_extinction_and_transfer_complement_vjp_kernel(
         receiver_weighted_extinction_log_probability - row_max_safe
     )
     receiver_mass = tl.where(mask, receiver_mass, zero)
-    total_receiver_mass = tl.sum(receiver_mass, axis=0)
     tl.store(receiver_mass_ptr + base + offs, receiver_mass, mask=mask)
-    tl.store(excluded_donor_adjoint_ptr + base + offs, zero, mask=mask)
 
     extinction_update_adjoint = tl.load(grad_E_new_ptr + base + offs, mask=mask, other=0.0)
     child1_extinction_output_adjoint = tl.load(grad_E_s1_out_ptr + base + offs, mask=mask, other=0.0)
@@ -213,17 +220,19 @@ def _stage_extinction_and_transfer_complement_vjp_kernel(
         mask=mask,
     )
 
-    # Cross-warp lost-update fix: the plain stores above (grad_E here, excluded_donor_adjoint earlier)
-    # and the atomic_adds below target overlapping row addresses (a state's children/
-    # ancestors are other states handled by other warps of the same CTA). Without a barrier
-    # a warp's atomic_add can land before another warp's initializing store, which then
-    # overwrites it -> dropped gradient contribution. Order stores-then-atomics.
+    # Cross-warp lost-update fix: the plain store above (grad_E) and the atomic_adds below target
+    # overlapping row addresses (a state's children are other states handled by other warps of the
+    # same CTA). Without a barrier a warp's atomic_add can land before another warp's initializing
+    # store, which then overwrites it -> dropped gradient contribution. Order stores-then-atomics.
     tl.debug_barrier()
 
-    c1 = tl.load(species_child1_ptr + offs, mask=mask, other=-1)
-    c2 = tl.load(species_child2_ptr + offs, mask=mask, other=-1)
-    c1_valid = mask & (c1 >= 0) & (c1 < S)
-    c2_valid = mask & (c2 >= 0) & (c2 < S)
+    (
+        species_height, c1_valid, c1, c2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    ) = species_neighbourhood(
+        species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
+        offs, mask, S,
+    )
     tl.atomic_add(
         grad_E_ptr + base + c1,
         speciation_event_vjp + child1_extinction_output_adjoint,
@@ -237,38 +246,32 @@ def _stage_extinction_and_transfer_complement_vjp_kernel(
         mask=c2_valid,
     )
 
-    ancestor_species = offs
-    excluded_ancestor_mass = tl.zeros([BLOCK_S], dtype=DTYPE)
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        ancestor_extinction_log_probability = tl.load(E_ptr + base + ancestor_species, mask=valid, other=neg_inf)
-        if USE_RECEIVER_WEIGHTS:
-            ancestor_receiver_log_probability = tl.load(receiver_log_probs_ptr + ancestor_species, mask=valid, other=neg_inf)
-            excluded_ancestor_mass += tl.where(valid, tl.exp2(ancestor_receiver_log_probability + ancestor_extinction_log_probability - row_max_safe), zero)
-        else:
-            excluded_ancestor_mass += tl.where(valid, tl.exp2(ancestor_extinction_log_probability - row_max_safe), zero)
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=valid, other=-1).to(tl.int32)
-
-    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    # The same valid receiver mass the forward built, by the same additive walk.
+    valid_receiver_mass = valid_receiver_sum(
+        receiver_mass, mask, zero, species_height,
+        c1_valid, c1, c2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
     donor_adjoint = tl.where(
         mask & (valid_receiver_mass > 0.0),
         transfer_complement_vjp / valid_receiver_mass,
         zero,
     )
-    tl.store(
-        total_donor_adjoint_ptr + g, tl.sum(donor_adjoint, axis=0)
-    )
 
-    ancestor_species = offs
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        tl.atomic_add(
-            excluded_donor_adjoint_ptr + base + ancestor_species,
-            donor_adjoint,
-            sem="relaxed",
-            mask=valid,
-        )
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=valid, other=-1).to(tl.int32)
+    # Extinction probability E[r] enters the transfer complement of every donor that may reach r,
+    # that is every donor OUTSIDE r's own subtree, so the finalize kernel needs the donor adjoint
+    # summed off each lane's subtree. Built by ADDITION in registers: subtree sums bottom-up, then
+    # off-subtree(child) = off-subtree(parent) + parent's own term + sibling's subtree, top-down.
+    # It used to be the row total minus an ancestor walk of scattered atomic adds.
+    tl.store(
+        off_subtree_donor_adjoint_ptr + base + offs,
+        off_subtree_sum(
+            donor_adjoint, mask, zero, species_height,
+            c1_valid, c1, c2_valid, c2,
+            has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+        ),
+        mask=mask,
+    )
 
 
 @triton.jit
@@ -276,8 +279,7 @@ def _finalize_extinction_transfer_complement_vjp_kernel(
     grad_E_ptr,
     grad_receiver_log_probs_ptr,
     receiver_mass_ptr,
-    excluded_donor_adjoint_ptr,
-    total_donor_adjoint_ptr,
+    off_subtree_donor_adjoint_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
@@ -289,16 +291,14 @@ def _finalize_extinction_transfer_complement_vjp_kernel(
     receiver_mass = tl.load(
         receiver_mass_ptr + base + offs, mask=mask, other=0.0
     )
-    excluded_donor_adjoint = tl.load(
-        excluded_donor_adjoint_ptr + base + offs, mask=mask, other=0.0
+    off_subtree_donor_adjoint = tl.load(
+        off_subtree_donor_adjoint_ptr + base + offs, mask=mask, other=0.0
     )
-    total_donor_adjoint = tl.load(total_donor_adjoint_ptr + g)
     current_extinction_vjp = tl.load(
         grad_E_ptr + base + offs, mask=mask, other=0.0
     )
-    transfer_complement_vjp = receiver_mass * (
-        total_donor_adjoint - excluded_donor_adjoint
-    )
+    # The staging kernel already summed the donor adjoint off each lane's subtree by addition.
+    transfer_complement_vjp = receiver_mass * off_subtree_donor_adjoint
     tl.store(
         grad_E_ptr + base + offs,
         current_extinction_vjp + transfer_complement_vjp,
@@ -323,7 +323,8 @@ def _launch_e_step_forward_2d(
     species_parent: torch.Tensor,
     species_child1: torch.Tensor,
     species_child2: torch.Tensor,
-    max_ancestor_depth: int,
+    species_height: torch.Tensor,
+    species_levels: int,
     *,
     max_diff_out: torch.Tensor | None = None,
     out: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
@@ -357,10 +358,11 @@ def _launch_e_step_forward_2d(
         species_parent,
         species_child1,
         species_child2,
+        species_height,
         leaf_fm_log_arg,
         S,
         BLOCK_S=block_s,
-        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        N_LEVELS=int(species_levels),
         COMPUTE_DIFF=max_diff_out is not None,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         USE_FRACTION_MISSING=use_fraction_missing,
@@ -382,7 +384,8 @@ class _TritonEStep2D(torch.autograd.Function):
         species_parent,
         species_child1,
         species_child2,
-        max_ancestor_depth: int,
+        species_height,
+        species_levels: int,
         use_receiver_weights: bool,
         leaf_fm_log,
     ):
@@ -396,16 +399,17 @@ class _TritonEStep2D(torch.autograd.Function):
             species_parent,
             species_child1,
             species_child2,
-            int(max_ancestor_depth),
+            species_height,
+            int(species_levels),
             use_receiver_weights=bool(use_receiver_weights),
             leaf_fm_log=leaf_fm_log,
         )
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        ctx.save_for_backward(inputs[0], *output, *inputs[1:4], inputs[5], *inputs[6:9])
-        ctx.max_ancestor_depth = int(inputs[9])
-        ctx.use_receiver_weights = bool(inputs[10])
+        ctx.save_for_backward(inputs[0], *output, *inputs[1:4], inputs[5], *inputs[6:10])
+        ctx.species_levels = int(inputs[10])
+        ctx.use_receiver_weights = bool(inputs[11])
 
     @staticmethod
     def backward(ctx, grad_E_new, grad_E_s1_out, grad_E_s2_out, grad_Ebar_out):
@@ -422,6 +426,7 @@ class _TritonEStep2D(torch.autograd.Function):
             species_parent,
             species_child1,
             species_child2,
+            species_height,
         ) = ctx.saved_tensors
         G = int(E.shape[0])
         S = int(E.shape[1])
@@ -437,12 +442,11 @@ class _TritonEStep2D(torch.autograd.Function):
             grad_log_pL,
             grad_max_transfer,
             receiver_mass,
-            excluded_donor_adjoint,
+            off_subtree_donor_adjoint,
         ) = (
             torch.empty_like(E) for _ in range(7)
         )
         grad_receiver_log_probs = torch.zeros_like(receiver_log_probs)
-        total_donor_adjoint = torch.empty((G,), dtype=E.dtype, device=E.device)
 
         _stage_extinction_and_transfer_complement_vjp_kernel[(G,)](
             E,
@@ -457,6 +461,7 @@ class _TritonEStep2D(torch.autograd.Function):
             species_parent,
             species_child1,
             species_child2,
+            species_height,
             grad_E_new,
             grad_E_s1_out,
             grad_E_s2_out,
@@ -468,11 +473,10 @@ class _TritonEStep2D(torch.autograd.Function):
             grad_max_transfer,
             grad_receiver_log_probs,
             receiver_mass,
-            excluded_donor_adjoint,
-            total_donor_adjoint,
+            off_subtree_donor_adjoint,
             S,
             BLOCK_S=block_s,
-            MAX_ANCESTOR_DEPTH=int(ctx.max_ancestor_depth),
+            N_LEVELS=int(ctx.species_levels),
             USE_RECEIVER_WEIGHTS=bool(ctx.use_receiver_weights),
             DTYPE=_tl_float_dtype(E.dtype),
             num_warps=8,
@@ -481,8 +485,7 @@ class _TritonEStep2D(torch.autograd.Function):
             grad_E,
             grad_receiver_log_probs,
             receiver_mass,
-            excluded_donor_adjoint,
-            total_donor_adjoint,
+            off_subtree_donor_adjoint,
             S,
             BLOCK_S=block_s,
             USE_RECEIVER_WEIGHTS=bool(ctx.use_receiver_weights),
@@ -498,7 +501,8 @@ class _TritonEStep2D(torch.autograd.Function):
             None,  # species_parent
             None,  # species_child1
             None,  # species_child2
-            None,  # max_ancestor_depth
+            None,  # species_height
+            None,  # species_levels
             None,  # use_receiver_weights
             None,  # leaf_fm_log (non-differentiable, fixed input)
         )
@@ -514,10 +518,14 @@ def e_step_triton_autograd(
     species_parent: torch.Tensor,
     species_child1: torch.Tensor,
     species_child2: torch.Tensor,
-    max_ancestor_depth: int,
+    species_height: torch.Tensor,
+    species_levels: int,
     use_receiver_weights: bool = True,
     leaf_fm_log: torch.Tensor | None = None,
 ):
+    """``species_height`` is 0 at a leaf and 1 + the taller child above; ``species_levels`` is the
+    species tree's height. Both drive the additive valid-receiver-mass walk (see
+    ``gpurec/core/kernels/species_tree_sums.py``) that replaced the old ancestor-chain walk."""
     E_arg = E.contiguous()
     return _TritonEStep2D.apply(
         E_arg,
@@ -526,7 +534,8 @@ def e_step_triton_autograd(
         species_parent,
         species_child1,
         species_child2,
-        int(max_ancestor_depth),
+        species_height,
+        int(species_levels),
         bool(use_receiver_weights),
         leaf_fm_log,
     )
@@ -542,7 +551,8 @@ def e_fixed_point_triton(
     species_parent: torch.Tensor,
     species_child1: torch.Tensor,
     species_child2: torch.Tensor,
-    max_ancestor_depth: int,
+    species_height: torch.Tensor,
+    species_levels: int,
     *,
     max_iter: int | None = None,
     tol: float | None = None,
@@ -575,7 +585,8 @@ def e_fixed_point_triton(
         species_parent,
         species_child1,
         species_child2,
-        int(max_ancestor_depth),
+        species_height,
+        int(species_levels),
     )
 
     E_b, E_s1, E_s2, Ebar = (torch.empty_like(E_a) for _ in range(4))

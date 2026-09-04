@@ -12,6 +12,13 @@ from gpurec.core.kernels.pi_forward import (
     _validate_offset_tensor,
     _validate_residual_tensors,
 )
+# The same additive species-tree sums the forward and the tangent use, so the second-order
+# contraction differentiates the primal the other two actually compute.
+from gpurec.core.kernels.species_tree_sums import (
+    off_subtree_sum,
+    species_neighbourhood,
+    valid_receiver_sum,
+)
 
 
 # ``ws`` is the wave's start row and changes every launch; keeping it out of the
@@ -28,7 +35,7 @@ def _reconciliation_vjp_directional_derivative_kernel(
     speciation_child1_const_ptr, d_speciation_child1_const_ptr,
     speciation_child2_const_ptr, d_speciation_child2_const_ptr,
     receiver_log_probs_ptr, dreceiver_log_probs_ptr,
-    species_child1_ptr, species_child2_ptr, species_parent_ptr,
+    species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
     leaf_species_ptr, leaf_logp_ptr, d_leaf_logp_ptr,
     family_idx_ptr,
     gene_split_log_likelihood_ptr,
@@ -42,10 +49,9 @@ def _reconciliation_vjp_directional_derivative_kernel(
     d_speciation_leaf_event_vjp_ptr,
     d_speciation_child1_event_vjp_ptr,
     d_speciation_child2_event_vjp_ptr,
-    subtree_donor_adjoint_ptr, d_subtree_donor_adjoint_ptr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    N_LEVELS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     FOLD_RHS: tl.constexpr,
@@ -95,40 +101,30 @@ def _reconciliation_vjp_directional_derivative_kernel(
     else:
         receiver_mass = tl.where(mask, tl.exp2(reconciliation_log_likelihood - receiver_mass_log_scale_safe), zero)
         d_receiver_mass = LN2 * receiver_mass * d_reconciliation_log_likelihood
-    total_receiver_mass = tl.sum(receiver_mass, axis=0)
-    d_total_receiver_mass = tl.sum(d_receiver_mass, axis=0)
-
     # The stabilizing row maximum is frozen: the represented transfer
     # complement is invariant to this gauge.
-    ancestor_species = s_offs
-    excluded_ancestor_mass = zero
-    d_excluded_ancestor_mass = zero
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        ancestor_reconciliation_log_likelihood = tl.load(Pi_ptr + pi_base + ancestor_species, mask=ancestor_valid, other=NEG)
-        d_ancestor_reconciliation_log_likelihood = tl.load(dPi_ptr + pi_base + ancestor_species, mask=ancestor_valid, other=0.0)
-        if USE_RECEIVER_WEIGHTS:
-            ancestor_receiver_log_probability = tl.load(
-                receiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=NEG
-            )
-            d_ancestor_receiver_log_probability = tl.load(
-                dreceiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=0.0
-            )
-            ancestor_receiver_mass = tl.where(
-                ancestor_valid, tl.exp2(ancestor_receiver_log_probability + ancestor_reconciliation_log_likelihood - receiver_mass_log_scale_safe), zero
-            )
-            d_excluded_ancestor_mass += (
-                LN2
-                * ancestor_receiver_mass
-                * (d_ancestor_reconciliation_log_likelihood + d_ancestor_receiver_log_probability)
-            )
-        else:
-            ancestor_receiver_mass = tl.where(ancestor_valid, tl.exp2(ancestor_reconciliation_log_likelihood - receiver_mass_log_scale_safe), zero)
-            d_excluded_ancestor_mass += LN2 * ancestor_receiver_mass * d_ancestor_reconciliation_log_likelihood
-        excluded_ancestor_mass += ancestor_receiver_mass
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
-
-    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    (
+        species_height, child1_valid, c1, child2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    ) = species_neighbourhood(
+        species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
+        s_offs, mask, S,
+    )
+    # A donor may transfer into every species that is neither itself nor one of its ancestors.
+    # Both this mass and its tangent are built by ADDITION -- subtree sums bottom-up, off-chain
+    # sums top-down -- exactly as the forward and the tangent build them, never as the row total
+    # minus the ancestor chain (see gpurec/core/kernels/species_tree_sums.py for why that
+    # subtraction is rounding noise for the species under the lane holding the row's mass).
+    valid_receiver_mass = valid_receiver_sum(
+        receiver_mass, mask, zero, species_height,
+        child1_valid, c1, child2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
+    d_valid_receiver_mass = valid_receiver_sum(
+        d_receiver_mass, mask, zero, species_height,
+        child1_valid, c1, child2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
     has_valid_receiver_mass = mask & (valid_receiver_mass > 0.0)
     safe_valid_receiver_mass = tl.where(
         has_valid_receiver_mass,
@@ -138,7 +134,6 @@ def _reconciliation_vjp_directional_derivative_kernel(
     inverse_valid_receiver_mass = tl.where(
         has_valid_receiver_mass, 1.0 / safe_valid_receiver_mass, zero
     )
-    d_valid_receiver_mass = d_total_receiver_mass - d_excluded_ancestor_mass
 
     # Event terms and probabilities at the saved primal fixed point.
     const_offsets = const_base + s_offs
@@ -165,10 +160,8 @@ def _reconciliation_vjp_directional_derivative_kernel(
         d_speciation_child2_const_ptr + const_offsets, mask=mask, other=0.0
     )
 
-    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
-    child1_valid = mask & (c1 < S)
-    child2_valid = mask & (c2 < S)
+    # c1/c2/child*_valid already came back from species_neighbourhood above; the indices are
+    # already 0 where the child is missing, so the gathers below can stay unconditional.
     reconciliation_child1_log_likelihood = tl.where(
         child1_valid,
         tl.gather(
@@ -384,40 +377,26 @@ def _reconciliation_vjp_directional_derivative_kernel(
     )
     donor_adjoint = v * donor_adjoint_coefficient
     d_donor_adjoint = v * d_donor_adjoint_coefficient
-    total_donor_adjoint = tl.sum(donor_adjoint, axis=0)
-    d_total_donor_adjoint = tl.sum(d_donor_adjoint, axis=0)
 
-    tl.store(subtree_donor_adjoint_ptr + out_base + s_offs, zero, mask=mask)
-    tl.store(
-        d_subtree_donor_adjoint_ptr + out_base + s_offs, zero, mask=mask
+    # A receiver s takes mass from every donor OUTSIDE s's own subtree, so what the transfer term
+    # needs per lane is that off-subtree sum of the donor adjoints (and of its tangent). This was
+    # the row total minus the lane's subtree sum, built with an ancestor walk of scattered atomic
+    # adds. Each donor adjoint divides by that donor's own valid receiver mass, so for a species
+    # hanging under the lane holding the row's mass it is astronomically large, the total is
+    # dominated by those terms, and for the dominant lane the difference cancels to rounding noise
+    # of that same size -- the first-order gradient came out 1e8 times too large on a 1007-species
+    # Coleman family at the loss-rate cap. Built by ADDITION instead, in registers: subtree sums
+    # bottom-up, then off-subtree(child) = off-subtree(parent) + parent's own term + sibling's
+    # subtree, top-down. No scratch buffer and no atomics.
+    off_subtree_donor_adjoint = off_subtree_sum(
+        donor_adjoint, mask, zero, species_height,
+        child1_valid, c1, child2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
     )
-    tl.debug_barrier()
-    ancestor_species = s_offs
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        tl.atomic_add(
-            subtree_donor_adjoint_ptr + out_base + ancestor_species,
-            donor_adjoint,
-            sem="relaxed",
-            mask=ancestor_valid,
-        )
-        tl.atomic_add(
-            d_subtree_donor_adjoint_ptr + out_base + ancestor_species,
-            d_donor_adjoint,
-            sem="relaxed",
-            mask=ancestor_valid,
-        )
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
-    tl.debug_barrier()
-    subtree_donor_adjoint = tl.load(
-        subtree_donor_adjoint_ptr + out_base + s_offs,
-        mask=mask,
-        other=0.0,
-    )
-    d_subtree_donor_adjoint = tl.load(
-        d_subtree_donor_adjoint_ptr + out_base + s_offs,
-        mask=mask,
-        other=0.0,
+    d_off_subtree_donor_adjoint = off_subtree_sum(
+        d_donor_adjoint, mask, zero, species_height,
+        child1_valid, c1, child2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
     )
 
     d_self_loop_diagonal = (
@@ -427,16 +406,15 @@ def _reconciliation_vjp_directional_derivative_kernel(
     )
     # Keep this addition association stable for the uniform-path numerical
     # regression: floating-point addition is not associative.
-    d_self_loop_vjp = v * d_self_loop_diagonal + d_receiver_mass * (
-        total_donor_adjoint - subtree_donor_adjoint
-    ) + receiver_mass * (
-        d_total_donor_adjoint - d_subtree_donor_adjoint
+    d_self_loop_vjp = (
+        v * d_self_loop_diagonal
+        + d_receiver_mass * off_subtree_donor_adjoint
+        + receiver_mass * d_off_subtree_donor_adjoint
     )
     if USE_RECEIVER_WEIGHTS:
-        d_transfer_complement_vjp = d_receiver_mass * (
-            total_donor_adjoint - subtree_donor_adjoint
-        ) + receiver_mass * (
-            d_total_donor_adjoint - d_subtree_donor_adjoint
+        d_transfer_complement_vjp = (
+            d_receiver_mass * off_subtree_donor_adjoint
+            + receiver_mass * d_off_subtree_donor_adjoint
         )
         tl.atomic_add(
             d_grad_receiver_log_probs_ptr + s_offs,
@@ -484,13 +462,19 @@ def wave_backward_so(
     Ebar, dEbar, E, dE,
     speciation_child1_const, d_speciation_child1_const,
     speciation_child2_const, d_speciation_child2_const,
-    receiver_log_probs, species_child1, species_child2, species_parent, max_ancestor_depth,
+    receiver_log_probs, species_child1, species_child2, species_parent,
     gene_split_log_likelihood=None, d_gene_split_log_likelihood=None,
-    *, leaf_species_idx, leaf_logp, d_leaf_logp, family_idx, has_leaf_term=True,
+    *, species_height, species_levels,
+    leaf_species_idx, leaf_logp, d_leaf_logp, family_idx, has_leaf_term=True,
     use_receiver_weights=False, d_rhs=None, dreceiver_log_probs=None,
     pi_offset, pibar_offset, gene_split_offset=None,
 ):
-    """Return the wave second-order contraction documented in LaTeX."""
+    """Return the wave second-order contraction documented in LaTeX.
+
+    ``species_height`` (0 at a leaf, 1 + the taller child above) and ``species_levels`` (the tree's
+    height, so the number of bottom-up passes) drive the additive valid-receiver and off-subtree
+    sums; the old ancestor-chain walk and its scratch buffers are gone.
+    """
     has_splits = gene_split_log_likelihood is not None
     fold_rhs = d_rhs is not None
     _, const_row_stride = _prepare_wave_launch(S, duplication_loss_const)
@@ -553,10 +537,6 @@ def wave_backward_so(
     d_local_event_vjps = tuple(
         torch.empty((W, S), device=device, dtype=dtype) for _ in range(6)
     )
-    subtree_donor_adjoint = torch.empty((W, S), device=device, dtype=dtype)
-    d_subtree_donor_adjoint = torch.empty(
-        (W, S), device=device, dtype=dtype
-    )
     d_grad_receiver_log_probs = torch.zeros((S,), device=device, dtype=dtype)
     dummy = Pi_star
     dreceiver_log_probs_arg = (
@@ -576,7 +556,7 @@ def wave_backward_so(
         speciation_child1_const, d_speciation_child1_const,
         speciation_child2_const, d_speciation_child2_const,
         receiver_log_probs, dreceiver_log_probs_arg,
-        species_child1, species_child2, species_parent,
+        species_child1, species_child2, species_parent, species_height,
         leaf_species_idx, leaf_logp, d_leaf_logp,
         family_idx,
         gene_split_log_likelihood if has_splits else dummy,
@@ -586,10 +566,9 @@ def wave_backward_so(
         d_self_loop_vjp, d_rhs if fold_rhs else dummy,
         d_grad_receiver_log_probs,
         *d_local_event_vjps,
-        subtree_donor_adjoint, d_subtree_donor_adjoint,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
-        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        N_LEVELS=int(species_levels),
         USE_LEAF_INDEX=bool(has_leaf_term),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         FOLD_RHS=fold_rhs,

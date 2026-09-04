@@ -35,6 +35,8 @@ def _extinction_inputs(device: torch.device):
     species_parent = torch.tensor([-1, 0, 0], device=device, dtype=torch.int32)
     species_child1 = torch.tensor([1, -1, -1], device=device, dtype=torch.int32)
     species_child2 = torch.tensor([2, -1, -1], device=device, dtype=torch.int32)
+    # Species 0 is the root with leaves 1 and 2 below it: heights 1, 0, 0, so one level.
+    species_height = torch.tensor([1, 0, 0], device=device, dtype=torch.int32)
     return (
         extinction,
         speciation_log_probability,
@@ -45,6 +47,7 @@ def _extinction_inputs(device: torch.device):
         species_parent,
         species_child1,
         species_child2,
+        species_height,
     )
 
 
@@ -61,6 +64,7 @@ def test_uniform_extinction_vjp_has_no_receiver_weight_gradient() -> None:
         species_parent,
         species_child1,
         species_child2,
+        species_height,
     ) = _extinction_inputs(device)
     extinction.requires_grad_(True)
     receiver_log_probs.requires_grad_(True)
@@ -75,7 +79,8 @@ def test_uniform_extinction_vjp_has_no_receiver_weight_gradient() -> None:
         species_parent,
         species_child1,
         species_child2,
-        2,
+        species_height,
+        1,
         use_receiver_weights=False,
     )
     (receiver_gradient,) = torch.autograd.grad(
@@ -102,6 +107,7 @@ def test_uniform_extinction_vjp_directional_derivative_has_no_receiver_gradient(
         species_parent,
         species_child1,
         species_child2,
+        species_height,
     ) = _extinction_inputs(device)
     extinction_new, extinction_child1, extinction_child2, extinction_complement = (
         output.detach()
@@ -115,7 +121,8 @@ def test_uniform_extinction_vjp_directional_derivative_has_no_receiver_gradient(
             species_parent,
             species_child1,
             species_child2,
-            2,
+            species_height,
+            1,
             use_receiver_weights=False,
         )
     )
@@ -134,7 +141,6 @@ def test_uniform_extinction_vjp_directional_derivative_has_no_receiver_gradient(
         species_parent,
         species_child1,
         species_child2,
-        2,
         random_like(extinction_new),
         random_like(extinction_complement),
         random_like(extinction),
@@ -146,6 +152,8 @@ def test_uniform_extinction_vjp_directional_derivative_has_no_receiver_gradient(
         random_like(duplication_log_probability),
         random_like(loss_log_probability),
         random_like(receiver_log_probs),
+        species_height=species_height,
+        species_levels=1,
         use_receiver_weights=False,
     )
     receiver_gradient_directional_derivative = result[-1]

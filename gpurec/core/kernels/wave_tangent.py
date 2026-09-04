@@ -14,6 +14,12 @@ from gpurec.core.kernels.pi_forward import (
     _validate_offset_tensor,
     _validate_residual_tensors,
 )
+# The two additive species-tree sums these kernels linearize; shared verbatim with the
+# wave second-order and E-step kernels so every path builds the same primal.
+from gpurec.core.kernels.species_tree_sums import (
+    species_neighbourhood as _species_neighbourhood,
+    valid_receiver_sum as _valid_receiver_sum,
+)
 
 # Launch tuning for the reconciliation-likelihood JVP. Tuned on the representative 666x80 fixture
 # (S=1331, BLOCK_S=2048): num_warps=4 is ~7.4% faster on the reconciliation_event_scaled_mass HVP than the old default of 8
@@ -45,85 +51,6 @@ def set_exact_tangent_guard_trip_collection(enabled):
     _COLLECT_EXACT_TANGENT_GUARD_TRIPS = bool(enabled)
     if not _COLLECT_EXACT_TANGENT_GUARD_TRIPS:
         _EXACT_TANGENT_GUARD_TRIPS.clear()
-
-
-@triton.jit
-def _species_neighbourhood(
-    species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
-    s_offs, mask, S: tl.constexpr,
-):
-    """Children, parent, sibling and heights of every lane, as whole-row gathers.
-
-    Returns ``(species_height, c1_valid, c1_safe, c2_valid, c2_safe, has_parent, parent_safe,
-    parent_height, has_sibling, sibling_safe)``; ``*_safe`` indices are 0 where invalid so they
-    can be gathered unconditionally and masked afterwards.
-    """
-    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
-    c1_valid = mask & (c1 < S)
-    c2_valid = mask & (c2 < S)
-    c1_safe = tl.where(c1_valid, c1, 0)
-    c2_safe = tl.where(c2_valid, c2, 0)
-    species_height = tl.load(species_height_ptr + s_offs, mask=mask, other=0)
-    parent_species = tl.load(species_parent_ptr + s_offs, mask=mask, other=-1)
-    has_parent = mask & (parent_species >= 0) & (parent_species < S)
-    parent_safe = tl.where(has_parent, parent_species, 0)
-    parent_height = tl.where(has_parent, tl.gather(species_height, parent_safe, axis=0), 0)
-    parent_child1 = tl.gather(c1, parent_safe, axis=0)
-    parent_child2 = tl.gather(c2, parent_safe, axis=0)
-    sibling = tl.where(parent_child1 == s_offs, parent_child2, parent_child1)
-    has_sibling = has_parent & (sibling < S)
-    sibling_safe = tl.where(has_sibling, sibling, 0)
-    return (
-        species_height, c1_valid, c1_safe, c2_valid, c2_safe,
-        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
-    )
-
-
-@triton.jit
-def _valid_receiver_sum(
-    value, mask, zero, species_height,
-    c1_valid, c1_safe, c2_valid, c2_safe,
-    has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
-    N_LEVELS: tl.constexpr,
-):
-    """Per lane s, the sum of ``value`` over every species that is neither s nor an ancestor of s.
-
-    Built by ADDITION only: subtree sums bottom-up (a lane of height ``level`` reads its children,
-    already final), then off-chain sums top-down (what hangs off a lane's ancestor chain is what
-    hangs off its parent's chain plus the sibling's whole subtree; a lane is settled in the pass
-    of its PARENT's height), and finally ``off_chain + subtree(child1) + subtree(child2)``.
-
-    Never ``row total - ancestor chain``: for a species under the lane holding the row's mass the
-    true remainder is below the unit roundoff of the total (2^-24 float32, 2^-53 float64) and that
-    difference is noise -- the same floor the forward and adjoint kernels removed. ``value`` may be
-    signed (a tangent numerator); the walk is the same.
-    """
-    subtree = value
-    for level in range(1, N_LEVELS + 1):
-        at_level = mask & (species_height == level)
-        subtree = tl.where(
-            at_level,
-            value
-            + tl.where(c1_valid, tl.gather(subtree, c1_safe, axis=0), zero)
-            + tl.where(c2_valid, tl.gather(subtree, c2_safe, axis=0), zero),
-            subtree,
-        )
-    off_chain = zero
-    for level_index in range(0, N_LEVELS):
-        level = N_LEVELS - level_index
-        at_level = has_parent & (parent_height == level)
-        off_chain = tl.where(
-            at_level,
-            tl.gather(off_chain, parent_safe, axis=0)
-            + tl.where(has_sibling, tl.gather(subtree, sibling_safe, axis=0), zero),
-            off_chain,
-        )
-    return (
-        off_chain
-        + tl.where(c1_valid, tl.gather(subtree, c1_safe, axis=0), zero)
-        + tl.where(c2_valid, tl.gather(subtree, c2_safe, axis=0), zero)
-    )
 
 
 @triton.jit
