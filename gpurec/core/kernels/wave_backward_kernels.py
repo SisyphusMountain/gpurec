@@ -958,6 +958,8 @@ def _exact_tree_self_loop_transpose_kernel(
     subtree_donor_weight_ptr,
     v_k_ptr,
     guard_trips_ptr,
+    spill_ptr,
+    conditioning_floor,
     W,
     S: tl.constexpr,
     BLOCK_W: tl.constexpr,
@@ -1199,9 +1201,27 @@ def _exact_tree_self_loop_transpose_kernel(
         tl.where(is_root, root_weight * root_c + root_gain, zero), axis=0
     )
     loop_denominator = 1.0 - total_donor_gain
+
+    # ---- the conditioning decision. Every lane divides by its pivot and the row divides once by
+    # ``1 - loop gain``; a margin m costs about eps/m in relative error, so a row whose smallest
+    # margin is under ``conditioning_floor`` is handed to the Neumann series instead, which has no
+    # such division. The forward makes the same call on its own operator, but the TRANSPOSE is a
+    # different operator with different margins -- measured across the rate box, this is where the
+    # exact path's gradients went wrong while its Pi and NLL stayed excellent.
+    smallest_pivot = tl.min(
+        tl.where(mask, pivot, tl.full([BLOCK_S, BLOCK_W], value=float("inf"), dtype=DTYPE)),
+        axis=0,
+    )
+    spill = (smallest_pivot < conditioning_floor) | (loop_denominator < conditioning_floor)
+    tl.store(spill_ptr + rows, tl.full([BLOCK_W], value=1, dtype=tl.int8), mask=row_mask & spill)
+    # A spilled row keeps the rhs the prepare kernel left in v_k, which is exactly what the
+    # series' cold branch expects to start from.
+    keep = row_mask & ~spill
     total_donor_adjoint = total_donor_constant / loop_denominator
     tl.store(
-        v_k_ptr + offsets, root_a + root_c * total_donor_adjoint[None, :], mask=is_root
+        v_k_ptr + offsets,
+        root_a + root_c * total_donor_adjoint[None, :],
+        mask=is_root & keep[None, :],
     )
     if WRITE_GUARD_TRIPS:
         tl.store(
@@ -1214,6 +1234,8 @@ def _exact_tree_self_loop_transpose_kernel(
             tl.where(loop_denominator <= 0.0, 1, 0).to(tl.int32),
             mask=row_valid,
         )
+    row_mask = keep
+    mask = species_valid[:, None] & row_mask[None, :]
     tl.debug_barrier()
 
     # ---- walk 2: top-down, the same levels reversed. A node's adjoint is written exactly once,

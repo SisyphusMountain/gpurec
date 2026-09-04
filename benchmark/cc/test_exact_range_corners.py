@@ -177,8 +177,6 @@ def main() -> int:
                     "error": f"{type(error).__name__}: {error}",
                 })
             torch.cuda.empty_cache()
-        del oracle_rows
-        torch.cuda.empty_cache()
 
         log_row, exact_row = report
         # The log path is the standard the exact path has to meet, so the comparison is relative
@@ -223,6 +221,8 @@ def main() -> int:
                     print(f"[bisect]   {label:<14} RAISED {type(error).__name__}: {error}",
                           flush=True)
                 torch.cuda.empty_cache()
+        del oracle_rows
+        torch.cuda.empty_cache()
     print(f"[grid] corners where the exact path is worse than the log path: {failures}", flush=True)
     return 0
 

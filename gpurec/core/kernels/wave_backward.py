@@ -12,6 +12,7 @@ from gpurec.core.kernels._dts_layout_contract import dts_backward_param_layout
 from gpurec.core.kernels.pi_forward import (
     _validate_offset_tensor,
     _validate_residual_tensors,
+    exact_conditioning_floor,
 )
 from gpurec.core.memory_policy import proposal0_memory_gate
 from gpurec.core.valid_receivers import valid_receiver_index_tables
@@ -506,9 +507,7 @@ def _solve_reconciliation_wave_vjp_2d(
     # ``subtree_donor_adjoint``, which is pure scratch until the receiver-gradient kernel below
     # rewrites it. So the exact path allocates exactly what the series path does.
     term_pair = torch.empty(
-        (2, 1, 1) if (use_exact_adjoint and not split_by_range) else (2, W, S),
-        device=device,
-        dtype=dtype,
+        (2, 1, 1) if use_exact_adjoint else (2, W, S), device=device, dtype=dtype
     )
     spec_buf = term_pair[0]
     term_buf = term_pair[1]
@@ -631,19 +630,22 @@ def _solve_reconciliation_wave_vjp_2d(
             if collect_guard_trips
             else compact_level_ptr
         )
-        # Two disjoint row sets: the elimination takes the rows the forward kept, the series
-        # takes the ones it handed to the log sweeps. Both stay inside the pruner's own active
-        # mask, so a pruned row is still skipped by each.
+        # Three row sets, not two. The forward already handed some rows to the log sweeps, and
+        # those go to the series here. The elimination takes the rest -- but it can also refuse a
+        # row of its own accord, because the TRANSPOSE is a different operator with its own pivots
+        # and its own loop gain, and it spills such a row into the same series mask. All of it
+        # stays inside the pruner's active mask, so a pruned row is skipped by every launch.
+        active_rows = (
+            active_mask.reshape(W, -1).ne(0).any(dim=1)
+            if active_mask is not None
+            else torch.ones(W, device=device, dtype=torch.bool)
+        )
         if split_by_range:
-            active_rows = (
-                active_mask.reshape(W, -1).ne(0).any(dim=1)
-                if active_mask is not None
-                else torch.ones(W, device=device, dtype=torch.bool)
-            )
             exact_rows = (active_rows & ~wide_rows_in_wave).to(torch.int8)
             series_rows = (active_rows & wide_rows_in_wave).to(torch.int8)
         else:
-            exact_rows = active_mask if active_mask is not None else rhs
+            exact_rows = active_rows.to(torch.int8)
+            series_rows = torch.zeros(W, device=device, dtype=torch.int8)
         _exact_tree_self_loop_transpose_kernel[(n_row_blocks,)](
             rhs,
             exact_rows,
@@ -664,59 +666,64 @@ def _solve_reconciliation_wave_vjp_2d(
             subtree_donor_weight,
             v_k,
             guard_trips,
+            series_rows,
+            exact_conditioning_floor(dtype),
             W,
             S,
             block_w,
             block_s,
             block_nodes,
             compact_level_ptr.numel() - 1,
-            USE_ACTIVE_MASK=bool(active_mask is not None or split_by_range),
+            USE_ACTIVE_MASK=True,
             WRITE_GUARD_TRIPS=bool(collect_guard_trips),
             DTYPE=_tl_float_dtype(dtype),
             num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
         )
         if collect_guard_trips:
             _EXACT_ADJOINT_GUARD_TRIPS.append(guard_trips)
-        if split_by_range:
-            # The flagged rows, summed as a Neumann series exactly as ``adjoint_self_loop
-            # = "series"`` would. v_k already holds rhs for them (the prepare kernel wrote it and
-            # the elimination skipped them), so this is the series' own cold branch.
-            _reconciliation_self_loop_transpose_series_kernel[(n_row_blocks,)](
-                rhs,
-                term_pair,
-                series_rows,
-                self_loop_diagonal,
-                donor_adjoint_coefficient,
-                receiver_mass,
-                speciation_child1_probability,
-                speciation_child2_probability,
-                species_child1,
-                species_child2,
-                species_parent,
-                compact_level_ptr,
-                compact_level_parents,
-                compact_level_child1,
-                compact_level_child2,
-                subtree_donor_adjoint,
-                v_k,
-                compact_level_ptr,
-                float(dtype_scaled_self_loop_tol(neumann_term_tol, dtype)),
-                int(neumann_terms),
-                W,
-                S,
-                block_w,
-                block_s,
-                block_nodes,
-                compact_level_ptr.numel() - 1,
-                USE_ACTIVE_MASK=True,
-                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-                FIXED_POINT_UPDATE=False,
-                DTYPE=_tl_float_dtype(dtype),
-                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-                COLLECT_TERMS=False,
-                WRITE_LAST_TERM=False,
-                num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
-            )
+        # Always: the mask is empty in the ordinary case, and then every program returns on its
+        # first load. Reading it back to skip the launch would cost a device-to-host copy per
+        # wave, which is more than the empty launch. ``elimination_pair`` is [2, W, S] and dead
+        # once the tree solve above has finished with it, so the series ping-pongs in it and this
+        # path allocates nothing of its own. v_k still holds rhs for every masked row -- the
+        # prepare kernel wrote it and the elimination either skipped or refused the row -- which
+        # is exactly what the series' cold branch starts from.
+        _reconciliation_self_loop_transpose_series_kernel[(n_row_blocks,)](
+            rhs,
+            elimination_pair,
+            series_rows,
+            self_loop_diagonal,
+            donor_adjoint_coefficient,
+            receiver_mass,
+            speciation_child1_probability,
+            speciation_child2_probability,
+            species_child1,
+            species_child2,
+            species_parent,
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+            subtree_donor_adjoint,
+            v_k,
+            compact_level_ptr,
+            float(dtype_scaled_self_loop_tol(neumann_term_tol, dtype)),
+            int(neumann_terms),
+            W,
+            S,
+            block_w,
+            block_s,
+            block_nodes,
+            compact_level_ptr.numel() - 1,
+            USE_ACTIVE_MASK=True,
+            SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
+            FIXED_POINT_UPDATE=False,
+            DTYPE=_tl_float_dtype(dtype),
+            USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+            COLLECT_TERMS=False,
+            WRITE_LAST_TERM=False,
+            num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
+        )
     elif int(neumann_terms) > 0 and not _USE_FUSED_NEUMANN_SERIES:
         # Reference path: one launch per Neumann term, no early exit. Kept only so
         # benchmark/cc/test_neumann_exit.py can show the fused kernel below repro-
