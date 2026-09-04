@@ -101,8 +101,9 @@ ADJOINT_SELF_LOOP_MODES = ("series", "exact")
 
 # Debug instrumentation for the exact adjoint solve, off in production. When switched on with
 # ``set_exact_adjoint_guard_trip_collection(True)`` every wave appends a [W, 2] int32 tensor to
-# ``_EXACT_ADJOINT_GUARD_TRIPS``: column 0 counts a row's non-positive elimination pivots,
-# column 1 flags a non-positive ``1 - transfer loop gain``. A module-level switch (not an
+# ``_EXACT_ADJOINT_GUARD_TRIPS``: column 0 counts a row's non-positive elimination pivots
+# (``1 - d`` per lane), column 1 flags a non-positive sibling-coupling divisor ``1 - R1 R2`` at any
+# species-tree node (see the kernel's docstring). A module-level switch (not an
 # argument) so the production call path keeps its exact signature and costs nothing.
 _COLLECT_EXACT_ADJOINT_GUARD_TRIPS = False
 _EXACT_ADJOINT_GUARD_TRIPS = []
@@ -633,7 +634,8 @@ def _solve_reconciliation_wave_vjp_2d(
         # Three row sets, not two. The forward already handed some rows to the log sweeps, and
         # those go to the series here. The elimination takes the rest -- but it can also refuse a
         # row of its own accord, because the TRANSPOSE is a different operator with its own pivots
-        # and its own loop gain, and it spills such a row into the same series mask. All of it
+        # and its own sibling-coupling divisors, and it spills such a row into the same series
+        # mask. All of it
         # stays inside the pruner's active mask, so a pruned row is skipped by every launch.
         active_rows = (
             active_mask.reshape(W, -1).ne(0).any(dim=1)
