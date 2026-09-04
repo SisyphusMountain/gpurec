@@ -35,8 +35,17 @@ DATA = Path(
 )
 ROOT = DATA / "alerax_hogenom_core" / "hogenom"
 SP = ROOT/"runs/MFP/true_start_ufboot1000/run_--gene-tree-samples_100_--per-family-rates_1/alegenerax/species_trees/starting_species_tree.newick"
+# The linear extinction-adjoint solve used to be BiCGSTAB, configured by bicgstab_max_iter /
+# bicgstab_tol / bicgstab_breakdown_tol. It is now a Neumann series (with a direct or GMRES
+# fallback if the operator turns out not to be a contraction), configured by e_adjoint_max_iter /
+# e_adjoint_tol -- the three old names no longer exist on SolverOptions, so this dict raised
+# TypeError on construction and certify.py did not import at all.
+# The 500-iteration budget carries over unchanged. The old 1e-7 tolerance does NOT: SolverOptions
+# documents it as sitting below float32's own achievable floor, which made the solve raise on an
+# essentially converged iterate, and ``None`` means "use the dtype's own resolution" (1e-6 in
+# float32, 1e-12 in float64), which is the robust setting. Same substitution as run_cv.py's _CV_SO.
 SO = dict(e_max_iter=2000,e_tol=1e-8,pi_iters=64,neumann_terms=64,
-   bicgstab_max_iter=500,bicgstab_tol=1e-7,bicgstab_breakdown_tol=1e-30,
+   e_adjoint_max_iter=500,e_adjoint_tol=None,
    adjoint_pruning_threshold=1e-6,use_adjoint_pruning=True,pibar_side_threshold=0.0)
 
 

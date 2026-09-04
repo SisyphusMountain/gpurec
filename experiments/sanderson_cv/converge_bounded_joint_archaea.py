@@ -73,9 +73,18 @@ DATA = os.environ.get(
 ARCHAEA_ROOT = os.environ.get("GPUREC_ARCHAEA_ROOT", f"{DATA}/alerax_archaea_davin2017")
 _SP_TREE = f"{ARCHAEA_ROOT}/species_reference/reference_species_tree.newick"
 # converged solver (matches the CV / bounded-theta runs)
+# The linear extinction-adjoint solve used to be BiCGSTAB, configured by bicgstab_max_iter /
+# bicgstab_tol / bicgstab_breakdown_tol. It is now a Neumann series (with a direct or GMRES
+# fallback if the operator turns out not to be a contraction), configured by e_adjoint_max_iter /
+# e_adjoint_tol -- the three old names no longer exist on SolverOptions, so this dict raised
+# TypeError on construction and this script did not import at all.
+# The 500-iteration budget carries over unchanged. The old 1e-7 tolerance does NOT: SolverOptions
+# documents it as sitting below float32's own achievable floor, which made the solve raise on an
+# essentially converged iterate, and ``None`` means "use the dtype's own resolution" (1e-6 in
+# float32, 1e-12 in float64), which is the robust setting. Same substitution as run_cv.py's _CV_SO.
 _CV_SO = dict(e_max_iter=2000, e_tol=1e-8, pi_iters=64, neumann_terms=64,
-              bicgstab_max_iter=500, bicgstab_tol=1e-7,
-              bicgstab_breakdown_tol=1e-30, adjoint_pruning_threshold=1e-6,
+              e_adjoint_max_iter=500, e_adjoint_tol=None,
+              adjoint_pruning_threshold=1e-6,
               use_adjoint_pruning=True, pibar_side_threshold=0.0)
 
 
