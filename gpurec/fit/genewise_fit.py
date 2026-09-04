@@ -100,7 +100,7 @@ _BASE_SOLVER = {
 GENEWISE_REFERENCE = dict(
     adam_steps=5, adam_lr=1.0, grad_clip=10.0, pi_tiers=(16, 64), neu_opt=16, neu_cert=64,
     clade_budget=None, tol=1e-3, max_iter=120, check_every=2, drop_frac=0.05, trust=2.0,
-    mu=1e-2, fwd_tol=1e-3, improve_frac=0.8, verify_drop=True, eager_defer=True,
+    mu=1e-4, fwd_tol=1e-3, improve_frac=0.8, verify_drop=True, eager_defer=True,
     warm_adjoint=True, certify=False,
 )
 
