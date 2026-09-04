@@ -573,6 +573,45 @@ spread over ~46,000 sub-microsecond gaps between 67,680 kernel launches (python 
 between launches), not over a few big stalls, so it will not come back from removing any one call
 site -- it needs fewer launches or bigger ones.
 
+## Round four, recipe side: why Newton needed 8 to 14 steps, and what was changed (2026-09-04)
+
+Per-family traces of every gradient evaluation on 200 Coleman families (`benchmark/cc/recipe_trace.py`):
+median 19 evaluations per family, 5 of them the Adam warm-up; only 6 % of the evaluations happen after a
+family's NLL has stopped improving by more than 1e-4 bits, so the iterations genuinely move the fit, just
+slowly. Steps are short: 4 % hit the 2.0 log2 cap, the median step is 0.29 log2 units while the median
+family has to travel 6.5 units, and paths are 1.75 times longer than the straight line. Two mechanisms
+were visible in the individual trajectories. The Adam warm-up (learning rate 1.0) moves every rate about
+one log2 unit per step whatever the gradient says and overshoots: typical families end the warm-up with a
+worse NLL than two steps earlier. And the curvature floor `mu = 1e-2` throttled flat directions: a rate
+heading towards zero has a gradient and a curvature both proportional to the rate, so its Newton step was
+gradient / 1e-2, 0.1 to 0.2 log2 units per iteration, for 20 iterations while the family's NLL moved by
+0.01 bits.
+
+Changes (`gpurec/fit/genewise_fit.py`): each eigen-direction of the Newton step is now bounded by the
+family's trust radius through `lam = max(e, mu, |g_v| / radius)` instead of flooring tiny curvature at
+`mu`, with `mu = 1e-4` as the sign guard; a per-family adaptive trust radius with the standard ratio test
+(gated on the float32 noise floor of a family's NLL, 0.05 bits, and consuming each pending test once) is
+in place but measured neutral once gated (ungated it oscillated: 115 steps). Sweep on 200 families, cost in
+full-dataset gradient equivalents with Hessians priced at their live share:
+
+| recipe | Newton steps | cost | NLL vs baseline |
+|---|---:|---:|---:|
+| baseline (adam_bfgs start, mu 1e-2, fixed cap 2) | 27 | 23.5 | 0 |
+| cap 4 / cap 8 | 26 / 111 | 23.6 / - | 0 / +0.24 |
+| per-direction cap, mu 1e-4 | 22 | 21.6 | -0.07 |
+| + exact starting Hessian | 26 | 19.1 | -0.74 |
+| exact Hessian every iteration (adam 5 / adam 2 / no Adam) | 11 / 10 / 19 | 20.2 / 19.8 / 22.9 | -0.72 / -0.07 / -0.70 |
+| exact Hessian every 2 iterations, adam 2 | 13 | 18.2 | -0.07 |
+
+Exact curvature does what it should (10 to 11 Newton steps instead of 27) but one 3-probe Hessian costs
+7.9 gradients on the RTX 4090 with the probes' cache cold, and the same regime holds at full scale on the
+H100 (the cache wants 688 GiB). The full-dataset run with the exact starting Hessian (job r4a_fulli,
+shared node, so the wall time is not comparable): Newton gradients 317 s against 449 s before, 55 steps,
+NLL 9048930.68 bits (7.6 bits better than every earlier run), all 5123 certified, but 376 s in four
+Hessians. Production therefore keeps the warm-up curvature as the start with the per-direction cap and
+`mu = 1e-4`; making the Hessian cheap (sharing the direction-independent work across the three probes,
+then batching the three directions) is the open item that would unlock exact Newton.
+
 ## What is left
 
 With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs
