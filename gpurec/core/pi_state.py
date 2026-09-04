@@ -28,9 +28,9 @@ class PiState:
     # It belongs to the state rather than to the solve because the adjoint and the tangent must
     # make the same per-row decision this forward made.
     wide_row: torch.Tensor | None
-    # How many rows that mask flags, counted on the host while the forward was already reading
-    # one counter per wave. Carrying the number means no consumer has to sync to learn whether
-    # the mask matters at all.
+    # How many rows that mask flags. The forward already has to read this number back once, at
+    # the end of its solve, to know whether it must redo the batch with the log-space sweeps on;
+    # carrying it here means no consumer has to sync again to learn whether the mask matters.
     wide_row_total: int
 
     def validate(
