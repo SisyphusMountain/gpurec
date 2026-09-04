@@ -696,7 +696,6 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     # C^T dv via the frozen kernels (linear in v)
                     (
                         donor_adjoint,
-                        total_donor_adjoint,
                         active_donor_side,
                         _duplication_parameter_vjp,
                         _speciation_parameter_vjp,
@@ -731,11 +730,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         sv["pi_wave"],
                         receiver_log_probs,
                         donor_adjoint,
-                        total_donor_adjoint,
                         meta["sl"],
                         meta["sr"],
                         d_rhs,
                         S,
+                        species_parent,
                         active_mask=wave["active_mask"], reduce_idx=meta["reduce_idx"],
                         pibar_row_max=pibar_row_max,
                         skip_zero_donor_sides=True,

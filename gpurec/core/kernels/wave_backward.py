@@ -885,6 +885,7 @@ def _solve_reconciliation_wave_vjp_2d(
             active_mask if active_mask is not None else rhs,
             donor_adjoint_coefficient,
             receiver_mass,
+            species_parent,
             compact_level_ptr,
             compact_level_parents,
             compact_level_child1,
@@ -1282,10 +1283,8 @@ def accumulate_gene_split_event_vjp(
         right_transfer_complement_vjp = torch.empty((n_splits, S), device=device, dtype=dtype)
     if output_donor_adjoint:
         donor_adjoint = torch.empty((2 * n_splits, S), device=device, dtype=dtype)
-        total_donor_adjoint = torch.empty((2 * n_splits,), device=device, dtype=dtype)
     else:
         donor_adjoint = None
-        total_donor_adjoint = None
     active_donor_side = (
         torch.empty((2 * n_splits,), device=device, dtype=torch.bool)
         if output_active_donor_sides
@@ -1304,7 +1303,6 @@ def accumulate_gene_split_event_vjp(
     grad_log_pS_arg = grad_log_pS if accum_param_reductions else dummy
     grad_max_transfer_arg = grad_max_transfer if accum_max_transfer_reduction else dummy
     donor_adjoint_arg = donor_adjoint if output_donor_adjoint else dummy
-    total_donor_adjoint_arg = total_donor_adjoint if output_donor_adjoint else dummy
     active_donor_side_arg = active_donor_side if output_active_donor_sides else dummy
     max_transfer_arg = max_transfer.contiguous() if output_donor_adjoint and not max_transfer.is_contiguous() else max_transfer
     pibar_row_max_arg = (
@@ -1351,7 +1349,7 @@ def accumulate_gene_split_event_vjp(
         duplication_parameter_vjp_arg, speciation_parameter_vjp_arg,
         grad_log_pD_arg, grad_log_pS_arg, grad_max_transfer_arg,
         grad_max_transfer_partial,
-        donor_adjoint_arg, total_donor_adjoint_arg, active_donor_side_arg, max_transfer_arg, pibar_row_max_arg,
+        donor_adjoint_arg, active_donor_side_arg, max_transfer_arg, pibar_row_max_arg,
         side_active_threshold_arg,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
@@ -1391,8 +1389,8 @@ def accumulate_gene_split_event_vjp(
 
     if output_donor_adjoint:
         if output_active_donor_sides:
-            return donor_adjoint, total_donor_adjoint, active_donor_side, duplication_parameter_vjp, speciation_parameter_vjp
-        return donor_adjoint, total_donor_adjoint, duplication_parameter_vjp, speciation_parameter_vjp
+            return donor_adjoint, active_donor_side, duplication_parameter_vjp, speciation_parameter_vjp
+        return donor_adjoint, duplication_parameter_vjp, speciation_parameter_vjp
     return left_transfer_complement_vjp, right_transfer_complement_vjp, duplication_parameter_vjp, speciation_parameter_vjp
 
 
@@ -1405,11 +1403,11 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
     Pi_star,
     receiver_log_probs,
     donor_adjoint,
-    total_donor_adjoint,
     split_left_rows,
     split_right_rows,
     accumulated_rhs,
     S,
+    species_parent,
     active_mask=None,
     reduce_idx=None,
     pibar_row_max=None,
@@ -1486,28 +1484,37 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
         Pi_star,
         receiver_log_probs=receiver_log_probs,
         donor_adjoint=donor_adjoint,
-        total_donor_adjoint=total_donor_adjoint,
         pibar_row_max=pibar_row_max,
         accumulated_rhs=accumulated_rhs,
         grad_receiver_log_probs=grad_receiver_log_probs,
     )
     receiver_log_probs = receiver_log_probs.contiguous()
+    species_parent = species_parent.to(device=Pi_star.device, dtype=torch.int32).contiguous()
     receiver_grad_arg = (
         grad_receiver_log_probs
         if grad_receiver_log_probs is not None
-        else total_donor_adjoint
+        else donor_adjoint
+    )
+    # The bottom-up pass overwrites each internal node's own donor adjoint with its subtree sum,
+    # and the top-down pass that follows needs that own term back (see the kernel's docstring).
+    # One slot per compact level-table entry -- that is, per internal species node -- and per
+    # split side, indexed exactly as the level tables are.
+    n_compact_nodes = int(compact_level_parents.numel())
+    internal_node_own_donor_adjoint = torch.empty(
+        (2 * n_splits, n_compact_nodes), device=Pi_star.device, dtype=Pi_star.dtype
     )
     _accumulate_transfer_subtree_vjp_kernel[(2 * n_splits,)](
         Pi_star,
         receiver_log_probs,
         donor_adjoint,
-        total_donor_adjoint,
-        active_donor_side if active_donor_side is not None else total_donor_adjoint,
+        internal_node_own_donor_adjoint,
+        active_donor_side if active_donor_side is not None else donor_adjoint,
         split_left_rows,
         split_right_rows,
         reduce_idx if reduce_idx is not None else split_left_rows,
         active_mask if active_mask is not None else donor_adjoint,
         pibar_row_max,
+        species_parent,
         compact_level_ptr,
         compact_level_parents,
         compact_level_child1,
@@ -1519,6 +1526,7 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
         stride_C,
         BLOCK_S,
         N_LEVELS=compact_level_ptr.numel() - 1,
+        N_COMPACT_NODES=n_compact_nodes,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_SIDE_ACTIVE=bool(active_donor_side is not None),
         ACCUM_RECEIVER_GRAD=bool(grad_receiver_log_probs is not None),

@@ -688,7 +688,6 @@ def implicit_grad_loglik_vjp_wave(
             split_right_rows = meta["sr"]
             (
                 donor_adjoint,
-                total_donor_adjoint,
                 active_donor_side,
                 _duplication_parameter_vjp,
                 _speciation_parameter_vjp,
@@ -733,11 +732,11 @@ def implicit_grad_loglik_vjp_wave(
                 Pi_star_wave,
                 receiver_log_probs,
                 donor_adjoint,
-                total_donor_adjoint,
                 split_left_rows,
                 split_right_rows,
                 accumulated_rhs,
                 S,
+                species_helpers["sp_parent"],
                 active_mask=active_mask,
                 reduce_idx=meta["reduce_idx"],
                 pibar_row_max=uniform_pibar_row_max,

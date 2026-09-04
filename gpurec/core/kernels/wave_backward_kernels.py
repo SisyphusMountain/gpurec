@@ -1333,6 +1333,7 @@ def _accumulate_transfer_receiver_log_probability_vjp_kernel(
     active_mask_ptr,
     donor_adjoint_coefficient_ptr,
     receiver_mass_ptr,
+    species_parent_ptr,
     compact_level_ptr,
     compact_level_parent_ptr,
     compact_level_child1_ptr,
@@ -1368,11 +1369,21 @@ def _accumulate_transfer_receiver_log_probability_vjp_kernel(
     donor_adjoint_coefficient = tl.load(donor_adjoint_coefficient_ptr + offsets, mask=mask, other=0.0)
     donor_adjoint = input_adjoint * donor_adjoint_coefficient
     zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
-    total_donor_adjoint = tl.sum(tl.where(mask, donor_adjoint, zero), axis=0)
     tl.store(subtree_donor_adjoint_ptr + offsets, tl.where(mask, donor_adjoint, zero), mask=store_mask)
 
     tl.debug_barrier()
 
+    # Receiver s's weight moves the mass of every donor t that may transfer INTO s, that is every
+    # donor OUTSIDE s's own subtree, so this kernel needs, per species s, the donor adjoint summed
+    # off s's subtree. That used to be ``row total - subtree sum``. Each donor's adjoint divides by
+    # that donor's own valid receiver mass, so for species hanging under the lane holding the row's
+    # mass it is astronomically large (2**depth); the row total is then dominated by those terms,
+    # and for the dominant lane -- whose subtree holds all of them -- the subtraction cancels to
+    # rounding noise of that astronomical size. Measured on a 1007-species Coleman family at the
+    # loss-rate cap, the gradient came out 1e8 times too large. So the off-subtree sum is built
+    # top-down by ADDITION instead: what lies off a child's subtree is what lies off its parent's,
+    # plus the parent's own term, plus the sibling's whole subtree. Subtree sums first (bottom-up),
+    # then that walk (top-down), each child's off-subtree sum overwriting its subtree sum.
     for level in range(0, N_LEVELS):
         level_start = tl.load(compact_level_ptr + level)
         level_end = tl.load(compact_level_ptr + level + 1)
@@ -1408,9 +1419,59 @@ def _accumulate_transfer_receiver_log_probability_vjp_kernel(
             node_start += BLOCK_NODES
         tl.debug_barrier()
 
-    subtree_donor_adjoint = tl.load(subtree_donor_adjoint_ptr + offsets, mask=mask, other=0.0)
+    # The root's subtree is the whole tree: nothing lies off it. Every other lane is written by
+    # its parent below.
+    species_parent_of_lane = tl.load(species_parent_ptr + s_offs, mask=species_valid, other=0)
+    is_root_lane = (species_parent_of_lane < 0)[:, None] & mask
+    tl.store(subtree_donor_adjoint_ptr + offsets, zero, mask=is_root_lane)
+    tl.debug_barrier()
+    for level_index in range(0, N_LEVELS):
+        level = N_LEVELS - 1 - level_index
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=0)
+            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            reduce_mask = node_mask[:, None] & row_mask[None, :]
+            c1_mask = reduce_mask & (c1 < S)[:, None]
+            c2_mask = reduce_mask & (c2 < S)[:, None]
+            row_base = rows[None, :] * S
+            parent_off_subtree = tl.load(
+                subtree_donor_adjoint_ptr + row_base + parent[:, None],
+                mask=reduce_mask,
+                other=0.0,
+            )
+            parent_own = tl.load(
+                donor_adjoint_coefficient_ptr + row_base + parent[:, None],
+                mask=reduce_mask,
+                other=0.0,
+            ) * tl.load(v_k_ptr + row_base + parent[:, None], mask=reduce_mask, other=0.0)
+            c1_subtree = tl.load(
+                subtree_donor_adjoint_ptr + row_base + c1[:, None], mask=c1_mask, other=0.0
+            )
+            c2_subtree = tl.load(
+                subtree_donor_adjoint_ptr + row_base + c2[:, None], mask=c2_mask, other=0.0
+            )
+            tl.store(
+                subtree_donor_adjoint_ptr + row_base + c1[:, None],
+                parent_off_subtree + parent_own + c2_subtree,
+                mask=c1_mask,
+            )
+            tl.store(
+                subtree_donor_adjoint_ptr + row_base + c2[:, None],
+                parent_off_subtree + parent_own + c1_subtree,
+                mask=c2_mask,
+            )
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
+    off_subtree_donor_adjoint = tl.load(subtree_donor_adjoint_ptr + offsets, mask=mask, other=0.0)
     receiver_mass = tl.load(receiver_mass_ptr + offsets, mask=mask, other=0.0)
-    transfer_complement_vjp = receiver_mass * (total_donor_adjoint[None, :] - subtree_donor_adjoint)
+    transfer_complement_vjp = receiver_mass * off_subtree_donor_adjoint
     species_contrib = tl.sum(tl.where(mask, transfer_complement_vjp, zero), axis=1)
     tl.atomic_add(
         grad_receiver_log_probs_ptr + s_offs,
@@ -1740,7 +1801,6 @@ def _accumulate_gene_split_event_vjp_kernel(
     grad_max_transfer_ptr,          # optional scalar/[S] accumulation target
     grad_max_transfer_partial_ptr,  # optional [ceil(n_ws/tile_splits), S] two-stage vector accumulation
     donor_adjoint_ptr,         # optional [2 * n_ws, S] initial Pibar VJP subtree values
-    total_donor_adjoint_ptr,          # optional [2 * n_ws] row sums of pibar_ud
     active_donor_side_ptr, # optional [2 * n_ws] exact nonzero donor_adjoint row mask
     max_transfer_ptr,               # optional [S] max transfer mat for Pibar valid_receiver_mass reuse
     pibar_row_max_ptr,    # optional [C] Pi-row max from forward uniform Pibar
@@ -1803,8 +1863,6 @@ def _accumulate_gene_split_event_vjp_kernel(
                     tl.store(active_donor_side_ptr + tl.num_programs(0) + split_index + scalar_lane_offset, 0)
                 if SKIP_INACTIVE_PIBAR_OUTPUT_ZERO:
                     return
-                tl.store(total_donor_adjoint_ptr + split_index + scalar_lane_offset, zero_scalar)
-                tl.store(total_donor_adjoint_ptr + tl.num_programs(0) + split_index + scalar_lane_offset, zero_scalar)
             for s_start in range(0, S, BLOCK_S):
                 s_offs = s_start + tl.arange(0, BLOCK_S)
                 mask = s_offs < S
@@ -1871,8 +1929,6 @@ def _accumulate_gene_split_event_vjp_kernel(
 
     duplication_parameter_vjp_sum = tl.zeros((1,), dtype=DTYPE)
     speciation_parameter_vjp_sum = tl.zeros((1,), dtype=DTYPE)
-    left_total_donor_adjoint = tl.zeros((1,), dtype=DTYPE)
-    right_total_donor_adjoint = tl.zeros((1,), dtype=DTYPE)
     scalar_lane_offset = tl.arange(0, 1)
     if OUTPUT_DONOR_ADJOINT:
         left_pibar_row_max = tl.load(pibar_row_max_ptr + left_clade_row)
@@ -2006,8 +2062,6 @@ def _accumulate_gene_split_event_vjp_kernel(
             right_donor_adjoint = transfer_left_retained_event_vjp * right_exclusion_scale
             tl.store(donor_adjoint_ptr + split_index * S + s_offs, left_donor_adjoint, mask=valid_mask)
             tl.store(donor_adjoint_ptr + (tl.num_programs(0) + split_index) * S + s_offs, right_donor_adjoint, mask=valid_mask)
-            left_total_donor_adjoint += tl.sum(tl.where(mask, left_donor_adjoint, 0.0), axis=0)
-            right_total_donor_adjoint += tl.sum(tl.where(mask, right_donor_adjoint, 0.0), axis=0)
             if OUTPUT_SIDE_ACTIVE:
                 if SIDE_ACTIVE_THRESHOLD_ENABLED:
                     left_donor_adjoint_abs_sum += tl.sum(tl.where(mask, tl.abs(left_donor_adjoint), 0.0), axis=0)
@@ -2123,8 +2177,6 @@ def _accumulate_gene_split_event_vjp_kernel(
         tl.store(duplication_parameter_vjp_ptr + split_index + scalar_lane_offset, duplication_parameter_vjp_sum)
         tl.store(speciation_parameter_vjp_ptr + split_index + scalar_lane_offset, speciation_parameter_vjp_sum)
     if OUTPUT_DONOR_ADJOINT:
-        tl.store(total_donor_adjoint_ptr + split_index + scalar_lane_offset, left_total_donor_adjoint)
-        tl.store(total_donor_adjoint_ptr + tl.num_programs(0) + split_index + scalar_lane_offset, right_total_donor_adjoint)
         if OUTPUT_SIDE_ACTIVE:
             if SIDE_ACTIVE_THRESHOLD_ENABLED:
                 threshold = tl.load(side_active_threshold_ptr)
@@ -2288,13 +2340,14 @@ def _accumulate_transfer_subtree_vjp_kernel(
     Pi_star_ptr,          # [C, S]
     receiver_log_probs_ptr, # [S]
     donor_adjoint_ptr,         # [2 * n_ws, S], initial subtree values donor_adjoint
-    total_donor_adjoint_ptr,          # [2 * n_ws], sum_s donor_adjoint[s] per split side
+    internal_node_own_ptr, # [2 * n_ws, N_COMPACT_NODES] scratch: each internal node's own term
     side_active_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
     split_left_rows_ptr,               # [n_ws]
     split_right_rows_ptr,               # [n_ws]
     reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
     active_mask_ptr,      # optional [W] bool parent row activity mask
     pibar_row_max_ptr,    # [C], Pi-row max from forward uniform Pibar
+    species_parent_ptr,   # [S] int32, each species' parent, negative at the root
     compact_level_ptr,    # [N_LEVELS + 1]
     compact_level_parent_ptr, # [total internal nodes across levels]
     compact_level_child1_ptr, # [total internal nodes across levels]
@@ -2308,13 +2361,30 @@ def _accumulate_transfer_subtree_vjp_kernel(
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
     N_LEVELS: tl.constexpr,
+    N_COMPACT_NODES: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     USE_SIDE_ACTIVE: tl.constexpr,
     ACCUM_RECEIVER_GRAD: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    """Apply the transfer-complement VJP using compact subtree reductions."""
+    """Apply the transfer-complement VJP using compact subtree reductions.
+
+    Receiver s takes donor mass from every donor OUTSIDE s's own subtree, so this kernel needs,
+    per species s, this split side's donor adjoint summed off s's subtree. That used to be
+    ``row total - subtree sum``. Each donor's adjoint carries the reciprocal of that donor's own
+    valid receiver mass, so for species hanging under the lane holding the row's mass it is
+    astronomically large (2**depth); the row total is then dominated by those terms, and for the
+    dominant lane -- whose subtree holds all of them -- the subtraction cancels to rounding noise
+    of that astronomical size. Measured on a 1007-species Coleman family at the loss-rate cap, the
+    gradient came out 1e8 times too large. So the off-subtree sum is built by ADDITION only:
+    subtree sums bottom-up as before, then a top-down walk over the same level tables,
+    off-subtree(child) = off-subtree(parent) + parent's own term + sibling's subtree sum, each
+    child's off-subtree sum overwriting its no-longer-needed subtree sum. The bottom-up walk
+    overwrites each internal node's own term with its subtree sum, so it parks that own term in
+    ``internal_node_own_ptr`` first, indexed exactly like the compact level tables: recovering it
+    as ``subtree(parent) - subtree(c1) - subtree(c2)`` would be the same cancelling subtraction.
+    """
     NEG_LARGE: tl.constexpr = -float("inf")
 
     # int64: row ranges over 2*n_ws, so row_base below can overflow int32 once
@@ -2342,7 +2412,7 @@ def _accumulate_transfer_subtree_vjp_kernel(
     row_base = row * S
     row_max = tl.load(pibar_row_max_ptr + child)
     row_max_safe = tl.where(row_max != NEG_LARGE, row_max, tl.zeros_like(row_max))
-    total_donor_adjoint = tl.load(total_donor_adjoint_ptr + row)
+    own_base = internal_node_own_ptr + row * N_COMPACT_NODES
 
     tl.debug_barrier()
     for level in range(0, N_LEVELS):
@@ -2362,7 +2432,55 @@ def _accumulate_transfer_subtree_vjp_kernel(
             parent_val = tl.load(donor_adjoint_ptr + row_base + parent, mask=parent_valid, other=0.0)
             c1_val = tl.load(donor_adjoint_ptr + row_base + c1, mask=c1_valid, other=0.0)
             c2_val = tl.load(donor_adjoint_ptr + row_base + c2, mask=c2_valid, other=0.0)
+            tl.store(own_base + node_offs, parent_val, mask=parent_valid)
             tl.store(donor_adjoint_ptr + row_base + parent, parent_val + c1_val + c2_val, mask=parent_valid)
+            p_start += BLOCK_S
+        tl.debug_barrier()
+
+    # The root's subtree is the whole tree: nothing lies off it. Every other species is some
+    # internal node's child, so the walk below writes it exactly once.
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        valid_mask = s_offs < S
+        species_parent = tl.load(species_parent_ptr + s_offs, mask=valid_mask, other=0)
+        is_root_lane = valid_mask & (species_parent < 0) & row_active
+        tl.store(
+            donor_adjoint_ptr + row_base + s_offs,
+            tl.zeros([BLOCK_S], dtype=DTYPE),
+            mask=is_root_lane,
+        )
+    tl.debug_barrier()
+    for level_index in range(0, N_LEVELS):
+        level = N_LEVELS - 1 - level_index
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        p_start = level_start
+        while p_start < level_end:
+            node_offs = p_start + tl.arange(0, BLOCK_S)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=-1)
+            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            parent_valid = node_mask & (parent >= 0) & (parent < S) & row_active
+            c1_valid = parent_valid & (c1 >= 0) & (c1 < S)
+            c2_valid = parent_valid & (c2 >= 0) & (c2 < S)
+
+            parent_off_subtree = tl.load(
+                donor_adjoint_ptr + row_base + parent, mask=parent_valid, other=0.0
+            )
+            parent_own = tl.load(own_base + node_offs, mask=parent_valid, other=0.0)
+            c1_subtree = tl.load(donor_adjoint_ptr + row_base + c1, mask=c1_valid, other=0.0)
+            c2_subtree = tl.load(donor_adjoint_ptr + row_base + c2, mask=c2_valid, other=0.0)
+            tl.store(
+                donor_adjoint_ptr + row_base + c1,
+                parent_off_subtree + parent_own + c2_subtree,
+                mask=c1_valid,
+            )
+            tl.store(
+                donor_adjoint_ptr + row_base + c2,
+                parent_off_subtree + parent_own + c1_subtree,
+                mask=c2_valid,
+            )
             p_start += BLOCK_S
         tl.debug_barrier()
 
@@ -2376,12 +2494,10 @@ def _accumulate_transfer_subtree_vjp_kernel(
             receiver_mass = tl.exp2(receiver_log_probability + pi_val - row_max_safe)
         else:
             receiver_mass = tl.exp2(pi_val - row_max_safe)
-        subtree_donor_adjoint = tl.load(
+        off_subtree_donor_adjoint = tl.load(
             donor_adjoint_ptr + row_base + s_offs, mask=mask, other=0.0
         )
-        transfer_complement_vjp = receiver_mass * (
-            total_donor_adjoint - subtree_donor_adjoint
-        )
+        transfer_complement_vjp = receiver_mass * off_subtree_donor_adjoint
         tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, transfer_complement_vjp, sem="relaxed", mask=mask)
         if ACCUM_RECEIVER_GRAD:
             tl.atomic_add(
