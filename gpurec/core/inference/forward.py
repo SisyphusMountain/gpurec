@@ -478,8 +478,23 @@ def pi_wave_forward(
                 run_fallback_sweeps = wave_wide_rows > 0
             else:
                 run_fallback_sweeps = True
+            # How many log-space iterations are left for the flagged rows after the prologue.
+            # Normally that is ``pi_iters`` minus the prologue, exactly what "log" mode would
+            # run. But a split wave's prologue is already 2 steps, so at the smallest legal
+            # ``pi_iters`` (2) the range below is EMPTY: the flagged rows would get no sweep at
+            # all, and since the exact kernel returned without touching them, their Pibar row and
+            # its row maximum would never be written -- the caller would read back whatever the
+            # freshly allocated buffer happened to hold. One full Jacobi pair is added in that
+            # case so every flagged row is published. Two, not one, to keep the alternation the
+            # loop relies on: the final write must land in ``pi``, which needs an odd last index.
+            # For every ``pi_iters`` that leaves the prologue room -- 4 and up, so every real
+            # configuration, including the production 16 -- this is exactly ``pi_iters`` and
+            # nothing changes.
+            fallback_end = (
+                pi_iters if pi_iters > prologue_iters else prologue_iters + 2
+            )
             if run_fallback_sweeps:
-                for local_iter in range(prologue_iters, pi_iters):
+                for local_iter in range(prologue_iters, fallback_end):
                     pi_in = pi if (local_iter % 2 == 0) else pibar
                     pi_in_offset = pi_offset if (local_iter % 2 == 0) else pibar_offset
                     pi_out = pibar if (local_iter % 2 == 0) else pi
@@ -512,12 +527,12 @@ def pi_wave_forward(
                         leaf_logp=log_p_s_family,
                         family_idx=family_idx,
                         pibar_row_max=uniform_pibar_row_max,
-                        store_final_pibar=local_iter == pi_iters - 1,
+                        store_final_pibar=local_iter == fallback_end - 1,
                         has_leaf_term=has_leaf_term,
                         input_ws=None,
                         use_receiver_weights=use_receiver_weights,
                         pi_residual_out=(
-                            pi_residual_out if local_iter == pi_iters - 1 else None
+                            pi_residual_out if local_iter == fallback_end - 1 else None
                         ),
                         leaf_fm_log=leaf_fm_log,
                         row_mask=wide_row,
