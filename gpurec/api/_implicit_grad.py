@@ -1,3 +1,4 @@
+import math
 import warnings
 
 import torch
@@ -78,6 +79,172 @@ def _likelihood_log2_survival(
 # them from here.
 
 
+# How many consecutive Neumann terms may fail to improve on the smallest term seen so far before
+# the series is declared non-contracting and the GMRES fallback below takes over. Not a setting:
+# it only decides how long a solve that is already failing keeps failing before a solver that
+# cannot fail takes over, so a wrong value costs time, never accuracy. 16 is chosen so that a
+# series whose terms merely OSCILLATE on the way down (complex-eigenvalue tail) is not mistaken
+# for one that has stopped converging: at the slowest rate that still finishes inside a 128-term
+# budget (about 0.81 per term) 16 terms shrink the envelope by 0.81^16 = 0.035, so an oscillation
+# would have to swing by a factor of 28 to hide the decay.
+_E_ADJOINT_NEUMANN_STALL_PATIENCE = 16
+
+# Krylov vectors per GMRES restart cycle in the fallback. Not a setting: it is a
+# memory-versus-orthogonalization-cost tradeoff inside a solve that only runs when the Neumann
+# series has already failed. Each basis vector is one full E vector, so 48 of them cost
+# 48 * families * species * 8 bytes -- about 150 MB for a 100-family batch on a 2013-leaf species
+# tree (4025 species-tree nodes), which such a batch can afford; a longer cycle costs more memory
+# and makes every Gram-Schmidt pass longer, a shorter one restarts more often and converges slower.
+_E_ADJOINT_GMRES_RESTART = 48
+
+# Below this many unknowns the fallback assembles ``I - J`` column by column and factorizes it
+# instead of running GMRES. Not a setting: it is the size at which building the matrix (one matvec
+# per column) stops being cheaper and smaller than iterating. 512 columns of a 512-long vector is
+# a 2 MB float64 matrix and 512 matvecs, both trivial, and the answer is then exact rather than
+# iterative -- which matters because restarted GMRES can stagnate on a strongly non-contracting
+# operator, exactly the regime the fallback exists for.
+_E_ADJOINT_DENSE_SOLVE_LIMIT = 512
+
+
+@torch.no_grad()
+def _dense_e_adjoint(Av, b):
+    """Solve ``(I - J) x = b`` by building ``I - J`` from the matvec and factorizing it.
+
+    For a system small enough that ``b.numel()`` matvecs are affordable this is both exact and
+    immune to the stagnation a restarted Krylov method can hit on a strongly non-contracting
+    operator. Assembly and the LU solve run in float64 whatever ``b``'s dtype is; the matvec
+    itself is still called in ``b``'s dtype.
+
+    Returns ``(x, relative_residual)`` with ``x`` in ``b``'s dtype and shape.
+    """
+    shape = b.shape
+    dtype = b.dtype
+    work = torch.float64
+    flat = b.reshape(-1).to(work)
+    n = flat.numel()
+    bnorm = float(torch.linalg.vector_norm(flat))
+    if bnorm == 0.0:
+        return torch.zeros_like(b), 0.0
+
+    operator = torch.empty(n, n, dtype=work, device=flat.device)
+    basis = torch.zeros(n, dtype=dtype, device=b.device)
+    for column in range(n):
+        basis.zero_()
+        basis[column] = 1
+        operator[:, column] = Av(basis.reshape(shape)).reshape(-1).to(work)
+
+    solution = torch.linalg.solve(operator, flat)
+    rel = float(torch.linalg.vector_norm(operator @ solution - flat)) / bnorm
+    return solution.reshape(shape).to(dtype), rel
+
+
+@torch.no_grad()
+def _gmres_e_adjoint(Av, b, *, x0, tol, max_matvecs, restart):
+    """Solve ``(I - J) x = b`` by restarted GMRES on the matvec ``Av(w) == (I - J) w``.
+
+    This is the fallback for :func:`_neumann_e_adjoint`: GMRES minimizes the residual over the
+    Krylov subspace, so unlike the Neumann series it needs no contraction assumption and cannot
+    break down on a nonsingular operator -- it only needs ``I - J`` to be invertible.
+
+    ``x0`` is the initial guess (the best Neumann iterate). Arnoldi runs in float64 regardless of
+    ``b``'s dtype -- the Gram-Schmidt inner products and the Givens least-squares are where an
+    fp32 Arnoldi loses orthogonality, and the vectors are only ``families x species`` long, so
+    float64 here costs little; the matvec itself is still called in ``b``'s dtype, so the residual
+    floor is set by the model's precision and not by the orthogonalization.
+
+    Returns ``(x, relative_residual)`` with ``x`` in ``b``'s dtype and shape; the caller decides
+    whether that residual is good enough.
+    """
+    restart = int(restart)
+    max_matvecs = int(max_matvecs)
+    if restart < 1:
+        raise ValueError("restart must be at least 1")
+    if max_matvecs < 1:
+        raise ValueError("max_matvecs must be at least 1")
+
+    shape = b.shape
+    dtype = b.dtype
+    work = torch.float64
+    flat = b.reshape(-1).to(work)
+    bnorm = float(torch.linalg.vector_norm(flat))
+    if bnorm == 0.0:
+        return torch.zeros_like(b), 0.0
+
+    def apply(v):
+        return Av(v.reshape(shape).to(dtype)).reshape(-1).to(work)
+
+    x = x0.reshape(-1).to(work).clone()
+    spent = 0
+    residual = flat - apply(x)
+    spent += 1
+    rel = float(torch.linalg.vector_norm(residual)) / bnorm
+    best_x, best_rel = x, rel
+
+    while rel > tol and spent < max_matvecs:
+        cycle = min(restart, max_matvecs - spent)
+        if cycle < 1:
+            break
+        beta = float(torch.linalg.vector_norm(residual))
+        if beta == 0.0:
+            break
+        basis = [residual / beta]
+        hessenberg = torch.zeros(cycle + 1, cycle, dtype=work)
+        cosines = torch.zeros(cycle, dtype=work)
+        sines = torch.zeros(cycle, dtype=work)
+        rhs = torch.zeros(cycle + 1, dtype=work)
+        rhs[0] = beta
+        used = 0
+        for j in range(cycle):
+            w = apply(basis[j])
+            spent += 1
+            # Two Gram-Schmidt passes: the second one removes the components the first pass
+            # leaves behind when the new direction is nearly inside the existing span, which is
+            # exactly the regime a restarted cycle ends in.
+            for _ in range(2):
+                for i in range(j + 1):
+                    coeff = torch.dot(basis[i], w)
+                    hessenberg[i, j] += coeff.cpu()
+                    w = w - coeff * basis[i]
+            subdiagonal = float(torch.linalg.vector_norm(w))
+            hessenberg[j + 1, j] = subdiagonal
+            for i in range(j):
+                rotated = cosines[i] * hessenberg[i, j] + sines[i] * hessenberg[i + 1, j]
+                hessenberg[i + 1, j] = (
+                    -sines[i] * hessenberg[i, j] + cosines[i] * hessenberg[i + 1, j]
+                )
+                hessenberg[i, j] = rotated
+            magnitude = math.hypot(float(hessenberg[j, j]), float(hessenberg[j + 1, j]))
+            if magnitude == 0.0:
+                # The Krylov space is exhausted and carries no new direction: stop with what the
+                # first ``j`` vectors already give.
+                break
+            cosines[j] = float(hessenberg[j, j]) / magnitude
+            sines[j] = float(hessenberg[j + 1, j]) / magnitude
+            hessenberg[j, j] = magnitude
+            hessenberg[j + 1, j] = 0.0
+            rhs[j + 1] = -sines[j] * rhs[j]
+            rhs[j] = cosines[j] * rhs[j]
+            used = j + 1
+            if abs(float(rhs[j + 1])) / bnorm <= tol or subdiagonal == 0.0:
+                break
+            basis.append(w / subdiagonal)
+        if used == 0:
+            break
+        y = torch.linalg.solve_triangular(
+            hessenberg[:used, :used], rhs[:used].unsqueeze(1), upper=True
+        ).squeeze(1)
+        for i in range(used):
+            x = x + float(y[i]) * basis[i]
+        residual = flat - apply(x)
+        spent += 1
+        rel = float(torch.linalg.vector_norm(residual)) / bnorm
+        if rel < best_rel:
+            best_rel = rel
+            best_x = x
+
+    return best_x.reshape(shape).to(dtype), best_rel
+
+
 @torch.no_grad()
 def _neumann_e_adjoint(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
     """Solve ``(I - J) x = b`` by Neumann series ``x = sum_k J^k b``, where ``J w = w - Av(w)``.
@@ -91,12 +258,27 @@ def _neumann_e_adjoint(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
     ``||J^N b|| / ||b||`` -- the quantity actually tracked below (``rel``) -- so ``rel`` is a
     conservative (upper-bound) proxy for the true residual, off by one power of ``J``.
 
+    The contraction holds only when ``J`` really is the Jacobian of the map the forward solved:
+    a caller that hands over a mismatched operator gets terms that grow instead of shrink. That is
+    not hypothetical -- ``gpurec/api/_execution.py`` used to build this system from the E-step
+    WITHOUT ``fraction_missing`` while the forward had solved the one WITH it, and the resulting
+    operator had spectral radius 2.0 instead of 0.05 (measured on one Coleman family, 2013 species,
+    fraction_missing up to 0.4998, float64), so the terms climbed by about 1.45x each and reached
+    inf. Rather than sum a divergent series, this function detects the failure -- the term norm
+    stops improving for ``_E_ADJOINT_NEUMANN_STALL_PATIENCE`` terms, or goes non-finite, while the
+    sum is still short of the acceptance floor -- and hands the SAME system to a solver that needs
+    no contraction: :func:`_dense_e_adjoint` when the system is small enough to assemble,
+    :func:`_gmres_e_adjoint` otherwise. That is a safety net, not a licence: an operator that is
+    not a contraction here means something upstream is inconsistent and is worth finding.
+
+    The fast path is untouched: the fallback can only trigger where the series would otherwise
+    have raised, so every solve that converges returns exactly what it did before.
+
     ``tol`` is a RELATIVE residual target: ``None`` -> the dtype-matched default
     (:func:`_e_adjoint_rel_tol_default`); a value below the dtype floor
     (:func:`_e_adjoint_rel_tol_floor`) is clamped up with a warning. Returns the best (smallest
-    conservative-residual) iterate; raises ``RuntimeError`` only if that residual never reaches
-    the acceptance floor within ``max_iter`` terms -- a genuinely non-contractive operator, never
-    a solver artefact.
+    conservative-residual) iterate; raises ``RuntimeError`` only if neither the series nor the
+    GMRES fallback reaches the acceptance floor within ``max_iter`` matvecs.
     """
     max_iter = int(max_iter)
     if max_iter < 1:
@@ -130,23 +312,60 @@ def _neumann_e_adjoint(Av, b: torch.Tensor, *, max_iter: int = 128, tol=None):
     term = b.clone()
     best_x = x
     best_rel = float("inf")
+    stalled = 0
+    terms = 0
     for _ in range(max_iter):
         term = term - Av(term)  # == J @ term
         x = x + term
+        terms += 1
         rel = float(torch.linalg.vector_norm(term.reshape(-1)).detach().cpu()) / bnorm
         if rel < best_rel:
             best_rel = rel
             best_x = x
+            stalled = 0
+        else:
+            stalled += 1
         if rel <= target:
             return x
+        if best_rel > accept and (
+            stalled >= _E_ADJOINT_NEUMANN_STALL_PATIENCE or not math.isfinite(rel)
+        ):
+            # The terms have stopped shrinking while the sum is still short of the acceptance
+            # floor, so no number of further terms will get there: J is not a contraction. Stop
+            # here rather than burning the rest of the budget (and overflowing to inf) and hand
+            # the same system to the fallback below.
+            break
 
     if best_rel <= accept:
         return best_x
+
+    # Fallback: the series is not contracting, so sum it no further -- solve the same system
+    # ``(I - J) x = b`` with a method that needs no contraction. Small enough to assemble ->
+    # build the operator and factorize it, which is exact and cannot stagnate; otherwise GMRES,
+    # warm-started from the best Neumann iterate so a series that merely ran out of terms starts
+    # from a good guess.
+    if b.numel() <= _E_ADJOINT_DENSE_SOLVE_LIMIT:
+        fallback, fallback_rel = _dense_e_adjoint(Av, b)
+        used = f"the assembled {b.numel()}x{b.numel()} direct solve"
+    else:
+        fallback, fallback_rel = _gmres_e_adjoint(
+            Av,
+            b,
+            x0=best_x,
+            tol=target,
+            max_matvecs=max_iter,
+            restart=_E_ADJOINT_GMRES_RESTART,
+        )
+        used = f"the GMRES fallback (within the same {max_iter}-matvec budget)"
+    if fallback_rel <= accept:
+        return fallback
     raise RuntimeError(
-        f"E-adjoint Neumann series failed to converge at conservative relative residual "
-        f"{best_rel:.3e} after {max_iter} terms (target {target:.3e}, dtype {dtype}); the "
-        f"self-map J is likely not a contraction (spectral radius >= 1) or needs more than "
-        f"{max_iter} terms to solve."
+        f"E-adjoint solve failed to converge: the Neumann series stopped at conservative "
+        f"relative residual {best_rel:.3e} after {terms} terms (target {target:.3e}, dtype "
+        f"{dtype}) because the self-map J is not a contraction, and {used} reached only "
+        f"{fallback_rel:.3e}. A non-contracting J usually means the operator does not match the "
+        f"map the forward solved (see the fraction-missing case in this function's docstring); "
+        f"failing that, raise e_adjoint_max_iter or loosen e_adjoint_tol."
     )
 
 
