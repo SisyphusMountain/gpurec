@@ -541,6 +541,18 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             d_grad_extinction, d_grad_extinction_complement, d_grad_extinction_child1, d_grad_extinction_child2 = (zeros_state() for _ in range(4))
             d_grad_max_transfer = torch.zeros_like(acc["grad_mc"])
             d_grad_receiver_log_probs = torch.zeros((S,), device=theta.device, dtype=dtype)
+            # The receiver-weight ROW of ``H u`` is only returned on the joint contract. The
+            # receiver log-probabilities come from the receiver weights alone
+            # (extract_parameters_weighted_receivers: receiver_log_probs_from_weights(receiver_weights)),
+            # never from theta, so on the theta-only contract the whole receiver cotangent is
+            # multiplied by something with no theta in it and contributes EXACTLY zero to
+            # out_theta. Handing the two wave-backward entry points ``None`` instead of a buffer
+            # is how they are told nobody wants it (same switch the gradient path's
+            # ``need_receiver_grad`` throws): it drops the per-wave receiver-log-probability VJP
+            # kernel and the receiver half of the transfer-complement kernel, 12 ms of the 502 ms
+            # a probe costs on the 200-family Coleman batch. ``d_grad_receiver_log_probs`` stays
+            # allocated because the second-order kernels below need a pointer to aim at when the
+            # receiver weights are non-uniform; on this branch nothing reads it back.
 
             from gpurec.solver.value_and_grad import free_cuda_cache_if_tight
 
@@ -626,6 +638,9 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 # zero when receiver weights are disabled.
                 if use_receiver_weights:
                     d_grad_receiver_log_probs = d_grad_receiver_log_probs + wave_d_grad_receiver_log_probs
+                # Re-read each wave: the line above REBINDS the accumulator to a fresh tensor, so a
+                # binding taken once before the loop would hand the kernels a stale buffer.
+                wave_grad_receiver_log_probs = d_grad_receiver_log_probs if joint else None
                 # (b) tangent-adjoint solve with the SAME operator and cached mask
                 seed = d_Av
                 (
@@ -659,7 +674,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     compact_level_parents=sh["compact_level_parents"],
                     compact_level_child1=sh["compact_level_child1"],
                     compact_level_child2=sh["compact_level_child2"],
-                    grad_receiver_log_probs=d_grad_receiver_log_probs, use_receiver_weights=use_receiver_weights,
+                    grad_receiver_log_probs=wave_grad_receiver_log_probs,
+                    use_receiver_weights=use_receiver_weights,
                     initial_v=_init_v,
                     return_last_increment=False,
                     reserved_scratch_bytes=reserved_scratch_bytes,
@@ -757,7 +773,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         compact_level_parents=sh["compact_level_parents"],
                         compact_level_child1=sh["compact_level_child1"],
                         compact_level_child2=sh["compact_level_child2"],
-                        grad_receiver_log_probs=d_grad_receiver_log_probs, use_receiver_weights=use_receiver_weights,
+                        grad_receiver_log_probs=wave_grad_receiver_log_probs,
+                        use_receiver_weights=use_receiver_weights,
                         side_active_threshold=so.pibar_side_threshold,
                     )
                     # d(C^T) v_k contraction at fixed v_k
@@ -854,8 +871,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 d_cot_pD = d_grad_log_pD + as_family_param(lin_p[1] + so_p[2], G, S)
             d_cot_pL = lin_p[2] + so_p[3]
             d_cot_max_transfer = d_grad_max_transfer + lin_p[3] + so_p[4]
+            # Only assembled on the joint contract: on the theta-only contract the wave sweep was
+            # told not to fill ``d_grad_receiver_log_probs`` (see above), and the head term below
+            # that would consume it is an exact zero for out_theta anyway.
             d_cot_receiver_log_probs = (
-                d_grad_receiver_log_probs + lin_p[4] + so_p[5]
+                (d_grad_receiver_log_probs + lin_p[4] + so_p[5]) if joint else None
             )
 
         # ---- smooth parameter head (autograd; forward graph + g1 hoisted, retained) ----
@@ -865,8 +885,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 + (pD_hp * d_cot_pD).sum()
                 + (pL_hi * d_cot_pL).sum()
                 + (max_transfer_hi * d_cot_max_transfer).sum()
-                + (receiver_log_probs_h * d_cot_receiver_log_probs).sum()
             )
+            if joint:
+                # ``receiver_log_probs_h`` is a function of the receiver weights only, so this term
+                # carries the receiver row of ``H u`` and adds exactly nothing to the theta row.
+                phi2 = phi2 + (receiver_log_probs_h * d_cot_receiver_log_probs).sum()
             # S8: grad w.r.t. BOTH theta and receiver weights of
             # (g1_theta * u_theta).sum()
             # + (g1_receiver_weights * u_alpha).sum() + phi2.
