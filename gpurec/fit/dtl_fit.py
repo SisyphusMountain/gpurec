@@ -90,7 +90,7 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
                            hessian_refresh=15, init_curvature="adam_bfgs",
                            solver_options=solver_options, config=config, verbose=verbose,
                            init_log2_rates=init_log2_rates, clade_budget=clade_budget,
-                           stall_patience=120)   # = max_iter: the stall rule is available but off (it settled 3-4 near-converged families early)
+                           stall_patience=120, trust_max=16.0)   # = max_iter: the stall rule is available but off (it settled 3-4 near-converged families early)
         wall_s = time.perf_counter() - t0
         nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)
         return {"mode": mode, "theta": res["theta"].detach().cpu(),

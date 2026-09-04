@@ -233,6 +233,16 @@ def _bfgs_update(B, s, y, free_both):
     return B + torch.where(ok[:, None, None], upd, torch.zeros_like(upd))
 
 
+# Trust-region ratio test thresholds (log2-likelihood units, i.e. bits). A family's float32 NLL
+# carries a few 1e-4 bits of evaluation noise (atomics, ~3000-bit totals), so a step must predict
+# at least this much gain before its actual gain is compared with the prediction, and it is undone
+# only when the NLL rose by more than the same amount. The radius never shrinks below
+# ``_TRUST_RADIUS_MIN`` log2 units: the fixed 2.0 cap of earlier rounds converged every family, so a
+# far smaller radius only slows a family down. Not settings: they are noise-floor facts.
+_TRUST_TEST_MIN_PREDICTED_BITS = 0.05
+_TRUST_RADIUS_MIN = 0.5
+
+
 def fit_genewise(
     species_tree,
     gene_trees,
@@ -258,6 +268,7 @@ def fit_genewise(
     hessian_refresh: int,
     init_curvature: str,
     trust: float = 2.0,
+    trust_max: float,
     mu: float = 1e-2,
     fwd_tol: float = 1e-3,
     improve_frac: float = 0.8,
@@ -274,7 +285,19 @@ def fit_genewise(
 ) -> dict:
     """Fit per-family DTL rates to a converged, box-bounded optimum. See module docstring for the recipe.
 
-    Five keywords have no default and must be stated by every caller:
+    Six keywords have no default and must be stated by every caller:
+
+    ``trust_max`` -- the largest per-family trust radius (log2 units). ``trust`` is the STARTING
+    radius; after every Newton step the actual decrease of the family's NLL is compared with the
+    decrease its quadratic model predicted (the standard trust-region ratio): a ratio below 0.25
+    quarters the radius and, if the NLL actually rose, the step is undone (the family's next step is
+    recomputed from the previous point with the smaller radius; that costs nothing extra, since the
+    batch evaluates every live family anyway); a ratio above 0.75 on a step that hit the radius
+    doubles it, up to ``trust_max``. Measured on 200 Coleman families with a fixed 2.0 cap, only 4 %
+    of steps hit the cap while the median step was 0.29 log2 units against a median distance to the
+    optimum of 6.5, and paths were 1.75 times longer than the straight line: Newton under-stepped
+    and zig-zagged. The adaptive radius is what lets a well-modelled family cover that distance in
+    a few steps and stops a badly-modelled one from wandering.
 
     ``min_drop`` -- how many families must look converged at the cheap tier before the fit pays for a
     verification round (a temporary accurate-tier model over just those candidates). A round also
@@ -537,6 +560,13 @@ def fit_genewise(
     prev_theta = torch.zeros(F_all, 3, device=dev, dtype=dtype)
     prev_g = torch.zeros(F_all, 3, device=dev, dtype=dtype)
     prev_free = torch.zeros(F_all, 3, device=dev, dtype=dtype)
+    # Adaptive trust region, per family: the current radius, the NLL at the point the last step
+    # left from, the decrease that step's quadratic model predicted (0 = no step pending a test),
+    # and whether that step was cut to the radius (only a capped step earns a larger radius).
+    radius = torch.full((F_all,), float(trust), device=dev, dtype=dtype)
+    prev_nll = torch.zeros(F_all, device=dev, dtype=dtype)
+    pred_dec = torch.zeros(F_all, device=dev, dtype=dtype)
+    last_capped = torch.zeros(F_all, dtype=torch.bool, device=dev)
 
     _warm_saved = os.environ.get("GPUREC_WARM_ADJOINT")
     if warm_adjoint:
@@ -615,6 +645,27 @@ def fit_genewise(
                 _sync(); newton_grad_seconds += time.perf_counter() - _t
                 _mem("newton_grad")
                 _track_best(active, lv, sub, live, n_steps)
+                # Trust-region ratio test on the step that led here (see ``trust_max`` above).
+                # Decided now, applied after the BFGS update below so the update still sees the
+                # evaluated point: (step, gradient change) is valid curvature information whether or
+                # not the step is kept.
+                # Only a step whose predicted gain is well above the float32 noise of a family's NLL
+                # (a few 1e-4 bits at ~3000 bits) can be judged; smaller steps are near convergence
+                # and are left alone. A pending test is consumed here, so a re-plan that re-measures
+                # the same point does not judge the same step twice.
+                pred_a = pred_dec.index_select(0, active)
+                pending = live & (pred_a > _TRUST_TEST_MIN_PREDICTED_BITS)
+                pred_dec.index_copy_(0, active, torch.zeros_like(pred_a))
+                actual = prev_nll.index_select(0, active) - lv
+                ratio = torch.where(pending, actual / torch.where(pending, pred_a, torch.ones_like(pred_a)),
+                                    torch.ones_like(pred_a))
+                r_act = radius.index_select(0, active)
+                r_act = torch.where(pending & (ratio < 0.25),
+                                    torch.maximum(0.25 * r_act, torch.full_like(r_act, _TRUST_RADIUS_MIN)), r_act)
+                r_act = torch.where(pending & (ratio > 0.75) & last_capped.index_select(0, active),
+                                    torch.minimum(2.0 * r_act, torch.full_like(r_act, trust_max)), r_act)
+                radius.index_copy_(0, active, r_act)
+                reject = pending & (actual < -_TRUST_TEST_MIN_PREDICTED_BITS)
                 fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
                     ((sub <= lo + bounds.bound_active_eps) & (g > 0))
                 free = (~fixed).to(dtype)
@@ -626,6 +677,14 @@ def fit_genewise(
                         B_fam.index_select(0, active),
                         sub - prev_theta.index_select(0, active),
                         g - prev_g.index_select(0, active), both))
+                if bool(reject.any()):   # undo the step: back to the previous point, its gradient and NLL
+                    keep = reject.unsqueeze(1)
+                    sub = torch.where(keep, prev_theta.index_select(0, active), sub)
+                    g = torch.where(keep, prev_g.index_select(0, active), g)
+                    lv = torch.where(reject, prev_nll.index_select(0, active), lv)
+                    fixed = ((sub >= hi - bounds.bound_active_eps) & (g < 0)) | \
+                        ((sub <= lo + bounds.bound_active_eps) & (g > 0))
+                    free = (~fixed).to(dtype)
                 prev_theta.index_copy_(0, active, sub)
                 prev_g.index_copy_(0, active, g)
                 prev_free.index_copy_(0, active, free)
@@ -725,12 +784,34 @@ def fit_genewise(
                     _mem("hessian")
                     refresh_due = False; since_exact = 0; n_hessians += 1
                 e, V = torch.linalg.eigh(B_fam.index_select(0, active))
-                Hd = V @ torch.diag_embed(e.clamp(min=mu)) @ V.transpose(1, 2)   # convexify -> PD
+                # Convexify AND bound each eigen-direction's step by the family's radius. A
+                # direction whose curvature is tiny (a rate heading towards zero: gradient and
+                # curvature both shrink with the rate) used to have its curvature floored at ``mu``,
+                # so its Newton step was gradient / mu -- 0.1 to 0.2 log2 units per iteration for
+                # 20 iterations on a family whose NLL moved by 0.01 bits over all of them. Raising
+                # the curvature to |gradient component| / radius instead lets such a direction move
+                # the whole radius per step while every well-curved direction keeps its exact
+                # Newton step; ``mu`` now only guards the sign of negative curvature.
+                gv = (V.transpose(1, 2) @ (g * free).unsqueeze(-1)).squeeze(-1)
+                r_dir = radius.index_select(0, active).unsqueeze(1)
+                lam = torch.maximum(torch.maximum(e, torch.full_like(e, mu)), gv.abs() / r_dir)
+                Hd = V @ torch.diag_embed(lam) @ V.transpose(1, 2)
                 Hred = Hd * free.unsqueeze(1) * free.unsqueeze(2) + torch.diag_embed(1.0 - free)
                 delta = -torch.linalg.solve(Hred, (g * free).unsqueeze(-1)).squeeze(-1)
                 delta = delta * live.unsqueeze(1).to(dtype)   # settled rows keep their frozen theta
                 dn = delta.norm(dim=1, keepdim=True)
-                sub = clamp_(sub + delta * (trust / dn.clamp(min=trust)))   # trust-region cap
+                r_step = radius.index_select(0, active).unsqueeze(1)
+                capped = dn > r_step
+                step = delta * torch.where(capped, r_step / torch.where(capped, dn, torch.ones_like(dn)),
+                                           torch.ones_like(dn))
+                new_sub = clamp_(sub + step)
+                applied = new_sub - sub   # what the box left of the step
+                predicted = -((g * applied).sum(dim=1)
+                              + 0.5 * (applied.unsqueeze(1) @ Hred @ applied.unsqueeze(2)).reshape(-1))
+                pred_dec.index_copy_(0, active, torch.where(live, predicted, torch.zeros_like(predicted)))
+                last_capped.index_copy_(0, active, capped.squeeze(1) & live)
+                prev_nll.index_copy_(0, active, lv)
+                sub = new_sub
                 n_steps += 1; since_exact += 1
             live = ~settled
             if bool(live.any()):   # ran out of iterations: keep each unfinished family's best iterate

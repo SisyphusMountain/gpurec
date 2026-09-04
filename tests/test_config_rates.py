@@ -123,7 +123,7 @@ def test_fit_genewise_still_uses_1e6_2p0_box():
                         min_drop=1, rebuild_frac=0.25, hessian_refresh=5,
                         init_curvature="exact", verify_drop=False,
                         certify=True, certify_curvature=True, init_log2_rates=(0.0, 0.0, 0.0),
-                        stall_patience=120)
+                        stall_patience=120, trust_max=16.0)
     theta = res["theta"]
     lo, hi = math.log2(1e-6), math.log2(2.0)
     assert torch.isfinite(theta).all()
