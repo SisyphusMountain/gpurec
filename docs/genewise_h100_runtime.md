@@ -612,7 +612,7 @@ Hessians. Production therefore keeps the warm-up curvature as the start with the
 `mu = 1e-4`; making the Hessian cheap (sharing the direction-independent work across the three probes,
 then batching the three directions) is the open item that would unlock exact Newton.
 
-## Round five: the adjoint self-loop in one register-resident kernel (RTX 4090, 2026-09-04)
+## Round six: the adjoint self-loop in one register-resident kernel (RTX 4090, 2026-09-04)
 
 After round four the two kernels that solve the transposed self-loop were 16.9 % of one gradient's
 GPU time: `_prepare_reconciliation_self_loop_vjp_kernel` 115.1 ms and
