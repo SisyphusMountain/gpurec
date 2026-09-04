@@ -7,8 +7,10 @@ import torch
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import evaluate_static_convergence
 from gpurec.core.inference.forward import pi_wave_forward
+from gpurec.core.valid_receivers import valid_receiver_index_tables
 from gpurec.core.inference.solver import solve_forward_residual, solve_resident_e_pi
 from gpurec.core.kernels.pi_forward import (
+    _VALID_RECEIVER_SCRATCH_SLOTS,
     compute_dts_forward,
     compute_leaf_initial_wave_step,
     compute_wave_step,
@@ -73,6 +75,32 @@ C_1 3
     )
     return species_tree, [gene_tree]
 
+
+
+def _valid_receiver_arguments(S, W, device, dtype):
+    """The transfer-mass inputs ``compute_wave_step`` needs, for a row of ISOLATED species.
+
+    The sweep builds each donor's available transfer mass by addition, from two running sums over
+    fixed species orders (see ``_write_valid_receiver_prefix_sums``); the orders come from the
+    depth-first interval numbering of the species tree. These tests use species that are each
+    their own root with no children, so every subtree is a single species: ``start`` is
+    ``0 .. S-1`` and ``end`` is ``start + 1``, which makes every species a valid receiver for
+    every other one and none for itself -- exactly what the ancestor walk these arguments replace
+    did with an all ``-1`` parent array.
+    """
+    subtree_start = torch.arange(S, device=device, dtype=torch.long)
+    not_open_source, closed_source, not_open_index, closed_index = valid_receiver_index_tables(
+        subtree_start, subtree_start + 1, S
+    )
+    return {
+        "valid_receiver_scratch": torch.empty(
+            (_VALID_RECEIVER_SCRATCH_SLOTS, W, S), device=device, dtype=dtype
+        ),
+        "not_open_source": not_open_source,
+        "closed_source": closed_source,
+        "not_open_index": not_open_index,
+        "closed_index": closed_index,
+    }
 
 @pytest.mark.gpu
 def test_pi_wave_forward_rejects_accumulator_narrower_than_residual() -> None:
@@ -278,7 +306,6 @@ def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows(
     impossible = torch.full((W, S), neg_inf, device=device, dtype=dtype)
     receiver_log_probs = torch.zeros((S,), device=device, dtype=dtype)
     children = torch.full((S,), S, device=device, dtype=torch.long)
-    parents = torch.full((S,), -1, device=device, dtype=torch.long)
     leaf_species = torch.zeros((W,), device=device, dtype=torch.long)
     leaf_logp = torch.zeros((W, S), device=device, dtype=dtype)
     family_idx = torch.arange(W, device=device, dtype=torch.long)
@@ -302,10 +329,9 @@ def test_centered_wave_residual_aligns_offset_frames_and_ignores_inactive_rows(
         receiver_log_probs,
         children,
         children,
-        parents,
-        1,
         dts,
         dts_offset,
+        **_valid_receiver_arguments(S, W, device, dtype),
         leaf_species_idx=leaf_species,
         leaf_logp=leaf_logp,
         family_idx=family_idx,
@@ -372,8 +398,7 @@ def test_centered_final_pibar_all_impossible_row_uses_zero_offset() -> None:
         rates[0],
         children,
         children,
-        torch.full((S,), -1, device=device, dtype=torch.long),
-        1,
+        **_valid_receiver_arguments(S, 1, device, pi_in.dtype),
         leaf_species_idx=torch.zeros((1,), device=device, dtype=torch.long),
         leaf_logp=rates,
         family_idx=torch.zeros((1,), device=device, dtype=torch.long),
@@ -440,11 +465,10 @@ def test_centered_split_input_uses_raw_max_for_virtual_dts_frame(
         torch.tensor(receiver_values, device=device, dtype=dtype),
         children,
         children,
-        torch.full((S,), -1, device=device, dtype=torch.long),
-        1,
         dts,
         dts_offset,
         dts_center_offset,
+        **_valid_receiver_arguments(S, 1, device, dtype),
         leaf_species_idx=torch.zeros((1,), device=device, dtype=torch.long),
         leaf_logp=impossible,
         family_idx=torch.zeros((1,), device=device, dtype=torch.long),
