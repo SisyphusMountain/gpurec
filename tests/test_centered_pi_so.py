@@ -466,6 +466,7 @@ def test_exact_hvp_matches_fp64_and_finite_difference(
             receiver,
             origination,
             need_grad=True,
+            need_receiver_grad=True,
         )
         return gradient.reshape(-1)
 

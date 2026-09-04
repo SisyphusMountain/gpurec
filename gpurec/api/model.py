@@ -279,6 +279,7 @@ class GeneReconModel(torch.nn.Module):
         origination_weights: torch.Tensor,
         *,
         need_grad: bool,
+        need_receiver_grad: bool,
         need_origination_grad: bool = False,
     ):
         return stream_batches(
@@ -288,6 +289,7 @@ class GeneReconModel(torch.nn.Module):
             origination_weights,
             genewise=self.genewise,
             need_grad=need_grad,
+            need_receiver_grad=need_receiver_grad,
             need_origination_grad=need_origination_grad,
         )
 
@@ -319,6 +321,11 @@ class GeneReconModel(torch.nn.Module):
             receiver_weights,
             origination_weights,
             need_grad=need_grad,
+            # A genewise rate fit normally freezes the receiver weights
+            # (``receiver_weights.requires_grad_(False)``), and then ``grad_receiver`` comes back
+            # None and the receiver-side backward kernels never run. Ask for it exactly when the
+            # weights are still trainable.
+            need_receiver_grad=bool(receiver_weights.requires_grad),
             update_warm_starts=update_warm_starts,
         )
         return loss_vec, grad_theta, grad_receiver
@@ -469,5 +476,11 @@ class GeneReconModel(torch.nn.Module):
             theta.requires_grad or receiver_weights.requires_grad or origination_weights.requires_grad
         ):
             return _GeneReconFullLossFunction.apply(theta, receiver_weights, origination_weights, self)
-        loss, _, _, _ = self._stream_batches(theta, receiver_weights, origination_weights, need_grad=False)
+        loss, _, _, _ = self._stream_batches(
+            theta,
+            receiver_weights,
+            origination_weights,
+            need_grad=False,
+            need_receiver_grad=False,
+        )
         return loss

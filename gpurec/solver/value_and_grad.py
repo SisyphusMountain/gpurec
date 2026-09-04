@@ -97,7 +97,7 @@ def forward_solve(batch_statics, theta, receiver_weights, *, warm_E=None):
             return loss, saved
         loss, _g, _gr, _go = stream_batches(
             statics, theta, receiver_weights, torch.zeros_like(receiver_weights),
-            genewise=statics[0].genewise, need_grad=False,
+            genewise=statics[0].genewise, need_grad=False, need_receiver_grad=False,
         )
         return loss, None
 
@@ -209,6 +209,10 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None,
             free_cuda_cache_if_tight()
         loss, g_theta, g_recv, g_orig = stream_batches(
             statics, theta_expanded, recv, orig, genewise=genewise, need_grad=want_grad,
+            # The receiver logits live in the tail of z only when the caller asked to optimize
+            # them; otherwise nothing below reads g_recv, so the receiver-side backward kernels
+            # are skipped and g_recv comes back None.
+            need_receiver_grad=optimize_receiver,
             need_origination_grad=optimize_origination,
         )
         loss_val = float(loss)
@@ -236,6 +240,7 @@ def make_value_and_grad(batch_statics, receiver_weights, *, theta_shape=None,
                 for _ in range(int(grad_avg_K) - 1):
                     _l, gk, grk, gok = stream_batches(
                         statics, theta_expanded, recv, orig, genewise=genewise, need_grad=True,
+                        need_receiver_grad=optimize_receiver,
                         need_origination_grad=optimize_origination,
                     )
                     acc = acc + gk
