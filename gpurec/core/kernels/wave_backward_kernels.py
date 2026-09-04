@@ -2622,6 +2622,7 @@ def _accumulate_transfer_subtree_vjp_kernel(
     S: tl.constexpr,
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    BLOCK_NODES: tl.constexpr,
     N_LEVELS: tl.constexpr,
     N_COMPACT_NODES: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
@@ -2700,7 +2701,7 @@ def _accumulate_transfer_subtree_vjp_kernel(
         level_end = tl.load(compact_level_ptr + level + 1)
         p_start = level_start
         while p_start < level_end:
-            node_offs = p_start + tl.arange(0, BLOCK_S)
+            node_offs = p_start + tl.arange(0, BLOCK_NODES)
             node_mask = node_offs < level_end
             parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=-1)
             c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
@@ -2714,7 +2715,7 @@ def _accumulate_transfer_subtree_vjp_kernel(
             c2_val = tl.load(donor_adjoint_ptr + row_base + c2, mask=c2_valid, other=0.0)
             tl.store(own_base + node_offs, parent_val, mask=parent_valid)
             tl.store(donor_adjoint_ptr + row_base + parent, parent_val + c1_val + c2_val, mask=parent_valid)
-            p_start += BLOCK_S
+            p_start += BLOCK_NODES
         tl.debug_barrier()
 
     # Top-down, root first. Node j holds ``off-subtree(its species) + own(its species)``: the one
@@ -2727,7 +2728,7 @@ def _accumulate_transfer_subtree_vjp_kernel(
         level_end = tl.load(compact_level_ptr + level + 1)
         p_start = level_start
         while p_start < level_end:
-            node_offs = p_start + tl.arange(0, BLOCK_S)
+            node_offs = p_start + tl.arange(0, BLOCK_NODES)
             node_mask = node_offs < level_end
             node_valid = node_mask & row_active
             grandparent_slot = tl.load(
@@ -2748,10 +2749,10 @@ def _accumulate_transfer_subtree_vjp_kernel(
             parent_off_subtree = tl.where(
                 has_grandparent,
                 grandparent_pair + parent_sibling_subtree,
-                tl.zeros([BLOCK_S], dtype=DTYPE),
+                tl.zeros([BLOCK_NODES], dtype=DTYPE),
             )
             tl.store(pair_base + node_offs, parent_off_subtree + parent_own, mask=node_valid)
-            p_start += BLOCK_S
+            p_start += BLOCK_NODES
         tl.debug_barrier()
 
     for s_start in range(0, S, BLOCK_S):

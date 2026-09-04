@@ -15,6 +15,20 @@ from gpurec.core.kernels.pi_forward import (
 )
 
 
+# Warps per program for ``_transfer_subtree_vjp_directional_derivative_kernel``, and the
+# species-tree nodes its two level walks put in one tile.
+#
+# A CUDA warp is 32 threads on every NVIDIA GPU. That is not a setting: it is a fact about the
+# hardware, and it is named here only so the tile width reads as "one node per thread". The tile
+# MUST hold one node per thread, because a Triton program cannot idle a thread: all 256 issue
+# every instruction of the walk, and with the species tile's 512 nodes per tile each instruction
+# was issued twice whether or not the second node existed. Which is what the walks used before,
+# having no width of their own.
+_NUM_WARPS_TRANSFER_SUBTREE_SO = 8
+_THREADS_PER_WARP = 32
+_BLOCK_NODES_TRANSFER_SUBTREE_SO = _NUM_WARPS_TRANSFER_SUBTREE_SO * _THREADS_PER_WARP
+
+
 # ``family_offset``/``ws`` are wave start rows, and the right-side staging views start at
 # row ``n_splits`` of a shared buffer, so their byte offset is only sometimes a multiple
 # of 16. Both would otherwise recompile the kernel per wave (see README.md).
@@ -303,7 +317,8 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
     d_rhs_ptr, d_grad_receiver_log_probs_ptr,
     n_ws,  # runtime int (per-wave split count; constexpr caused one JIT compile per wave shape)
     S: tl.constexpr, stride_C: tl.constexpr,
-    BLOCK_S: tl.constexpr, N_LEVELS: tl.constexpr, N_COMPACT_NODES: tl.constexpr,
+    BLOCK_S: tl.constexpr, BLOCK_NODES: tl.constexpr,
+    N_LEVELS: tl.constexpr, N_COMPACT_NODES: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr, DTYPE: tl.constexpr,
 ):
     """Evaluate the DTS transfer-tree curvature term documented in LaTeX.
@@ -359,7 +374,7 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
         level_end = tl.load(level_offsets_ptr + level + 1)
         p_start = level_start
         while p_start < level_end:
-            node_offs = p_start + tl.arange(0, BLOCK_S)
+            node_offs = p_start + tl.arange(0, BLOCK_NODES)
             node_mask = node_offs < level_end
             parent = tl.load(level_parents_ptr + node_offs, mask=node_mask, other=-1)
             c1 = tl.load(level_child1_ptr + node_offs, mask=node_mask, other=S)
@@ -405,7 +420,7 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
                 d_parent_adjoint + d_child1_adjoint + d_child2_adjoint,
                 mask=parent_valid,
             )
-            p_start += BLOCK_S
+            p_start += BLOCK_NODES
         tl.debug_barrier()
 
     # The root's subtree is the whole tree: nothing lies off it. Every other species is some
@@ -425,7 +440,7 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
         level_end = tl.load(level_offsets_ptr + level + 1)
         p_start = level_start
         while p_start < level_end:
-            node_offs = p_start + tl.arange(0, BLOCK_S)
+            node_offs = p_start + tl.arange(0, BLOCK_NODES)
             node_mask = node_offs < level_end
             parent = tl.load(level_parents_ptr + node_offs, mask=node_mask, other=-1)
             c1 = tl.load(level_child1_ptr + node_offs, mask=node_mask, other=S)
@@ -475,7 +490,7 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
                 d_parent_off_subtree + d_parent_own + d_c1_subtree,
                 mask=c2_mask,
             )
-            p_start += BLOCK_S
+            p_start += BLOCK_NODES
         tl.debug_barrier()
 
     for s_start in range(0, S, BLOCK_S):
@@ -702,11 +717,12 @@ def dts_backward_so(
         compact_level_child1.contiguous(), compact_level_child2.contiguous(),
         d_rhs, d_grad_receiver_log_probs,
         n_ws=n_splits, S=S, stride_C=int(Pi.stride(0)),
-        BLOCK_S=block_s, N_LEVELS=n_levels, N_COMPACT_NODES=n_compact_nodes,
+        BLOCK_S=block_s, BLOCK_NODES=_BLOCK_NODES_TRANSFER_SUBTREE_SO,
+        N_LEVELS=n_levels, N_COMPACT_NODES=n_compact_nodes,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights), DTYPE=_tl_float_dtype(Pi.dtype),
         # num_warps=8 trims _dts_tree_so ~8% vs 4 on 666x80 (back-to-back wall 997->989ms;
         # nsys kernel 12%->11% of HVP). Each program owns a full side-row walked in BLOCK_S
         # chunks -> more warps hide the dependent level-walk loads. split kernel unaffected (kept
         # at Triton's default). Bit-identical (dts_so/hvp gates unchanged).
-        num_warps=8,
+        num_warps=_NUM_WARPS_TRANSFER_SUBTREE_SO,
     )
