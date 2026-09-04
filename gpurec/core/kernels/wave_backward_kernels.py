@@ -388,11 +388,21 @@ def _reconciliation_self_loop_transpose_term(
     input_adjoint = tl.load(term_in_ptr + offsets, mask=mask, other=0.0)
     donor_adjoint_coefficient = tl.load(donor_adjoint_coefficient_ptr + offsets, mask=mask, other=0.0)
     donor_adjoint = input_adjoint * donor_adjoint_coefficient
-    total_donor_adjoint = tl.sum(tl.where(mask, donor_adjoint, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)), axis=0)
     tl.store(subtree_donor_adjoint_ptr + offsets, tl.where(mask, donor_adjoint, tl.zeros_like(donor_adjoint)), mask=store_mask)
 
     tl.debug_barrier()
 
+    # A donor t's transfer term collects g[s] v[s] over every receiver s OUTSIDE t's subtree
+    # (s is neither t nor a descendant of t). That used to be ``row total - subtree sum``. The
+    # receiver coefficient g[s] divides by s's own valid receiver mass, so for a species hanging
+    # under the lane that holds the row's mass it is astronomically large (2**depth); the row
+    # total is then dominated by those terms, and for the dominant lane itself -- whose subtree
+    # holds all of them -- the subtraction cancels to rounding noise of that astronomical size.
+    # Measured on a 1007-species Coleman family at the loss-rate cap, the gradient came out 1e8
+    # times too large. So the off-subtree sum is built top-down by ADDITION instead: what lies
+    # off a child's subtree is what lies off its parent's, plus the parent's own term, plus the
+    # sibling's whole subtree. Subtree sums first (bottom-up), then that walk (top-down), each
+    # child's off-subtree sum overwriting its no-longer-needed subtree sum.
     for level in range(0, N_LEVELS):
         level_start = tl.load(compact_level_ptr + level)
         level_end = tl.load(compact_level_ptr + level + 1)
@@ -428,15 +438,66 @@ def _reconciliation_self_loop_transpose_term(
             node_start += BLOCK_NODES
         tl.debug_barrier()
 
+    # The root's chain is empty: nothing lies off it. Every other lane is written by its parent.
+    species_parent_of_lane = tl.load(species_parent_ptr + s_offs, mask=species_valid, other=0)
+    is_root_lane = (species_parent_of_lane < 0)[:, None] & mask
+    tl.store(
+        subtree_donor_adjoint_ptr + offsets,
+        tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
+        mask=is_root_lane,
+    )
+    tl.debug_barrier()
+    for level_index in range(0, N_LEVELS):
+        level = N_LEVELS - 1 - level_index
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=0)
+            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            reduce_mask = node_mask[:, None] & row_mask[None, :]
+            c1_mask = reduce_mask & (c1 < S)[:, None]
+            c2_mask = reduce_mask & (c2 < S)[:, None]
+            row_base = rows[None, :] * S
+            parent_off_subtree = tl.load(
+                subtree_donor_adjoint_ptr + row_base + parent[:, None],
+                mask=reduce_mask,
+                other=0.0,
+            )
+            parent_own = tl.load(
+                donor_adjoint_coefficient_ptr + row_base + parent[:, None],
+                mask=reduce_mask,
+                other=0.0,
+            ) * tl.load(term_in_ptr + row_base + parent[:, None], mask=reduce_mask, other=0.0)
+            c1_subtree = tl.load(
+                subtree_donor_adjoint_ptr + row_base + c1[:, None], mask=c1_mask, other=0.0
+            )
+            c2_subtree = tl.load(
+                subtree_donor_adjoint_ptr + row_base + c2[:, None], mask=c2_mask, other=0.0
+            )
+            tl.store(
+                subtree_donor_adjoint_ptr + row_base + c1[:, None],
+                parent_off_subtree + parent_own + c2_subtree,
+                mask=c1_mask,
+            )
+            tl.store(
+                subtree_donor_adjoint_ptr + row_base + c2[:, None],
+                parent_off_subtree + parent_own + c1_subtree,
+                mask=c2_mask,
+            )
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
     tl.debug_barrier()
 
-    subtree_donor_adjoint = tl.load(subtree_donor_adjoint_ptr + offsets, mask=mask, other=0.0)
+    off_subtree_donor_adjoint = tl.load(subtree_donor_adjoint_ptr + offsets, mask=mask, other=0.0)
     self_loop_diagonal = tl.load(self_loop_diagonal_ptr + offsets, mask=mask, other=0.0)
     receiver_mass = tl.load(receiver_mass_ptr + offsets, mask=mask, other=0.0)
     self_loop_vjp_without_child_edges = (
-        input_adjoint * self_loop_diagonal
-        + receiver_mass
-        * (total_donor_adjoint[None, :] - subtree_donor_adjoint)
+        input_adjoint * self_loop_diagonal + receiver_mass * off_subtree_donor_adjoint
     )
 
     if USE_CHILD_EDGE_SELF_LOOP:
