@@ -711,6 +711,133 @@ either would pay; the per-node algebra must not change, because the elimination 
 sibling coupling and the additive `Off` are what keep a catastrophic cancellation out of the
 adjoint (commits 60a8b993 and 8ad9bf49).
 
+## Round seven: what the three gene-split (DTS) kernels actually move (RTX 4090, 2026-09-04)
+
+The three biggest gene-split kernels of a gradient were measured byte for byte against the minimum
+their arithmetic needs. Same 200-family Coleman batch as every round above (15 batches of ~100,000
+clades, 2013 species, float32, exact forward and exact adjoint, 1977 waves, flat theta -6/-3/-6).
+Nsight Compute numbers are one launch of the LARGEST wave of a 40-family gradient at the same
+theta: 14,507 splits sharing one parent clade, so 29,014 split sides, S = 2013, one species row =
+8052 bytes. That wave is representative by weight -- half of this kernel's time is in launches of
+4645 splits or more -- and its profiled milliseconds are inflated by Nsight's serialization, so
+they are used only against each other.
+
+**Per split, what each kernel moves, against what it needs.**
+
+| | reads | writes | the minimum one pass needs |
+|---|---|---|---|
+| forward `_stage_multiple_gene_split_event_reduction_kernel` | 32,593 B | 250 B | 32,208 B = the four child rows (Pi and Pibar of both children) |
+| backward `_accumulate_gene_split_event_vjp_kernel` | 48,524 B | 30,240 B | 48,312 B read = those four rows + the two child rows of `accumulated_rhs` it adds into; 32,208 B written = those two rows + the two staged donor rows |
+| backward `_accumulate_transfer_subtree_vjp_kernel` (per SIDE) | 24,193 B | 19,105 B | 24,156 B read = the side's donor row, the child's Pi row, the `accumulated_rhs` row; 8052 B written = that row |
+
+So **the forward reduction moves 1.2 % more than the minimum and runs at 90.4 % of DRAM peak** --
+it is a streaming sum over splits, each split's four child rows are read exactly once, and there is
+nothing in it to remove. **The gene-split VJP's reads and writes are at the minimum too**: it reads
+212 B per split more than the six rows it must touch -- `Pi[parent]` and `v_k[parent]`, which 3.17
+splits share on average and all 14,507 share in this wave, cost essentially nothing because L2
+absorbs them -- and it writes 6 % LESS than four rows, because the rows the adjoint pruner marked
+inactive are skipped. Only the transfer-subtree VJP moved more than it needed, and only on the
+write side: 2.37 rows written per split side where one would do.
+
+**The reuse the profile suggested is not there.** Splits of one parent are contiguous in
+`sl`/`sr`/`reduce_idx` (`build_wave_layout` sorts them that way) and 3.17 splits share a parent,
+but the parent rows are already free -- see above. Child clades are the ones that would matter, and
+they are barely shared: over all 1962 split waves, 8,964,908 child slots point at 6,815,175
+distinct child rows, **1.32 uses per row**, and in the wave above every one of the 14,507 left
+children and 14,507 right children is distinct. Tiling by child row cannot pay at 1.32.
+The species-child gathers are not a problem either: `Pi[child1(s)]` over consecutive species
+touches 363 of the 32-byte lines of an 8052-byte row against 252 for a contiguous pass, and
+`Pi[child2(s)]` 283 -- the species numbering is already local.
+
+**What was scattered: the transfer-complement walk's stores.** That kernel gives every species the
+sum of a split side's donor adjoints lying OFF its subtree, built by addition only (round three's
+cancellation fix). Its top-down pass wrote one number per species back into the species row, at
+whatever index the tree structure chose. Indexing a species row by tree structure is scattered: a
+whole pass over the 1006 internal nodes' parent slots touches 879 lines, over their first children
+883 and their second children 883, where a contiguous pass touches 252. Nsight put the kernel at
+**92.7 % of L2 throughput** with 66.5 M write sectors against 33.4 M read sectors and said only 5.7
+of every 32 stored bytes were used.
+
+The pass now stores one number per INTERNAL NODE, in the compact-level order the walk already
+iterates in, so the store is contiguous (126 lines): `pair[j] = off-subtree(node j's species) +
+own(node j's species)`, which is exactly the quantity both children of node j add their sibling's
+subtree sum to. The species row keeps its subtree sums, so the kernel's last pass finishes any
+species -- leaf or internal -- with one add, `pair[slot of my parent] + subtree[my sibling]`.
+`pair[j]` overwrites `own[j]` in the scratch that already existed (the pass reads a node's own term
+and writes its pair in the same statement, each slot belongs to exactly one level, and no other
+node reads slot j's own term); a second array of the same shape was tried and cost its own 117 MB
+of DRAM writes on this wave, +0.12 ms. Four int32 tables built once per species tree
+(`_off_subtree_walk_tables` in `gpurec/core/scheduling/batching.py`) say where the two operands
+live, and the root-zeroing pass over the species row is gone, because "the root has no parent slot"
+is now what says its off-subtree sum is zero.
+
+| one launch, 29,014 split sides | before | after |
+|---|---|---|
+| L2 throughput | 92.7 % | 65.8 % |
+| L2 write sectors | 66.5 M | 35.6 M |
+| L1 store sectors | 81.8 M | 35.7 M |
+| DRAM throughput | 65.0 % | 73.8 % |
+| duration | 1.97 ms | 1.73 ms |
+
+Over the whole 200-family gradient, taken at a matched load -- the untouched
+`_accumulate_gene_split_event_vjp_kernel` next to it reads 278.0 ms before and 278.9 ms after, 0.3 %
+apart, which is what says the card was in the same state -- `_accumulate_transfer_subtree_vjp_kernel`
+goes **302.0 ms -> 270.7 ms, -10.4 %**. Wall clock, alternating the two builds with the forward as
+the control (unchanged at 780 ms in all six runs, its quiet value): forward+gradient medians 2016.9
+and 2038.3 ms before against 1996.5 and 2010.2 ms after, minima 2008.2 / 2007.7 before against
+1988.6 / 1999.2 after -- **about -20 ms on 2020 ms, -1.1 %**, which is what a 31 ms kernel saving
+should look like. Peak CUDA memory is unchanged at 4041 MiB.
+
+**Nothing moved.** The float64 COG0009 corner gradients are bit-identical to 17 digits at both
+corners (loss-rate cap D -71.943889924633581, L 2748.8267744464943, T -407.69410771831559; mild
+point D 13.885568633078321, L -377.32444930100792, T -618.26689801293253). The 200-family
+per-family NLL vector is identical to the last bit. `grad_theta` moves 8.3e-7 and 5.5e-7 relative
+on two before/after pairs against 5.9e-7 and 4.7e-7 between two runs of the SAME code -- the float32
+cross-wave atomics, whose ORDER is all this changes. `pytest -q tests/` is 441 passed, 14 skipped.
+
+**Three things that were measured and NOT kept.**
+
+1. *Chunking the two backward kernels so the staged donor rows stay in L2.* The gene-split VJP
+   writes a `[2 x splits, species]` array (233 MB on this wave) and the transfer-subtree VJP reads
+   it back; splitting the wave into 1024-split chunks and running the pair per chunk makes that
+   array 16 MB, inside the 4090's 72 MB L2, and PyTorch's allocator hands back the same block every
+   chunk. It works as advertised on the writes -- DRAM writes per side 19,105 B -> 5,620 B -- and
+   not at all on the reads (24,193 B -> 24,248 B). Both kernels came out ~15 % SLOWER against the
+   forward self-loop as control, because a 2048-program grid does not fill the card. At 4096 splits
+   the grid is fine but the L2 saving is gone (DRAM writes back to 20,591 B per side). Reverted.
+2. *Giving each program both sides of a split,* to halve the CTA barriers, which are the kernel's
+   top stall after the change above (6.8 of the 19.4 cycles between two issued instructions; 13 of
+   the tree's 33 levels hold 2 nodes or fewer and 1006 internal nodes are spread over 34 passes of
+   256 lanes, so most warps reach each barrier with nothing to do). It does what it says to the
+   instruction side -- L1 load requests 58.7 M -> 37.1 M, SM throughput 62.3 % -> 48.2 % -- but
+   doubling a program's live working set from 16 KB to 32 KB
+   makes the caches worse: L2 read sectors +38 %, DRAM writes +14 %. Net 1.73 -> 1.69 ms on the big
+   wave and nothing measurable over the gradient. Reverted -- and it is the direct evidence against
+   the larger version of the same idea, fusing the two backward kernels into one launch: that would
+   enlarge the working set further still.
+3. *A wider species block for the gene-split VJP.* That kernel is not bandwidth-bound but
+   memory-LATENCY-bound: 84 % of its cycles have no eligible warp, 0.30 eligible warps per
+   scheduler out of 9.85 active, top stall a memory scoreboard dependency at 20.6 of 61.6 cycles,
+   and its access pattern is already near-perfect (27.0 of 32 bytes used per loaded sector, 26.2
+   per stored one). `BLOCK_S` 256 -> 512 gives each thread two independent loads in flight and is
+   **1.83 ms -> 1.67 ms, -8.7 %** on the big wave, worth about 1.2 % of a gradient (1024 is the
+   same, 1.67 ms; `num_warps` 4 instead of 8 is 1.65 ms, inside the noise). It was NOT taken,
+   because `BLOCK_S` also blocks the per-program sum over species that forms the DTS rate gradient,
+   so the float64 corner gradients move by 1 to 3 units in the last place instead of staying
+   bit-identical (d/dT -407.69410771831559 -> ...565, d/dD 13.885568633078321 -> ...33). It is one
+   number in `wave_backward.py:1451` if a later round decides that certificate can be relaxed.
+
+**Where the gene-split work stands.** The forward reduction is at the DRAM roofline with nothing
+to remove. The gene-split VJP is at its minimum traffic and latency-bound, so the lever there is
+instruction-level parallelism (point 3), not bytes. The transfer-subtree VJP is now balanced --
+DRAM 73.8 %, L2 65.8 %, L1 62.8 %, SM 62.4 % -- with no single unit above 80 %, so its ceiling from
+here is 1.36x and would take a rewrite: its remaining excess is the bottom-up pass, which still
+writes its subtree sums scattered across the species row (879 lines against 126) and so rewrites
+that whole row through DRAM. Moving those sums to a node-indexed array costs a wider staged row
+(one extra slot per internal node, +117 MB on this wave, and a stride through the gene-split
+kernel) and buys about 9 % of DRAM traffic -- roughly 1.2 % of a gradient, which is why it was
+priced and left.
+
 ## What is left
 
 With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs
@@ -736,3 +863,12 @@ the stall rule (`stall_patience`) trades the tail against 3-4 certified families
 Timings on the shared GPU nodes vary by ±100 s with other users' CPU load; pin a quiet node
 (`sbatch --nodelist=...`) for measurements. Independent families still shard perfectly across GPUs
 (`run_genewise_sharded.py`).
+
+Round seven corrects the "all latency-bound at low occupancy" line above for the three gene-split
+(DTS) kernels, which are together 35 % of a gradient: measured against the bytes their arithmetic
+needs, the forward reduction is at **90 % of DRAM peak** moving 1.2 % more than the minimum, the
+gene-split VJP is at its minimum traffic and memory-LATENCY-bound at 82 % occupancy (not low), and
+the transfer-subtree VJP is now balanced with no unit above 74 %. None of them has redundant
+traffic left to remove; see that section for the per-split accounting and for the three
+experiments -- L2 chunking, two split sides per program, a wider species block -- that were
+measured and not kept.

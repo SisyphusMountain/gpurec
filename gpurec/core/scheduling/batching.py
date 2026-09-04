@@ -175,7 +175,57 @@ def _species_tensors(species: dict, *, accumulator_dtype: torch.dtype) -> dict:
         species[key] = torch.tensor(species[key], dtype=torch.int32)
     species["compact_level_ptr"] = torch.tensor(species["compact_level_ptr"], dtype=torch.int64)
     species["sp_height"] = _species_heights(species)
+    species.update(_off_subtree_walk_tables(species))
     return species
+
+
+def _off_subtree_walk_tables(species: dict) -> dict:
+    """Four lookup tables that let the transfer-complement VJP write its top-down walk coalesced.
+
+    That walk gives every species the sum of a split side's donor adjoints lying OFF its own
+    subtree. Written the obvious way it stores one number per species into a species-indexed row,
+    and a species row indexed by tree structure is scattered: on the 2013-species Coleman tree one
+    such store touches 879 of the 32-byte lines that hold the row, where a contiguous pass touches
+    252. Every line carries 4 useful bytes out of 32, and those stores are what saturates L2.
+
+    The walk therefore stores one number per INTERNAL NODE instead, in the same order as the
+    ``compact_level_*`` tables, so the store is contiguous (126 lines): node j's number is
+    "everything off the subtree of node j's species, plus that species' own donor adjoint", which
+    is exactly the quantity both of its children add their sibling's subtree sum to. Recovering a
+    species' own off-subtree sum from it is one add, done once per species in the kernel's last
+    pass. The four tables say where the two operands of that add live:
+
+      ``sp_sibling``            species -> its sibling species, -1 at the root
+      ``sp_parent_node_slot``   species -> the compact-level slot of its parent, -1 at the root
+      ``node_parent_sibling``   node slot -> the sibling of that node's own species, -1 at the root
+      ``node_grandparent_slot`` node slot -> the slot of that node's species' parent, -1 at the root
+    """
+    S = int(species["S"])
+    child1 = species["sp_child1"].to(torch.int64)
+    child2 = species["sp_child2"].to(torch.int64)
+    parents = species["compact_level_parents"].to(torch.int64)
+
+    sibling = torch.full((S,), -1, dtype=torch.int32)
+    internal = child1 < S
+    left, right = child1[internal], child2[internal]
+    sibling[left] = right.to(torch.int32)
+    sibling[right] = left.to(torch.int32)
+
+    # ``compact_level_parents`` lists every internal node exactly once, so this inverse is total.
+    slot_of_species = torch.full((S,), -1, dtype=torch.int32)
+    slot_of_species[parents] = torch.arange(parents.numel(), dtype=torch.int32)
+
+    species_parent = species["sp_parent"].to(torch.int64)
+    has_parent = species_parent >= 0
+    parent_slot = torch.full((S,), -1, dtype=torch.int32)
+    parent_slot[has_parent] = slot_of_species[species_parent[has_parent]]
+
+    return {
+        "sp_sibling": sibling,
+        "sp_parent_node_slot": parent_slot,
+        "node_parent_sibling": sibling[parents].contiguous(),
+        "node_grandparent_slot": parent_slot[parents].contiguous(),
+    }
 
 
 def _species_heights(species: dict) -> torch.Tensor:

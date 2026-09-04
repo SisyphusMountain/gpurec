@@ -1524,7 +1524,10 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
     split_right_rows,
     accumulated_rhs,
     S,
-    species_parent,
+    node_grandparent_slot,
+    node_parent_sibling,
+    species_parent_slot,
+    species_sibling,
     active_mask=None,
     reduce_idx=None,
     pibar_row_max=None,
@@ -1606,7 +1609,16 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
         grad_receiver_log_probs=grad_receiver_log_probs,
     )
     receiver_log_probs = receiver_log_probs.contiguous()
-    species_parent = species_parent.to(device=Pi_star.device, dtype=torch.int32).contiguous()
+    node_grandparent_slot = node_grandparent_slot.to(
+        device=Pi_star.device, dtype=torch.int32
+    ).contiguous()
+    node_parent_sibling = node_parent_sibling.to(
+        device=Pi_star.device, dtype=torch.int32
+    ).contiguous()
+    species_parent_slot = species_parent_slot.to(
+        device=Pi_star.device, dtype=torch.int32
+    ).contiguous()
+    species_sibling = species_sibling.to(device=Pi_star.device, dtype=torch.int32).contiguous()
     receiver_grad_arg = (
         grad_receiver_log_probs
         if grad_receiver_log_probs is not None
@@ -1615,27 +1627,32 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
     # The bottom-up pass overwrites each internal node's own donor adjoint with its subtree sum,
     # and the top-down pass that follows needs that own term back (see the kernel's docstring).
     # One slot per compact level-table entry -- that is, per internal species node -- and per
-    # split side, indexed exactly as the level tables are.
+    # split side, indexed exactly as the level tables are. The top-down pass then overwrites each
+    # slot with the one number that node's children need, so that its store is contiguous instead
+    # of scattered across the species row; the kernel's docstring says why both matter.
     n_compact_nodes = int(compact_level_parents.numel())
-    internal_node_own_donor_adjoint = torch.empty(
+    internal_node_scratch = torch.empty(
         (2 * n_splits, n_compact_nodes), device=Pi_star.device, dtype=Pi_star.dtype
     )
     _accumulate_transfer_subtree_vjp_kernel[(2 * n_splits,)](
         Pi_star,
         receiver_log_probs,
         donor_adjoint,
-        internal_node_own_donor_adjoint,
+        internal_node_scratch,
         active_donor_side if active_donor_side is not None else donor_adjoint,
         split_left_rows,
         split_right_rows,
         reduce_idx if reduce_idx is not None else split_left_rows,
         active_mask if active_mask is not None else donor_adjoint,
         pibar_row_max,
-        species_parent,
         compact_level_ptr,
         compact_level_parents,
         compact_level_child1,
         compact_level_child2,
+        node_grandparent_slot,
+        node_parent_sibling,
+        species_parent_slot,
+        species_sibling,
         accumulated_rhs,
         receiver_grad_arg,
         n_splits,
