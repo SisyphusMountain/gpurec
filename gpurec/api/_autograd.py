@@ -150,6 +150,9 @@ class _GeneReconFunction(torch.autograd.Function):
             # When it does not, the receiver-side backward kernels are skipped and None is
             # returned for that slot below -- which is what autograd expects anyway.
             need_receiver_grad=bool(ctx.needs_input_grad[1]),
+            # The forward ran in this Function's forward(), possibly many steps back, and its
+            # gene-split rows are long gone by the time autograd calls this: recompute them.
+            forward_gene_split=None,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,

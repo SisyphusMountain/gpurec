@@ -386,6 +386,11 @@ def implicit_grad_loglik_vjp_wave(
     # weights, so it passes False; anything that trains them (map_cv, the specieswise joint
     # theta+alpha solves) passes True.
     need_receiver_grad: bool,
+    # The forward's kept gene-split (DTS) rows, {wave start: (rows, row offsets)}, or None to
+    # recompute them here. Every caller says which (no default): reading rows that do NOT come
+    # from the matching forward solve would be silently wrong, so there is no safe fallback to
+    # guess at. See gpurec/core/inference/forward.pi_wave_forward's ``gene_split_out``.
+    forward_gene_split: dict | None,
     theta: torch.Tensor, receiver_weights: torch.Tensor, uniform_pibar_row_max: torch.Tensor,
     family_idx: torch.Tensor,
     leaf_fm_log: torch.Tensor | None = None,
@@ -546,7 +551,15 @@ def implicit_grad_loglik_vjp_wave(
         ).contiguous()
         has_splits = bool(meta.get("has_splits", "sl" in meta))
         has_leaf_term = int(meta.get("phase", 1 if not has_splits else 2)) == 1
-        if has_splits:
+        kept_gene_split = None if forward_gene_split is None else forward_gene_split.get(ws)
+        if has_splits and kept_gene_split is not None:
+            # The forward already reduced these rows from the very same Pi/Pibar child rows this
+            # wave reads (a child's rows are written by its own, earlier wave and never touched
+            # again), so recomputing them here reproduces them exactly. The forward's copy covers
+            # every parent row while this wave's may prune some; the extra rows are never read,
+            # because every consumer below is masked by ``active_mask``.
+            dts_r, dts_offset = kept_gene_split
+        elif has_splits:
             dts_r, dts_offset = compute_dts_forward(
                 Pi_star_wave.detach(),
                 pi_offset,

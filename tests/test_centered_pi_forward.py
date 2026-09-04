@@ -123,6 +123,7 @@ def test_pi_wave_forward_rejects_accumulator_narrower_than_residual() -> None:
             self_loop_mode="exact",
             exact_range_log2=100.0,
             exact_guard_trips_out=None,
+            gene_split_out=None,
         )
 
 

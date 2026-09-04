@@ -160,6 +160,7 @@ def _implicit_kwargs(model, solved, receiver_weights, origination_weights):
         use_receiver_weights=not receiver_weights_are_uniform(receiver_weights),
         # This test compares BOTH returned gradients (theta and receiver weights) against fp64.
         need_receiver_grad=True,
+        forward_gene_split=None,
         theta=model.theta,
         receiver_weights=receiver_weights,
         family_idx=static.rate_family_idx,

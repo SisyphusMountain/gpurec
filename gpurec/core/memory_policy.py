@@ -126,6 +126,37 @@ def warm_adjoint_cache_bytes(total_clades: int, S: int, dtype: torch.dtype) -> i
     return _nonnegative_int("total_clades", total_clades) * _positive_int("S", S) * dtype_nbytes(dtype)
 
 
+def forward_gene_split_cache_fits(
+    max_batch_clades: int,
+    S: int,
+    dtype: torch.dtype,
+    *,
+    device: torch.device | int | None,
+    scratch_tensors: int,
+) -> tuple[bool, int, int, int | None]:
+    """Decide whether the backward may read the forward's gene-split (DTS) rows instead of redoing them.
+
+    The forward computes one ``[wave clades x species]`` gene-split row block per split wave and
+    throws it away; the backward then recomputes exactly the same rows (three Triton reduction
+    launches per wave, 11 % of one gradient on the 200-family Coleman batch). Keeping them costs
+    ONE more ``[batch clades x species]`` tensor per batch -- the wave blocks tile that shape --
+    on top of the ``scratch_tensors`` that ``batch_working_set_bytes`` already budgets for a
+    batch's working set. Its ``[batch clades]`` row-offset sidecar adds another 1/S of that, which
+    at S in the thousands is below the rounding of this estimate.
+
+    Returns ``(ok, cache_bytes, working_set_bytes, budget_bytes)``. ``ok`` False means the caller
+    should let the backward recompute, which is what it always did.
+    """
+    cache = proposal0_wave_scratch_bytes(max_batch_clades, S, dtype, scratch_tensors=1)
+    working = batch_working_set_bytes(
+        max_batch_clades, S, dtype, scratch_tensors=scratch_tensors
+    )
+    budget = cuda_memory_budget_bytes(device)
+    if budget is None:
+        return True, cache, working, budget
+    return (working + cache) <= budget, cache, working, budget
+
+
 def warm_adjoint_fits(
     total_clades: int,
     S: int,

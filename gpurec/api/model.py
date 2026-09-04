@@ -176,6 +176,49 @@ class GeneReconModel(torch.nn.Module):
         self.rate_family_idx = first.rate_family_idx
         self.warm_E = first.warm_E
         self._resolve_warm_adjoint_gate()
+        self._resolve_forward_gene_split_gate()
+
+    def _resolve_forward_gene_split_gate(self) -> None:
+        """Decide whether the backward may read the forward's gene-split (DTS) rows.
+
+        The forward reduces each split wave's gene-split rows and drops them; the backward then
+        reduces exactly the same rows again -- three Triton launches per wave, 11 % of one
+        gradient on the 200-family Coleman batch (274 ms of 2489 ms, half of it the backward's).
+        Keeping them costs ONE more [batch clades x species] tensor while a batch is being
+        processed. Decided ONCE per (re)build, against the largest batch, so a card that cannot
+        afford it simply keeps recomputing.
+        """
+        device = self.theta.device
+        if device.type != "cuda":
+            for static in self.batch_statics:
+                static.forward_gene_split_ok = False
+            return
+        from gpurec.config.memory import MemoryOptions
+        from gpurec.core.memory_policy import forward_gene_split_cache_fits
+
+        S = int(self.species_helpers["S"])
+        batch_clades = [
+            sum(int(self.families[i]["C"]) for i in batch) for batch in self.family_batches
+        ]
+        ok, cache, working, budget = forward_gene_split_cache_fits(
+            max(batch_clades, default=0),
+            S,
+            self.theta.dtype,
+            device=device,
+            scratch_tensors=MemoryOptions().scratch_tensors,
+        )
+        for static in self.batch_statics:
+            static.forward_gene_split_ok = ok
+        self.forward_gene_split_ok = ok
+        if not ok:
+            gib = 1024 ** 3
+            print(
+                f"[gpurec] backward will recompute the gene-split rows: keeping them "
+                f"({cache / gib:.1f} GiB) on top of one batch's working set "
+                f"({working / gib:.1f} GiB) exceeds the budget {(budget or 0) / gib:.1f} GiB "
+                f"[{max(batch_clades, default=0):,} clades in the largest batch x {S} species]",
+                flush=True,
+            )
 
     def _resolve_warm_adjoint_gate(self) -> None:
         """Memory-gate the GPUREC_WARM_ADJOINT cache by the clades x species product.
@@ -393,6 +436,7 @@ class GeneReconModel(torch.nn.Module):
         self.rate_family_idx = self.batch_statics[0].rate_family_idx
         self.warm_E = self.batch_statics[0].warm_E
         self._resolve_warm_adjoint_gate()
+        self._resolve_forward_gene_split_gate()
         return self.family_batches
 
     def set_batch_solver_options(self, per_group_options):

@@ -108,6 +108,18 @@ def evaluate_static_loss_grad(
     need_origination_grad: bool = False,
 ):
     accumulator_dtype = _static_accumulator_dtype(static, theta.dtype)
+    # An empty dict here asks the forward below to KEEP each split wave's gene-split (DTS) rows so
+    # the backward reads them instead of reducing them a second time (three Triton launches per
+    # wave, 11 % of one gradient on the 200-family Coleman batch). Only when a backward is
+    # actually coming and the build-time memory gate said one more [clades x species] tensor fits;
+    # None restores the behaviour of always recomputing.
+    static.forward_gene_split = (
+        {}
+        # getattr, like the warm-adjoint gate above it, because a hand-built static (tests,
+        # probes) has no such field and must keep the recompute path.
+        if (need_grad and bool(getattr(static, "forward_gene_split_ok", False)))
+        else None
+    )
     with torch.no_grad():
         (
             E,
@@ -151,6 +163,10 @@ def evaluate_static_loss_grad(
             _warm_v = static.warm_v
         else:
             _warm_v = None
+        # Hand the kept rows over as a local and drop the static's reference before the backward
+        # starts, so nothing keeps that block alive past this call -- including on an exception.
+        gene_split_rows = static.forward_gene_split
+        static.forward_gene_split = None
         grad_theta, grad_receiver = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -167,6 +183,7 @@ def evaluate_static_loss_grad(
             receiver_log_probs=receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
             need_receiver_grad=need_receiver_grad,
+            forward_gene_split=gene_split_rows,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
@@ -259,6 +276,8 @@ def evaluate_static_convergence(
             # below short-circuits before any parameter gradient is formed), so no receiver
             # gradient is ever read from it.
             need_receiver_grad=False,
+            # This diagnostic runs its own forward above with no gene-split cache installed.
+            forward_gene_split=None,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
@@ -293,6 +312,18 @@ def evaluate_static_loss_vector_grad(
     if not static.genewise:
         raise ValueError("per-family loss vectors require genewise mode")
     accumulator_dtype = _static_accumulator_dtype(static, theta.dtype)
+    # An empty dict here asks the forward below to KEEP each split wave's gene-split (DTS) rows so
+    # the backward reads them instead of reducing them a second time (three Triton launches per
+    # wave, 11 % of one gradient on the 200-family Coleman batch). Only when a backward is
+    # actually coming and the build-time memory gate said one more [clades x species] tensor fits;
+    # None restores the behaviour of always recomputing.
+    static.forward_gene_split = (
+        {}
+        # getattr, like the warm-adjoint gate above it, because a hand-built static (tests,
+        # probes) has no such field and must keep the recompute path.
+        if (need_grad and bool(getattr(static, "forward_gene_split_ok", False)))
+        else None
+    )
     with torch.no_grad():
         (
             E,
@@ -337,6 +368,10 @@ def evaluate_static_loss_vector_grad(
             _warm_v = static.warm_v
         else:
             _warm_v = None
+        # Hand the kept rows over as a local and drop the static's reference before the backward
+        # starts, so nothing keeps that block alive past this call -- including on an exception.
+        gene_split_rows = static.forward_gene_split
+        static.forward_gene_split = None
         grad_theta, grad_receiver = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -353,6 +388,7 @@ def evaluate_static_loss_vector_grad(
             receiver_log_probs=receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
             need_receiver_grad=need_receiver_grad,
+            forward_gene_split=gene_split_rows,
             theta=theta,
             receiver_weights=receiver_weights,
             family_idx=static.rate_family_idx,
