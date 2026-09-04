@@ -117,8 +117,10 @@ def test_precision_partial_toml_override_merges_and_validates(tmp_path):
 
 def test_none_only_fields_are_omitted_from_defaults_toml_and_stay_none():
     cfg = GpurecConfig.from_toml(DEFAULTS_TOML_PATH)
-    assert cfg.solver.bicgstab_tol is None
-    assert cfg.solver.bicgstab_breakdown_tol is None
+    # [solver]'s only None-defaulting field since the E-adjoint solve became a Neumann series
+    # (the old bicgstab_tol / bicgstab_breakdown_tol are gone): None here means "derive the
+    # relative-residual target from the working dtype" (fp32 -> 1e-6, fp64 -> 1e-12).
+    assert cfg.solver.e_adjoint_tol is None
     assert cfg.rates.max_rate is None
     assert cfg.regularizer.origination.depth is None
     assert cfg.regularizer.origination.root_index is None

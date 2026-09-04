@@ -1,3 +1,4 @@
+import dataclasses
 from types import SimpleNamespace
 import inspect
 
@@ -86,12 +87,20 @@ def test_fit_dtl_routes_solver_options_to_genewise_recipe(monkeypatch):
 
 
 def test_global_tiers_have_no_representation_option():
-    fit_tier = global_fit._tier_solver_options(pi_iters=16, neumann_terms=16)
-    eval_tier = global_fit._tier_solver_options(pi_iters=64, neumann_terms=64)
+    # ``_tier_solver_options`` now takes the caller's already-resolved base solver settings and
+    # overrides only the two tier counts, so the base has to be passed in. It is a dict of every
+    # SolverOptions field, exactly as fit_global builds it.
+    base = {f.name: getattr(SolverOptions(), f.name) for f in dataclasses.fields(SolverOptions)}
+    fit_tier = global_fit._tier_solver_options(base, pi_iters=16, neumann_terms=16)
+    eval_tier = global_fit._tier_solver_options(base, pi_iters=64, neumann_terms=64)
 
     assert not hasattr(fit_tier, "pi_representation")
     assert not hasattr(eval_tier, "pi_representation")
     assert (fit_tier.pi_iters, eval_tier.pi_iters) == (16, 64)
+    assert (fit_tier.neumann_terms, eval_tier.neumann_terms) == (16, 64)
+    # Everything except the two tier counts is carried through from the base unchanged.
+    assert fit_tier.e_adjoint_max_iter == SolverOptions().e_adjoint_max_iter
+    assert fit_tier.forward_self_loop == SolverOptions().forward_self_loop
 
 
 def test_pi_wave_forward_has_no_representation_parameter():

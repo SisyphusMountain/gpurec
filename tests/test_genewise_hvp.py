@@ -15,8 +15,12 @@ from gpurec.fit.newton_cg import _fd_hessian_hvp
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 
 _D = "tests/data/alerax/test_trees_200"
+# A deliberately over-converged fp64 solver, so the analytic HVP is compared against a
+# finite-difference oracle with no solve error of its own. The E-adjoint linear solve is a Neumann
+# series -- ``e_adjoint_max_iter`` / ``e_adjoint_tol`` are its budget and relative-residual target
+# (the old BiCGSTAB triple bicgstab_max_iter / bicgstab_tol / bicgstab_breakdown_tol is gone).
 _SO = dict(e_max_iter=2000, e_tol=1e-10, pi_iters=128, neumann_terms=64,
-           bicgstab_max_iter=500, bicgstab_tol=1e-10, bicgstab_breakdown_tol=1e-30,
+           e_adjoint_max_iter=500, e_adjoint_tol=1e-10,
            adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0)
 
 
@@ -68,10 +72,16 @@ def test_build_point_cache_warm_v_poisoned_seed_changes_result():
     initial_v -- no contraction to wash the poisoned seed's effect away, unlike the
     production neumann_terms=64 default where A^64 would shrink any perturbation
     below detectable tolerance regardless of whether warm_v is truly consumed.
+
+    ``adjoint_self_loop="series"`` is required and is the whole point of the gate: the warm start
+    seeds the Neumann sum, and only the series path has a sum to seed. The library default
+    ``"exact"`` SOLVES the self-loop by tree elimination instead, so it has no iterate to warm and
+    ignores warm_v by construction -- running this gate there would assert on a mechanism that is
+    not in play.
     """
     from gpurec.solver.hvp.exact import build_point_cache
 
-    so = SolverOptions(**{**_SO, "neumann_terms": 1})
+    so = SolverOptions(**{**_SO, "neumann_terms": 1, "adjoint_self_loop": "series"})
     so.validate()
     m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 2, mode="genewise",
                        device="cuda", dtype=torch.float64, solver_options=so)
