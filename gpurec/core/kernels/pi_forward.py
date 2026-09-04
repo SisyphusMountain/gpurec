@@ -2159,13 +2159,11 @@ def compute_wave_step(
     # every row, which is what the "log" mode itself does.
     use_row_mask = row_mask is not None
     use_fraction_missing = leaf_fm_log is not None
-    # When there is no fraction-missing tensor the constexpr short-circuits the
-    # off-hit load, so a valid-but-unused 1-element placeholder is enough.
-    leaf_fm_log_arg = (
-        leaf_fm_log.contiguous()
-        if use_fraction_missing
-        else torch.empty(1, device=Pi_in.device, dtype=Pi_in.dtype)
-    )
+    # When there is no fraction-missing tensor the constexpr short-circuits the off-hit load, so
+    # the kernel never dereferences this pointer and any live tensor of the model dtype will do.
+    # ``Pi_in`` is passed rather than a fresh 1-element tensor because this runs on every wave
+    # launch, and an allocation per launch is one more thing the host does while the GPU waits.
+    leaf_fm_log_arg = leaf_fm_log.contiguous() if use_fraction_missing else Pi_in
     block_s, const_row_stride = _prepare_wave_launch(S, duplication_loss_const)
     _update_reconciliation_likelihood_kernel[(W,)](
         Pi_in,
@@ -2377,13 +2375,11 @@ def compute_exact_tree_self_loop(
     if write_guard_trips and tuple(guard_trips_out.shape) != (int(Pi_out.shape[0]), 4):
         raise ValueError("guard_trips_out must have shape [clade rows, 4]")
     use_fraction_missing = leaf_fm_log is not None
-    # When there is no fraction-missing tensor the constexpr short-circuits the
-    # off-hit load, so a valid-but-unused 1-element placeholder is enough.
-    leaf_fm_log_arg = (
-        leaf_fm_log.contiguous()
-        if use_fraction_missing
-        else torch.empty(1, device=Pi_in.device, dtype=Pi_in.dtype)
-    )
+    # When there is no fraction-missing tensor the constexpr short-circuits the off-hit load, so
+    # the kernel never dereferences this pointer and any live tensor of the model dtype will do.
+    # ``Pi_in`` is passed rather than a fresh 1-element tensor because this runs on every wave
+    # launch, and an allocation per launch is one more thing the host does while the GPU waits.
+    leaf_fm_log_arg = leaf_fm_log.contiguous() if use_fraction_missing else Pi_in
     _, const_row_stride = _prepare_wave_launch(S, self_diagonal_lin)
     block_s = min(_BLOCK_SPECIES_SELF_LOOP, triton.next_power_of_2(S))
     _exact_tree_pi_self_loop_kernel[(W,)](
