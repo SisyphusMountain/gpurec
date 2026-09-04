@@ -367,7 +367,11 @@ one with a 2x2 sibling coupling per node and no scalar closure; the two sweep ta
 one helper (`_valid_receiver_sum`). The log forward kernel and the two remaining backward VJP
 kernels were converted by agents from the same template (see their commits). A host-side
 lane-by-lane residual of the fixed-point equation (`benchmark/cc/exact_row_host_check.py`) went
-from 1.9e-8 to 1.4e-13 on the first bad row.
+from 1.9e-8 to 1.4e-13 on the first bad row. After all first-order kernels were converted, the float64 log
+and exact paths agree to 1e-11 bits on the corner family (whole-row disagreement 1.8e-11 log2 at every depth), and
+the analytic gradient there is -71.944 / +2748.83 / -407.69 (D, L, T) against central finite differences
+-71.951 / +2749.09 / -407.73, the step's truncation floor, identically for both adjoint solvers; in a mild regime
+nothing moved (8e-5). As a bonus the log sweep got 8-18 % faster: two prefix scans replace a 34-deep ancestor walk.
 
 **Effect at fitted rates: none.** Full fit with the forward fix (job 57791446): 856 s on a shared
 node, NLL 9048938.300 bits (previously 9048938.28-9048938.31), 5119/5123 certified. The tails only
