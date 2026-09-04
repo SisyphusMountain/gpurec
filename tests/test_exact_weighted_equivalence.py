@@ -85,6 +85,17 @@ _GENE_NEWICKS = (
 # Leaves given a non-zero fraction missing, and how much. Chosen by hand rather than at random so a
 # failure is reproducible from the file alone: a mix of sizeable and small values, and two leaves
 # (D, F) left fully observed so the "some species missing, some not" branch is exercised too.
+#
+# KNOWN LIMIT, unrelated to what this file tests: on real data these same values can make the
+# gradient impossible to compute at all. The gradient needs a separate linear solve -- the
+# extinction adjoint, ``_neumann_e_adjoint`` in gpurec/api/_implicit_grad.py -- whose Neumann series
+# assumes the extinction step's Jacobian shrinks a vector. Measured on 100 Coleman families
+# (benchmark/cc/diagnose_fraction_missing_adjoint.py): with no missing data it shrinks by 0.55 per
+# term, at fraction_missing up to 0.05 by 0.55, up to 0.10 by 0.83, and at 0.20 and above it GROWS
+# by about 1.45 per term until the term overflows -- so the solve raises and there is no gradient.
+# Two of those 100 families do it on their own, both with a very small duplication and transfer rate
+# and a much larger loss rate. This fixture's three families are far from that corner, so the values
+# below are safe here.
 _FRACTION_MISSING = {"A": 0.30, "B": 0.05, "C": 0.45, "E": 0.20}
 
 
