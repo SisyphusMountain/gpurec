@@ -389,6 +389,18 @@ the same large lane-level disagreement with the oracle (identical for log and ex
 (extinction probabilities within 2^-24 of one round to one), not the transfer sums, and the likelihood is still
 within 3e-3 bits. `exact_range_log2 = 100` keeps a 26-order margin from float32 underflow (2^-126) and stays.
 
+**Per-kernel profile after the third round (RTX 4090, 200 Coleman families, 15 batches, float32, exact
+solves; `benchmark/cc/profile_gradient_kernels.py`, `results/profile_kernels_rtx4090_200fam.txt`).**
+Forward only: 756 ms of GPU time, of which the exact forward solve 61 %, the gene-split (DTS) reduction
+21 %, the log-space prologue 10 %. Forward plus gradient: 2354 ms, so the backward is about twice the
+forward: transfer-subtree VJP 12.9 %, gene-split reduction (recomputed in the backward, not stored)
+11.3 %, gene-split VJP 10.5 %, exact transposed solve 9.0 %, receiver-weight VJP 6.4 % (computed
+even though the receiver weights are frozen in a genewise fit: `_implicit_grad.py` always allocates
+its output), prepare kernel 5.0 %, `index_add` scatters 4.5 %, zero-fills 3.6 % (18,620 launches),
+event VJP 3.5 %, series adjoint kernel 2.7 % (launched for spilled rows even when no row spilled).
+Cheap wins visible here: skip the receiver-weight VJP when the weights need no gradient (6.4 %), skip
+the series launch when the spill mask is empty (2.7 %), and stop zero-filling per wave (3.6 %).
+
 ## What is left
 
 With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs
