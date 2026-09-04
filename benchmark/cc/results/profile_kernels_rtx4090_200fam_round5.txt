@@ -1,0 +1,63 @@
+# Per-kernel GPU time of one forward and one forward+gradient AFTER round five (the adjoint
+# self-loop moved into one register-resident kernel per clade row). RTX 4090, 200 Coleman
+# families, 15 batches of ~100,000 clades, 2013 species, float32, exact forward and exact
+# adjoint, 1977 waves.
+#
+#   benchmark/cc/profile_gradient_kernels.py --limit 200 --clade-budget 100000 --top 20
+#
+# ANOTHER PROCESS SHARED THE CARD while this listing was captured, so its milliseconds are
+# roughly DOUBLE and only the launch counts and the percentages are trustworthy here. The
+# load-bearing before/after numbers were taken at matched gradient totals earlier in the same
+# session and are in docs/genewise_h100_runtime.md, round five:
+#
+#   before (total 1926 ms):  _exact_tree_self_loop_transpose_kernel        210.3 ms
+#                            _prepare_reconciliation_self_loop_vjp_kernel  115.1 ms
+#   after  (total 1912 ms):  _solve_reconciliation_self_loop_transpose_row_kernel  312.3 ms
+#                            _prepare_reconciliation_self_loop_vjp_kernel    6.2 ms   (spilled rows only)
+#
+# What this listing still shows plainly: the prepare kernel is down to 0.3 % of the gradient and
+# the Neumann series to 0.1 %, both because they now run only on the rows the elimination refuses,
+# which on this batch is almost none.
+
+[prof] forward only: total GPU time 1219 ms over 59 distinct kernels
+[prof]    61.3%     747.6 ms    1977 launches  _exact_tree_pi_self_loop_kernel
+[prof]    23.2%     282.8 ms    1947 launches  _stage_multiple_gene_split_event_reduction_kernel
+[prof]    10.0%     122.5 ms    1962 launches  _update_reconciliation_likelihood_kernel
+[prof]     2.8%      34.2 ms    1939 launches  _reduce_single_gene_split_events_kernel
+[prof]     0.9%      10.4 ms    1947 launches  _finalize_multiple_gene_split_event_reduction_kernel
+[prof]     0.7%       8.8 ms    2007 launches  void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::arr
+[prof]     0.4%       4.5 ms     210 launches  _update_extinction_log_probabilities_kernel
+[prof]     0.2%       2.3 ms    2082 launches  void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<double>, std::ar
+[prof]     0.1%       1.8 ms      15 launches  _initialize_leaf_reconciliation_likelihood_kernel
+[prof]     0.0%       0.4 ms     195 launches  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrappe
+[prof]     0.0%       0.4 ms      75 launches  exp2_kernel_vectorized2_kernel
+[prof]     0.0%       0.3 ms      15 launches  void at::native::radixSortKVInPlace<-2, -1, 64, 32, long, long, unsigned int>(at::cuda::de
+[prof]     0.0%       0.3 ms      15 launches  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<double, at::native::MaxOps<dou
+[prof]     0.0%       0.2 ms     180 launches  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+[prof]     0.0%       0.2 ms     240 launches  Memcpy DtoH (Device -> Pinned)
+[prof]     0.0%       0.2 ms     105 launches  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+[prof]     0.0%       0.1 ms      22 launches  void at::native::(anonymous namespace)::indexSelectSmallIndex<float, long, unsigned int, 2
+[prof]     0.0%       0.1 ms      60 launches  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+[prof]     0.0%       0.1 ms      34 launches  void at::native::_scatter_gather_elementwise_kernel<128, 8, at::native::_cuda_scatter_gath
+[prof]     0.0%       0.1 ms      15 launches  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<double, at::native::func_wrapp
+[prof] forward+gradient: total GPU time 3861 ms over 101 distinct kernels
+[prof]    25.6%     986.8 ms    1977 launches  _exact_tree_pi_self_loop_kernel
+[prof]    16.8%     647.9 ms    1977 launches  _solve_reconciliation_self_loop_transpose_row_kernel
+[prof]    14.2%     547.0 ms    1962 launches  _accumulate_transfer_subtree_vjp_kernel
+[prof]    13.5%     520.6 ms    1962 launches  _accumulate_gene_split_event_vjp_kernel
+[prof]     8.8%     338.3 ms    1947 launches  _stage_multiple_gene_split_event_reduction_kernel
+[prof]     4.7%     180.2 ms    1977 launches  _accumulate_reconciliation_event_vjp_kernel
+[prof]     4.6%     179.0 ms    9734 launches  void at::native::indexFuncLargeIndex<float, long, unsigned int, 2, 2, -2, true, at::native
+[prof]     3.8%     147.6 ms    1962 launches  _update_reconciliation_likelihood_kernel
+[prof]     1.7%      67.1 ms    1939 launches  _reduce_single_gene_split_events_kernel
+[prof]     1.5%      56.1 ms    4074 launches  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrappe
+[prof]     0.9%      36.0 ms    4735 launches  void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::arr
+[prof]     0.9%      34.5 ms    2532 launches  void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<float>, std:
+[prof]     0.7%      28.6 ms    1977 launches  _select_active_adjoint_rows_kernel
+[prof]     0.5%      19.6 ms    1947 launches  _finalize_multiple_gene_split_event_reduction_kernel
+[prof]     0.3%      11.0 ms    1977 launches  _prepare_reconciliation_self_loop_vjp_kernel
+[prof]     0.2%       8.0 ms    3892 launches  void at::native::indexFuncLargeIndex<float, long, unsigned int, 1, 1, -2, true, at::native
+[prof]     0.1%       5.2 ms     135 launches  _stage_extinction_and_transfer_complement_vjp_kernel
+[prof]     0.1%       5.2 ms     240 launches  _update_extinction_log_probabilities_kernel
+[prof]     0.1%       4.0 ms    1977 launches  void at::native::unrolled_elementwise_kernel<at::native::AUnaryFunctor<long, long, bool, a
+[prof]     0.1%       3.8 ms    1977 launches  _reconciliation_self_loop_transpose_series_kernel
