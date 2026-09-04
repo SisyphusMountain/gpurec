@@ -612,6 +612,105 @@ Hessians. Production therefore keeps the warm-up curvature as the start with the
 `mu = 1e-4`; making the Hessian cheap (sharing the direction-independent work across the three probes,
 then batching the three directions) is the open item that would unlock exact Newton.
 
+## Round five: the adjoint self-loop in one register-resident kernel (RTX 4090, 2026-09-04)
+
+After round four the two kernels that solve the transposed self-loop were 16.9 % of one gradient's
+GPU time: `_prepare_reconciliation_self_loop_vjp_kernel` 115.1 ms and
+`_exact_tree_self_loop_transpose_kernel` 210.3 ms of 1926 ms, on the same 200-family Coleman batch
+(15 batches of ~100,000 clades, 2013 species, float32, exact forward and exact adjoint, 1977
+waves). Between them they moved **eight** `[wave clades x species]` arrays through global memory --
+each one 12 GB per gradient at this batch size:
+
+* five coefficients the prepare kernel wrote and the elimination read back (the self-loop diagonal,
+  the donor coefficient, the receiver mass, the two speciation edge probabilities);
+* two running sums for the valid receiver mass, written and read inside the prepare kernel;
+* three working arrays the elimination's own two species-tree walks wrote and re-read at every
+  level.
+
+`_solve_reconciliation_self_loop_transpose_row_kernel` does all of it in one launch, one program
+per clade row: the species row sits in registers as `BLOCK_S` lanes across several warps, the
+coefficients are built from the primal row on the spot, and the two elimination walks reach
+children, parent and sibling with `tl.gather`. This is the shape the forward tangent
+(`_solve_reconciliation_self_loop_jvp_exact_kernel`) has used since the exact tangent landed. The
+prepare kernel and the Neumann series stay for the `"series"` adjoint mode and for the rows the
+elimination refuses on conditioning grounds; on the exact path prepare is now launched with only
+those rows and returns on its first load when there are none.
+
+**The arithmetic is unchanged on purpose**, term for term and in the same order, so the gradient
+does not move. In particular the valid receiver mass is still the depth-first "not yet open" plus
+"already closed" pair of running sums summed by `tl.cumsum` over the same `BLOCK_S` lanes -- only
+the two gathers around it now read registers instead of a scratch array. A 2013-lane test says the
+1-D scan is bit-identical to the `[BLOCK_S, 1]` one at 4, 8 and 16 warps. It is deliberately NOT
+the additive tree walk in `species_tree_sums.py`, which is the same number to a different rounding.
+The one thing that could not be carried over literally is the scatter: the prepare kernel wrote
+"speciate at parent(t), follow the edge into t" into the child's slot, and a register-resident
+program cannot write another lane's register, so each lane gathers the number its parent computed
+for it instead. Same number.
+
+**What it bought, and what it did not.** Per-kernel GPU time at matched totals:
+
+| | before | after |
+|---|---|---|
+| `_prepare_reconciliation_self_loop_vjp_kernel` | 115.1 ms | 6.2 ms |
+| `_exact_tree_self_loop_transpose_kernel` | 210.3 ms | (deleted) |
+| `_solve_reconciliation_self_loop_transpose_row_kernel` | -- | 312.3 ms |
+| the three together | 325.4 ms (16.9 %) | 318.5 ms (16.6 %) |
+| one gradient, all kernels | 1926 ms | 1912 ms |
+| peak CUDA memory | 4041 MiB | 4041 MiB |
+
+So the round trip really is gone -- Nsight Compute on one wave puts DRAM throughput at **36 % of
+peak before and 1.5 % after** -- and the gradient is about **2 % faster overall**, not the 12 to
+19 % the array traffic suggested. The reason is that neither kernel was bandwidth-bound to begin
+with; both were latency-bound at 16 % occupancy, and `tl.gather` pays back in the shared-memory
+pipe what the arrays cost in DRAM. After the change the kernel's top stall is `mio_throttle` at
+2.43 warps stalled per issue (the memory-input/output queue that `tl.gather` stages through), L1
+throughput 53 %, SM throughput only 7.6 %; registers 112 per thread at 16 warps and occupancy 33 %,
+up from 187 registers and 16 %.
+
+An isolated cost model separates the two halves -- the pipeline cannot, because its row pruner
+reads the adjoint this kernel produces, so shortening the walks changes how many rows the next wave
+even looks at. Capturing one real 254-row wave's arguments and re-launching the kernel on them
+(`num_warps=16`): the whole solve is 58.3 us, of which the coefficient setup is **18.4 us (32 %)**
+and the two species-tree walks are **40 us (68 %), 1.21 us per level**. The saving is the setup
+half; the walks cost what the block-tiled walks through global memory cost.
+
+Warp sweep on the whole gradient, this kernel only: 4 warps 342.8 ms, 8 warps 328.6 ms, **16 warps
+312.3 ms**, 32 warps 323.9 ms. 16 is the default.
+
+**The gradient did not move.** `benchmark/cc/save_gradient_snapshot.py`, 200 families,
+`--receiver-grad` on so the receiver-weight path is exercised too: the per-family NLL vector is
+identical to the last bit (max difference exactly 0), `grad_theta` moves 4.272461e-04 out of
+7.717233e+02 (**5.5e-7 relative**) and `grad_receiver` 2.29e-05 out of 5.77e+01 (4.0e-7) -- against
+two runs of the SAME code, which differ by 4.272461e-04 (5.5e-7) and 1.91e-05 (3.3e-7). The change
+sits exactly at the run-to-run noise of the float32 cross-wave atomics. In float64, where there are
+no atomics to reorder, the COG0009 corner gradients (`benchmark/cc/corner_fd_grad.py --step 1e-3
+--adjoint exact`) are bit-identical to before the change at both the loss-rate cap
+(D -7.194388992e+01, L +2.748826774e+03, T -4.076941077e+02) and the mild point
+(D +1.388556863e+01, L -3.773244493e+02, T -6.182668980e+02). `pytest -q tests/` is 441 passed,
+14 skipped, unchanged.
+
+Wall clock could not be resolved. Another process shared the card for most of the session, so
+every measurement alternated the two builds one at a time (`git checkout 2620fa3d -- gpurec/`
+between arms) and only the runs whose FORWARD came out at its quiet value of ~783 ms count -- the
+forward is identical in both arms, so it is the control that says the card was free. Those runs
+give `forward+gradient` **2133.3 ms and 2348.3 ms before, 2202.2 ms and 2326.2 ms after**: two
+overlapping ranges about 10 % wide, around a change worth 14 ms of GPU time. The per-kernel numbers
+above, taken at matched gradient totals (1926 ms before, 1912 and 1917 ms after), are the
+load-bearing measurement.
+
+The full after-listing is in `results/profile_kernels_rtx4090_200fam_round5.txt`; the card was busy
+when it was captured, so its milliseconds are about double while its launch counts and percentages
+are exact.
+
+**Where the remaining cost is, for whoever picks this up.** The walks are 68 % of the kernel and
+are throttled on bank-conflicted `tl.gather`s: the child, parent and sibling indices are arbitrary
+species numbers, so each gather is a many-way shared-memory conflict. The bottom-up walk also runs
+one whole-row pass per species-tree LEVEL, and this tree is badly balanced -- of 33 levels, the
+deepest 14 hold 23 of the 1006 internal nodes, so 42 % of the passes do 2 % of the work. Cutting
+either would pay; the per-node algebra must not change, because the elimination triples, the 2x2
+sibling coupling and the additive `Off` are what keep a catastrophic cancellation out of the
+adjoint (commits 60a8b993 and 8ad9bf49).
+
 ## What is left
 
 With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs
@@ -623,6 +722,15 @@ producing nothing at all (see above); what is left in the backward is genuine ar
 removed the host-side stalls that drained the queue around it, and the 200-family gradient is now
 94.6 % GPU-bound, so the next gain has to come from the kernels themselves rather than from the
 python driving them. The warm-up (5 Adam gradients, ~125 s) and the tail
+
+~30 s (79 batches x 0.4 s) and is spread over the per-wave backward kernels (the transposed self-loop
+solve, transfer-subtree VJP, gene-split VJP), the exact forward solve (~24 %), the DTS forward reduction
+and the `index_add` scatter; all are latency-bound at low occupancy rather than compute- or
+bandwidth-bound, so further gains need occupancy/tiling work per kernel. Round four removed the backward
+work that was producing nothing at all and round five removed the adjoint self-loop's global-memory round
+trip (both above); what is left in the backward is genuine arithmetic, and round five is the direct
+evidence that removing memory traffic from a LATENCY-bound kernel buys little -- the next gains have to
+come from the walks themselves. The warm-up (5 Adam gradients, ~125 s) and the tail
 of a few families iterating to `max_iter` (30-120 s, run-dependent) are the remaining recipe-level costs;
 the stall rule (`stall_patience`) trades the tail against 3-4 certified families and is off by default.
 Timings on the shared GPU nodes vary by ±100 s with other users' CPU load; pin a quiet node

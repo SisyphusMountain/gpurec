@@ -23,7 +23,7 @@ from gpurec.core.kernels.wave_backward_kernels import (
     _prepare_reconciliation_self_loop_vjp_kernel,
     _apply_reconciliation_self_loop_transpose_kernel,
     _reconciliation_self_loop_transpose_series_kernel,
-    _exact_tree_self_loop_transpose_kernel,
+    _solve_reconciliation_self_loop_transpose_row_kernel,
     _accumulate_transfer_receiver_log_probability_vjp_kernel,
     _accumulate_reconciliation_event_vjp_kernel,
     _accumulate_gene_split_event_vjp_kernel,
@@ -49,6 +49,12 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 _NUM_WARPS_PREPARE_SELF_LOOP_VJP = 8
 _NUM_WARPS_SELF_LOOP_TRANSPOSE = 2
 _NUM_WARPS_TRANSFER_SUBTREE_VJP = 8
+
+# Warps per program for the register-resident transposed solve
+# (``_solve_reconciliation_self_loop_transpose_row_kernel``). One program holds one clade row's
+# whole species tile, so the warp count decides how many species lanes each thread carries and
+# how many registers the walks need per thread; see benchmark/cc/sweep_num_warps.py.
+_NUM_WARPS_SELF_LOOP_TRANSPOSE_ROW = 16
 
 # Attribute name under which the four valid-receiver scan tables are memoised on the caller's
 # ``sp_subtree_start`` tensor. They depend only on the species tree, and a gradient launches the
@@ -96,7 +102,8 @@ _USE_FUSED_NEUMANN_SERIES = True
 # The two adjoint self-loop implementations selectable through ``SolverOptions.adjoint_self_loop``.
 # "series": sum the Neumann terms of (I - J^T)^-1 rhs, stopping early per row block.
 # "exact":  solve (I - J^T) v = rhs directly by elimination on the species tree
-#           (``_exact_tree_self_loop_transpose_kernel``), which is what the series converges to.
+#           (``_solve_reconciliation_self_loop_transpose_row_kernel``), which is what the series
+#           converges to.
 ADJOINT_SELF_LOOP_MODES = ("series", "exact")
 
 # Debug instrumentation for the exact adjoint solve, off in production. When switched on with
@@ -355,6 +362,7 @@ def _solve_reconciliation_wave_vjp_2d(
     has_leaf_term,
     active_mask,
     species_parent,
+    species_height,
     species_subtree_start,
     species_subtree_end,
     pibar_row_max,
@@ -470,6 +478,13 @@ def _solve_reconciliation_wave_vjp_2d(
     if species_parent is None:
         raise ValueError("species_parent is required for the retained 2D self-loop path")
     species_parent = species_parent.to(device=device, dtype=torch.int32).contiguous()
+    if species_height is None:
+        raise ValueError(
+            "species_height is required for the retained 2D self-loop path: the register-resident "
+            "transposed solve settles one species-tree level per pass and reads each lane's height "
+            "to know which lanes that pass updates"
+        )
+    species_height = species_height.to(device=device, dtype=torch.int32).contiguous()
     if species_subtree_start is None or species_subtree_end is None:
         raise ValueError(
             "species_subtree_start and species_subtree_end are required for the retained 2D "
@@ -600,73 +615,87 @@ def _solve_reconciliation_wave_vjp_2d(
 
     launch_options = {"num_warps": 8}
 
-    _prepare_reconciliation_self_loop_vjp_kernel[(n_row_blocks,)](
-        Pi_star,
-        Pibar_star,
-        pi_offset,
-        pibar_offset,
-        pibar_row_max,
-        gene_split_log_likelihood if gene_split_log_likelihood is not None else Pi_star,
-        gene_split_offset if gene_split_offset is not None else Pi_star,
-        gene_split_log_likelihood is not None,
-        rhs,
-        active_mask if active_mask is not None else rhs,
-        max_transfer,
-        duplication_loss_const,
-        Ebar,
-        E,
-        speciation_child1_const,
-        speciation_child2_const,
-        receiver_log_probs,
-        species_child1,
-        species_child2,
-        not_open_source,
-        closed_source,
-        not_open_index,
-        closed_index,
-        valid_receiver_scratch,
-        leaf_term_wt,
-        leaf_species_arg,
-        leaf_logp_arg,
-        leaf_fm_log_arg,
-        family_idx,
-        v_k,
-        self_loop_diagonal,
-        donor_adjoint_coefficient,
-        receiver_mass,
-        speciation_child1_probability,
-        speciation_child2_probability,
-        ws,
-        W,
-        S,
-        Pi_star.stride(0),
-        block_w,
-        block_s,
-        USE_LEAF_INDEX=bool(use_leaf_index),
-        HAS_LEAF_TERM=bool(has_leaf_term),
-        LEAF_LOGP_MODE=int(leaf_logp_mode),
-        USE_FRACTION_MISSING=bool(use_fraction_missing),
-        USE_ACTIVE_MASK=bool(active_mask is not None),
-        SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-        CONST_LAYOUT=int(const_layout),
-        DTYPE=_tl_float_dtype(dtype),
-        USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
-        num_warps=_NUM_WARPS_PREPARE_SELF_LOOP_VJP,
-    )
+    def _launch_prepare(prepare_rows, use_prepare_row_mask):
+        """Write the five per-species self-loop coefficient arrays, and seed ``v_k`` with the rhs.
 
-    if initial_v is not None and not use_exact_adjoint:
-        # Warm start: the series then iterates the fixed point v <- rhs + J^T v
-        # from this v instead of summing Neumann terms from scratch. The exact solve
-        # lands on that fixed point in one shot, so a starting point buys it nothing.
-        if tuple(initial_v.shape) != scratch_shape:
-            raise ValueError(
-                f"initial_v shape {tuple(initial_v.shape)} does not match "
-                f"wave scratch shape {scratch_shape}"
-            )
-        v_k.copy_(initial_v.contiguous())
+        On the "series" adjoint this covers every active row -- the series reads all five arrays
+        at every term. On the "exact" adjoint it covers only the rows the register-resident solve
+        did NOT take: the ones the forward flagged as too wide for one row scale, plus the ones
+        that solve refused on conditioning grounds. That is almost always none of them, and the
+        kernel returns on its first load when its row is not in the mask, so the launch costs a
+        few microseconds rather than a full pass over the wave.
+        """
+        _prepare_reconciliation_self_loop_vjp_kernel[(n_row_blocks,)](
+            Pi_star,
+            Pibar_star,
+            pi_offset,
+            pibar_offset,
+            pibar_row_max,
+            gene_split_log_likelihood if gene_split_log_likelihood is not None else Pi_star,
+            gene_split_offset if gene_split_offset is not None else Pi_star,
+            gene_split_log_likelihood is not None,
+            rhs,
+            prepare_rows,
+            max_transfer,
+            duplication_loss_const,
+            Ebar,
+            E,
+            speciation_child1_const,
+            speciation_child2_const,
+            receiver_log_probs,
+            species_child1,
+            species_child2,
+            not_open_source,
+            closed_source,
+            not_open_index,
+            closed_index,
+            valid_receiver_scratch,
+            leaf_term_wt,
+            leaf_species_arg,
+            leaf_logp_arg,
+            leaf_fm_log_arg,
+            family_idx,
+            v_k,
+            self_loop_diagonal,
+            donor_adjoint_coefficient,
+            receiver_mass,
+            speciation_child1_probability,
+            speciation_child2_probability,
+            ws,
+            W,
+            S,
+            Pi_star.stride(0),
+            block_w,
+            block_s,
+            USE_LEAF_INDEX=bool(use_leaf_index),
+            HAS_LEAF_TERM=bool(has_leaf_term),
+            LEAF_LOGP_MODE=int(leaf_logp_mode),
+            USE_FRACTION_MISSING=bool(use_fraction_missing),
+            USE_ACTIVE_MASK=bool(use_prepare_row_mask),
+            SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
+            CONST_LAYOUT=int(const_layout),
+            DTYPE=_tl_float_dtype(dtype),
+            USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+            USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+            num_warps=_NUM_WARPS_PREPARE_SELF_LOOP_VJP,
+        )
 
     jt_options = {"num_warps": 2}
+    if not use_exact_adjoint:
+        _launch_prepare(
+            active_mask if active_mask is not None else rhs, active_mask is not None
+        )
+        if initial_v is not None:
+            # Warm start: the series then iterates the fixed point v <- rhs + J^T v
+            # from this v instead of summing Neumann terms from scratch. The exact solve
+            # lands on that fixed point in one shot, so a starting point buys it nothing.
+            if tuple(initial_v.shape) != scratch_shape:
+                raise ValueError(
+                    f"initial_v shape {tuple(initial_v.shape)} does not match "
+                    f"wave scratch shape {scratch_shape}"
+                )
+            v_k.copy_(initial_v.contiguous())
+
     if use_exact_adjoint:
         # One launch, no terms: solve (I - J^T) v = rhs by elimination on the species tree.
         collect_guard_trips = _COLLECT_EXACT_ADJOINT_GUARD_TRIPS
@@ -704,43 +733,68 @@ def _solve_reconciliation_wave_vjp_2d(
             if count_spills
             else compact_level_ptr
         )
-        _exact_tree_self_loop_transpose_kernel[(n_row_blocks,)](
+        # One launch, one program per clade row, no [clades, species] round trip: the row's
+        # coefficients are built from the primal row in registers and the two elimination walks
+        # run there too. The prepare kernel below then fills those arrays for the rows this one
+        # refused, which is what the series needs and almost always nobody.
+        _solve_reconciliation_self_loop_transpose_row_kernel[(int(W),)](
+            Pi_star,
+            Pibar_star,
+            pi_offset,
+            pibar_offset,
+            pibar_row_max,
+            gene_split_log_likelihood if gene_split_log_likelihood is not None else Pi_star,
+            gene_split_offset if gene_split_offset is not None else Pi_star,
+            gene_split_log_likelihood is not None,
             rhs,
             exact_rows,
-            self_loop_diagonal,
+            duplication_loss_const,
+            Ebar,
+            E,
+            speciation_child1_const,
+            speciation_child2_const,
+            receiver_log_probs,
+            species_child1,
+            species_child2,
+            species_parent,
+            species_height,
+            not_open_source,
+            closed_source,
+            not_open_index,
+            closed_index,
+            leaf_term_wt,
+            leaf_species_arg,
+            leaf_logp_arg,
+            leaf_fm_log_arg,
+            family_idx,
+            v_k,
             donor_adjoint_coefficient,
             receiver_mass,
-            # In the child-edge layout the prepare kernel writes BOTH children's speciation
-            # probabilities into this one array, indexed by the child, so each entry already
-            # reads "speciate at my parent and follow the edge into me".
-            speciation_child1_probability,
-            species_parent,
-            compact_level_ptr,
-            compact_level_parents,
-            compact_level_child1,
-            compact_level_child2,
-            subtree_donor_adjoint,
-            subtree_donor_constant,
-            subtree_donor_weight,
-            v_k,
             guard_trips,
             series_rows,
             spill_count,
             exact_conditioning_floor(dtype),
+            ws,
             W,
             S,
-            block_w,
+            Pi_star.stride(0),
             block_s,
-            block_nodes,
             compact_level_ptr.numel() - 1,
-            USE_ACTIVE_MASK=True,
+            USE_LEAF_INDEX=bool(use_leaf_index),
+            HAS_LEAF_TERM=bool(has_leaf_term),
+            LEAF_LOGP_MODE=int(leaf_logp_mode),
+            USE_FRACTION_MISSING=bool(use_fraction_missing),
+            CONST_LAYOUT=int(const_layout),
+            DTYPE=_tl_float_dtype(dtype),
+            USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+            PUBLISH_DONOR_TERMS=bool(grad_receiver_log_probs is not None),
             WRITE_GUARD_TRIPS=bool(collect_guard_trips),
             COUNT_SPILLS=bool(count_spills),
-            DTYPE=_tl_float_dtype(dtype),
-            num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
+            num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE_ROW,
         )
         if collect_guard_trips:
             _EXACT_ADJOINT_GUARD_TRIPS.append(guard_trips)
+        _launch_prepare(series_rows, True)
         # Whether the series has any row to work on. ``elimination_pair`` is [2, W, S] and dead
         # once the tree solve above has finished with it, so the series ping-pongs in it and this
         # path allocates nothing of its own. v_k still holds rhs for every masked row -- the
@@ -1054,6 +1108,7 @@ def solve_reconciliation_wave_vjp(
     has_leaf_term=True,
     active_mask=None,
     species_parent=None,
+    species_height=None,
     species_subtree_start=None,
     species_subtree_end=None,
     pibar_row_max=None,
@@ -1175,6 +1230,7 @@ def solve_reconciliation_wave_vjp(
         has_leaf_term=requested_has_leaf_term,
         active_mask=active_mask,
         species_parent=species_parent,
+        species_height=species_height,
         species_subtree_start=species_subtree_start,
         species_subtree_end=species_subtree_end,
         pibar_row_max=pibar_row_max,

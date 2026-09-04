@@ -651,6 +651,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     leaf_logp=wave_constants["leaf_log_probability"],
                     has_leaf_term=has_leaf,
                     active_mask=wave["active_mask"], species_parent=species_parent,
+                    species_height=sh["sp_height"],
                     species_subtree_start=sh["sp_subtree_start"],
                     species_subtree_end=sh["sp_subtree_end"],
                     pibar_row_max=pibar_row_max, family_idx=family_idx,
