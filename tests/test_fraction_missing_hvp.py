@@ -16,8 +16,12 @@ modifies (curvature -1.7e-2 without fm -> -4.0e-2 at fm=0.3).
 Gate 1: analytic HVP ``H u`` (real ``make_exact_hvp`` entry point) vs central finite-difference of
 the FIRST-ORDER gradient (``m().backward()`` -- the fraction-missing-correct gradient verified by
 ``test_fraction_missing_grad.py``) along a random unit direction ``u``. Relative L2 error < 1e-2.
-Gate 2: with fraction_missing=0.0 the HVP is bit-identical to the no-fraction-missing HVP (the
-``USE_FRACTION_MISSING`` constexpr compiles the new code out when ``leaf_fm_log is None``).
+Gate 2: with fraction_missing=0.0 the HVP matches the no-fraction-missing HVP (the
+``USE_FRACTION_MISSING`` constexpr compiles the new code out when ``leaf_fm_log is None``). The two
+runs are the SAME arithmetic, but the HVP is accumulated with Triton atomics whose float64 summation
+order is not reproducible between launches, so they agree to a few rounding steps rather than bit
+for bit (over 10 repeats the two HVPs were identical 8 times and differed by at most 6.9e-18 on a
+largest entry of 4.3e-2).
 """
 import torch, pytest
 pytestmark = pytest.mark.gpu
@@ -82,7 +86,7 @@ def test_hvp_matches_central_fd_of_grad_with_fraction_missing(tmp_path):
     )
 
 
-def test_hvp_fraction_missing_zero_bit_identical_to_none(tmp_path):
+def test_hvp_fraction_missing_zero_matches_none(tmp_path):
     m_none = _build(tmp_path, _GENE_DUP, None, "none")
     m_zero = _build(tmp_path, _GENE_DUP, 0.0, "zero")
     # fraction_missing=0.0 collapses to the no-fraction-missing fast path (build_fraction_missing_tensors
@@ -97,9 +101,21 @@ def test_hvp_fraction_missing_zero_bit_identical_to_none(tmp_path):
 
     Hu_none = _hvp(m_none, theta0)(u).reshape(-1)
     Hu_zero = _hvp(m_zero, m_zero.theta.detach().clone())(u).reshape(-1)
-    assert torch.equal(Hu_none, Hu_zero), (
-        "fraction_missing=0.0 HVP is not bit-identical to the no-fraction-missing HVP "
-        f"(max abs diff {float((Hu_none - Hu_zero).abs().max()):.3e})"
+
+    # Both runs execute the identical kernels on identical inputs, so the only difference allowed is
+    # the run-to-run summation order of the Triton atomics that accumulate the HVP: a few float64
+    # rounding steps of the largest HVP entry. The tolerance is therefore an absolute floor set by
+    # the HVP's own size, 1e-12 of the largest entry = 4.3e-14 here. That is ~6000x above the worst
+    # atomics noise measured over 10 repeats (6.9e-18) and ~1e12x below a real fraction-missing
+    # effect (turning fraction-missing on moves this fixture's curvature from -1.7e-2 to -4.0e-2),
+    # so it cannot hide a genuine difference between the two paths.
+    scale = float(Hu_none.abs().max())
+    assert scale > 0.0, "fixture HVP is all zeros, so the comparison would be vacuous"
+    tol = 1e-12 * scale
+    max_diff = float((Hu_none - Hu_zero).abs().max())
+    assert max_diff <= tol, (
+        "fraction_missing=0.0 HVP does not match the no-fraction-missing HVP "
+        f"(max abs diff {max_diff:.3e}, tolerance {tol:.3e}, largest HVP entry {scale:.3e})"
     )
 
 

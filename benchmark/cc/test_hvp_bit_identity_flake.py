@@ -1,7 +1,7 @@
 """Flake rate of the bit-identity HVP comparison, per forward_self_loop.
 
 Reproduces exactly what tests/test_fraction_missing_hvp.py::
-test_hvp_fraction_missing_zero_bit_identical_to_none asserts -- two models that must compute the
+test_hvp_fraction_missing_zero_matches_none asserts -- two models that must compute the
 same thing, whose HVPs are required to match bit for bit -- and repeats it, so the pass rate can be
 compared across forward paths instead of inferred from one sample.
 """
