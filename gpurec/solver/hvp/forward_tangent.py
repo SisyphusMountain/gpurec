@@ -282,6 +282,10 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     pi_state.validate(pi, pibar, sv["pibar_row_max"], check_values=False)
     pi_offset = pi_state.pi_offset
     pibar_offset = pi_state.pibar_offset
+    # The forward's own record of the rows it could not hold under one row scale. The tangent's
+    # elimination underflows on the same lanes, so those rows take the sweeps instead. None
+    # whenever nothing was flagged, which leaves the tangent exactly as it was.
+    tangent_wide_row = pi_state.wide_row if pi_state.wide_row_total > 0 else None
     C = int(pi.shape[0])
     dpi = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
     dpibar = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
@@ -381,6 +385,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 pi_offset=pi_offset, gene_split_offset=gene_split_offset,
                 species_height=species_height, species_levels=species_levels,
                 exact=exact_selfloop,
+                wide_row=tangent_wide_row if exact_selfloop else None,
             )
         elif self_iters is not None:
             # reference (unfused) fixed-count path: one launch per Jacobi step

@@ -319,6 +319,7 @@ def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     has_splits: tl.constexpr,
     dPi_new_ptr,
     dPibar_out_ptr,
+    row_mask_ptr,
     n_iters,
     S: tl.constexpr,
     stride: tl.constexpr,
@@ -328,13 +329,24 @@ def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
+    USE_ROW_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    """Fuse fixed-count wave-tangent self-loop iterations."""
+    """Fuse fixed-count wave-tangent self-loop iterations.
+
+    ``row_mask_ptr`` (behind ``USE_ROW_MASK``) restricts the sweeps to the clade rows the exact
+    tangent handed back -- the ones the forward could not hold under one row scale. Every other
+    row returns immediately, leaving whatever the exact elimination published for it.
+    """
     NEG = -float("inf")
     # int64: w ranges over the whole batch's clade rows, so the *stride
     # multiplies below can overflow int32 once total_clades * S exceeds 2^31.
     w = tl.program_id(0).to(tl.int64)
+    if USE_ROW_MASK:
+        # Selective sweep: every row the exact tangent could solve already holds its answer, so
+        # returning here makes this launch a no-op on it.
+        if tl.load(row_mask_ptr + ws + w) == 0:
+            return
     pi_base = (pi_ws + w) * stride
     out_base = w * stride
     global_base = (ws + w) * stride
@@ -535,6 +547,7 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     dPi_new_ptr,
     dPibar_out_ptr,
     guard_trips_ptr,
+    row_mask_ptr,
     S: tl.constexpr,
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
@@ -545,6 +558,7 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     STORE_PIBAR: tl.constexpr,
     WRITE_GUARD_TRIPS: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
+    USE_ROW_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Solve the wave-tangent self-loop EXACTLY, by elimination on the species tree.
@@ -607,6 +621,12 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     # int64: w ranges over the whole batch's clade rows, so the *stride
     # multiplies below can overflow int32 once total_clades * S exceeds 2^31.
     w = tl.program_id(0).to(tl.int64)
+    if USE_ROW_MASK:
+        # The forward could not hold these rows under one row scale and solved them in log space;
+        # the tangent's own elimination underflows on exactly the same lanes, so it leaves them to
+        # the sweeps. The two launches cover every row of the wave between them.
+        if tl.load(row_mask_ptr + ws + w) != 0:
+            return
     pi_base = (pi_ws + w) * stride
     out_base = w * stride
     global_base = (ws + w) * stride
@@ -992,7 +1012,7 @@ def compute_wave_step_tangent_selfloop(
     dPibar_out=None, has_leaf_term=True, use_receiver_weights=True,
     dreceiver_log_probs=None,
     pi_offset, gene_split_offset=None,
-    species_height=None, species_levels=None, exact=False,
+    species_height=None, species_levels=None, exact=False, wide_row=None,
 ):
     """Run the wave-tangent self-loop; see the LaTeX reference.
 
@@ -1002,6 +1022,11 @@ def compute_wave_step_tangent_selfloop(
     ``species_levels``, the species tree's height, which is ``compact_level_ptr.numel() - 1``;
     that is a shape, so the caller reads it without the device-to-host copy a
     ``species_height.max()`` here would cost on every wave.
+
+    ``wide_row`` (``int8``, one entry per clade row) is the forward's own record of which rows it
+    could not hold under a single row scale. With ``exact=True`` those rows go to the sweeps and
+    the rest to the elimination, so the two launches cover the wave between them; ``None`` means
+    the forward flagged nothing and only the elimination runs, exactly as before.
     """
     has_splits = gene_split_log_likelihood is not None
     pi_offset_arg, gene_split_offset_arg = _prepare_wave_offsets(
@@ -1078,6 +1103,7 @@ def compute_wave_step_tangent_selfloop(
             dPi_out_rows,
             dPibar_out if store_pibar else dummy,
             guard_trips,
+            wide_row if wide_row is not None else species_child1,
             S,
             stride=S,
             CONST_ROW_STRIDE=const_row_stride,
@@ -1088,12 +1114,15 @@ def compute_wave_step_tangent_selfloop(
             STORE_PIBAR=bool(store_pibar),
             WRITE_GUARD_TRIPS=bool(collect_guard_trips),
             USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+            USE_ROW_MASK=bool(wide_row is not None),
             DTYPE=_tl_float_dtype(Pi_in.dtype),
             num_warps=_NUM_WARPS_SELF_LOOP_JVP_ITERS,
         )
         if collect_guard_trips:
             _EXACT_TANGENT_GUARD_TRIPS.append(guard_trips)
-        return
+        if wide_row is None:
+            return
+        # Fall through: the sweeps below run, masked to the rows the elimination just skipped.
     _apply_reconciliation_self_loop_jvp_iterations_kernel[(int(W),)](
         Pi_in, dPi_io,
         pi_offset_arg,
@@ -1113,6 +1142,7 @@ def compute_wave_step_tangent_selfloop(
         has_splits,
         dPi_out_rows,
         dPibar_out if store_pibar else dummy,
+        wide_row if wide_row is not None else species_child1,
         int(max(int(n_iters), 1)),
         S,
         stride=S,
@@ -1122,6 +1152,7 @@ def compute_wave_step_tangent_selfloop(
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+        USE_ROW_MASK=bool(wide_row is not None),
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         num_warps=_NUM_WARPS_SELF_LOOP_JVP_ITERS,
     )

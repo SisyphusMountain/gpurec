@@ -1,3 +1,5 @@
+import math
+
 import torch
 import triton
 import triton.language as tl
@@ -47,6 +49,44 @@ _NUM_WARPS_EXACT_TREE = 8
 # alpha and gamma, plus two working arrays that each carry three roles in turn (see the kernel
 # docstring's slot table).
 _EXACT_TREE_SCRATCH_SLOTS = 4
+
+# The reference dtype ``SolverOptions.exact_range_log2`` is written in: float32, whose smallest
+# normal is 2**-126, so a 100-order default leaves 26 binary orders of margin for what the solve
+# adds on top of the range it measured at entry. NOT a setting -- it is the property of the format
+# the configured number is quoted against.
+_EXACT_RANGE_REFERENCE_DTYPE = torch.float32
+
+
+def exact_conditioning_floor(dtype) -> float:
+    """Smallest divisor the exact elimination is allowed to use, for ``dtype``.
+
+    Every lane divides by its pivot and the whole row divides once by ``1 - loop gain``. Both are
+    one minus a probability, so they are order-1 numbers and a margin can be compared against them
+    directly. A margin ``m`` costs about ``eps/m`` in relative error, so ``sqrt(eps)`` is the point
+    where half the dtype's digits are gone: float32 -> 3.5e-4, float64 -> 1.5e-8. Beyond it the row
+    goes to the log-space path, which has no such division.
+
+    NOT a setting: it is a property of the arithmetic, not of a dataset.
+    """
+    return float(torch.finfo(dtype).eps) ** 0.5
+
+
+def exact_range_for_dtype(range_log2, dtype) -> float:
+    """Rescale the configured exact-solve range limit to the exponent range of ``dtype``.
+
+    The configured number says "this many binary orders below the row maximum still fit", quoted
+    against float32. Another dtype fits a different number of them, in proportion to its exponent
+    range, so the factor is the ratio of smallest-normal exponents:
+
+      * float32 -> factor exactly 1.0, i.e. the configured value;
+      * float64 -> factor 1022/126 = 8.11, so the default 100 becomes 811, well inside float64's
+        own 1022 and keeping the same 26/126 fraction of headroom.
+
+    Without this a float64 solve would hand the log path every row float32 could not hold, and
+    never use the range float64 actually has.
+    """
+    reference_orders = -math.log2(torch.finfo(_EXACT_RANGE_REFERENCE_DTYPE).tiny)
+    return float(range_log2) * (-math.log2(torch.finfo(dtype).tiny) / reference_orders)
 
 
 def _tl_float_dtype(dtype):
@@ -435,6 +475,7 @@ def _update_reconciliation_likelihood_kernel(
     Pibar_offset_ptr,
     pibar_row_max_ptr,
     pi_residual_out_ptr,
+    row_mask_ptr,
     S: tl.constexpr,
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
@@ -445,6 +486,7 @@ def _update_reconciliation_likelihood_kernel(
     STORE_FINAL_PIBAR: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
+    USE_ROW_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
     ACC_DTYPE: tl.constexpr,
 ):
@@ -455,6 +497,13 @@ def _update_reconciliation_likelihood_kernel(
     w = tl.program_id(0).to(tl.int64)
     pi_row = pi_ws + w
     global_row = ws + w
+    if USE_ROW_MASK:
+        # Selective sweep: the exact solve handed back only the rows it could not carry in scaled
+        # linear space (see ``_exact_tree_pi_self_loop_kernel``'s range check), and every other
+        # row already holds its published answer. Returning here leaves those rows untouched, so
+        # a masked sweep is bit-for-bit a no-op on them.
+        if tl.load(row_mask_ptr + global_row) == 0:
+            return
     pi_base = pi_row * stride
     global_base = global_row * stride
     gene_split_base = w * stride
@@ -1260,9 +1309,14 @@ def _exact_tree_pi_self_loop_kernel(
     gene_split_log_likelihood_ptr,
     gene_split_offset_ptr,
     gene_split_center_offset_ptr,
+    wide_row_ptr,
+    wide_row_count_ptr,
     ws,
     slot_span,
     n_levels,
+    range_limit,
+    conditioning_floor,
+    wave_index,
     S: tl.constexpr,
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
@@ -1407,15 +1461,21 @@ def _exact_tree_pi_self_loop_kernel(
     # slot 3: U1, then the subtree mass M.
     mass_subtree_base = 3 * span + row_base
 
-    # ---- entry pass 1: exact absolute row maximum, which becomes the linear gauge.
-    # Identical to the fused linear kernel's, so the two paths publish in the same frame.
+    # ---- entry pass 1: exact absolute row maximum, which becomes the linear gauge, and the
+    # smallest finite lane, which says whether this row FITS in that single gauge at all.
+    POS_LARGE: tl.constexpr = float("inf")
     entry_residual_max = tl.full((), value=NEG_LARGE, dtype=DTYPE)
+    entry_residual_min = tl.full((), value=POS_LARGE, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
         value = tl.load(Pi_in_ptr + global_base + s_offs, mask=mask, other=NEG_LARGE)
         entry_residual_max = tl.maximum(
             entry_residual_max, tl.max(tl.where(mask, value, NEG_LARGE), axis=0)
+        )
+        entry_residual_min = tl.minimum(
+            entry_residual_min,
+            tl.min(tl.where(mask & (value != NEG_LARGE), value, POS_LARGE), axis=0),
         )
     pi_in_offset = tl.load(Pi_in_offset_ptr + global_row)
     scale = tl.where(
@@ -1441,6 +1501,9 @@ def _exact_tree_pi_self_loop_kernel(
 
     # ---- entry pass 2: the iteration-invariant source term src[s], in this row's frame.
     # ``scale`` is at least the maximum of every log2 term entering it, so each exponent is <= 0.
+    # The same pass records how far the SOURCE reaches below the gauge, because a row's range is
+    # set by everything that enters it, not only by the iterate it was handed.
+    source_span_min = tl.full((), value=POS_LARGE, dtype=ACC_DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
@@ -1468,13 +1531,65 @@ def _exact_tree_pi_self_loop_kernel(
             source += tl.exp2(
                 gene_split_log_likelihood + (gene_split_row_offset - scale).to(DTYPE)
             )
+            gene_split_min = tl.min(
+                tl.where(
+                    mask & (gene_split_log_likelihood != NEG_LARGE),
+                    gene_split_log_likelihood,
+                    POS_LARGE,
+                ),
+                axis=0,
+            )
+            source_span_min = tl.minimum(
+                source_span_min, gene_split_min.to(ACC_DTYPE) + gene_split_row_offset - scale
+            )
         tl.store(
             scratch_ptr + mass_off_chain_base + s_offs,
             tl.where(mask, source, tl.zeros([BLOCK_S], dtype=DTYPE)),
             mask=mask,
         )
 
+    if USE_LEAF_INDEX:
+        # The leaf observation sits at one lane, and with fraction-missing every other lane of
+        # this row's leaf column carries the present-but-unobserved baseline; both are sources.
+        source_span_min = tl.minimum(
+            source_span_min, leaf_observation_log_probability.to(ACC_DTYPE) - scale
+        )
+        if USE_FRACTION_MISSING:
+            for s_start in range(0, S, BLOCK_S):
+                s_offs = s_start + tl.arange(0, BLOCK_S)
+                mask = s_offs < S
+                leaf_logp_col = tl.load(
+                    leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE
+                )
+                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=mask, other=NEG_LARGE)
+                baseline = leaf_logp_col + fm_col
+                source_span_min = tl.minimum(
+                    source_span_min,
+                    tl.min(
+                        tl.where(mask & (baseline != NEG_LARGE), baseline, POS_LARGE), axis=0
+                    ).to(ACC_DTYPE)
+                    - scale,
+                )
+
+    # ---- the range decision. Scaled linear space carries ONE exponent for the whole row, so a
+    # lane this far under the gauge is an exact zero here while the log path, which keeps an
+    # exponent per lane, still holds it. Hand such a row back untouched: the caller sweeps it in
+    # log space instead, and the row's published state is left exactly as this kernel found it.
+    row_span_min = tl.minimum(
+        source_span_min,
+        tl.where(
+            entry_residual_min != POS_LARGE,
+            entry_residual_min.to(ACC_DTYPE) + pi_in_offset - scale,
+            tl.full((), value=POS_LARGE, dtype=ACC_DTYPE),
+        ),
+    )
+    if row_span_min < -range_limit:
+        tl.store(wide_row_ptr + global_row, 1)
+        tl.atomic_add(wide_row_count_ptr + wave_index, 1)
+        return
+
     guard_trips = tl.full((), value=0, dtype=tl.int32)
+    smallest_pivot = tl.full((), value=POS_LARGE, dtype=DTYPE)
 
     # ---- walk 1a: the species-tree leaves, which have no children to fold in. They are not in
     # the ``compact_level_*`` tables (those hold internal nodes only), so they are done in one
@@ -1485,7 +1600,7 @@ def _exact_tree_pi_self_loop_kernel(
         const_offsets = const_base + s_offs
         child1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
         is_leaf = mask & (child1 >= S)
-        diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=is_leaf, other=1.0)
+        diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=mask, other=1.0)
         transfer_coefficient = tl.load(
             transfer_coefficient_lin_ptr + const_offsets, mask=is_leaf, other=0.0
         )
@@ -1494,6 +1609,11 @@ def _exact_tree_pi_self_loop_kernel(
         tl.store(scratch_ptr + gamma_base + s_offs, transfer_coefficient / diagonal, mask=is_leaf)
         guard_trips += tl.sum(
             tl.where(is_leaf & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0
+        )
+        # Every internal node's pivot is its diagonal PLUS a non-negative children term, so the
+        # smallest diagonal in the row bounds every divisor this solve will use from below.
+        smallest_pivot = tl.minimum(
+            smallest_pivot, tl.min(tl.where(mask, diagonal, POS_LARGE), axis=0)
         )
     tl.debug_barrier()
 
@@ -1629,11 +1749,27 @@ def _exact_tree_pi_self_loop_kernel(
     loop_denominator = 1.0 - transfer_gain
     total_receiver_mass = transfer_constant / loop_denominator
     if WRITE_GUARD_TRIPS:
-        tl.store(guard_trips_ptr + 2 * global_row, guard_trips)
+        tl.store(guard_trips_ptr + 4 * global_row, guard_trips.to(DTYPE))
         tl.store(
-            guard_trips_ptr + 2 * global_row + 1,
-            tl.where(loop_denominator <= 0.0, 1, 0).to(tl.int32),
+            guard_trips_ptr + 4 * global_row + 1,
+            tl.where(loop_denominator <= 0.0, 1.0, 0.0).to(DTYPE),
         )
+        # The two conditioning margins themselves, so a row that came out wrong without tripping
+        # a sign can still be explained.
+        tl.store(guard_trips_ptr + 4 * global_row + 2, smallest_pivot)
+        tl.store(guard_trips_ptr + 4 * global_row + 3, loop_denominator)
+
+    # ---- the conditioning decision, and the second reason to hand a row over. Range was the
+    # first: a row too tall for one scale. This is the other way the elimination fails -- every
+    # lane divides by a pivot, and the whole row divides once by ``1 - loop gain``, so a row whose
+    # smallest divisor is within a rounding of zero loses digits in proportion. Both margins are
+    # order-1 quantities (one minus probabilities), so ``conditioning_floor`` compares against
+    # them directly. Deciding here, before walks 3 and 4 and before anything is published, leaves
+    # the row exactly as this kernel found it, same as the range check does.
+    if (smallest_pivot < conditioning_floor) or (loop_denominator < conditioning_floor):
+        tl.store(wide_row_ptr + global_row, 1)
+        tl.atomic_add(wide_row_count_ptr + wave_index, 1)
+        return
     tl.debug_barrier()
 
     # ---- seed walk 3 with each species' OWN receiver mass, from the first-pass solution
@@ -2324,6 +2460,7 @@ def compute_wave_step(
     use_receiver_weights=True,
     pi_residual_out=None,
     leaf_fm_log=None,
+    row_mask,
 ):
     _validate_residual_tensors(
         Pi_in,
@@ -2406,6 +2543,9 @@ def compute_wave_step(
             "and a distinct output buffer"
         )
     compute_diff = pi_residual_out is not None
+    # ``row_mask`` restricts the sweep to the clade rows the exact solve handed back; None sweeps
+    # every row, which is what the "log" mode itself does.
+    use_row_mask = row_mask is not None
     use_fraction_missing = leaf_fm_log is not None
     # When there is no fraction-missing tensor the constexpr short-circuits the
     # off-hit load, so a valid-but-unused 1-element placeholder is enough.
@@ -2445,6 +2585,7 @@ def compute_wave_step(
         Pibar_offset,
         pibar_row_max,
         pi_residual_out if compute_diff else pibar_row_max,
+        row_mask if use_row_mask else leaf_species_idx,
         S,
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
@@ -2455,6 +2596,7 @@ def compute_wave_step(
         STORE_FINAL_PIBAR=bool(store_final_pibar),
         COMPUTE_DIFF=compute_diff,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+        USE_ROW_MASK=use_row_mask,
         DTYPE=_tl_float_dtype(Pi_in.dtype),
         ACC_DTYPE=_tl_float_dtype(accumulator_dtype),
         num_warps=_NUM_WARPS_UPDATE_RECONCILIATION,
@@ -2679,6 +2821,10 @@ def compute_exact_tree_self_loop(
     pi_residual_out,
     guard_trips_out,
     leaf_fm_log,
+    wide_row,
+    wide_row_count,
+    wave_index,
+    range_log2,
 ):
     """Launch :func:`_exact_tree_pi_self_loop_kernel` for one wave.
 
@@ -2692,10 +2838,19 @@ def compute_exact_tree_self_loop(
     ``rows >= W``; ``rows * S`` is passed as the slot stride so the offset arithmetic is built in
     Python rather than in int32 device arithmetic.
 
-    ``guard_trips_out`` is an optional ``int32`` tensor of shape ``[clade rows, 2]``: column 0
-    counts this row's non-positive elimination pivots and column 1 flags a non-positive
-    ``1 - loop gain``. Both are zero for any parameter set the fixed point converges for; it is a
-    diagnostic, not a fallback, so pass ``None`` in production.
+    ``guard_trips_out`` is an optional tensor of shape ``[clade rows, 4]`` in the model dtype:
+    how many of this row's pivots were non-positive, whether ``1 - loop gain`` was, and then the
+    two margins themselves -- the row's smallest pivot and its ``1 - loop gain``. The counts are
+    small integers, exact in either float type, and one dtype keeps the kernel's stores uniform.
+    The margins are what explains a row that came out wrong without tripping a sign. Diagnostic
+    only; pass ``None`` in production.
+
+    ``wide_row`` (``int8``, ``[clade rows]``) and ``wide_row_count`` (``int32``, one entry per
+    wave, indexed by ``wave_index``) carry the range fallback. A row whose lanes reach more than
+    ``range_log2`` binary orders below its own gauge cannot be held in scaled linear space at
+    this dtype: the kernel writes its flag, bumps the wave's count, and returns WITHOUT touching
+    the row, leaving it exactly as it was handed in for the caller to sweep in log space. The
+    limit is quoted against float32 and rescaled by :func:`exact_range_for_dtype`.
     """
     _validate_residual_tensors(
         Pi_in,
@@ -2728,6 +2883,12 @@ def compute_exact_tree_self_loop(
     n_levels = int(compact_level_ptr.numel()) - 1
     if n_levels < 0:
         raise ValueError("compact_level_ptr must have at least one entry")
+    if wide_row.dtype != torch.int8 or wide_row.numel() != int(Pi_out.shape[0]):
+        raise ValueError("wide_row must be an int8 tensor with one entry per clade row")
+    if wide_row_count.dtype != torch.int32 or int(wave_index) >= wide_row_count.numel():
+        raise ValueError("wide_row_count must be an int32 tensor with one entry per wave")
+    if float(range_log2) <= 0.0:
+        raise ValueError("range_log2 must be positive")
     Pi_in_offset = _validate_offset_tensor(
         "Pi_in_offset",
         Pi_in_offset,
@@ -2777,6 +2938,8 @@ def compute_exact_tree_self_loop(
         gene_split_center_offset = Pi_in_offset
     compute_diff = pi_residual_out is not None
     write_guard_trips = guard_trips_out is not None
+    if write_guard_trips and tuple(guard_trips_out.shape) != (int(Pi_out.shape[0]), 4):
+        raise ValueError("guard_trips_out must have shape [clade rows, 4]")
     use_fraction_missing = leaf_fm_log is not None
     # When there is no fraction-missing tensor the constexpr short-circuits the
     # off-hit load, so a valid-but-unused 1-element placeholder is enough.
@@ -2797,7 +2960,7 @@ def compute_exact_tree_self_loop(
         Pibar_offset,
         pibar_row_max,
         pi_residual_out if compute_diff else pibar_row_max,
-        guard_trips_out if write_guard_trips else species_child1,
+        guard_trips_out if write_guard_trips else Pi_in,
         self_diagonal_lin,
         transfer_coefficient_lin,
         speciation_child1_lin,
@@ -2817,9 +2980,14 @@ def compute_exact_tree_self_loop(
         gene_split_log_likelihood,
         gene_split_offset,
         gene_split_center_offset,
+        wide_row,
+        wide_row_count,
         ws,
         slot_rows * int(S),
         n_levels,
+        exact_range_for_dtype(range_log2, Pi_in.dtype),
+        exact_conditioning_floor(Pi_in.dtype),
+        int(wave_index),
         S,
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,

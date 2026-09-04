@@ -31,6 +31,7 @@ pibar_side_threshold = 0.0
 e_tangent_tol = 1e-9
 forward_self_loop = "exact"
 adjoint_self_loop = "exact"
+exact_range_log2 = 100.0
 pi_linear_tol = 1e-6
 
 [precision]

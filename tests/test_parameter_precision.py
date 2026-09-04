@@ -116,6 +116,10 @@ def test_weighted_exact_hvp_promotes_head_logits_before_small_softmax(monkeypatc
     pi_state = SimpleNamespace(
         pi_offset=torch.zeros(1, dtype=torch.float64),
         pibar_offset=torch.zeros(1, dtype=torch.float64),
+        # This stand-in has to carry the range-fallback fields too: the tangent and adjoint read
+        # them to learn which rows the forward handed to the log-space paths. Nothing flagged.
+        wide_row=None,
+        wide_row_total=0,
         validate=lambda *_args, **_kwargs: None,
     )
     static = SimpleNamespace(

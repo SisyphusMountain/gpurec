@@ -22,6 +22,16 @@ class PiState:
 
     pi_offset: torch.Tensor
     pibar_offset: torch.Tensor
+    # Per clade row, 1 where the exact tree solve handed the row back to the log-space sweeps
+    # because its lanes span more than the model dtype can hold under one row scale (see
+    # ``SolverOptions.exact_range_log2``). ``None`` when the forward did not run the exact solve.
+    # It belongs to the state rather than to the solve because the adjoint and the tangent must
+    # make the same per-row decision this forward made.
+    wide_row: torch.Tensor | None
+    # How many rows that mask flags, counted on the host while the forward was already reading
+    # one counter per wave. Carrying the number means no consumer has to sync to learn whether
+    # the mask matters at all.
+    wide_row_total: int
 
     def validate(
         self,

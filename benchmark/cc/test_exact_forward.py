@@ -89,7 +89,7 @@ def _install_guard_probe():
 
     def probed(**kwargs):
         rows = int(kwargs["wave_layout"]["leaf_species_index"].numel())
-        counts = torch.zeros((rows, 2), device=kwargs["e"].device, dtype=torch.int32)
+        counts = torch.zeros((rows, 4), device=kwargs["e"].device, dtype=kwargs["e"].dtype)
         kwargs["exact_guard_trips_out"] = counts
         result = original(**kwargs)
         trips.append(counts)
@@ -107,7 +107,9 @@ def _report_guard_trips(label, trips):
     print(
         f"[{label}] guard trips over {int(stacked.shape[0])} clade rows: "
         f"non-positive elimination pivots = {pivot_trips} (in {rows_with_pivot_trip} rows), "
-        f"non-positive 1 - loop gain = {denominator_trips} rows",
+        f"non-positive 1 - loop gain = {denominator_trips} rows; "
+        f"smallest pivot over rows = {float(stacked[:, 2].min().item()):.4e}, "
+        f"smallest 1 - loop gain = {float(stacked[:, 3].min().item()):.4e}",
         flush=True,
     )
     return pivot_trips + denominator_trips
