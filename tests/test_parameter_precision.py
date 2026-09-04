@@ -131,6 +131,9 @@ def test_weighted_exact_hvp_promotes_head_logits_before_small_softmax(monkeypatc
             "sp_child2": torch.tensor([-1, -1]),
             "sp_parent": torch.tensor([-1, -1]),
             "max_ancestor_depth": 1,
+            # Two isolated leaves: every height is 0 and the compact level table is empty.
+            "sp_height": torch.zeros(2, dtype=torch.int32),
+            "compact_level_ptr": torch.zeros(1, dtype=torch.long),
         },
         wave_layout={
             "leaf_species_index": torch.tensor([0], dtype=torch.int32),

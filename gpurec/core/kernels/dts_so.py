@@ -294,17 +294,39 @@ def _gene_split_event_vjp_directional_derivative_kernel(
 def _transfer_subtree_vjp_directional_derivative_kernel(
     Pi_ptr, dPi_ptr, receiver_log_probs_ptr, dreceiver_log_probs_ptr,
     donor_adjoint_ptr, d_donor_adjoint_ptr,
+    internal_node_own_ptr, d_internal_node_own_ptr,
     split_left_rows_ptr, split_right_rows_ptr,
     pibar_row_max_ptr,
+    species_parent_ptr,
     level_offsets_ptr, level_parents_ptr,
     level_child1_ptr, level_child2_ptr,
     d_rhs_ptr, d_grad_receiver_log_probs_ptr,
     n_ws,  # runtime int (per-wave split count; constexpr caused one JIT compile per wave shape)
     S: tl.constexpr, stride_C: tl.constexpr,
-    BLOCK_S: tl.constexpr, N_LEVELS: tl.constexpr,
+    BLOCK_S: tl.constexpr, N_LEVELS: tl.constexpr, N_COMPACT_NODES: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr, DTYPE: tl.constexpr,
 ):
-    """Evaluate the DTS transfer-tree curvature term documented in LaTeX."""
+    """Evaluate the DTS transfer-tree curvature term documented in LaTeX.
+
+    Receiver s takes donor mass from every donor OUTSIDE s's own subtree, so this kernel needs,
+    per species s, this split side's donor adjoint -- and its tangent -- summed off s's subtree.
+    That used to be ``row total - subtree sum``. Each donor's adjoint carries the reciprocal of
+    that donor's own valid receiver mass, so for species hanging under the lane holding the row's
+    mass it is astronomically large; the row total is dominated by those terms and, for the
+    dominant lane whose subtree holds them all, the difference cancels to rounding noise of that
+    same size. The first-order twin of this kernel measured a gradient 1e8 times too large on a
+    1007-species Coleman family at the loss-rate cap.
+
+    Built by ADDITION only, exactly as
+    :func:`gpurec.core.kernels.wave_backward_kernels._accumulate_transfer_subtree_vjp_kernel`
+    does it: subtree sums bottom-up over the compact level tables, then a top-down walk over the
+    same tables, ``off-subtree(child) = off-subtree(parent) + parent's own term + sibling's
+    subtree sum``, each child's off-subtree sum overwriting its no-longer-needed subtree sum. The
+    bottom-up pass destroys each internal node's own term, so it is parked first in
+    ``internal_node_own_ptr`` / ``d_internal_node_own_ptr``, indexed exactly like the level
+    tables; recovering it as ``subtree(parent) - subtree(c1) - subtree(c2)`` would be the same
+    cancelling subtraction one level down.
+    """
     LN2 = 0.6931471805599453
     NEG = -float("inf")
     # int64: row ranges over 2*n_splits, so row_base below can overflow int32
@@ -325,31 +347,12 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
         tl.zeros_like(receiver_mass_log_scale),
     )
 
-    # Compute the full donor-adjoint totals before the in-place tree walk turns
-    # each entry into its subtree sum.
-    total_donor_adjoint = tl.zeros((), dtype=DTYPE)
-    d_total_donor_adjoint = tl.zeros((), dtype=DTYPE)
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        species_mask = s_offs < S
-        total_donor_adjoint += tl.sum(
-            tl.load(
-                donor_adjoint_ptr + row_base + s_offs,
-                mask=species_mask,
-                other=0.0,
-            )
-        )
-        d_total_donor_adjoint += tl.sum(
-            tl.load(
-                d_donor_adjoint_ptr + row_base + s_offs,
-                mask=species_mask,
-                other=0.0,
-            )
-        )
-    # All warps must finish the original row totals before any warp overwrites
-    # an internal node with its subtree sum. For example, without this barrier
-    # one warp could replace u[parent] by u[parent]+u[c1]+u[c2] while another
-    # warp is still reducing U, causing c1 and c2 to be counted twice.
+    own_base = internal_node_own_ptr + row * N_COMPACT_NODES
+    d_own_base = d_internal_node_own_ptr + row * N_COMPACT_NODES
+
+    # All warps must reach the same point before any warp overwrites an internal node with its
+    # subtree sum: without this barrier one warp could replace u[parent] by u[parent]+u[c1]+u[c2]
+    # while another warp is still reading u[parent] as its own term.
     tl.debug_barrier()
     for level in range(0, N_LEVELS):
         level_start = tl.load(level_offsets_ptr + level)
@@ -375,6 +378,7 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
             child2_adjoint = tl.load(
                 donor_adjoint_ptr + row_base + c2, mask=c2_mask, other=0.0
             )
+            tl.store(own_base + node_offs, parent_adjoint, mask=parent_valid)
             tl.store(
                 donor_adjoint_ptr + row_base + parent,
                 parent_adjoint + child1_adjoint + child2_adjoint,
@@ -395,10 +399,81 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
                 mask=c2_mask,
                 other=0.0,
             )
+            tl.store(d_own_base + node_offs, d_parent_adjoint, mask=parent_valid)
             tl.store(
                 d_donor_adjoint_ptr + row_base + parent,
                 d_parent_adjoint + d_child1_adjoint + d_child2_adjoint,
                 mask=parent_valid,
+            )
+            p_start += BLOCK_S
+        tl.debug_barrier()
+
+    # The root's subtree is the whole tree: nothing lies off it. Every other species is some
+    # internal node's child, so the top-down walk below writes it exactly once.
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        species_mask = s_offs < S
+        species_parent = tl.load(species_parent_ptr + s_offs, mask=species_mask, other=0)
+        is_root_lane = species_mask & (species_parent < 0)
+        zero_lane = tl.zeros([BLOCK_S], dtype=DTYPE)
+        tl.store(donor_adjoint_ptr + row_base + s_offs, zero_lane, mask=is_root_lane)
+        tl.store(d_donor_adjoint_ptr + row_base + s_offs, zero_lane, mask=is_root_lane)
+    tl.debug_barrier()
+    for level_index in range(0, N_LEVELS):
+        level = N_LEVELS - 1 - level_index
+        level_start = tl.load(level_offsets_ptr + level)
+        level_end = tl.load(level_offsets_ptr + level + 1)
+        p_start = level_start
+        while p_start < level_end:
+            node_offs = p_start + tl.arange(0, BLOCK_S)
+            node_mask = node_offs < level_end
+            parent = tl.load(level_parents_ptr + node_offs, mask=node_mask, other=-1)
+            c1 = tl.load(level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(level_child2_ptr + node_offs, mask=node_mask, other=S)
+            parent_valid = node_mask & (parent >= 0) & (parent < S)
+            c1_mask = parent_valid & (c1 >= 0) & (c1 < S)
+            c2_mask = parent_valid & (c2 >= 0) & (c2 < S)
+
+            parent_off_subtree = tl.load(
+                donor_adjoint_ptr + row_base + parent, mask=parent_valid, other=0.0
+            )
+            parent_own = tl.load(own_base + node_offs, mask=parent_valid, other=0.0)
+            c1_subtree = tl.load(
+                donor_adjoint_ptr + row_base + c1, mask=c1_mask, other=0.0
+            )
+            c2_subtree = tl.load(
+                donor_adjoint_ptr + row_base + c2, mask=c2_mask, other=0.0
+            )
+            tl.store(
+                donor_adjoint_ptr + row_base + c1,
+                parent_off_subtree + parent_own + c2_subtree,
+                mask=c1_mask,
+            )
+            tl.store(
+                donor_adjoint_ptr + row_base + c2,
+                parent_off_subtree + parent_own + c1_subtree,
+                mask=c2_mask,
+            )
+
+            d_parent_off_subtree = tl.load(
+                d_donor_adjoint_ptr + row_base + parent, mask=parent_valid, other=0.0
+            )
+            d_parent_own = tl.load(d_own_base + node_offs, mask=parent_valid, other=0.0)
+            d_c1_subtree = tl.load(
+                d_donor_adjoint_ptr + row_base + c1, mask=c1_mask, other=0.0
+            )
+            d_c2_subtree = tl.load(
+                d_donor_adjoint_ptr + row_base + c2, mask=c2_mask, other=0.0
+            )
+            tl.store(
+                d_donor_adjoint_ptr + row_base + c1,
+                d_parent_off_subtree + d_parent_own + d_c2_subtree,
+                mask=c1_mask,
+            )
+            tl.store(
+                d_donor_adjoint_ptr + row_base + c2,
+                d_parent_off_subtree + d_parent_own + d_c1_subtree,
+                mask=c2_mask,
             )
             p_start += BLOCK_S
         tl.debug_barrier()
@@ -431,19 +506,17 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
                 pi_val != NEG, receiver_mass, tl.zeros_like(receiver_mass)
             )
             d_receiver_mass = LN2 * receiver_mass * dpi_val
-        subtree_donor_adjoint = tl.load(
+        off_subtree_donor_adjoint = tl.load(
             donor_adjoint_ptr + row_base + s_offs, mask=mask, other=0.0
         )
-        d_subtree_donor_adjoint = tl.load(
+        d_off_subtree_donor_adjoint = tl.load(
             d_donor_adjoint_ptr + row_base + s_offs,
             mask=mask,
             other=0.0,
         )
         d_transfer_complement_vjp = (
-            d_receiver_mass
-            * (total_donor_adjoint - subtree_donor_adjoint)
-            + receiver_mass
-            * (d_total_donor_adjoint - d_subtree_donor_adjoint)
+            d_receiver_mass * off_subtree_donor_adjoint
+            + receiver_mass * d_off_subtree_donor_adjoint
         )
         tl.atomic_add(
             d_rhs_ptr + pi_base + s_offs,
@@ -467,7 +540,7 @@ def dts_backward_so(
     receiver_log_probs, species_child1, species_child2, pibar_row_max, family_idx,
     d_rhs, d_grad_pD, d_grad_pS, d_grad_max_transfer,
     d_grad_receiver_log_probs,
-    *, compact_level_ptr=None, compact_level_parents=None,
+    *, species_parent, compact_level_ptr=None, compact_level_parents=None,
     compact_level_child1=None, compact_level_child2=None,
     use_receiver_weights=False, dreceiver_log_probs=None, pi_offset, pibar_offset,
 ):
@@ -605,15 +678,31 @@ def dts_backward_so(
         .reshape(S)
         .contiguous()
     )
+    # The bottom-up pass overwrites each internal node's own donor adjoint with its subtree sum,
+    # and the top-down pass that follows needs that own term back (see the kernel's docstring).
+    # One slot per compact level-table entry -- that is, per internal species node -- per split
+    # side, indexed exactly as the level tables are; one buffer for the adjoint, one for its
+    # tangent.
+    compact_level_parents = compact_level_parents.contiguous()
+    n_compact_nodes = int(compact_level_parents.numel())
+    internal_node_own_donor_adjoint = torch.empty(
+        (2 * n_splits, n_compact_nodes), device=device, dtype=dtype
+    )
+    d_internal_node_own_donor_adjoint = torch.empty(
+        (2 * n_splits, n_compact_nodes), device=device, dtype=dtype
+    )
     _transfer_subtree_vjp_directional_derivative_kernel[(2 * n_splits,)](
         Pi, dPi, receiver_log_probs, dreceiver_log_probs_arg,
-        donor_adjoint, d_donor_adjoint, split_left_rows, split_right_rows,
+        donor_adjoint, d_donor_adjoint,
+        internal_node_own_donor_adjoint, d_internal_node_own_donor_adjoint,
+        split_left_rows, split_right_rows,
         pibar_row_max,
-        compact_level_ptr.contiguous(), compact_level_parents.contiguous(),
+        species_parent.to(device=device, dtype=torch.int32).contiguous(),
+        compact_level_ptr.contiguous(), compact_level_parents,
         compact_level_child1.contiguous(), compact_level_child2.contiguous(),
         d_rhs, d_grad_receiver_log_probs,
         n_ws=n_splits, S=S, stride_C=int(Pi.stride(0)),
-        BLOCK_S=block_s, N_LEVELS=n_levels,
+        BLOCK_S=block_s, N_LEVELS=n_levels, N_COMPACT_NODES=n_compact_nodes,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights), DTYPE=_tl_float_dtype(Pi.dtype),
         # num_warps=8 trims _dts_tree_so ~8% vs 4 on 666x80 (back-to-back wall 997->989ms;
         # nsys kernel 12%->11% of HVP). Each program owns a full side-row walked in BLOCK_S

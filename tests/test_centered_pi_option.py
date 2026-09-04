@@ -118,6 +118,9 @@ def test_solver_stores_required_pi_state(monkeypatch):
             "sp_child1": torch.zeros(2, dtype=torch.long),
             "sp_child2": torch.zeros(2, dtype=torch.long),
             "max_ancestor_depth": 0,
+            # Two leaves, no internal node: every height is 0 and the compact level table is empty.
+            "sp_height": torch.zeros(2, dtype=torch.int32),
+            "compact_level_ptr": torch.zeros(1, dtype=torch.long),
         },
         specieswise=False,
         genewise=False,

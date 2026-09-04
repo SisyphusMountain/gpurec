@@ -9,6 +9,12 @@ import triton.language as tl
 from gpurec.api.solver_options import SolverOptions
 from gpurec.core.parameters.extract_parameters import as_family_species
 from gpurec.core.kernels.e_step import _tl_float_dtype
+# The same additive species-tree sum the E-step forward uses, so this tangent linearizes the
+# primal the forward actually computes.
+from gpurec.core.kernels.species_tree_sums import (
+    species_neighbourhood,
+    valid_receiver_sum,
+)
 
 
 @triton.jit
@@ -33,10 +39,11 @@ def _update_extinction_log_probabilities_jvp_kernel(
     species_parent_ptr,
     species_child1_ptr,
     species_child2_ptr,
+    species_height_ptr,
     leaf_fm_log_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    N_LEVELS: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     USE_FRACTION_MISSING: tl.constexpr,
@@ -68,51 +75,29 @@ def _update_extinction_log_probabilities_jvp_kernel(
     receiver_mass = tl.where(
         mask, tl.exp2(receiver_weighted_extinction_log_probability - row_max_safe), zero
     )
-    total_receiver_mass = tl.sum(receiver_mass, axis=0)
-    total_receiver_tangent_numerator = tl.sum(
-        tl.where(
-            mask,
-            receiver_mass * d_receiver_weighted_extinction_log_probability,
-            zero,
-        ),
-        axis=0,
+    (
+        species_height, c1_valid, c1, c2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    ) = species_neighbourhood(
+        species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
+        offs, mask, S,
+    )
+    # The forward's valid receiver mass and its tangent numerator, both by ADDITION over the tree
+    # and never as the row total minus the ancestor chain -- see
+    # gpurec/core/kernels/species_tree_sums.py. The tangent must linearize the primal the forward
+    # actually computes, so the two use the same walk.
+    valid_receiver_mass = valid_receiver_sum(
+        receiver_mass, mask, zero, species_height,
+        c1_valid, c1, c2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
+    valid_receiver_tangent_numerator = valid_receiver_sum(
+        receiver_mass * d_receiver_weighted_extinction_log_probability,
+        mask, zero, species_height,
+        c1_valid, c1, c2_valid, c2,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
     )
 
-    ancestor_species = offs
-    excluded_ancestor_mass = zero
-    excluded_ancestor_tangent_numerator = zero
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        ancestor_extinction_log_probability = tl.load(E_ptr + base + ancestor_species, mask=ancestor_valid, other=neg_inf)
-        d_ancestor_extinction_log_probability = tl.load(dE_ptr + base + ancestor_species, mask=ancestor_valid, other=0.0)
-        if USE_RECEIVER_WEIGHTS:
-            ancestor_receiver_log_probability = tl.load(
-                receiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=neg_inf
-            )
-            d_ancestor_receiver_log_probability = tl.load(
-                dreceiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=0.0
-            )
-            ancestor_receiver_mass = tl.where(
-                ancestor_valid,
-                tl.exp2(ancestor_receiver_log_probability + ancestor_extinction_log_probability - row_max_safe),
-                zero,
-            )
-            d_ancestor_weighted_extinction_log_probability = d_ancestor_extinction_log_probability + d_ancestor_receiver_log_probability
-        else:
-            ancestor_receiver_mass = tl.where(
-                ancestor_valid, tl.exp2(ancestor_extinction_log_probability - row_max_safe), zero
-            )
-            d_ancestor_weighted_extinction_log_probability = d_ancestor_extinction_log_probability
-        excluded_ancestor_mass += ancestor_receiver_mass
-        excluded_ancestor_tangent_numerator += (
-            ancestor_receiver_mass * d_ancestor_weighted_extinction_log_probability
-        )
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
-
-    c1 = tl.load(species_child1_ptr + offs, mask=mask, other=-1)
-    c2 = tl.load(species_child2_ptr + offs, mask=mask, other=-1)
-    c1_valid = mask & (c1 >= 0) & (c1 < S)
-    c2_valid = mask & (c2 >= 0) & (c2 < S)
     E_s1 = tl.load(E_ptr + base + c1, mask=c1_valid, other=neg_inf)
     E_s2 = tl.load(E_ptr + base + c2, mask=c2_valid, other=neg_inf)
     dE_s1 = tl.load(dE_ptr + base + c1, mask=c1_valid, other=0.0)
@@ -131,7 +116,6 @@ def _update_extinction_log_probabilities_jvp_kernel(
     d_max_transfer = tl.load(
         dmax_transfer_ptr + base + offs, mask=mask, other=0.0
     )
-    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
     has_valid_receiver_mass = valid_receiver_mass > 0.0
     safe_valid_receiver_mass = tl.where(
         has_valid_receiver_mass,
@@ -145,12 +129,7 @@ def _update_extinction_log_probabilities_jvp_kernel(
     )
     dEbar = tl.where(
         has_valid_receiver_mass,
-        (
-            total_receiver_tangent_numerator
-            - excluded_ancestor_tangent_numerator
-        )
-        / safe_valid_receiver_mass
-        + d_max_transfer,
+        valid_receiver_tangent_numerator / safe_valid_receiver_mass + d_max_transfer,
         zero,
     )
 
@@ -229,7 +208,8 @@ def _launch_e_step_tangent_2d(
     species_parent,
     species_child1,
     species_child2,
-    max_ancestor_depth,
+    species_height,
+    species_levels,
     *,
     out=None,
     max_diff_out=None,
@@ -260,11 +240,11 @@ def _launch_e_step_tangent_2d(
         receiver_log_probs,
         dreceiver_log_probs,
         dlog_pS_mat, dlog_pD_mat, dlog_pL_mat, dmax_transfer_mat,
-        species_parent, species_child1, species_child2,
+        species_parent, species_child1, species_child2, species_height,
         leaf_fm_log_arg,
         S,
         BLOCK_S=block_s,
-        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        N_LEVELS=int(species_levels),
         COMPUTE_DIFF=max_diff_out is not None,
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         USE_FRACTION_MISSING=use_fraction_missing,
@@ -278,8 +258,10 @@ def e_tangent_fixed_point(
     E_star,
     dlog_pS, dlog_pD, dlog_pL, dmax_transfer,
     log_pS, log_pD, log_pL, max_transfer, receiver_log_probs,
-    species_parent, species_child1, species_child2, max_ancestor_depth,
+    species_parent, species_child1, species_child2,
     *,
+    species_height,
+    species_levels,
     max_iter=None,
     tol=None,
     use_receiver_weights=True,
@@ -287,7 +269,10 @@ def e_tangent_fixed_point(
     dreceiver_log_probs=None,
     leaf_fm_log=None,
 ):
-    """Solve the tangent fixed point documented in the LaTeX reference."""
+    """Solve the tangent fixed point documented in the LaTeX reference.
+
+    ``species_height`` (0 at a leaf, 1 + the taller child above) and ``species_levels`` (the tree's
+    height) drive the additive valid-receiver-mass walk this tangent shares with the forward."""
     if max_iter is None:
         max_iter = SolverOptions().e_max_iter
     if tol is None:
@@ -321,7 +306,8 @@ def e_tangent_fixed_point(
         species_parent,
         species_child1,
         species_child2,
-        int(max_ancestor_depth),
+        species_height,
+        int(species_levels),
     )
 
     dE_a = torch.zeros_like(E_a) if dE0 is None else dE0.contiguous().clone()

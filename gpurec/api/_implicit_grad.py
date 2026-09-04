@@ -802,7 +802,10 @@ def _e_adjoint_and_theta_vjp(
         species_helpers["sp_parent"],
         species_helpers["sp_child1"],
         species_helpers["sp_child2"],
-        int(species_helpers["max_ancestor_depth"]),
+        # Each species' height (0 at a leaf) and the tree's height: the extinction complement adds
+        # up the valid receivers level by level instead of subtracting the ancestor chain.
+        species_helpers["sp_height"],
+        int(species_helpers["compact_level_ptr"].numel()) - 1,
     )
 
     E_req = E_star.detach().requires_grad_(True)

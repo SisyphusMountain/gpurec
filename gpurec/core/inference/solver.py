@@ -79,7 +79,10 @@ def solve_resident_e_pi(
         species_parent=static.species_helpers["sp_parent"],
         species_child1=static.species_helpers["sp_child1"],
         species_child2=static.species_helpers["sp_child2"],
-        max_ancestor_depth=int(static.species_helpers["max_ancestor_depth"]),
+        # Each species' height (0 at a leaf) and the tree's height: the extinction complement sums
+        # the valid receivers level by level rather than subtracting the ancestor chain.
+        species_height=static.species_helpers["sp_height"],
+        species_levels=int(static.species_helpers["compact_level_ptr"].numel()) - 1,
         max_iter=solver_options.e_max_iter,
         tol=solver_options.e_tol,
         leaf_fm_log=getattr(static, "leaf_fm_log", None),
