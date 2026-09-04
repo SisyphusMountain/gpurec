@@ -93,7 +93,10 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
         # Hessian over all families then costs several gradients: the full-dataset run with it
         # spent 376 s in four Hessians against 317 s in Newton gradients. Until the Hessian is
         # cheaper the warm-up's own curvature (adam_bfgs) stays the start.
-        res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype,
+        # Three Adam warm-up steps, not five: per-family traces showed the fixed-size Adam moves
+        # overshoot on the last steps (200-family sweep: 19.9 gradient equivalents with 3 steps
+        # against 21.1 with 5, same certification, NLL 0.07 bits better).
+        res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype, adam_steps=3,
                            certify=True, certify_curvature=False, min_drop=32, rebuild_frac=0.25,
                            hessian_refresh=15, init_curvature="adam_bfgs", mu=1e-4,
                            solver_options=solver_options, config=config, verbose=verbose,
