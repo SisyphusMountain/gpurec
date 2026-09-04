@@ -253,3 +253,30 @@ Drivers (`benchmark/cc/`): `ab_make_lists.py` (family lists), `ab_run.sh` (one a
 with `score_per_family.py` (score one fit), `xcheck_alerax.py` (AleRax comparison),
 `ab_disagreement.py` (who carries the gap), `ab_bound_active.py`, `ab_report.py` (regenerates the
 tables above from the JSONs).
+
+## Third round (2026-09-04): HOGENOM full set on the local RTX 4090, exact solves vs iterated solvers
+
+After the rounding-floor fix (every transfer sum built by addition; see `docs/genewise_h100_runtime.md`),
+the full 10,869-family HOGENOM set (666-species AleRax starting tree, the same list as above) was fitted
+twice on one RTX 4090 (24 GB) with the current code, once with the exact tree solves (the defaults, the
+configuration that took the Coleman fit under 800 s) and once with the iterated solvers (log-space sweeps,
+Neumann-series adjoint, two tiers) as a control. The adjoint ran cold on both (its warm cache does not
+fit in 24 GB).
+
+| solver | wall | reported NLL (bits) | Newton steps | certified | bound-active | uncertified | peak GiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| exact forward + exact adjoint | 179 s | 1906508.955 | 93 | 10869 | 724 | 0 | 12.2 |
+| log sweeps + series adjoint (two tiers) | 654 s | 1906508.734 | 224 | 10431 | 731 | 438 | 12.2 |
+
+Both rate sets re-scored by one converged solver (64 sweeps, 64 terms, exact forward;
+`compare_fit_thetas.py`, `cmp_hogenom_full_round3.txt`): no family differs by more than 0.01 bits
+(largest 0.004); total 1906508.952 (exact) vs 1906508.758 (iterated), 0.19 bits apart over 10,869
+families. The exact fit before the fix (cluster, commit a8598cee) re-scores to 1906508.953: 0.001 bits
+from the new one, largest per-family difference 0.0004 bits. Against the original code's fit on the
+1042 shared families of the 1055 subset: one family differs by more than 0.01 bits (better by 0.03),
+total 0.07 bits better. AleRax cross-check (`xcheck_hog_exact_local.json`, `xcheck_hog_log_local.json`):
+10,869 of 10,869 families matched, Pearson r = 0.999917 for both, mean gpurec minus AleRax +0.4195
+nats per family, total margin +4559.4 nats, identical to the earlier cluster fit and the same for both
+solver paths. The 438 families the iterated control leaves uncertified sit at the same optimum (their
+re-scored likelihoods match the exact fit's within 0.004 bits); the control's accurate tier simply
+runs out of its 120 iterations on them.

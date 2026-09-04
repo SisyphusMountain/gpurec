@@ -1,0 +1,16 @@
+{
+  "label": "hog_log_local",
+  "n_gpurec_families": 10869,
+  "n_alerax_families": 10869,
+  "n_matched": 10869,
+  "n_gpurec_not_in_alerax": 0,
+  "pearson_r": 0.9999169117877507,
+  "mean_signed_diff_nats": 0.4195029852194873,
+  "median_signed_diff_nats": 0.0015429177258852178,
+  "mean_abs_diff_nats": 0.42572501825079967,
+  "max_abs_diff_nats": 163.370024440723,
+  "max_abs_diff_family": "CLU_004282_0_0_C",
+  "gpurec_total_nll_nats": 1321491.1702036492,
+  "alerax_total_nll_nats": 1326050.74815,
+  "gpurec_minus_alerax_total_logl_nats": 4559.577946350608
+}
