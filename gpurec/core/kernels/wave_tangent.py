@@ -48,6 +48,85 @@ def set_exact_tangent_guard_trip_collection(enabled):
 
 
 @triton.jit
+def _species_neighbourhood(
+    species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
+    s_offs, mask, S: tl.constexpr,
+):
+    """Children, parent, sibling and heights of every lane, as whole-row gathers.
+
+    Returns ``(species_height, c1_valid, c1_safe, c2_valid, c2_safe, has_parent, parent_safe,
+    parent_height, has_sibling, sibling_safe)``; ``*_safe`` indices are 0 where invalid so they
+    can be gathered unconditionally and masked afterwards.
+    """
+    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
+    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
+    c1_valid = mask & (c1 < S)
+    c2_valid = mask & (c2 < S)
+    c1_safe = tl.where(c1_valid, c1, 0)
+    c2_safe = tl.where(c2_valid, c2, 0)
+    species_height = tl.load(species_height_ptr + s_offs, mask=mask, other=0)
+    parent_species = tl.load(species_parent_ptr + s_offs, mask=mask, other=-1)
+    has_parent = mask & (parent_species >= 0) & (parent_species < S)
+    parent_safe = tl.where(has_parent, parent_species, 0)
+    parent_height = tl.where(has_parent, tl.gather(species_height, parent_safe, axis=0), 0)
+    parent_child1 = tl.gather(c1, parent_safe, axis=0)
+    parent_child2 = tl.gather(c2, parent_safe, axis=0)
+    sibling = tl.where(parent_child1 == s_offs, parent_child2, parent_child1)
+    has_sibling = has_parent & (sibling < S)
+    sibling_safe = tl.where(has_sibling, sibling, 0)
+    return (
+        species_height, c1_valid, c1_safe, c2_valid, c2_safe,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    )
+
+
+@triton.jit
+def _valid_receiver_sum(
+    value, mask, zero, species_height,
+    c1_valid, c1_safe, c2_valid, c2_safe,
+    has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    N_LEVELS: tl.constexpr,
+):
+    """Per lane s, the sum of ``value`` over every species that is neither s nor an ancestor of s.
+
+    Built by ADDITION only: subtree sums bottom-up (a lane of height ``level`` reads its children,
+    already final), then off-chain sums top-down (what hangs off a lane's ancestor chain is what
+    hangs off its parent's chain plus the sibling's whole subtree; a lane is settled in the pass
+    of its PARENT's height), and finally ``off_chain + subtree(child1) + subtree(child2)``.
+
+    Never ``row total - ancestor chain``: for a species under the lane holding the row's mass the
+    true remainder is below the unit roundoff of the total (2^-24 float32, 2^-53 float64) and that
+    difference is noise -- the same floor the forward and adjoint kernels removed. ``value`` may be
+    signed (a tangent numerator); the walk is the same.
+    """
+    subtree = value
+    for level in range(1, N_LEVELS + 1):
+        at_level = mask & (species_height == level)
+        subtree = tl.where(
+            at_level,
+            value
+            + tl.where(c1_valid, tl.gather(subtree, c1_safe, axis=0), zero)
+            + tl.where(c2_valid, tl.gather(subtree, c2_safe, axis=0), zero),
+            subtree,
+        )
+    off_chain = zero
+    for level_index in range(0, N_LEVELS):
+        level = N_LEVELS - level_index
+        at_level = has_parent & (parent_height == level)
+        off_chain = tl.where(
+            at_level,
+            tl.gather(off_chain, parent_safe, axis=0)
+            + tl.where(has_sibling, tl.gather(subtree, sibling_safe, axis=0), zero),
+            off_chain,
+        )
+    return (
+        off_chain
+        + tl.where(c1_valid, tl.gather(subtree, c1_safe, axis=0), zero)
+        + tl.where(c2_valid, tl.gather(subtree, c2_safe, axis=0), zero)
+    )
+
+
+@triton.jit
 def _update_reconciliation_likelihood_jvp_kernel(
     Pi_ptr, dPi_ptr,
     Pi_offset_ptr,
@@ -59,7 +138,7 @@ def _update_reconciliation_likelihood_jvp_kernel(
     speciation_child1_const_ptr, d_speciation_child1_const_ptr,
     speciation_child2_const_ptr, d_speciation_child2_const_ptr,
     receiver_log_probs_ptr, dreceiver_log_probs_ptr,
-    species_child1_ptr, species_child2_ptr, species_parent_ptr,
+    species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
     leaf_species_ptr, leaf_logp_ptr, d_leaf_logp_ptr,
     family_idx_ptr,
     gene_split_log_likelihood_ptr,
@@ -72,7 +151,7 @@ def _update_reconciliation_likelihood_jvp_kernel(
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    N_LEVELS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
@@ -114,44 +193,30 @@ def _update_reconciliation_likelihood_jvp_kernel(
     receiver_mass = tl.where(
         mask, tl.exp2(receiver_weighted_reconciliation_log_likelihood - row_max_safe), zero
     )
-    total_receiver_mass = tl.sum(receiver_mass, axis=0)
-    total_receiver_tangent_numerator = tl.sum(
-        tl.where(mask, receiver_mass * d_receiver_weighted_reconciliation_log_likelihood, zero), axis=0
+    (
+        species_height, c1_valid, c1_safe, c2_valid, c2_safe,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    ) = _species_neighbourhood(
+        species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
+        s_offs, mask, S,
     )
-
-    ancestor_species = s_offs
-    excluded_ancestor_mass = zero
-    excluded_ancestor_tangent_numerator = zero
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        ancestor_reconciliation_log_likelihood = tl.load(Pi_ptr + pi_base + ancestor_species, mask=ancestor_valid, other=NEG)
-        d_ancestor_reconciliation_log_likelihood = tl.load(dPi_ptr + pi_base + ancestor_species, mask=ancestor_valid, other=0.0)
-        if USE_RECEIVER_WEIGHTS:
-            ancestor_receiver_log_probability = tl.load(
-                receiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=NEG
-            )
-            d_ancestor_receiver_log_probability = tl.load(
-                dreceiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=0.0
-            )
-            ancestor_receiver_mass = tl.where(
-                ancestor_valid, tl.exp2(ancestor_receiver_log_probability + ancestor_reconciliation_log_likelihood - row_max_safe), zero
-            )
-            d_ancestor_weighted_reconciliation_log_likelihood = d_ancestor_reconciliation_log_likelihood + d_ancestor_receiver_log_probability
-        else:
-            ancestor_receiver_mass = tl.where(
-                ancestor_valid, tl.exp2(ancestor_reconciliation_log_likelihood - row_max_safe), zero
-            )
-            d_ancestor_weighted_reconciliation_log_likelihood = d_ancestor_reconciliation_log_likelihood
-        excluded_ancestor_mass += ancestor_receiver_mass
-        excluded_ancestor_tangent_numerator += (
-            ancestor_receiver_mass * d_ancestor_weighted_reconciliation_log_likelihood
-        )
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
+    c1 = c1_safe
+    c2 = c2_safe
+    # The primal valid receiver mass and its tangent numerator, both by addition only.
+    valid_receiver_mass = _valid_receiver_sum(
+        receiver_mass, mask, zero, species_height,
+        c1_valid, c1_safe, c2_valid, c2_safe,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
+    valid_receiver_tangent_numerator = _valid_receiver_sum(
+        receiver_mass * d_receiver_weighted_reconciliation_log_likelihood, mask, zero, species_height,
+        c1_valid, c1_safe, c2_valid, c2_safe,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
 
     const_offsets = const_base + s_offs
     max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
     d_max_transfer = tl.load(dmax_transfer_ptr + const_offsets, mask=mask, other=0.0)
-    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
     has_valid_receiver_mass = valid_receiver_mass > 0.0
     safe_valid_receiver_mass = tl.where(
         has_valid_receiver_mass,
@@ -165,12 +230,7 @@ def _update_reconciliation_likelihood_jvp_kernel(
     )
     d_transfer_complement_log_likelihood = tl.where(
         has_valid_receiver_mass,
-        (
-            total_receiver_tangent_numerator
-            - excluded_ancestor_tangent_numerator
-        )
-        / safe_valid_receiver_mass
-        + d_max_transfer,
+        valid_receiver_tangent_numerator / safe_valid_receiver_mass + d_max_transfer,
         zero,
     )
 
@@ -197,10 +257,6 @@ def _update_reconciliation_likelihood_jvp_kernel(
         d_speciation_child2_const_ptr + const_offsets, mask=mask, other=0.0
     )
 
-    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
-    c1_valid = mask & (c1 < S)
-    c2_valid = mask & (c2 < S)
     reconciliation_child1_log_likelihood = tl.where(
         c1_valid, tl.gather(reconciliation_log_likelihood, tl.where(c1_valid, c1, 0), axis=0), NEG
     )
@@ -310,7 +366,7 @@ def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     speciation_child1_const_ptr, d_speciation_child1_const_ptr,
     speciation_child2_const_ptr, d_speciation_child2_const_ptr,
     receiver_log_probs_ptr, dreceiver_log_probs_ptr,
-    species_child1_ptr, species_child2_ptr, species_parent_ptr,
+    species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
     leaf_species_ptr, leaf_logp_ptr, d_leaf_logp_ptr,
     family_idx_ptr,
     gene_split_log_likelihood_ptr,
@@ -325,7 +381,7 @@ def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    N_LEVELS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
@@ -373,23 +429,25 @@ def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     row_max = tl.max(receiver_weighted_reconciliation_log_likelihood, axis=0)
     row_max_safe = tl.where(row_max != NEG, row_max, tl.zeros([1], dtype=DTYPE))
     receiver_mass = tl.where(mask, tl.exp2(receiver_weighted_reconciliation_log_likelihood - row_max_safe), zero)
-    total_receiver_mass = tl.sum(receiver_mass, axis=0)
-
-    # primal ancestor sum (invariant) -> valid_receiver_mass
-    ancestor_species = s_offs
-    excluded_ancestor_mass = zero
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        ancestor_receiver_mass = tl.where(
-            ancestor_valid, tl.gather(receiver_mass, tl.where(ancestor_valid, ancestor_species, 0), axis=0), zero
-        )
-        excluded_ancestor_mass += ancestor_receiver_mass
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
+    (
+        species_height, c1_valid, c1_safe, c2_valid, c2_safe,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    ) = _species_neighbourhood(
+        species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
+        s_offs, mask, S,
+    )
+    c1 = c1_safe
+    c2 = c2_safe
+    # primal valid receiver mass (invariant), by addition only
+    valid_receiver_mass = _valid_receiver_sum(
+        receiver_mass, mask, zero, species_height,
+        c1_valid, c1_safe, c2_valid, c2_safe,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
 
     const_offsets = const_base + s_offs
     max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
     d_max_transfer = tl.load(dmax_transfer_ptr + const_offsets, mask=mask, other=0.0)
-    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
     has_valid_receiver_mass = valid_receiver_mass > 0.0
     safe_valid_receiver_mass = tl.where(
         has_valid_receiver_mass,
@@ -416,10 +474,6 @@ def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=mask, other=NEG)
     d_speciation_child2_const = tl.load(d_speciation_child2_const_ptr + const_offsets, mask=mask, other=0.0)
 
-    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
-    c1_valid = mask & (c1 < S)
-    c2_valid = mask & (c2 < S)
     reconciliation_child1_log_likelihood = tl.where(c1_valid, tl.gather(reconciliation_log_likelihood, tl.where(c1_valid, c1, 0), axis=0), NEG)
     reconciliation_child2_log_likelihood = tl.where(c2_valid, tl.gather(reconciliation_log_likelihood, tl.where(c2_valid, c2, 0), axis=0), NEG)
 
@@ -478,28 +532,14 @@ def _apply_reconciliation_self_loop_jvp_iterations_kernel(
     d_transfer_complement_log_likelihood = zero
     for _it in range(0, n_iters):
         d_receiver_weighted_reconciliation_log_likelihood = d_reconciliation_log_likelihood + d_receiver_log_probability
-        total_receiver_tangent_numerator = tl.sum(
-            tl.where(mask, receiver_mass * d_receiver_weighted_reconciliation_log_likelihood, zero), axis=0
+        valid_receiver_tangent_numerator = _valid_receiver_sum(
+            receiver_mass * d_receiver_weighted_reconciliation_log_likelihood, mask, zero, species_height,
+            c1_valid, c1_safe, c2_valid, c2_safe,
+            has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
         )
-        ancestor_species = s_offs
-        excluded_ancestor_tangent_numerator = zero
-        for _ in range(0, MAX_ANCESTOR_DEPTH):
-            ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-            ancestor_receiver_mass = tl.where(
-                ancestor_valid, tl.gather(receiver_mass, tl.where(ancestor_valid, ancestor_species, 0), axis=0), zero
-            )
-            d_ancestor_reconciliation_log_likelihood = tl.where(ancestor_valid, tl.gather(d_reconciliation_log_likelihood, tl.where(ancestor_valid, ancestor_species, 0), axis=0), zero)
-            d_ancestor_receiver_log_probability = tl.where(ancestor_valid, tl.gather(d_receiver_log_probability, tl.where(ancestor_valid, ancestor_species, 0), axis=0), zero)
-            excluded_ancestor_tangent_numerator += ancestor_receiver_mass * (d_ancestor_reconciliation_log_likelihood + d_ancestor_receiver_log_probability)
-            ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int32)
         d_transfer_complement_log_likelihood = tl.where(
             has_valid_receiver_mass,
-            (
-                total_receiver_tangent_numerator
-                - excluded_ancestor_tangent_numerator
-            )
-            * inverse_valid_receiver_mass
-            + d_max_transfer,
+            valid_receiver_tangent_numerator * inverse_valid_receiver_mass + d_max_transfer,
             zero,
         )
         d_reconciliation_child1_log_likelihood = tl.where(c1_valid, tl.gather(d_reconciliation_log_likelihood, tl.where(c1_valid, c1, 0), axis=0), zero)
@@ -683,59 +723,25 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     )
     total_receiver_mass = tl.sum(receiver_mass, axis=0)
 
-    # Species-tree neighbourhood of every lane: children, parent, and the sibling (the parent's
-    # other child), all as whole-row gathers.
-    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
-    c1_valid = mask & (c1 < S)
-    c2_valid = mask & (c2 < S)
-    c1_safe = tl.where(c1_valid, c1, 0)
-    c2_safe = tl.where(c2_valid, c2, 0)
-    species_height = tl.load(species_height_ptr + s_offs, mask=mask, other=0)
-    parent_species = tl.load(species_parent_ptr + s_offs, mask=mask, other=-1)
-    has_parent = mask & (parent_species >= 0) & (parent_species < S)
-    parent_safe = tl.where(has_parent, parent_species, 0)
-    parent_height = tl.where(has_parent, tl.gather(species_height, parent_safe, axis=0), 0)
-    parent_child1 = tl.gather(c1, parent_safe, axis=0)
-    parent_child2 = tl.gather(c2, parent_safe, axis=0)
-    sibling = tl.where(parent_child1 == s_offs, parent_child2, parent_child1)
-    has_sibling = has_parent & (sibling < S)
-    sibling_safe = tl.where(has_sibling, sibling, 0)
-    is_root = mask & (parent_species < 0)
-
-    # ---- primal valid receiver mass, by addition only (docstring, THE PRIMAL MASSES). Subtree
-    # masses bottom-up: a lane of height ``level`` reads its children, already final.
-    subtree_receiver_mass = receiver_mass
-    for level in range(1, N_LEVELS + 1):
-        at_level = mask & (species_height == level)
-        subtree_receiver_mass = tl.where(
-            at_level,
-            receiver_mass
-            + tl.where(c1_valid, tl.gather(subtree_receiver_mass, c1_safe, axis=0), zero)
-            + tl.where(c2_valid, tl.gather(subtree_receiver_mass, c2_safe, axis=0), zero),
-            subtree_receiver_mass,
-        )
-    # Off-chain masses top-down: what hangs off a lane's ancestor chain is what hangs off its
-    # parent's chain plus the sibling's whole subtree. A lane is settled in the pass of its
-    # PARENT's height, when the parent is already final.
-    off_chain_receiver_mass = zero
-    for level_index in range(0, N_LEVELS):
-        level = N_LEVELS - level_index
-        at_level = has_parent & (parent_height == level)
-        off_chain_receiver_mass = tl.where(
-            at_level,
-            tl.gather(off_chain_receiver_mass, parent_safe, axis=0)
-            + tl.where(has_sibling, tl.gather(subtree_receiver_mass, sibling_safe, axis=0), zero),
-            off_chain_receiver_mass,
-        )
-    children_receiver_mass = tl.where(
-        c1_valid, tl.gather(subtree_receiver_mass, c1_safe, axis=0), zero
-    ) + tl.where(c2_valid, tl.gather(subtree_receiver_mass, c2_safe, axis=0), zero)
+    # Species-tree neighbourhood of every lane, and the primal valid receiver mass by addition
+    # only (docstring, THE PRIMAL MASSES); both shared with the sweep kernels above.
+    (
+        species_height, c1_valid, c1_safe, c2_valid, c2_safe,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe,
+    ) = _species_neighbourhood(
+        species_child1_ptr, species_child2_ptr, species_parent_ptr, species_height_ptr,
+        s_offs, mask, S,
+    )
+    is_root = mask & ~has_parent
+    valid_receiver_mass = _valid_receiver_sum(
+        receiver_mass, mask, zero, species_height,
+        c1_valid, c1_safe, c2_valid, c2_safe,
+        has_parent, parent_safe, parent_height, has_sibling, sibling_safe, N_LEVELS,
+    )
 
     const_offsets = const_base + s_offs
     max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
     d_max_transfer = tl.load(dmax_transfer_ptr + const_offsets, mask=mask, other=0.0)
-    valid_receiver_mass = off_chain_receiver_mass + children_receiver_mass
     has_valid_receiver_mass = valid_receiver_mass > 0.0
     safe_valid_receiver_mass = tl.where(
         has_valid_receiver_mass, valid_receiver_mass, tl.full([BLOCK_S], 1.0, DTYPE)
@@ -1076,22 +1082,23 @@ def compute_wave_step_tangent_selfloop(
     Ebar, dEbar, E, dE,
     speciation_child1_const, d_speciation_child1_const,
     speciation_child2_const, d_speciation_child2_const,
-    receiver_log_probs, species_child1, species_child2, species_parent, max_ancestor_depth,
+    receiver_log_probs, species_child1, species_child2, species_parent,
     gene_split_log_likelihood=None, d_gene_split_log_likelihood=None,
     *, leaf_species_idx, leaf_logp, d_leaf_logp, family_idx,
     dPibar_out=None, has_leaf_term=True, use_receiver_weights=True,
     dreceiver_log_probs=None,
     pi_offset, gene_split_offset=None,
-    species_height=None, species_levels=None, exact=False, wide_row=None,
+    species_height, species_levels, exact=False, wide_row=None,
 ):
     """Run the wave-tangent self-loop; see the LaTeX reference.
 
     ``exact=False`` runs ``n_iters`` fixed Jacobi sweeps. ``exact=True`` solves the same system by
     elimination on the species tree and ignores ``n_iters`` -- its answer is what the sweeps
-    converge to. It needs ``species_height`` (``species_helpers["sp_height"]``) and
+    converge to. Both need ``species_height`` (``species_helpers["sp_height"]``) and
     ``species_levels``, the species tree's height, which is ``compact_level_ptr.numel() - 1``;
     that is a shape, so the caller reads it without the device-to-host copy a
-    ``species_height.max()`` here would cost on every wave.
+    ``species_height.max()`` here would cost on every wave. The sweeps use them to build each
+    lane's valid receiver mass by addition (see ``_valid_receiver_sum``).
 
     ``wide_row`` (``int8``, one entry per clade row) is the forward's own record of which rows it
     could not hold under a single row scale. With ``exact=True`` those rows go to the sweeps and
@@ -1137,17 +1144,14 @@ def compute_wave_step_tangent_selfloop(
         dreceiver_log_probs=dreceiver_log_probs,
         dPibar_out=dPibar_out,
     )
+    species_height = species_height.to(device=Pi_in.device, dtype=torch.int32).contiguous()
+    n_levels = int(species_levels)
     if exact:
-        if species_height is None:
-            raise ValueError("the exact wave-tangent self-loop needs species_height")
-        if species_levels is None:
-            raise ValueError("the exact wave-tangent self-loop needs species_levels")
-        species_height = species_height.to(device=Pi_in.device, dtype=torch.int32).contiguous()
-        n_levels = int(species_levels)
         collect_guard_trips = _COLLECT_EXACT_TANGENT_GUARD_TRIPS
-        # [rows, 3]: non-positive pivot count, non-positive-closure flag, and the closure's own
-        # margin ``1 - M1``. Floats throughout -- the counts are small integers, exact in either
-        # float type, and one dtype keeps the kernel's stores uniform.
+        # [rows, 3]: non-positive pivot count, non-positive ``1 - gain`` flag, and the smallest
+        # ``1 - gain`` margin (per node or at the closure). Floats throughout -- the counts are
+        # small integers, exact in either float type, and one dtype keeps the kernel's stores
+        # uniform.
         guard_trips = (
             torch.zeros((int(W), 3), device=Pi_in.device, dtype=Pi_in.dtype)
             if collect_guard_trips
@@ -1202,7 +1206,7 @@ def compute_wave_step_tangent_selfloop(
         speciation_child1_const, d_speciation_child1_const,
         speciation_child2_const, d_speciation_child2_const,
         receiver_log_probs, dreceiver_log_probs,
-        species_child1, species_child2, species_parent,
+        species_child1, species_child2, species_parent, species_height,
         leaf_species_idx, leaf_logp, d_leaf_logp,
         family_idx,
         gene_split_log_likelihood if has_splits else dummy,
@@ -1217,7 +1221,7 @@ def compute_wave_step_tangent_selfloop(
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
-        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        N_LEVELS=n_levels,
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
@@ -1234,14 +1238,22 @@ def compute_wave_step_tangent(
     Ebar, dEbar, E, dE,
     speciation_child1_const, d_speciation_child1_const,
     speciation_child2_const, d_speciation_child2_const,
-    receiver_log_probs, species_child1, species_child2, species_parent, max_ancestor_depth,
+    receiver_log_probs, species_child1, species_child2, species_parent,
     gene_split_log_likelihood=None, d_gene_split_log_likelihood=None,
     *, leaf_species_idx, leaf_logp, d_leaf_logp, family_idx,
     dPibar_out=None, has_leaf_term=True, input_ws=None,
     use_receiver_weights=True, dreceiver_log_probs=None,
     pi_offset, gene_split_offset=None,
+    species_height, species_levels,
 ):
-    """Apply the wave-step JVP documented in the LaTeX reference."""
+    """Apply the wave-step JVP documented in the LaTeX reference.
+
+    ``species_height`` (``species_helpers["sp_height"]``) and ``species_levels`` (the tree's
+    height, ``compact_level_ptr.numel() - 1``) let the kernel build each lane's valid receiver
+    mass by addition; see ``_valid_receiver_sum``.
+    """
+    species_height = species_height.to(device=Pi_in.device, dtype=torch.int32).contiguous()
+    n_levels = int(species_levels)
     has_splits = gene_split_log_likelihood is not None
     pi_offset_arg, gene_split_offset_arg = _prepare_wave_offsets(
         Pi_in, pi_offset, gene_split_offset, has_splits, W
@@ -1292,7 +1304,7 @@ def compute_wave_step_tangent(
         speciation_child1_const, d_speciation_child1_const,
         speciation_child2_const, d_speciation_child2_const,
         receiver_log_probs, dreceiver_log_probs,
-        species_child1, species_child2, species_parent,
+        species_child1, species_child2, species_parent, species_height,
         leaf_species_idx, leaf_logp, d_leaf_logp,
         family_idx,
         gene_split_log_likelihood if has_splits else dummy,
@@ -1305,7 +1317,7 @@ def compute_wave_step_tangent(
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
-        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        N_LEVELS=n_levels,
         USE_LEAF_INDEX=bool(has_leaf_term),
         STORE_PIBAR=bool(store_pibar),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),

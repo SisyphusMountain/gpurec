@@ -326,6 +326,54 @@ cost 3-4 certified families relative to no stall rule (5121) for a ~28 s gain, s
 bits, 5119/5123 certified, 109 Newton steps; split: warm-up 125 s, Newton gradients 400 s, curvature
 31 s, verification 53 s, re-plans 19 s, certificate 24 s, build 68 s (20 s on a quiet node).
 
+## Third round: a rounding floor in every transfer sum (2026-09-04)
+
+**What was wrong.** The rate-box sweep left two corners where the exact path disagreed with the log
+path even in float64. Chasing the worse one (log2 rates D = -19.9, L = 1, T = -19.9: duplication and
+transfer at the floor, loss at the cap) on the 29,014-clade family COG0009_0 led to a defect that is
+not in either solver's algebra but in one arithmetic step shared by every kernel: **a lane's
+available transfer mass was formed as "row total minus the mass on that lane's ancestor chain"**
+(forward log kernel: `total_receiver_mass - excluded_ancestor_mass`; exact forward: `u[c] = u[s] -
+recv[s] p[s]`; tangent kernels: the same two; adjoint: "row total minus own subtree" of the receiver
+adjoints). For every species hanging under the lane that holds the row's mass the true remainder is
+below the unit roundoff of the total (2^-24 in float32, 2^-53 in float64), so the difference is
+rounding noise. Those lanes sit 50-300 binary orders below their own row maximum and looked
+harmless, but under high loss a lane far under its own row maximum is the dominant factor of a
+product in the parent clade's gene-split source, so the noise climbs wave by wave: a whole-row
+comparison of the two paths (`benchmark/cc/corner_row_probe.py`) showed the first disagreement at
+exactly 54 binary orders below the row maximum in wave 1 (2.5e-9 log2), growing to 0.08 by wave 25,
+11 by wave 32 and 100 by wave 100; the family's NLL was off by 8.7 bits. Both paths were fixed points
+of the log kernel to 1e-8 (`corner_residual_probe.py`: one more sweep moved neither), which is what
+gave it away: the equation being iterated was itself floor-limited, so the converged log path was
+not an oracle either.
+
+**In the adjoint the same floor is amplified.** Each receiver lane's adjoint coefficient divides by
+its own valid receiver mass, so for lanes under the dominant species it is about 2^depth; "row total
+minus own subtree" of those terms, for the dominant lane, is a difference of two astronomically
+large nearly equal numbers. At the corner the float64 gradient was 1e8 times larger than central
+finite differences of the (corrected) likelihood, with both adjoint solvers (`corner_fd_grad.py`);
+in a mild regime (D = -6, L = -3, T = -6) analytic and finite differences agreed to 8e-5, the
+step's own truncation error.
+
+**The fix, everywhere: additions only.** A lane's available mass is the mass hanging off its
+ancestor chain plus its children's subtree masses; both are sums of non-negative terms built by two
+tree walks (subtree sums bottom-up, off-chain sums top-down through parent and sibling). In the
+exact forward solve this is carried as an affine function of the mass entering each subtree
+(`M = mA + mG*u`, gains `mG` in [0, 1)), which replaced three walks by one and removed the
+first-pass rebuild (commit bacea6b1); the exact tangent got the same walk with a signed constant
+part (edc92533); the series adjoint term (60a8b993) and the exact adjoint solve (8ad9bf49) now
+eliminate on the off-subtree adjoint passed down by addition instead of the row total, the exact
+one with a 2x2 sibling coupling per node and no scalar closure; the two sweep tangent kernels share
+one helper (`_valid_receiver_sum`). The log forward kernel and the two remaining backward VJP
+kernels were converted by agents from the same template (see their commits). A host-side
+lane-by-lane residual of the fixed-point equation (`benchmark/cc/exact_row_host_check.py`) went
+from 1.9e-8 to 1.4e-13 on the first bad row.
+
+**Effect at fitted rates: none.** Full fit with the forward fix (job 57791446): 856 s on a shared
+node, NLL 9048938.300 bits (previously 9048938.28-9048938.31), 5119/5123 certified. The tails only
+matter at the extreme corners; the point of the fix is that the rate box is now trustworthy there,
+for the likelihood and for the gradient.
+
 ## What is left
 
 With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs

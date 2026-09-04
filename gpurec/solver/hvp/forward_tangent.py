@@ -247,16 +247,15 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     # The species tree's height. One bucket per height in the compact level tables, so this is a
     # shape rather than a value: no device-to-host copy, unlike reducing species_height itself.
     species_levels = int(sh["compact_level_ptr"].numel()) - 1
-    max_ancestor_depth = int(sh["max_ancestor_depth"])
     # The tangent is the forward tree system with a different right-hand side, so
     # SolverOptions.adjoint_self_loop -- which already says "solve the wave's linear system
     # exactly rather than iterating it" for the adjoint -- selects it here too.
     exact_selfloop = getattr(static, "solver_options", None) is not None and (
         static.solver_options.adjoint_self_loop == "exact"
     )
-    if exact_selfloop and species_height is None:
+    if species_height is None:
         raise ValueError(
-            "the exact wave-tangent self-loop needs species_helpers['sp_height']; rebuild the "
+            "the wave-tangent self-loop needs species_helpers['sp_height']; rebuild the "
             "model so the species payload carries it"
         )
 
@@ -310,7 +309,6 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
             base["speciation_child1_const"], tangent_constants["d_speciation_child1_const"],
             base["speciation_child2_const"], tangent_constants["d_speciation_child2_const"],
             receiver_log_probs, species_child1, species_child2, species_parent,
-            max_ancestor_depth,
             gene_split_log_likelihood, d_gene_split_log_likelihood,
             leaf_species_idx=leaf_species_idx,
             leaf_logp=base["leaf_log_probability"],
@@ -318,6 +316,7 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
             family_idx=family_idx, dPibar_out=(dpibar if store else None),
             has_leaf_term=has_leaf, input_ws=None, use_receiver_weights=use_receiver_weights,
             dreceiver_log_probs=dreceiver_log_probs,
+            species_height=species_height, species_levels=species_levels,
             pi_offset=pi_offset, gene_split_offset=gene_split_offset,
         )
 
@@ -375,7 +374,6 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
                 base["speciation_child1_const"], tangent_constants["d_speciation_child1_const"],
                 base["speciation_child2_const"], tangent_constants["d_speciation_child2_const"],
                 receiver_log_probs, species_child1, species_child2, species_parent,
-                max_ancestor_depth,
                 gene_split_log_likelihood, d_gene_split_log_likelihood,
                 leaf_species_idx=leaf_species_idx,
                 leaf_logp=base["leaf_log_probability"],
