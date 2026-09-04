@@ -380,6 +380,15 @@ NLL 9048938.292 bits, **5123/5123 certified** in 68 Newton steps instead of abou
 (+2 GiB of scratch in the additive backward kernels). The families that used to iterate to the cap were
 the ones whose gradient was rounding noise in a high-loss region.
 
+**Rate-box sweep after the fix (job corners_add, 20 families, float32 exact and float32 log against a converged
+float64 log oracle at 2048 sweeps / 512 terms, `benchmark/cc/test_exact_range_corners.py`).** 27 of 27 corners
+pass (3 failed before): the float32 likelihood is within 8e-3 bits of the oracle at every corner for both paths,
+and the exact path is never worse than the log path. At the three corners with loss at its cap and transfer at
+its floor, 34-54 % of the rows exceed the 100-order range and take the log sweeps; both float32 paths there show
+the same large lane-level disagreement with the oracle (identical for log and exact), which is float32 itself
+(extinction probabilities within 2^-24 of one round to one), not the transfer sums, and the likelihood is still
+within 3e-3 bits. `exact_range_log2 = 100` keeps a 26-order margin from float32 underflow (2^-126) and stays.
+
 ## What is left
 
 With both self-loops and the tangent solved exactly, one full-dataset gradient at fitted rates costs
