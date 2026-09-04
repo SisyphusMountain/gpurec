@@ -82,8 +82,24 @@ _BLOCK_NODES_TRANSFER_SUBTREE_VJP = _NUM_WARPS_TRANSFER_SUBTREE_VJP * _THREADS_P
 # Warps per program for the register-resident transposed solve
 # (``_solve_reconciliation_self_loop_transpose_row_kernel``). One program holds one clade row's
 # whole species tile, so the warp count decides how many species lanes each thread carries and
-# how many registers the walks need per thread; see benchmark/cc/sweep_num_warps.py.
-_NUM_WARPS_SELF_LOOP_TRANSPOSE_ROW = 16
+# how many registers the walks need per thread; see benchmark/cc/sweep_num_warps.py. The kernel is
+# arithmetic and shared-memory gathers with almost no DRAM traffic, so it lands on the card's
+# instruction rate, and the two cards this project runs on want different widths: on the RTX 4090
+# (compute capability 8.9) 16 warps is the optimum (312 ms for the 200-family gradient's 1977
+# launches; 32 warps 324 ms), on the H100 (compute capability 9.0, twice the memory bandwidth but a
+# lower float32 instruction rate) 32 warps is (362 ms; 16 warps 400 ms, 8 warps 435 ms, 4 warps
+# 491 ms). Hardware facts, not settings, so the choice is made from the device.
+_NUM_WARPS_SELF_LOOP_TRANSPOSE_ROW_SM90 = 32
+_NUM_WARPS_SELF_LOOP_TRANSPOSE_ROW_OTHER = 16
+
+
+def _num_warps_self_loop_transpose_row(device) -> int:
+    """Warp count of the register-resident transposed solve for this card (see the note above)."""
+    major, _minor = torch.cuda.get_device_capability(device)
+    return (
+        _NUM_WARPS_SELF_LOOP_TRANSPOSE_ROW_SM90 if major >= 9
+        else _NUM_WARPS_SELF_LOOP_TRANSPOSE_ROW_OTHER
+    )
 
 # Attribute name under which the four valid-receiver scan tables are memoised on the caller's
 # ``sp_subtree_start`` tensor. They depend only on the species tree, and a gradient launches the
@@ -819,7 +835,7 @@ def _solve_reconciliation_wave_vjp_2d(
             PUBLISH_DONOR_TERMS=bool(grad_receiver_log_probs is not None),
             WRITE_GUARD_TRIPS=bool(collect_guard_trips),
             COUNT_SPILLS=bool(count_spills),
-            num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE_ROW,
+            num_warps=_num_warps_self_loop_transpose_row(Pi_star.device),
         )
         if collect_guard_trips:
             _EXACT_ADJOINT_GUARD_TRIPS.append(guard_trips)
