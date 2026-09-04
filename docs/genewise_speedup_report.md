@@ -222,7 +222,7 @@ number of passes over the tree (`_exact_tree_pi_self_loop_kernel`):
 
 Four passes of O(S) per row, no iteration, and the answer is what the old iteration converges to
 as the sweep count grows. The **adjoint** is the transposed system for the same row and is solved
-by the analogous elimination (`_exact_tree_self_loop_transpose_kernel`); the **tangent** used by the
+by the analogous elimination (`_solve_reconciliation_self_loop_transpose_row_kernel`); the **tangent** used by the
 Hessian probes is the forward system with a different right-hand side and reuses the forward
 elimination (`gpurec/core/kernels/wave_tangent.py`). Evidence, at 100 families and fitted rates,
 against the old path run to convergence (256 sweeps or 256 terms): total NLL within 2.6e-3 bits,

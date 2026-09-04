@@ -23,7 +23,6 @@ from gpurec.core.kernels.wave_backward_kernels import (
     _prepare_reconciliation_self_loop_vjp_kernel,
     _apply_reconciliation_self_loop_transpose_kernel,
     _reconciliation_self_loop_transpose_series_kernel,
-    _exact_tree_self_loop_transpose_kernel,
     _solve_reconciliation_self_loop_transpose_row_kernel,
     _accumulate_transfer_receiver_log_probability_vjp_kernel,
     _accumulate_reconciliation_event_vjp_kernel,
@@ -103,7 +102,8 @@ _USE_FUSED_NEUMANN_SERIES = True
 # The two adjoint self-loop implementations selectable through ``SolverOptions.adjoint_self_loop``.
 # "series": sum the Neumann terms of (I - J^T)^-1 rhs, stopping early per row block.
 # "exact":  solve (I - J^T) v = rhs directly by elimination on the species tree
-#           (``_exact_tree_self_loop_transpose_kernel``), which is what the series converges to.
+#           (``_solve_reconciliation_self_loop_transpose_row_kernel``), which is what the series
+#           converges to.
 ADJOINT_SELF_LOOP_MODES = ("series", "exact")
 
 # Debug instrumentation for the exact adjoint solve, off in production. When switched on with
