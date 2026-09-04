@@ -50,6 +50,11 @@ _NUM_WARPS_EXACT_TREE = 8
 # docstring's slot table).
 _EXACT_TREE_SCRATCH_SLOTS = 4
 
+# Slots of the log-space sweep's per-row working buffer, shape ``[2, rows, S]``: one running
+# sum for the receivers whose subtree has not opened yet, one for those already closed. See
+# ``_write_valid_receiver_prefix_sums``.
+_VALID_RECEIVER_SCRATCH_SLOTS = 2
+
 # The reference dtype ``SolverOptions.exact_range_log2`` is written in: float32, whose smallest
 # normal is 2**-126, so a 100-order default leaves 26 binary orders of margin for what the solve
 # adds on top of the range it measured at entry. NOT a setting -- it is the property of the format
@@ -219,51 +224,123 @@ def _compute_total_receiver_mass(
 
 
 @triton.jit
-def _compute_transfer_complement(
+def _write_valid_receiver_prefix_sums(
     Pi_ptr,
-    receiver_log_probs_ptr,
     row_base,
-    s_offs,
-    mask,
     row_max,
-    total_receiver_mass,
-    max_transfer,
-    species_parent_ptr,
+    receiver_log_probs_ptr,
+    scratch_ptr,
+    not_open_base,
+    closed_base,
+    not_open_source_ptr,
+    closed_source_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
+    """Write the two running sums a donor's transfer mass is built from, without any subtraction.
+
+    A donor species ``s`` may transfer to every species that is neither ``s`` itself nor one of
+    its ancestors. The obvious way to get that mass is ``the row's total minus the mass sitting on
+    s's own lineage``. That subtraction is what this exists to avoid. For every species hanging
+    UNDER the lane that holds the row's mass the two numbers agree to more digits than the dtype
+    has: the true remainder is below the unit roundoff of the total (2**-24 in float32, 2**-53 in
+    float64), so what comes out is rounding noise, and when it comes out non-positive the lane is
+    published as ``-inf`` instead. Those lanes look harmless -- they sit 50 to 300 binary orders
+    under their own row maximum -- but in a high-loss regime a lane far under its row maximum is
+    the dominant factor of a product in a parent clade's gene-split source, so the noise climbs
+    wave by wave. Measured on Coleman family COG0009_0 (1007 species, 29,014 clades) at log2 rates
+    D=-19.9, L=1, T=-19.9: comparing whole rows against the exact tree-elimination solve, the
+    first deviations appear exactly 54 binary orders below the row maximum -- float64's rounding
+    depth -- already in wave 1 (2.5e-9), reach 9e-6 by wave 11 and 335 by wave 174, and the
+    family's likelihood ends up 0.45 bits wrong even in float64.
+
+    With the depth-first interval numbering (``sp_subtree_start`` is a permutation of ``0..S-1``
+    and each subtree owns ``[start, end)``), ``a`` is an ancestor-or-self of ``s`` exactly when
+    ``start[a] <= start[s] < end[a]``. So the ALLOWED recipients split into two disjoint groups,
+
+        not yet opened   ``start[a] > start[s]``
+        already closed   ``end[a] <= start[s]``
+
+    and each group's mass is a running sum of non-negative terms, which cannot cancel. This writes
+    both, each as a plain forward scan over a species order the host prepared
+    (:func:`gpurec.core.valid_receivers.valid_receiver_index_tables`); the sources are shifted by
+    one position, so an inclusive scan already gives the exclusive prefix
+    :func:`_lookup_valid_receiver_mass` reads back.
+
+    The summed terms are ``2**(receiver_log_prob[r] + Pi[r] - row_max)``, or ``2**(Pi[r] -
+    row_max)`` when receiver weights are off -- exactly the terms the row total was made of -- so
+    ``row_max`` is the gauge the lookup's caller adds back.
+    """
     NEG_INF: tl.constexpr = -float("inf")
-    excluded_ancestor_mass = tl.zeros([BLOCK_S], dtype=DTYPE)
     row_max_safe = tl.where(row_max != NEG_INF, row_max, tl.zeros_like(row_max))
-    ancestor_species = s_offs.to(tl.int64)
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        ancestor_reconciliation_log_likelihood = tl.load(
-            Pi_ptr + row_base + ancestor_species, mask=ancestor_valid, other=NEG_INF
-        )
-        if USE_RECEIVER_WEIGHTS:
-            ancestor_receiver_log_probability = tl.load(receiver_log_probs_ptr + ancestor_species, mask=ancestor_valid, other=NEG_INF)
-            excluded_ancestor_mass += tl.where(
-                ancestor_valid,
-                tl.exp2(
-                    ancestor_receiver_log_probability
-                    + ancestor_reconciliation_log_likelihood
-                    - row_max_safe
-                ),
-                tl.zeros([BLOCK_S], dtype=DTYPE),
-            )
+    # Both scans gather Pi lanes at arbitrary positions. When the row being scanned is one this
+    # program itself just wrote, only a barrier makes those writes visible here.
+    tl.debug_barrier()
+    for pass_id in tl.static_range(2):
+        if pass_id == 0:
+            source_ptr = not_open_source_ptr
+            output_base = not_open_base
         else:
-            excluded_ancestor_mass += tl.where(
-                ancestor_valid,
-                tl.exp2(ancestor_reconciliation_log_likelihood - row_max_safe),
+            source_ptr = closed_source_ptr
+            output_base = closed_base
+        running_total = tl.full((), value=0.0, dtype=DTYPE)
+        for s_start in range(0, S, BLOCK_S):
+            positions = s_start + tl.arange(0, BLOCK_S)
+            mask = positions < S
+            species = tl.load(source_ptr + positions, mask=mask, other=S).to(tl.int64)
+            # ``S`` is the one-position shift's sentinel: it contributes nothing.
+            contributes = mask & (species < S)
+            receiver_log_likelihood = tl.load(
+                Pi_ptr + row_base + species, mask=contributes, other=NEG_INF
+            )
+            if USE_RECEIVER_WEIGHTS:
+                receiver_log_likelihood = receiver_log_likelihood + tl.load(
+                    receiver_log_probs_ptr + species, mask=contributes, other=NEG_INF
+                )
+            value = tl.where(
+                contributes,
+                tl.exp2(receiver_log_likelihood - row_max_safe),
                 tl.zeros([BLOCK_S], dtype=DTYPE),
             )
-        ancestor_species = tl.load(species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1).to(tl.int64)
-    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
-    return tl.where(valid_receiver_mass > 0.0, tl.log2(valid_receiver_mass) + row_max + max_transfer, NEG_INF)
+            tl.store(
+                scratch_ptr + output_base + positions,
+                running_total + tl.cumsum(value, axis=0),
+                mask=mask,
+            )
+            running_total += tl.sum(value, axis=0)
+    # The lookups below read lanes this program just wrote.
+    tl.debug_barrier()
+
+
+@triton.jit
+def _lookup_valid_receiver_mass(
+    scratch_ptr,
+    not_open_base,
+    closed_base,
+    not_open_index_ptr,
+    closed_index_ptr,
+    s_offs,
+    mask,
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Read each donor lane's valid receiver mass out of the two running sums.
+
+    Both index tables come from
+    :func:`gpurec.core.valid_receivers.valid_receiver_index_tables`: one says where this
+    donor's "not yet opened" prefix ends, the other where its "already closed" prefix ends. Adding
+    the two is the whole mass, with no subtraction anywhere. The result is relative to the
+    ``row_max`` :func:`_write_valid_receiver_prefix_sums` scaled by, so the caller turns it into a
+    log2 value as ``log2(mass) + row_max``, or ``-inf`` when the mass is exactly zero.
+    """
+    not_open_index = tl.load(not_open_index_ptr + s_offs, mask=mask, other=0).to(tl.int64)
+    closed_index = tl.load(closed_index_ptr + s_offs, mask=mask, other=0).to(tl.int64)
+    not_yet_open = tl.load(scratch_ptr + not_open_base + not_open_index, mask=mask, other=0.0)
+    already_closed = tl.load(scratch_ptr + closed_base + closed_index, mask=mask, other=0.0)
+    return tl.where(mask, not_yet_open + already_closed, tl.zeros([BLOCK_S], dtype=DTYPE))
 
 
 @triton.jit
@@ -441,10 +518,11 @@ def _initialize_leaf_reconciliation_likelihood_kernel(
         )
 
 
-# ``ws``/``pi_ws`` are the wave's start rows and change every launch. Triton keys its
-# compile cache on each integer's "== 1" / divisible-by-16 state, so leaving them
-# specialized recompiles this kernel for no gain (see README.md).
-@triton.jit(do_not_specialize=["ws", "pi_ws"])
+# ``ws``/``pi_ws`` are the wave's start rows and ``prefix_slot_span`` the valid-receiver
+# scratch stride; all three change every launch. Triton keys its compile cache on each
+# integer's "== 1" / divisible-by-16 state, so leaving them specialized recompiles this
+# kernel for no gain (see README.md).
+@triton.jit(do_not_specialize=["ws", "pi_ws", "prefix_slot_span"])
 def _update_reconciliation_likelihood_kernel(
     Pi_ptr,
     Pi_offset_ptr,
@@ -459,7 +537,12 @@ def _update_reconciliation_likelihood_kernel(
     receiver_log_probs_ptr,
     species_child1_ptr,
     species_child2_ptr,
-    species_parent_ptr,
+    valid_receiver_scratch_ptr,
+    not_open_source_ptr,
+    closed_source_ptr,
+    not_open_index_ptr,
+    closed_index_ptr,
+    prefix_slot_span,
     leaf_species_ptr,
     leaf_logp_ptr,
     leaf_fm_log_ptr,
@@ -480,7 +563,6 @@ def _update_reconciliation_likelihood_kernel(
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     USE_FRACTION_MISSING: tl.constexpr,
     STORE_FINAL_PIBAR: tl.constexpr,
@@ -510,8 +592,17 @@ def _update_reconciliation_likelihood_kernel(
     family_const = tl.load(family_idx_ptr + global_row)
     const_base = family_const * CONST_ROW_STRIDE
     pi_offset = tl.load(Pi_offset_ptr + pi_row)
+    # This program's two rows of the valid-receiver scratch, one per running sum. Both are
+    # rewritten from the row this sweep reads, before any lane looks a mass up.
+    prefix_span = prefix_slot_span.to(tl.int64)
+    not_open_base = w * stride
+    closed_base = prefix_span + w * stride
 
-    row_max, total_receiver_mass, reconciliation_row_max = _compute_total_receiver_mass(
+    # Only the two maxima are read. ``row_max`` is the gauge every transfer mass below is
+    # expressed in; the row TOTAL this also returns is no longer part of any answer, because
+    # a lane's available transfer mass is built by addition rather than as total-minus-lineage
+    # (see ``_write_valid_receiver_prefix_sums``).
+    row_max, _unused_row_total, reconciliation_row_max = _compute_total_receiver_mass(
         Pi_ptr,
         receiver_log_probs_ptr,
         pi_base,
@@ -577,6 +668,22 @@ def _update_reconciliation_likelihood_kernel(
     if COMPUTE_DIFF:
         row_max_diff = tl.zeros([1], dtype=tl.float32)
 
+    _write_valid_receiver_prefix_sums(
+        Pi_ptr,
+        pi_base,
+        row_max,
+        receiver_log_probs_ptr,
+        valid_receiver_scratch_ptr,
+        not_open_base,
+        closed_base,
+        not_open_source_ptr,
+        closed_source_ptr,
+        S,
+        BLOCK_S,
+        USE_RECEIVER_WEIGHTS,
+        DTYPE,
+    )
+
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
@@ -584,21 +691,22 @@ def _update_reconciliation_likelihood_kernel(
         reconciliation_log_likelihood = reconciliation_log_likelihood - reconciliation_residual_shift
         const_offsets = const_base + s_offs
         max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-        transfer_complement_log_likelihood = _compute_transfer_complement(
-            Pi_ptr,
-            receiver_log_probs_ptr,
-            pi_base,
+        valid_receiver_mass = _lookup_valid_receiver_mass(
+            valid_receiver_scratch_ptr,
+            not_open_base,
+            closed_base,
+            not_open_index_ptr,
+            closed_index_ptr,
             s_offs,
             mask,
-            row_max,
-            total_receiver_mass,
-            max_transfer,
-            species_parent_ptr,
             S,
             BLOCK_S,
-            MAX_ANCESTOR_DEPTH,
-            USE_RECEIVER_WEIGHTS,
             DTYPE,
+        )
+        transfer_complement_log_likelihood = tl.where(
+            valid_receiver_mass > 0.0,
+            tl.log2(valid_receiver_mass) + row_max + max_transfer,
+            NEG_LARGE,
         )
         transfer_complement_log_likelihood = transfer_complement_log_likelihood - reconciliation_residual_shift
         duplication_loss_const = tl.load(duplication_loss_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
@@ -730,7 +838,8 @@ def _update_reconciliation_likelihood_kernel(
         tl.store(gene_split_center_offset_ptr + w, gene_split_center_offset)
 
     if STORE_FINAL_PIBAR:
-        final_row_max, final_row_sum, _ = _compute_total_receiver_mass(
+        # Again only the maximum is read; see the call above.
+        final_row_max, _unused_final_row_total, _ = _compute_total_receiver_mass(
             Pi_new_ptr,
             receiver_log_probs_ptr,
             global_base,
@@ -741,6 +850,23 @@ def _update_reconciliation_likelihood_kernel(
             DTYPE,
         )
         tl.store(pibar_row_max_ptr + global_row, tl.max(final_row_max, axis=0))
+        # The published Pibar row is built from the row just written, so the two running sums
+        # are rebuilt from it, in its own gauge, before the lanes read them back.
+        _write_valid_receiver_prefix_sums(
+            Pi_new_ptr,
+            global_base,
+            final_row_max,
+            receiver_log_probs_ptr,
+            valid_receiver_scratch_ptr,
+            not_open_base,
+            closed_base,
+            not_open_source_ptr,
+            closed_source_ptr,
+            S,
+            BLOCK_S,
+            USE_RECEIVER_WEIGHTS,
+            DTYPE,
+        )
         # ``Pi_new`` is stored in ``output_frame_offset``'s frame, so the Pibar values
         # produced from it are already in that same frame. Keep that cheap
         # gauge instead of traversing the species row once to find an exact
@@ -751,21 +877,22 @@ def _update_reconciliation_likelihood_kernel(
             mask = s_offs < S
             const_offsets = const_base + s_offs
             max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
-            transfer_complement_log_likelihood = _compute_transfer_complement(
-                Pi_new_ptr,
-                receiver_log_probs_ptr,
-                global_base,
+            valid_receiver_mass = _lookup_valid_receiver_mass(
+                valid_receiver_scratch_ptr,
+                not_open_base,
+                closed_base,
+                not_open_index_ptr,
+                closed_index_ptr,
                 s_offs,
                 mask,
-                final_row_max,
-                final_row_sum,
-                max_transfer,
-                species_parent_ptr,
                 S,
                 BLOCK_S,
-                MAX_ANCESTOR_DEPTH,
-                USE_RECEIVER_WEIGHTS,
                 DTYPE,
+            )
+            transfer_complement_log_likelihood = tl.where(
+                valid_receiver_mass > 0.0,
+                tl.log2(valid_receiver_mass) + final_row_max + max_transfer,
+                NEG_LARGE,
             )
             pibar_has_finite = tl.maximum(
                 pibar_has_finite,
@@ -776,103 +903,6 @@ def _update_reconciliation_likelihood_kernel(
         # pair even when its Pi row used a nonzero heuristic gauge.
         pibar_offset = tl.where(pibar_has_finite != 0, output_frame_offset, 0.0)
         tl.store(Pibar_offset_ptr + global_row, pibar_offset)
-
-
-@triton.jit
-def _lookup_valid_receiver_mass(
-    scratch_ptr,
-    not_open_base,
-    closed_base,
-    not_open_index_ptr,
-    closed_index_ptr,
-    s_offs,
-    mask,
-    S: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    DTYPE: tl.constexpr,
-):
-    """Read each donor lane's valid receiver mass out of the two running sums.
-
-    Both index tables come from
-    :func:`gpurec.core.valid_receivers.valid_receiver_index_tables`: one says where this
-    donor's "not yet opened" prefix ends, the other where its "already closed" prefix ends. Adding
-    the two is the whole mass, with no subtraction anywhere.
-    """
-    not_open_index = tl.load(not_open_index_ptr + s_offs, mask=mask, other=0).to(tl.int64)
-    closed_index = tl.load(closed_index_ptr + s_offs, mask=mask, other=0).to(tl.int64)
-    not_yet_open = tl.load(scratch_ptr + not_open_base + not_open_index, mask=mask, other=0.0)
-    already_closed = tl.load(scratch_ptr + closed_base + closed_index, mask=mask, other=0.0)
-    return tl.where(mask, not_yet_open + already_closed, tl.zeros([BLOCK_S], dtype=DTYPE))
-
-
-@triton.jit
-def _write_valid_receiver_prefix_sums(
-    scratch_ptr,
-    value_base,
-    not_open_base,
-    closed_base,
-    receiver_lin_ptr,
-    not_open_source_ptr,
-    closed_source_ptr,
-    S: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    USE_RECEIVER_WEIGHTS: tl.constexpr,
-    DTYPE: tl.constexpr,
-):
-    """Write the two running sums a donor's valid receiver mass is built from, without any subtraction.
-
-    A donor ``s`` may transfer to every species that is neither ``s`` itself nor one of its
-    ancestors. :func:`_compute_transfer_complement` gets that mass as
-    ``total_receiver_mass - excluded_ancestor_mass``, two nearly equal numbers whose difference is
-    the answer: at a high transfer rate the row's whole mass sits on the donor's own lineage, the
-    two agree to more than fp32's 24 bits, and the difference is noise -- it even changes sign, so
-    lanes flip between a finite transfer complement and ``-inf``.
-
-    With the depth-first interval numbering (``start`` is a permutation of ``0..S-1`` and each
-    subtree owns ``[start, end)``), ``a`` is an ancestor-or-self of ``s`` exactly when
-    ``start[a] <= start[s] < end[a]``. So the ALLOWED recipients split into two disjoint groups,
-
-        not yet opened   ``start[a] > start[s]``
-        already closed   ``end[a] <= start[s]``
-
-    and their masses are two running sums of non-negative terms, which cannot cancel. This writes
-    both, each as a plain forward scan over a species order the host prepared
-    (:func:`gpurec.core.valid_receivers.valid_receiver_index_tables`); the sources are shifted
-    by one position, so an inclusive scan already gives the exclusive prefix the lookup wants.
-    """
-    # Both scans gather lanes of the value row at arbitrary positions, i.e. lanes other warps of
-    # this block wrote (the entry conversion, or the previous iteration's store). Only a barrier
-    # makes those writes visible here; the row-wide reductions that used to sit in front of these
-    # gathers are gone.
-    tl.debug_barrier()
-    for pass_id in tl.static_range(2):
-        if pass_id == 0:
-            source_ptr = not_open_source_ptr
-            output_base = not_open_base
-        else:
-            source_ptr = closed_source_ptr
-            output_base = closed_base
-        running_total = tl.full((), value=0.0, dtype=DTYPE)
-        for s_start in range(0, S, BLOCK_S):
-            positions = s_start + tl.arange(0, BLOCK_S)
-            mask = positions < S
-            species = tl.load(source_ptr + positions, mask=mask, other=S).to(tl.int64)
-            # ``S`` is the one-position shift's sentinel: it contributes nothing.
-            contributes = mask & (species < S)
-            value = tl.load(scratch_ptr + value_base + species, mask=contributes, other=0.0)
-            if USE_RECEIVER_WEIGHTS:
-                value = value * tl.load(
-                    receiver_lin_ptr + species, mask=contributes, other=0.0
-                )
-            value = tl.where(contributes, value, tl.zeros([BLOCK_S], dtype=DTYPE))
-            tl.store(
-                scratch_ptr + output_base + positions,
-                running_total + tl.cumsum(value, axis=0),
-                mask=mask,
-            )
-            running_total += tl.sum(value, axis=0)
-    # The lookups below read lanes other warps in this block just wrote.
-    tl.debug_barrier()
 
 
 # ``ws`` is the wave's start row and ``slot_span`` the scratch stride; both change per
@@ -2010,12 +2040,15 @@ def compute_wave_step(
     receiver_log_probs,
     species_child1,
     species_child2,
-    species_parent,
-    max_ancestor_depth,
     gene_split_log_likelihood=None,
     gene_split_offset=None,
     gene_split_center_offset=None,
     *,
+    valid_receiver_scratch,
+    not_open_source,
+    closed_source,
+    not_open_index,
+    closed_index,
     leaf_species_idx,
     leaf_logp,
     family_idx,
@@ -2032,6 +2065,7 @@ def compute_wave_step(
         Pi_in,
         Pi_out=Pi_out,
         Pibar=Pibar,
+        valid_receiver_scratch=valid_receiver_scratch,
         max_transfer_mat=max_transfer_mat,
         duplication_loss_const=duplication_loss_const,
         Ebar=Ebar,
@@ -2043,6 +2077,18 @@ def compute_wave_step(
         pibar_row_max=pibar_row_max,
         gene_split_log_likelihood=gene_split_log_likelihood,
     )
+    if (
+        valid_receiver_scratch.ndim != 3
+        or int(valid_receiver_scratch.shape[0]) != _VALID_RECEIVER_SCRATCH_SLOTS
+        or int(valid_receiver_scratch.shape[2]) != int(S)
+    ):
+        raise ValueError(
+            f"valid-receiver working buffer must have shape "
+            f"[{_VALID_RECEIVER_SCRATCH_SLOTS}, rows, S]"
+        )
+    prefix_slot_rows = int(valid_receiver_scratch.shape[1])
+    if prefix_slot_rows < int(W):
+        raise ValueError("valid-receiver working buffer has fewer rows than the wave")
     Pi_in_offset = _validate_offset_tensor(
         "Pi_in_offset",
         Pi_in_offset,
@@ -2135,7 +2181,12 @@ def compute_wave_step(
         receiver_log_probs,
         species_child1,
         species_child2,
-        species_parent,
+        valid_receiver_scratch,
+        not_open_source,
+        closed_source,
+        not_open_index,
+        closed_index,
+        prefix_slot_rows * int(S),
         leaf_species_idx,
         leaf_logp,
         leaf_fm_log_arg,
@@ -2156,7 +2207,6 @@ def compute_wave_step(
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
-        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         USE_LEAF_INDEX=bool(has_leaf_term),
         USE_FRACTION_MISSING=use_fraction_missing,
         STORE_FINAL_PIBAR=bool(store_final_pibar),

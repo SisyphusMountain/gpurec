@@ -7,8 +7,10 @@ from ..kernels.pi_forward import (
     compute_leaf_initial_wave_step,
     compute_wave_step,
     _EXACT_TREE_SCRATCH_SLOTS,
+    _VALID_RECEIVER_SCRATCH_SLOTS,
     _select_log_split_probs,
 )
+from ..valid_receivers import valid_receiver_index_tables
 from ..parameters.extract_parameters import as_family_param, as_family_species
 
 # The two self-loop implementations selectable through ``SolverOptions.forward_self_loop``.
@@ -169,10 +171,26 @@ def pi_wave_forward(
 
     sp_child1 = species_helpers["sp_child1"]
     sp_child2 = species_helpers["sp_child2"]
-    sp_parent = species_helpers["sp_parent"]
     sp_subtree_start = species_helpers["sp_subtree_start"]
     sp_subtree_end = species_helpers["sp_subtree_end"]
-    max_ancestor_depth = int(species_helpers["max_ancestor_depth"])
+
+    # The log-space sweep builds every lane's available transfer mass by ADDITION, as two
+    # running sums over fixed species orders, never as "the row total minus the donor's own
+    # lineage" (see ``_write_valid_receiver_prefix_sums`` for why that subtraction is not
+    # usable). The orders depend only on the species tree, so one build serves every wave.
+    (
+        not_open_source,
+        closed_source,
+        not_open_index,
+        closed_index,
+    ) = valid_receiver_index_tables(sp_subtree_start, sp_subtree_end, S)
+    max_wave_rows = max(
+        (int(meta["W"]) for meta in wave_layout["wave_metas"]), default=1
+    )
+    # Two slots: one running sum per receiver group, one row per clade row of the widest wave.
+    valid_receiver_scratch = torch.empty(
+        (_VALID_RECEIVER_SCRATCH_SLOTS, max_wave_rows, S), dtype=dtype, device=device
+    )
 
     dl_const = 1.0 + log_p_d_family + e_family
     sl1_const = log_p_s_family + e_s2_family
@@ -190,9 +208,6 @@ def pi_wave_forward(
             sl2_const,
             max_transfer_family,
             receiver_log_probs,
-        )
-        max_wave_rows = max(
-            (int(meta["W"]) for meta in wave_layout["wave_metas"]), default=1
         )
         self_diag_lin, transfer_coefficient_lin = _exact_tree_coefficients(
             dl_const,
@@ -323,11 +338,14 @@ def pi_wave_forward(
                     receiver_log_probs,
                     sp_child1,
                     sp_child2,
-                    sp_parent,
-                    max_ancestor_depth,
                     dts_r,
                     dts_offset,
                     dts_center_offset,
+                    valid_receiver_scratch=valid_receiver_scratch,
+                    not_open_source=not_open_source,
+                    closed_source=closed_source,
+                    not_open_index=not_open_index,
+                    closed_index=closed_index,
                     leaf_species_idx=wave_layout["leaf_species_index"],
                     leaf_logp=log_p_s_family,
                     family_idx=family_idx,
@@ -438,11 +456,14 @@ def pi_wave_forward(
                         receiver_log_probs,
                         sp_child1,
                         sp_child2,
-                        sp_parent,
-                        max_ancestor_depth,
                         dts_r,
                         dts_offset,
                         dts_center_offset,
+                        valid_receiver_scratch=valid_receiver_scratch,
+                        not_open_source=not_open_source,
+                        closed_source=closed_source,
+                        not_open_index=not_open_index,
+                        closed_index=closed_index,
                         leaf_species_idx=wave_layout["leaf_species_index"],
                         leaf_logp=log_p_s_family,
                         family_idx=family_idx,

@@ -139,9 +139,18 @@ The mass outside the donor's ancestral lineage is
   = m(s)+M_x+\log_2 D_x(s).
   \label{eq:transfer-complement}
 \end{equation}
-It is $-\infty$ when the complementary mass is zero.  Kernel helpers
-\kernelref{pi_forward.py}{_compute_total_receiver_mass} and
-\kernelref{pi_forward.py}{_compute_transfer_complement} evaluate these quantities.
+It is $-\infty$ when the complementary mass is zero.
+
+The forward does not evaluate $D_x(s)$ as the difference $R_x-A_x(s)$.  For every species
+under the lane carrying the row's mass the two terms agree to more digits than the format
+has, so the difference is rounding noise and can even change sign.  It uses the second form,
+$D_x(s)=\sum_{r\in\mathcal V(s)}q_x(r)$: with the depth-first interval numbering of the
+species tree, $\mathcal V(s)$ is the union of the two disjoint sets $\{r:\text{start}(r)>
+\text{start}(s)\}$ and $\{r:\text{end}(r)\le\text{start}(s)\}$, and each set's mass is an
+exclusive prefix sum of non-negative terms over a fixed species order.  Kernel helper
+\kernelref{pi_forward.py}{_compute_total_receiver_mass} supplies the gauge $M_x$;
+\kernelref{pi_forward.py}{_write_valid_receiver_prefix_sums} writes the two prefix sums and
+\kernelref{pi_forward.py}{_lookup_valid_receiver_mass} reads $D_x(s)$ back out of them.
 The same operator produces $\bar E$ from $E$ and $\bar\Pi$ from $\Pi$.
 
 The row maximum $M_x$ is only a numerical gauge.  Equation
@@ -660,8 +669,9 @@ Kernel & Mathematical role \\
 \midrule
 \endhead
 \kernelref{pi_forward.py}{_load_event_log_probability} & Selects a family/species parameter layout and returns $\ell_{g,s}$. \\
-\kernelref{pi_forward.py}{_compute_total_receiver_mass} & Computes $M_x$ and $R_x$ for Equation~\eqref{eq:transfer-complement}. \\
-\kernelref{pi_forward.py}{_compute_transfer_complement} & Computes $\mathcal B[x](s)$ in Equation~\eqref{eq:transfer-complement}. \\
+\kernelref{pi_forward.py}{_compute_total_receiver_mass} & Computes the gauge $M_x$ for Equation~\eqref{eq:transfer-complement}. \\
+\kernelref{pi_forward.py}{_write_valid_receiver_prefix_sums} & Writes the two prefix sums $D_x(s)$ is assembled from, without subtracting. \\
+\kernelref{pi_forward.py}{_lookup_valid_receiver_mass} & Reads $D_x(s)$ per donor and so $\mathcal B[x](s)$ in Equation~\eqref{eq:transfer-complement}. \\
 \kernelref{pi_forward.py}{_initialize_leaf_reconciliation_likelihood_kernel} & Leaf specialization of Equation~\eqref{eq:pi-wave}. \\
 \kernelref{pi_forward.py}{_update_reconciliation_likelihood_kernel} & General primal recurrence, Equations~\eqref{eq:pi-wave} and \eqref{eq:pibar}. \\
 \kernelref{pi_forward.py}{_reduce_single_gene_split_events_kernel} & Equation~\eqref{eq:dts} for one split per parent. \\
