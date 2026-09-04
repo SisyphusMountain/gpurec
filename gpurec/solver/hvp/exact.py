@@ -28,6 +28,7 @@ from gpurec.core.kernels.wave_backward import (
     solve_reconciliation_wave_vjp,
 )
 from gpurec.core.kernels.wave_so import wave_backward_so
+from gpurec.core.memory_policy import wave_scratch_budget_bytes
 from gpurec.core.parameters.extract_parameters import (
     as_family_param,
     as_family_species,
@@ -303,7 +304,15 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                                         warm_v=_warm_v)
     acc = cache["accum"]
     wE = cache["e_side"]["wE"]
-    reserved_scratch_bytes = _warm_reserved_scratch_bytes(static)
+    # One free-memory reading for this whole reverse sweep. On the cold path (no resident warm
+    # cache) ``_warm_reserved_scratch_bytes`` returns None, and the per-wave gate inside
+    # ``solve_reconciliation_wave_vjp`` then read free memory itself once per wave -- a blocking
+    # cudaMemGetInfo plus two memory_stats() dict builds each time, for a number that cannot move
+    # between waves (the scratch is allocated and freed inside one wave). Same fix as the gradient
+    # path in gpurec/api/_implicit_grad.py.
+    reserved_scratch_bytes = wave_scratch_budget_bytes(
+        _warm_reserved_scratch_bytes(static), device=sv["pi_wave"].device
+    )
 
     wave_constants = wave_step_constants(sv, S)
     pibar_row_max = sv["pibar_row_max"]

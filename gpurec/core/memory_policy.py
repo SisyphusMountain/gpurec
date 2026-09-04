@@ -114,6 +114,31 @@ def proposal0_memory_gate(
     return required <= budget, required, budget
 
 
+def wave_scratch_budget_bytes(reserved_scratch_bytes: int | None, *, device) -> int | None:
+    """Resolve, ONCE for a whole reverse sweep, the byte budget every wave's scratch is gated on.
+
+    ``proposal0_memory_gate`` above compares one wave's scratch against either a build-time
+    reservation (``reserved_scratch_bytes``, the warm-adjoint path) or the free memory it reads on
+    the spot (``reserved_scratch_bytes is None``, the cold path). Reading it on the spot costs one
+    blocking ``cudaMemGetInfo`` plus two ``torch.cuda.memory_stats()`` nested-dict builds, and the
+    cold path is the production path whenever the warm-adjoint cache does not fit, so a 1977-wave
+    gradient paid for it 1977 times: 88.7 ms of GPU idle (the card drains at every
+    ``cudaMemGetInfo``) and 65.3 ms of host time, about 6 % of one 200-family Coleman gradient.
+
+    Every wave of one sweep gets the same answer anyway -- the scratch is transient (allocated and
+    freed inside the wave), so nothing a wave does moves the budget the next wave would read. Read
+    it once here and hand the number down as the reservation; the gate then makes the identical
+    comparison (``scratch <= budget``, since the callers pass no ``already_live_bytes``) without the
+    driver round trip. A wave whose scratch genuinely exceeds the budget is still rejected.
+
+    Returns ``None`` off CUDA, which leaves the gate exactly as it was (it returns "fits" when there
+    is no budget to read).
+    """
+    if reserved_scratch_bytes is not None:
+        return _nonnegative_int("reserved_scratch_bytes", reserved_scratch_bytes)
+    return cuda_memory_budget_bytes(device)
+
+
 def warm_adjoint_cache_bytes(total_clades: int, S: int, dtype: torch.dtype) -> int:
     """Resident bytes of the GPUREC_WARM_ADJOINT per-wave adjoint cache (``warm_v``).
 

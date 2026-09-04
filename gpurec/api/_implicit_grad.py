@@ -13,6 +13,7 @@ from gpurec.core.kernels.wave_backward import (
     accumulate_transfer_complement_vjp_from_donor_adjoint,
     solve_reconciliation_wave_vjp,
 )
+from gpurec.core.memory_policy import wave_scratch_budget_bytes
 from gpurec.core.parameters.extract_parameters import (
     as_family_param,
     as_family_species,
@@ -539,6 +540,12 @@ def implicit_grad_loglik_vjp_wave(
         backward_relres = torch.zeros(n_fam, device=device, dtype=torch.float32)
         backward_vk_mag = torch.zeros(n_fam, device=device, dtype=torch.float32)
 
+    # One free-memory reading for the whole reverse sweep instead of one per wave. Each wave's
+    # self-loop scratch is allocated and freed inside that wave, so every wave used to read the
+    # same number back at the cost of a blocking cudaMemGetInfo and two memory_stats() dict
+    # builds -- 1977 of them per 200-family Coleman gradient. See memory_policy.
+    wave_scratch_budget = wave_scratch_budget_bytes(reserved_scratch_bytes, device=device)
+
     for meta in reversed(wave_layout["wave_metas"]):
         ws = int(meta["start"])
         W = int(meta["W"])
@@ -631,7 +638,7 @@ def implicit_grad_loglik_vjp_wave(
             use_receiver_weights=use_receiver_weights,
             return_last_increment=collect_backward_relres,
             initial_v=init_v,
-            reserved_scratch_bytes=reserved_scratch_bytes,
+            reserved_scratch_bytes=wave_scratch_budget,
             pi_offset=pi_offset,
             pibar_offset=pibar_offset,
             gene_split_offset=dts_offset,
