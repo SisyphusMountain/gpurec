@@ -2599,18 +2599,21 @@ def _accumulate_transfer_subtree_vjp_kernel(
     Pi_star_ptr,          # [C, S]
     receiver_log_probs_ptr, # [S]
     donor_adjoint_ptr,         # [2 * n_ws, S], initial subtree values donor_adjoint
-    internal_node_own_ptr, # [2 * n_ws, N_COMPACT_NODES] scratch: each internal node's own term
+    internal_node_scratch_ptr, # [2 * n_ws, N_COMPACT_NODES]: each node's own term, then its pair
     side_active_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
     split_left_rows_ptr,               # [n_ws]
     split_right_rows_ptr,               # [n_ws]
     reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
     active_mask_ptr,      # optional [W] bool parent row activity mask
     pibar_row_max_ptr,    # [C], Pi-row max from forward uniform Pibar
-    species_parent_ptr,   # [S] int32, each species' parent, negative at the root
     compact_level_ptr,    # [N_LEVELS + 1]
     compact_level_parent_ptr, # [total internal nodes across levels]
     compact_level_child1_ptr, # [total internal nodes across levels]
     compact_level_child2_ptr, # [total internal nodes across levels]
+    node_grandparent_slot_ptr, # [N_COMPACT_NODES] int32, slot of this node's species' parent, -1 at the root
+    node_parent_sibling_ptr,   # [N_COMPACT_NODES] int32, sibling of this node's species, -1 at the root
+    species_parent_slot_ptr,   # [S] int32, slot of each species' parent, -1 at the root
+    species_sibling_ptr,       # [S] int32, each species' sibling, -1 at the root
     accumulated_rhs_ptr,  # [C, S], updated atomically
     grad_receiver_log_probs_ptr, # optional [S], updated atomically
     n_ws,  # runtime int, NOT constexpr: it is the wave's split count and differs for every wave; a
@@ -2638,11 +2641,28 @@ def _accumulate_transfer_subtree_vjp_kernel(
     of that astronomical size. Measured on a 1007-species Coleman family at the loss-rate cap, the
     gradient came out 1e8 times too large. So the off-subtree sum is built by ADDITION only:
     subtree sums bottom-up as before, then a top-down walk over the same level tables,
-    off-subtree(child) = off-subtree(parent) + parent's own term + sibling's subtree sum, each
-    child's off-subtree sum overwriting its no-longer-needed subtree sum. The bottom-up walk
-    overwrites each internal node's own term with its subtree sum, so it parks that own term in
-    ``internal_node_own_ptr`` first, indexed exactly like the compact level tables: recovering it
-    as ``subtree(parent) - subtree(c1) - subtree(c2)`` would be the same cancelling subtraction.
+    off-subtree(child) = off-subtree(parent) + parent's own term + sibling's subtree sum. The
+    bottom-up walk overwrites each internal node's own term with its subtree sum, so it parks that
+    own term in ``internal_node_own_ptr`` first, indexed exactly like the compact level tables:
+    recovering it as ``subtree(parent) - subtree(c1) - subtree(c2)`` would be the same cancelling
+    subtraction.
+
+    WHERE THE TOP-DOWN WALK WRITES. It used to store each child's off-subtree sum back into the
+    species row, one number per species, at an index the tree structure chooses. On the
+    2013-species Coleman tree that store touches 879 of the 32-byte lines holding the row where a
+    contiguous pass touches 252 -- 4 useful bytes per line -- and that, twice per internal node,
+    is what pushed this kernel to 92.5 % of L2 throughput. It now stores ONE number per internal
+    node, in compact-level order, so the store is contiguous: ``pair[j] = off-subtree(species of
+    node j) + own(species of node j)``, which is exactly the quantity both children of node j add
+    their sibling's subtree sum to. The walk reads its own previous level out of ``pair`` and the
+    species row keeps its subtree sums untouched, so the last pass finishes any species -- leaf or
+    internal -- with a single add, ``pair[slot of my parent] + subtree[my sibling]``. Same three
+    numbers added in the same order as before, so the result is bit for bit what the scattered
+    version produced; the root, whose off-subtree sum is zero, is the lane with no parent slot.
+    ``pair[j]`` overwrites ``own[j]`` in ``internal_node_scratch_ptr``: the top-down pass reads a
+    node's own term and writes its pair in the same statement, each slot is touched by exactly one
+    level, and no other node ever reads slot j's own term -- so a second array of the same shape
+    would only add its own 117 MB of DRAM writes on the largest Coleman wave.
     """
     NEG_LARGE: tl.constexpr = -float("inf")
 
@@ -2671,7 +2691,8 @@ def _accumulate_transfer_subtree_vjp_kernel(
     row_base = row * S
     row_max = tl.load(pibar_row_max_ptr + child)
     row_max_safe = tl.where(row_max != NEG_LARGE, row_max, tl.zeros_like(row_max))
-    own_base = internal_node_own_ptr + row * N_COMPACT_NODES
+    own_base = internal_node_scratch_ptr + row * N_COMPACT_NODES
+    pair_base = own_base
 
     tl.debug_barrier()
     for level in range(0, N_LEVELS):
@@ -2696,19 +2717,10 @@ def _accumulate_transfer_subtree_vjp_kernel(
             p_start += BLOCK_S
         tl.debug_barrier()
 
-    # The root's subtree is the whole tree: nothing lies off it. Every other species is some
-    # internal node's child, so the walk below writes it exactly once.
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        valid_mask = s_offs < S
-        species_parent = tl.load(species_parent_ptr + s_offs, mask=valid_mask, other=0)
-        is_root_lane = valid_mask & (species_parent < 0) & row_active
-        tl.store(
-            donor_adjoint_ptr + row_base + s_offs,
-            tl.zeros([BLOCK_S], dtype=DTYPE),
-            mask=is_root_lane,
-        )
-    tl.debug_barrier()
+    # Top-down, root first. Node j holds ``off-subtree(its species) + own(its species)``: the one
+    # number both of its children need. The root has no parent slot, and nothing lies off the
+    # whole tree, so its off-subtree sum is the literal zero the scattered version used to store
+    # into the species row.
     for level_index in range(0, N_LEVELS):
         level = N_LEVELS - 1 - level_index
         level_start = tl.load(compact_level_ptr + level)
@@ -2717,29 +2729,28 @@ def _accumulate_transfer_subtree_vjp_kernel(
         while p_start < level_end:
             node_offs = p_start + tl.arange(0, BLOCK_S)
             node_mask = node_offs < level_end
-            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=-1)
-            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
-            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
-            parent_valid = node_mask & (parent >= 0) & (parent < S) & row_active
-            c1_valid = parent_valid & (c1 >= 0) & (c1 < S)
-            c2_valid = parent_valid & (c2 >= 0) & (c2 < S)
+            node_valid = node_mask & row_active
+            grandparent_slot = tl.load(
+                node_grandparent_slot_ptr + node_offs, mask=node_mask, other=-1
+            )
+            parent_sibling = tl.load(
+                node_parent_sibling_ptr + node_offs, mask=node_mask, other=-1
+            )
+            has_grandparent = node_valid & (grandparent_slot >= 0) & (parent_sibling >= 0)
 
-            parent_off_subtree = tl.load(
-                donor_adjoint_ptr + row_base + parent, mask=parent_valid, other=0.0
+            grandparent_pair = tl.load(
+                pair_base + grandparent_slot, mask=has_grandparent, other=0.0
             )
-            parent_own = tl.load(own_base + node_offs, mask=parent_valid, other=0.0)
-            c1_subtree = tl.load(donor_adjoint_ptr + row_base + c1, mask=c1_valid, other=0.0)
-            c2_subtree = tl.load(donor_adjoint_ptr + row_base + c2, mask=c2_valid, other=0.0)
-            tl.store(
-                donor_adjoint_ptr + row_base + c1,
-                parent_off_subtree + parent_own + c2_subtree,
-                mask=c1_valid,
+            parent_sibling_subtree = tl.load(
+                donor_adjoint_ptr + row_base + parent_sibling, mask=has_grandparent, other=0.0
             )
-            tl.store(
-                donor_adjoint_ptr + row_base + c2,
-                parent_off_subtree + parent_own + c1_subtree,
-                mask=c2_valid,
+            parent_own = tl.load(own_base + node_offs, mask=node_valid, other=0.0)
+            parent_off_subtree = tl.where(
+                has_grandparent,
+                grandparent_pair + parent_sibling_subtree,
+                tl.zeros([BLOCK_S], dtype=DTYPE),
             )
+            tl.store(pair_base + node_offs, parent_off_subtree + parent_own, mask=node_valid)
             p_start += BLOCK_S
         tl.debug_barrier()
 
@@ -2753,8 +2764,15 @@ def _accumulate_transfer_subtree_vjp_kernel(
             receiver_mass = tl.exp2(receiver_log_probability + pi_val - row_max_safe)
         else:
             receiver_mass = tl.exp2(pi_val - row_max_safe)
-        off_subtree_donor_adjoint = tl.load(
-            donor_adjoint_ptr + row_base + s_offs, mask=mask, other=0.0
+        parent_slot = tl.load(species_parent_slot_ptr + s_offs, mask=valid_mask, other=-1)
+        sibling = tl.load(species_sibling_ptr + s_offs, mask=valid_mask, other=-1)
+        has_parent = mask & (parent_slot >= 0) & (sibling >= 0)
+        parent_pair = tl.load(pair_base + parent_slot, mask=has_parent, other=0.0)
+        sibling_subtree = tl.load(
+            donor_adjoint_ptr + row_base + sibling, mask=has_parent, other=0.0
+        )
+        off_subtree_donor_adjoint = tl.where(
+            has_parent, parent_pair + sibling_subtree, tl.zeros([BLOCK_S], dtype=DTYPE)
         )
         transfer_complement_vjp = receiver_mass * off_subtree_donor_adjoint
         tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, transfer_complement_vjp, sem="relaxed", mask=mask)
