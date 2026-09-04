@@ -135,7 +135,14 @@ def receiver_valid_log_normalizer(
     for _ in range(max(1, int(max_ancestor_depth))):
         valid = (cur >= 0) & (cur < S)
         safe_cur = cur.clamp(0, max(S - 1, 0))  # index-only clamp (bounds safety); the ``valid`` mask carries the logic
-        excluded[idx[valid], safe_cur[valid]] = True  # mark ``s`` itself and every ancestor visited
+        # Mark ``s`` itself and every ancestor visited. Written as a read-modify-write over the
+        # FULL row index rather than ``excluded[idx[valid], safe_cur[valid]] = True``: selecting
+        # with a boolean mask has to count the True entries on the host, so each such select ran
+        # ``nonzero`` and stalled the host until the GPU drained -- 68 device-to-host round trips
+        # per call here, measured at 198 ms of GPU idle per 200-family gradient. An invalid row
+        # ORs in ``False`` at its clamped column, which leaves that entry exactly as it was, so
+        # the marked set is identical to the masked write's.
+        excluded[idx, safe_cur] = excluded[idx, safe_cur] | valid
         cur = torch.where(valid, parent.index_select(0, safe_cur), torch.full_like(cur, -1))
 
     valid_mass = (receiver_probs.unsqueeze(0) * (~excluded)).sum(dim=-1)  # sum of non-excluded receiver probs
