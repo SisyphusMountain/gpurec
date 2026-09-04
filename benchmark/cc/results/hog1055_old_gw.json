@@ -1,0 +1,120 @@
+{
+  "tag": "hog1055_old_gw",
+  "n_families": 1055,
+  "wall_s": 815.3228102033027,
+  "nll_bits": 578249.7497202368,
+  "nll_nats": 400812.18367807614,
+  "opt_seconds": 690.8326608417556,
+  "n_steps": 211,
+  "n_builds": 11,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 337,
+        "remain": 694
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 407,
+        "remain": 276
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 78,
+        "remain": 183
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 98,
+        "remain": 84
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 58,
+        "remain": 25
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 19,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 4,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 64,
+        "it": 4,
+        "dropped": 52,
+        "remain": 1
+      },
+      {
+        "pi": 64,
+        "it": 100,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 8,
+        "deferred": 24,
+        "to": 64,
+        "resid_max": 0.19154739379882812
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "deferred": 11,
+        "to": 64,
+        "resid_max": 0.1945943832397461
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "deferred": 15,
+        "to": 64,
+        "resid_max": 0.3110771179199219
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 0.34583473205566406
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 0.3707733154296875
+      }
+    ]
+  },
+  "peak_gib": 33.066182136535645,
+  "certificate": {
+    "converged": 1054,
+    "interior_pd": 793,
+    "bound_active": 97,
+    "unconverged": 1,
+    "premature_drops": 1,
+    "pg_max": 0.004447676241397858
+  }
+}

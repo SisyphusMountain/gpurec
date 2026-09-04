@@ -1,0 +1,54 @@
+{
+  "tag": "sm_arch_old_gw",
+  "n_families": 40,
+  "wall_s": 57.89600517787039,
+  "nll_bits": 4079.7178285084105,
+  "nll_nats": 2827.8449103107473,
+  "opt_seconds": 56.30236125411466,
+  "n_steps": 40,
+  "n_builds": 5,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 16,
+        "remain": 24
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 8,
+        "remain": 16
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 14,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 0.19164705276489258,
+  "certificate": {
+    "converged": 40,
+    "interior_pd": 26,
+    "bound_active": 3,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009866520995274186
+  }
+}

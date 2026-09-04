@@ -109,19 +109,41 @@ model.solver_options.e_tol = 1e-10
 The most important controls are:
 
 - `e_max_iter`, `e_tol`, `e_init`: resident `E` fixed-point solve.
+- `forward_self_loop`: how the forward Pi self-loop inside a wave is solved —
+  `"exact"` (the default) eliminates the fixed point on the species tree in a
+  fixed number of passes; `"log"` iterates it in log2 space (the reference
+  implementation); `"linear"` iterates it in scaled linear space.
+- `adjoint_self_loop`: how the backward self-loop is solved — `"exact"` (the
+  default) solves `(I - Jᵀ) v = rhs` outright; `"series"` sums Neumann terms.
+  The Hessian-probe tangent follows this setting.
 - `pi_iters`: number of Pi/Pibar wave iterations.  It must be an even integer
-  at least 2.
-- `neumann_terms`: maximum number of Neumann-series terms used in the wave self-loop.
-- `neumann_term_tol`: early-exit threshold for that series. Each row block stops
-  once its largest remaining term is at or below
+  at least 2.  **Only applies when `forward_self_loop` is `"log"` or
+  `"linear"`** — the exact solve returns the converged fixed point whatever this
+  is set to.
+- `neumann_terms`: maximum number of Neumann-series terms used in the wave
+  self-loop.  **Only applies when `adjoint_self_loop` is `"series"`.**
+- `neumann_term_tol`: early-exit threshold for that series (so also `"series"`
+  only). Each row block stops once its largest remaining term is at or below
   `neumann_term_tol * (that block's largest |adjoint|)`. The default 1e-7 sits
   just below the float32 unit roundoff, so the dropped tail is smaller than the
   rounding already in the sum. Set to `0.0` to always run `neumann_terms`.
+- `pi_linear_tol`: early-exit threshold for the `"linear"` forward self-loop
+  (that mode only). A row stops once every species lane has settled to this
+  relative tolerance. `0.0` disables the exit and runs the full `pi_iters`.
 - `e_adjoint_max_iter`, `e_adjoint_tol`: implicit E-adjoint linear-solve
-  controls (Neumann series).
+  controls (Neumann series).  Unrelated to the self-loop modes above; these
+  apply in every mode.
 - `use_adjoint_pruning`, `adjoint_pruning_threshold`: skip low-signal adjoint
   rows in approximate gradient computations.
 - `pibar_side_threshold`: threshold for side-term work in Pibar adjoints.
+
+Both `neumann_term_tol` and `pi_linear_tol` are written in units of float32
+precision and are rescaled by the ratio of machine epsilons for the dtype a
+solve actually runs in, so a float64 run exits only below one float64 ulp and
+float32 behaviour is bit-identical.
+
+The same choices are on the command line as `--forward-self-loop` /
+`--adjoint-self-loop` (see `docs/cli.md`).
 
 ## Repository Map
 

@@ -156,3 +156,140 @@ def warm_adjoint_fits(
     if budget is None:
         return True, cache, scratch, budget
     return (cache + scratch) <= budget, cache, scratch, budget
+
+
+# ---------------------------------------------------------------------------------------------
+# Sizing one fit's GPU footprint, so the per-batch clade budget can be derived from the card.
+#
+# A genewise fit's allocated high-water mark has two parts, and only the second one depends on how
+# the clades are split into batches:
+#
+#   1. the per-batch STATIC tensors -- the index and split-probability arrays
+#      gpurec/core/scheduling/batching.py builds for every wave of every batch and keeps resident
+#      for the whole fit. They scale with the dataset's TOTAL clades and splits, not with the batch
+#      size: re-packing the same clades into more, smaller batches does not change their total.
+#   2. one batch's transient WORKING SET -- the [clades x species] forward, adjoint and
+#      curvature-probe buffers of whichever batch is being processed. This scales with the batch,
+#      so the clade budget is the knob that sizes it.
+#
+# Both constants below were measured on the full Coleman set (job 57680456, H100 NVL: 5123
+# families, 22,931,793 clades, 71,885,789 splits as the parser counts them, S=2013, fp32, 79
+# batches of <=315,000 clades, peak 23.85 GiB of which 2.22 GiB static).
+# ---------------------------------------------------------------------------------------------
+
+# Resident static bytes per clade and per CCP split, summed over every batch of a fit. Per clade:
+# ``perm`` (int64) + ``family_idx`` (int64) + ``leaf_species_index`` (int32) = 20 B. Per split:
+# ``sl`` + ``sr`` + ``reduce_idx`` (int32 each) = 12 B, the model-dtype ``log_split_probs`` (4 B in
+# fp32), and 4 B more for the ``eq1_reduce_idx`` / ``ge2_ptr`` / ``ge2_parent_ids`` arrays, which
+# only cover part of the splits each -- 20 B in total. These are a fact of that module's tensor list
+# rather than a tuning knob, so they are hard-wired here: change the tensors there and change these
+# with them.
+#
+# Check against the measurement: the 2.22 GiB above includes the fp64 split-probability copy that
+# batching.py no longer materializes for an fp32 model (71,885,789 x 8 B = 0.54 GiB), so the static
+# footprint this predicts is 2.22 - 0.54 = 1.68 GiB. The constants give 20 B x 22.93M + 20 B x
+# 71.89M = 1.77 GiB, i.e. 5 % high -- the conservative direction, since over-estimating the
+# statics can only make the derived clade budget smaller.
+_STATIC_BYTES_PER_CLADE = 20
+_STATIC_BYTES_PER_SPLIT = 20
+
+# The caching allocator RESERVES more than it hands out. At the Coleman peak it held 28.82 GiB
+# reserved against 23.85 GiB allocated, a factor of 1.21. A clade budget derived from the free
+# memory must therefore aim the ALLOCATED peak below the free budget by that factor, or the
+# reservation the allocator needs in order to serve it will not fit on the card. Not a setting: a
+# measured property of PyTorch's allocator on this workload, rounded up from 1.21 for margin.
+_RESERVED_PER_ALLOCATED = 1.25
+
+
+def batch_static_bytes(total_clades: int, total_splits: int) -> int:
+    """Resident bytes of the per-batch static tensors of a WHOLE fit (all batches together).
+
+    Independent of the clade budget: the same clades and splits are described whether they are
+    packed into few large batches or many small ones. See ``_STATIC_BYTES_PER_CLADE``.
+    """
+    return (
+        _nonnegative_int("total_clades", total_clades) * _STATIC_BYTES_PER_CLADE
+        + _nonnegative_int("total_splits", total_splits) * _STATIC_BYTES_PER_SPLIT
+    )
+
+
+def batch_working_set_bytes(clade_budget: int, S: int, dtype: torch.dtype, *, scratch_tensors: int) -> int:
+    """Transient high-water bytes of ONE batch of ``clade_budget`` clades.
+
+    The same ``scratch_tensors`` x clades x species x dtype shape as
+    ``proposal0_wave_scratch_bytes``, applied to a whole batch rather than one wave: the forward
+    Pi/Pibar, the adjoint, and the curvature probes' buffers are all [clades x species]. At the
+    Coleman measurement the peak phase (the exact 3-probe analytic Hessian) sat at 21.63 GiB of
+    transient over 315,000 clades x 2013 species x 4 B, i.e. 9.16 such tensors, so the default
+    ``MemoryOptions.scratch_tensors`` of 10 is the measured multiplier with ~9 % of margin.
+    """
+    return proposal0_wave_scratch_bytes(clade_budget, S, dtype, scratch_tensors=scratch_tensors)
+
+
+def clade_budget_for_device(
+    *,
+    total_clades: int,
+    total_splits: int,
+    S: int,
+    dtype: torch.dtype,
+    device: torch.device | int | None,
+    fixed_clade_budget: int,
+    scratch_tensors: int,
+) -> tuple[int, dict]:
+    """The largest per-batch clade budget whose predicted peak fits this device's memory budget.
+
+    Returns ``(clade_budget, detail)``. ``clade_budget`` is never ABOVE ``fixed_clade_budget``: a
+    card with memory to spare keeps the tuned batch size and the run is bit-for-bit the one it
+    always was. It is only lowered when the fixed budget's predicted peak does not fit -- which is
+    what lets the same fit that needs 23.85 GiB on a 94 GiB H100 also run on a 24 GB card.
+
+    ``detail`` carries the numbers behind the decision (budget, static and working-set bytes, the
+    predicted peak) so the caller can print why it chose what it chose.
+
+    Raises ``ValueError`` when the dataset's resident statics alone exceed the device budget: no
+    batch size can rescue that, and failing here says so far more clearly than an OOM 10 minutes in.
+    """
+    fixed = _positive_int("fixed_clade_budget", fixed_clade_budget)
+    static_b = batch_static_bytes(total_clades, total_splits)
+    budget_b = cuda_memory_budget_bytes(device)
+    detail = {
+        "device_budget_bytes": budget_b,
+        "static_bytes": static_b,
+        "fixed_clade_budget": fixed,
+        "automatic": False,
+    }
+    if budget_b is None:   # no CUDA device to size against: keep the tuned batch size
+        detail["working_set_bytes"] = batch_working_set_bytes(
+            fixed, S, dtype, scratch_tensors=scratch_tensors)
+        detail["predicted_peak_bytes"] = static_b + detail["working_set_bytes"]
+        return fixed, detail
+    # Aim the ALLOCATED peak low enough that the reservation needed to serve it still fits.
+    allocatable_b = int(budget_b / _RESERVED_PER_ALLOCATED)
+    usable_b = allocatable_b - static_b
+    if usable_b <= 0:
+        raise ValueError(
+            f"the resident per-batch statics of this dataset ({static_b / GIB:.2f} GiB for "
+            f"{total_clades:,} clades and {total_splits:,} splits) do not fit the device memory "
+            f"budget ({budget_b / GIB:.2f} GiB, of which {allocatable_b / GIB:.2f} GiB is "
+            f"allocatable); no per-batch clade budget can make this fit"
+        )
+    per_clade_b = (
+        _positive_int("scratch_tensors", scratch_tensors)
+        * _positive_int("S", S)
+        * dtype_nbytes(dtype)
+    )
+    affordable = usable_b // per_clade_b
+    if affordable <= 0:
+        raise ValueError(
+            f"after the resident statics ({static_b / GIB:.2f} GiB) this device's memory budget "
+            f"({budget_b / GIB:.2f} GiB, {allocatable_b / GIB:.2f} GiB allocatable) leaves room "
+            f"for fewer than one clade per batch at {S} species; this fit does not fit this card"
+        )
+    chosen = int(min(fixed, affordable))
+    detail["automatic"] = chosen < fixed
+    detail["allocatable_bytes"] = allocatable_b
+    detail["affordable_clade_budget"] = int(affordable)
+    detail["working_set_bytes"] = batch_working_set_bytes(
+        chosen, S, dtype, scratch_tensors=scratch_tensors)
+    detail["predicted_peak_bytes"] = static_b + detail["working_set_bytes"]
+    return chosen, detail

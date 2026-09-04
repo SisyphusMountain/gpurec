@@ -26,6 +26,7 @@ import torch
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.api._execution import stream_batches
 from gpurec.config import GpurecConfig
+from gpurec.core.scheduling.batching import parse_families
 from gpurec.fit.specieswise_fit import fit_specieswise
 
 # solver settings matching the kernel-bench fixture mint (production truncation, pi=16/neumann=16);
@@ -61,10 +62,18 @@ def kfold_indices(n, k, seed=0):
     return out
 
 
-def _build(species_tree, paths, *, mode, device, solver_options):
+def _build(species_tree, parsed, indices, all_paths, *, mode, device, solver_options):
+    """Build a model over ``indices`` (positions into ``all_paths``) of an ALREADY PARSED dataset.
+
+    Every fold and every lambda re-uses the same families in a different SUBSET, so the gene-tree
+    files are read and parsed ONCE by :func:`parse_families` in :func:`map_cv` and each model here
+    only re-plans its batches over the requested subset. Before this, a k-fold run parsed every
+    file k+1 times (once for the full model, then once per fold as either train or test).
+    """
+    idx = [int(i) for i in indices]
     return GeneReconModel(
-        str(species_tree), [str(p) for p in paths], mode=mode, device=device,
-        solver_options=solver_options,
+        str(species_tree), [str(all_paths[i]) for i in idx], mode=mode, device=device,
+        solver_options=solver_options, parsed_families=parsed, family_indices=idx,
     )
 
 
@@ -123,8 +132,13 @@ def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 100
     gene_trees = list(gene_trees)
     n = len(gene_trees)
 
+    # Parse the species tree and every family ONCE; every fold/lambda model below is rebuilt
+    # from this resident handle over a subset of family indices, so no file is read twice.
+    parsed = parse_families(species_tree, gene_trees)
+
     # one full model: gives S / receiver_weights / theta_ref shape and the final refit.
-    full = _build(species_tree, gene_trees, mode=mode, device=device, solver_options=so)
+    full = _build(species_tree, parsed, range(n), gene_trees, mode=mode, device=device,
+                  solver_options=so)
     S = int(full.species_helpers["S"])
     rw = full.receiver_weights.detach().clone()  # uniform (zeros); held fixed
     theta_ref = torch.full((S, 3), math.log2(init_rate), device=device, dtype=torch.float32)
@@ -136,9 +150,9 @@ def map_cv(species_tree, gene_trees, *, k=5, lambdas=(0.0, 1.0, 10.0, 100.0, 100
     for fi, (tr, te) in enumerate(folds):
         if verbose:
             print(f"[fold {fi+1}/{k}] train={len(tr)} test={len(te)}")
-        train = _build(species_tree, [gene_trees[i] for i in tr], mode=mode, device=device,
+        train = _build(species_tree, parsed, tr, gene_trees, mode=mode, device=device,
                        solver_options=so)
-        test = _build(species_tree, [gene_trees[i] for i in te], mode=mode, device=device,
+        test = _build(species_tree, parsed, te, gene_trees, mode=mode, device=device,
                       solver_options=so)
         theta = theta_ref.clone()  # warm-start carried down the homotopy
         for lam in lambdas_desc:   # large lambda first, warm-started downward

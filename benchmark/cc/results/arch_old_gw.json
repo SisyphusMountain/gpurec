@@ -1,0 +1,107 @@
+{
+  "tag": "arch_old_gw",
+  "n_families": 5446,
+  "wall_s": 768.1045616110787,
+  "nll_bits": 360167.9169049465,
+  "nll_nats": 249649.3761308123,
+  "opt_seconds": 640.0005303961225,
+  "n_steps": 69,
+  "n_builds": 9,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 1793,
+        "remain": 3619
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 2813,
+        "remain": 794
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 475,
+        "remain": 314
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 271,
+        "remain": 42
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 32,
+        "remain": 10
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 7,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 2,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 72,
+        "dropped": 1,
+        "remain": 0
+      },
+      {
+        "pi": 64,
+        "it": 4,
+        "dropped": 52,
+        "remain": 0
+      }
+    ],
+    "defer": [
+      {
+        "pi": 16,
+        "it": 16,
+        "deferred": 34,
+        "to": 64,
+        "resid_max": 1.7084503173828125
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "deferred": 12,
+        "to": 64,
+        "resid_max": 1.9927940368652344
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "deferred": 5,
+        "to": 64,
+        "resid_max": 0.26291370391845703
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "deferred": 1,
+        "to": 64,
+        "resid_max": 0.26645660400390625
+      }
+    ]
+  },
+  "peak_gib": 8.150626182556152,
+  "certificate": {
+    "converged": 5446,
+    "interior_pd": 1554,
+    "bound_active": 1275,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009999385802075267
+  }
+}

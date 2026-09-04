@@ -11,7 +11,7 @@ Gates here are FAST (fp64, tiny 20-species model, a few HVPs) and NOT @slow:
   * FD-Hessian parity (the key correctness gate): streamed H u == (g(t+eps u) - g(t-eps u))/(2 eps)
     where g is make_value_and_grad's multi-batch gradient;
   * additivity: streamed H_batchlist u == sum_b H_[b] u;
-  * the streaming path runs with e_adjoint_solver="neumann" too.
+  * the streaming path's E-adjoint Neumann-series solve stays finite and FD-consistent.
 """
 import math
 
@@ -30,14 +30,18 @@ from gpurec.solver.hvp.exact import make_exact_hvp, make_exact_hvp_single
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
 
 _TSI = 128
+# A deliberately over-converged fp64 solver, so the streamed curvature is compared against a
+# finite-difference oracle with no solve error of its own. The E-adjoint linear solve is a Neumann
+# series -- ``e_adjoint_max_iter`` / ``e_adjoint_tol`` are its budget and relative-residual target
+# (the old BiCGSTAB triple bicgstab_max_iter / bicgstab_tol / bicgstab_breakdown_tol is gone, and
+# with it the ``e_adjoint_solver`` selector: the Neumann series is the only implementation).
 _SO = dict(e_max_iter=2000, e_tol=1e-10, pi_iters=_TSI, neumann_terms=64,
-           bicgstab_max_iter=500, bicgstab_tol=1e-10, bicgstab_breakdown_tol=1e-30,
+           e_adjoint_max_iter=500, e_adjoint_tol=1e-10,
            adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0)
 
 
-def _build(n_species=20, n_families=8, family_chunk_size=3, e_adjoint_solver="gmres", seed=3,
-           mode="specieswise"):
-    so = SolverOptions(e_adjoint_solver=e_adjoint_solver, **_SO); so.validate()
+def _build(n_species=20, n_families=8, family_chunk_size=3, seed=3, mode="specieswise"):
+    so = SolverOptions(**_SO); so.validate()
     import tempfile
     d = tempfile.mkdtemp()
     sp, genes = simulate_dataset(mode, d, n_species=n_species, n_families=n_families,
@@ -163,10 +167,18 @@ def test_streaming_fd_hessian_parity_genewise_theta():
 
 @pytest.mark.gpu
 def test_streaming_with_neumann_e_adjoint():
-    """The streaming HVP runs (finite, FD-consistent) with e_adjoint_solver='neumann'."""
-    m = _build(family_chunk_size=3, e_adjoint_solver="neumann")
+    """The streaming HVP runs (finite, FD-consistent) on the E-adjoint Neumann-series solve.
+
+    This used to select that solve with ``e_adjoint_solver="neumann"`` against a GMRES alternative.
+    The Neumann series is now the only E-adjoint implementation, so there is nothing to select and
+    the gate instead pins the two settings that govern it -- the iteration budget and the
+    relative-residual target from ``_SO`` -- to the batch statics the streaming HVP actually runs
+    on, then keeps the FD-parity check unchanged.
+    """
+    m = _build(family_chunk_size=3)
     assert len(m.batch_statics) > 1
-    assert m.batch_statics[0].solver_options.e_adjoint_solver == "neumann"
+    assert m.batch_statics[0].solver_options.e_adjoint_max_iter == _SO["e_adjoint_max_iter"]
+    assert m.batch_statics[0].solver_options.e_adjoint_tol == _SO["e_adjoint_tol"]
     S = int(m.species_helpers["S"])
     theta = m.theta.detach().clone()
     rw = m.receiver_weights.detach().clone()

@@ -1,0 +1,329 @@
+{
+  "tag": "memprof_base",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 5123,
+  "wall_s": 831.8508752249181,
+  "nll_bits": 9048938.264475327,
+  "nll_nats": 6272246.045082077,
+  "opt_seconds": 742.8716328260489,
+  "n_steps": 109,
+  "n_builds": 46,
+  "adam_seconds": 208.42557770386338,
+  "hessian_seconds": 46.64342919783667,
+  "n_hessians": 7,
+  "newton_grad_seconds": 406.8451185231097,
+  "n_verify_builds": 34,
+  "verify_seconds": 48.91692843195051,
+  "n_rebuilds": 11,
+  "rebuild_seconds": 13.086149104405195,
+  "certify_seconds": 17.94688807381317,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 226,
+        "remain": 4897
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 905,
+        "remain": 3992
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 1275,
+        "remain": 2717
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 431,
+        "remain": 2286
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 291,
+        "remain": 1995
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 185,
+        "remain": 1810
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 108,
+        "remain": 1702
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 252,
+        "remain": 1450
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 100,
+        "remain": 1350
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 339,
+        "remain": 1011
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 307,
+        "remain": 704
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 337,
+        "remain": 367
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 115,
+        "remain": 252
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 67,
+        "remain": 185
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 66,
+        "remain": 119
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 58,
+        "remain": 61
+      },
+      {
+        "pi": 16,
+        "it": 38,
+        "dropped": 11,
+        "remain": 50
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 8,
+        "remain": 42
+      },
+      {
+        "pi": 16,
+        "it": 42,
+        "dropped": 4,
+        "remain": 38
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 6,
+        "remain": 32
+      },
+      {
+        "pi": 16,
+        "it": 46,
+        "dropped": 9,
+        "remain": 23
+      },
+      {
+        "pi": 16,
+        "it": 48,
+        "dropped": 5,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 50,
+        "dropped": 2,
+        "remain": 16
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 3,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 60,
+        "dropped": 3,
+        "remain": 10
+      },
+      {
+        "pi": 16,
+        "it": 62,
+        "dropped": 1,
+        "remain": 9
+      },
+      {
+        "pi": 16,
+        "it": 64,
+        "dropped": 2,
+        "remain": 7
+      },
+      {
+        "pi": 16,
+        "it": 66,
+        "dropped": 1,
+        "remain": 6
+      },
+      {
+        "pi": 16,
+        "it": 68,
+        "dropped": 1,
+        "remain": 5
+      },
+      {
+        "pi": 16,
+        "it": 76,
+        "dropped": 1,
+        "remain": 4
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 23.852832794189453,
+  "memory_phases": {
+    "parse_families": {
+      "n": 1,
+      "alloc_max": 0,
+      "alloc_last": 0,
+      "peak_max": 0,
+      "reserved_max": 0,
+      "peak_reserved_max": 0
+    },
+    "tier_build": {
+      "n": 1,
+      "alloc_max": 2380503552,
+      "alloc_last": 2380503552,
+      "peak_max": 2380503552,
+      "reserved_max": 2401239040,
+      "peak_reserved_max": 2401239040
+    },
+    "adam_warmup": {
+      "n": 1,
+      "alloc_max": 2785427968,
+      "alloc_last": 2785427968,
+      "peak_max": 15570297344,
+      "reserved_max": 27787264000,
+      "peak_reserved_max": 27787264000
+    },
+    "newton_grad": {
+      "n": 120,
+      "alloc_max": 8538273792,
+      "alloc_last": 3036687872,
+      "peak_max": 19425548800,
+      "reserved_max": 30949769216,
+      "peak_reserved_max": 30949769216
+    },
+    "verify_build": {
+      "n": 34,
+      "alloc_max": 8573890560,
+      "alloc_last": 3033035264,
+      "peak_max": 8573890560,
+      "reserved_max": 30949769216,
+      "peak_reserved_max": 30949769216
+    },
+    "verify_grad": {
+      "n": 34,
+      "alloc_max": 8538255360,
+      "alloc_last": 3031113728,
+      "peak_max": 17643360768,
+      "reserved_max": 18454937600,
+      "peak_reserved_max": 40332427264
+    },
+    "replan": {
+      "n": 11,
+      "alloc_max": 1079512576,
+      "alloc_last": 45188608,
+      "peak_max": 8538256896,
+      "reserved_max": 1111490560,
+      "peak_reserved_max": 18454937600
+    },
+    "hessian": {
+      "n": 7,
+      "alloc_max": 3027432448,
+      "alloc_last": 3027432448,
+      "peak_max": 25611784192,
+      "reserved_max": 30949769216,
+      "peak_reserved_max": 30949769216
+    },
+    "tier_end": {
+      "n": 1,
+      "alloc_max": 35820544,
+      "alloc_last": 35820544,
+      "peak_max": 3050326528,
+      "reserved_max": 295698432,
+      "peak_reserved_max": 10586423296
+    },
+    "cert_unfrozen_grad": {
+      "n": 1,
+      "alloc_max": 44240384,
+      "alloc_last": 44240384,
+      "peak_max": 2290801152,
+      "reserved_max": 2483027968,
+      "peak_reserved_max": 2483027968
+    },
+    "cert_full_build": {
+      "n": 1,
+      "alloc_max": 2406750208,
+      "alloc_last": 2406750208,
+      "peak_max": 2406750208,
+      "reserved_max": 2415919104,
+      "peak_reserved_max": 2483027968
+    },
+    "cert_nll_forward": {
+      "n": 1,
+      "alloc_max": 2776003072,
+      "alloc_last": 2776003072,
+      "peak_max": 9890339328,
+      "reserved_max": 10116661248,
+      "peak_reserved_max": 10116661248
+    },
+    "certify_end": {
+      "n": 1,
+      "alloc_max": 35915264,
+      "alloc_last": 35915264,
+      "peak_max": 2776061440,
+      "reserved_max": 295698432,
+      "peak_reserved_max": 10116661248
+    },
+    "driver_end": {
+      "n": 1,
+      "alloc_max": 33678336,
+      "alloc_last": 33678336,
+      "peak_max": 35915264,
+      "reserved_max": 295698432,
+      "peak_reserved_max": 295698432
+    }
+  },
+  "certificate": {
+    "converged": 5119,
+    "bound_active": 453,
+    "unconverged": 4,
+    "premature_drops": 0,
+    "pg_max": 4.374871730804443
+  }
+}

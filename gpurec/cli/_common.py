@@ -24,9 +24,24 @@ def add_common_args(parser) -> None:
     # These default to None (not their SolverOptions values) so
     # ``make_solver_options`` can tell "not passed" apart from "passed the same value the
     # config/default already has" -- an explicitly-passed flag must win over --config.
-    parser.add_argument("--pi-iters", type=int, default=None)
-    parser.add_argument("--neumann-terms", type=int, default=None)
-    parser.add_argument("--e-max-iter", type=int, default=None)
+    parser.add_argument("--pi-iters", type=int, default=None,
+                        help="forward self-loop iteration count. ONLY applies to "
+                             "--forward-self-loop log/linear; the default 'exact' solves the "
+                             "self-loop outright and ignores it")
+    parser.add_argument("--neumann-terms", type=int, default=None,
+                        help="adjoint self-loop Neumann term count. ONLY applies to "
+                             "--adjoint-self-loop series; the default 'exact' solves the adjoint "
+                             "outright and ignores it")
+    parser.add_argument("--e-max-iter", type=int, default=None,
+                        help="max iterations of the resident E (survival) fixed-point solve")
+    parser.add_argument("--forward-self-loop", choices=["log", "linear", "exact"], default=None,
+                        help="how the forward Pi self-loop is solved inside a wave. 'exact' "
+                             "(default) eliminates the fixed point on the species tree; 'log' and "
+                             "'linear' iterate it for --pi-iters steps")
+    parser.add_argument("--adjoint-self-loop", choices=["series", "exact"], default=None,
+                        help="how the backward self-loop is solved. 'exact' (default) solves "
+                             "(I - J^T) v = rhs outright; 'series' sums --neumann-terms Neumann "
+                             "terms. The Hessian-probe tangent follows this setting")
 
 
 def resolve_gene_trees(values) -> list:
@@ -47,9 +62,16 @@ def make_solver_options(args):
 
     Precedence (highest first): an explicitly-passed solver flag > the matching
     field of ``--config``'s ``[solver]`` table > the
-    hardcoded ``SolverOptions`` default (``pi_iters=64``, ``neumann_terms=64``, ``e_max_iter=128``).
+    hardcoded ``SolverOptions`` default (``pi_iters=64``, ``neumann_terms=64``, ``e_max_iter=128``,
+    ``forward_self_loop="exact"``, ``adjoint_self_loop="exact"``).
     With neither ``--config`` nor an explicit solver flag, this returns ``SolverOptions()``
     unchanged -- identical to today.
+
+    ``--pi-iters`` and ``--neumann-terms`` are iteration COUNTS and only mean anything for the
+    iterated self-loop modes: under the default exact solves the answer is the converged fixed
+    point however many iterations are asked for, so passing them changes nothing. They are still
+    accepted (and still resolved here) so a command line can select an iterated mode and its
+    iteration count together.
     """
     from dataclasses import replace
 
@@ -63,6 +85,10 @@ def make_solver_options(args):
         overrides["neumann_terms"] = neumann_terms
     if (e_max_iter := getattr(args, "e_max_iter", None)) is not None:
         overrides["e_max_iter"] = e_max_iter
+    if (forward_self_loop := getattr(args, "forward_self_loop", None)) is not None:
+        overrides["forward_self_loop"] = forward_self_loop
+    if (adjoint_self_loop := getattr(args, "adjoint_self_loop", None)) is not None:
+        overrides["adjoint_self_loop"] = adjoint_self_loop
     return replace(base, **overrides) if overrides else base
 
 

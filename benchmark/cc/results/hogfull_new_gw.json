@@ -1,0 +1,257 @@
+{
+  "tag": "hogfull_new_gw",
+  "forward_self_loop": "exact",
+  "adjoint_self_loop": "exact",
+  "init_rate": "none",
+  "n_families": 10869,
+  "wall_s": 260.03001962415874,
+  "nll_bits": 1906508.9524980844,
+  "nll_nats": 1321491.3051363418,
+  "opt_seconds": 161.210804278031,
+  "n_steps": 79,
+  "n_builds": 53,
+  "adam_seconds": 30.788950512185693,
+  "hessian_seconds": 18.74860361451283,
+  "n_hessians": 5,
+  "newton_grad_seconds": 66.56930158985779,
+  "n_verify_builds": 37,
+  "verify_seconds": 14.534856922924519,
+  "n_rebuilds": 15,
+  "rebuild_seconds": 3.4472658787854016,
+  "certify_seconds": 2.8632136937230825,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 4,
+        "dropped": 76,
+        "remain": 10793
+      },
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 778,
+        "remain": 10015
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 1813,
+        "remain": 8202
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 679,
+        "remain": 7523
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 732,
+        "remain": 6791
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 242,
+        "remain": 6549
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 652,
+        "remain": 5897
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 971,
+        "remain": 4926
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 1225,
+        "remain": 3701
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 827,
+        "remain": 2874
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 1325,
+        "remain": 1549
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 469,
+        "remain": 1080
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 525,
+        "remain": 555
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 126,
+        "remain": 429
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 86,
+        "remain": 343
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 182,
+        "remain": 161
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 34,
+        "remain": 127
+      },
+      {
+        "pi": 16,
+        "it": 38,
+        "dropped": 30,
+        "remain": 97
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 12,
+        "remain": 85
+      },
+      {
+        "pi": 16,
+        "it": 42,
+        "dropped": 17,
+        "remain": 68
+      },
+      {
+        "pi": 16,
+        "it": 44,
+        "dropped": 7,
+        "remain": 61
+      },
+      {
+        "pi": 16,
+        "it": 46,
+        "dropped": 12,
+        "remain": 49
+      },
+      {
+        "pi": 16,
+        "it": 48,
+        "dropped": 4,
+        "remain": 45
+      },
+      {
+        "pi": 16,
+        "it": 50,
+        "dropped": 7,
+        "remain": 38
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 6,
+        "remain": 32
+      },
+      {
+        "pi": 16,
+        "it": 56,
+        "dropped": 4,
+        "remain": 28
+      },
+      {
+        "pi": 16,
+        "it": 60,
+        "dropped": 4,
+        "remain": 24
+      },
+      {
+        "pi": 16,
+        "it": 62,
+        "dropped": 6,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 64,
+        "dropped": 1,
+        "remain": 17
+      },
+      {
+        "pi": 16,
+        "it": 66,
+        "dropped": 6,
+        "remain": 11
+      },
+      {
+        "pi": 16,
+        "it": 70,
+        "dropped": 1,
+        "remain": 10
+      },
+      {
+        "pi": 16,
+        "it": 72,
+        "dropped": 1,
+        "remain": 9
+      },
+      {
+        "pi": 16,
+        "it": 74,
+        "dropped": 2,
+        "remain": 7
+      },
+      {
+        "pi": 16,
+        "it": 80,
+        "dropped": 3,
+        "remain": 4
+      },
+      {
+        "pi": 16,
+        "it": 82,
+        "dropped": 2,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 90,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 94,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 34.49417066574097,
+  "certificate": {
+    "converged": 10869,
+    "bound_active": 724,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009999965550377965
+  }
+}

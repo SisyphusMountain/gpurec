@@ -75,8 +75,14 @@ def run_fit(args) -> int:
         or args.pi_iters is not None
         or args.neumann_terms is not None
         or args.e_max_iter is not None
+        or args.forward_self_loop is not None
+        or args.adjoint_self_loop is not None
     )
-    config = load_config(args.config)
+    # Pass a config ONLY when the user actually supplied one, for the same reason as solver_options
+    # above: the recipes treat a config's [solver] table as authoritative, so handing them a
+    # default-constructed GpurecConfig would silently replace their tuned solver settings with the
+    # library defaults.
+    config = load_config(args.config) if args.config is not None else None
     try:
         res = fit_dtl(args.species, args.gene, args.mode, device=args.device,
                       dtype=(None if args.dtype is None else _common.make_dtype(args.dtype)),

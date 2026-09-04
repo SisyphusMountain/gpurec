@@ -22,19 +22,30 @@ def test_solver_options_has_tangent_tol():
 
 
 def test_no_divergent_signature_defaults():
-    """Previously-divergent signature defaults (neumann_terms=3, bicgstab max_iter=500)
+    """Previously-divergent signature defaults (neumann_terms=3, E-adjoint max_iter=500)
     must now agree with ``SolverOptions()`` -- either literally (a None sentinel resolved
-    at call time) or, if already-numeric, by matching value."""
+    at call time) or, if already-numeric, by matching value.
+
+    The E-adjoint linear solve is a Neumann series (``_neumann_e_adjoint``), so its budget and
+    residual target are ``e_adjoint_max_iter`` / ``e_adjoint_tol``; the old BiCGSTAB fields
+    (``bicgstab_max_iter``/``bicgstab_tol``/``bicgstab_breakdown_tol``) and ``_bicgstab`` itself
+    no longer exist.
+    """
     from gpurec.api import _implicit_grad as ig
 
     so = SolverOptions()
     sig = inspect.signature(ig.implicit_grad_loglik_vjp_wave).parameters
     # None-sentinel -> resolved to SolverOptions default at call time
     assert sig["neumann_terms"].default in (None, so.neumann_terms)
-    assert sig["bicgstab_max_iter"].default in (None, so.bicgstab_max_iter)
+    assert sig["neumann_term_tol"].default in (None, so.neumann_term_tol)
+    assert sig["adjoint_self_loop"].default in (None, so.adjoint_self_loop)
+    assert sig["e_adjoint_max_iter"].default in (None, so.e_adjoint_max_iter)
+    assert sig["e_adjoint_tol"].default in (None, so.e_adjoint_tol)
     assert sig["adjoint_pruning_threshold"].default in (None, so.adjoint_pruning_threshold)
     assert sig["pibar_side_threshold"].default in (None, so.pibar_side_threshold)
-    assert inspect.signature(ig._bicgstab).parameters["max_iter"].default in (None, so.bicgstab_max_iter)
+    neumann = inspect.signature(ig._neumann_e_adjoint).parameters
+    assert neumann["max_iter"].default in (None, so.e_adjoint_max_iter)
+    assert neumann["tol"].default in (None, so.e_adjoint_tol)
 
 
 def test_e_step_fallbacks_agree_with_solver_options():

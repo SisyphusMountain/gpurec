@@ -34,12 +34,17 @@ def test_genewise_reference_factory_reproduces_recipe():
     solver = cfg.solver
     assert solver.e_max_iter == 128
     assert solver.e_tol == 1e-8
-    assert solver.bicgstab_max_iter == 128
-    assert solver.bicgstab_tol == 1e-7
-    assert solver.bicgstab_breakdown_tol == 1e-30
+    # The E-adjoint linear solve is a Neumann series (the old BiCGSTAB knobs
+    # bicgstab_max_iter / bicgstab_tol / bicgstab_breakdown_tol are gone); the recipe pins its
+    # iteration budget and its own tighter-than-dtype-auto residual target.
+    assert solver.e_adjoint_max_iter == 128
+    assert solver.e_adjoint_tol == 1e-7
     assert solver.adjoint_pruning_threshold == 1e-6
     assert solver.use_adjoint_pruning is True
     assert solver.pibar_side_threshold == 0.0
+    # The recipe solves each clade row's self-loop exactly (tree elimination) in both directions.
+    assert solver.forward_self_loop == "exact"
+    assert solver.adjoint_self_loop == "exact"
     assert cfg.rates == RateBounds.genewise()
 
 
@@ -49,9 +54,9 @@ def test_map_cv_reference_factory_reproduces_recipe():
     assert solver.neumann_terms == 64
     assert solver.e_max_iter == 128
     assert solver.e_tol == 1e-8
-    assert solver.bicgstab_max_iter == 128
-    assert solver.bicgstab_tol is None
-    assert solver.bicgstab_breakdown_tol is None
+    assert solver.e_adjoint_max_iter == 128
+    # None = dtype-relative auto residual target (fp32 -> 1e-6, fp64 -> 1e-12), the robust default.
+    assert solver.e_adjoint_tol is None
     assert solver.adjoint_pruning_threshold == 1e-6
     assert solver.use_adjoint_pruning is True
     assert solver.pibar_side_threshold == 0.0
