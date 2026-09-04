@@ -618,6 +618,7 @@ def implicit_grad_loglik_vjp_wave(
             has_leaf_term=has_leaf_term,
             active_mask=active_mask,
             species_parent=species_helpers["sp_parent"],
+            species_height=species_helpers["sp_height"],
             species_subtree_start=species_helpers["sp_subtree_start"],
             species_subtree_end=species_helpers["sp_subtree_end"],
             pibar_row_max=uniform_pibar_row_max,
