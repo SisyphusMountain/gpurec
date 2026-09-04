@@ -302,7 +302,8 @@ differences -71.951 / +2749.09 / -407.73, the truncation floor, identically for 
 solvers. At fitted rates nothing changed: the full fit with the forward fix alone gave
 9048938.300 bits (previous runs 9048938.28 to 9048938.31), 5119 of 5123 certified; the full fit
 with every kernel converted (747 s, 9048938.292 bits) certifies all 5123 families for the first time,
-in 68 Newton steps instead of about 110. The point of the change is
+in 68 Newton steps instead of about 110. The float32 rate-box sweep against a converged float64 oracle
+now passes at all 27 corners (3 failed before), with the likelihood within 8e-3 bits everywhere. The point of the change is
 that the rate box is now trustworthy where the fit may wander, for the likelihood and for the
 gradient, in both precisions.
 
