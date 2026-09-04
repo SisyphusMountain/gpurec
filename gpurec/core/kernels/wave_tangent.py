@@ -552,7 +552,6 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
     N_LEVELS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
@@ -594,9 +593,33 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     1. Bottom-up: ``dv[s] = alpha[s] + gamma[s] u[s]``. A leaf divides by ``diag``; an internal
        node folds in its children, with ``G = p1 gamma[c1] + p2 gamma[c2]`` and
        ``pivot = diag[s] + G m[s]`` -- again the diagonal PLUS the children's feedback.
-    2. Top-down, carrying both basis directions: ``u = U0 + U1 M``, ``U0[root] = 0``,
-       ``U1[root] = 1``, ``U0[c] = U0[s] - m[s](P0[s] + drecv[s])``, ``U1[c] = U1[s] - m[s] P1[s]``.
-    3. ``M = sum_t m[t](dv[t] + drecv[t])`` is then one scalar equation, ``M = M0 + M1 M``.
+    2. In the same bottom-up walk, each subtree's donor tangent becomes an affine function of the
+       donor tangent entering it, ``sum over r in subtree(s) of m[r](dv[r] + drecv[r]) = A[s] +
+       G[s] u[s]``: a leaf has ``A = m (alpha + drecv)``, ``G = m gamma``; an internal node, whose
+       children both see ``u[c] = u[s] - m[s](dv[s] + drecv[s])``, has
+
+           G[s] = m gamma + (G[c1] + G[c2]) (1 - m gamma)
+           A[s] = m (alpha + drecv) (1 - G[c1] - G[c2]) + A[c1] + A[c2].
+
+       ``G`` is built from primal masses only, so it is a gain in ``[0, 1)`` like the forward's;
+       ``A`` carries the signs of the right-hand side.
+    3. The root closes the loop: ``M = A[root] / (1 - G[root])``. Then top-down, by ADDITION
+       only, with ``R[s]`` the donor tangent hanging off ``s``'s ancestor chain (``R[root] = 0``):
+
+           v     = (R[s] + A[c1] + A[c2]) / (1 - G[c1] - G[c2])      what both children see
+           u[c1] = u[c2] = v
+           R[c1] = R[s] + A[c2] + G[c2] v        R[c2] = R[s] + A[c1] + G[c1] v
+
+       ``v`` is also the tangent of ``s``'s own valid receiver mass, so ``dPibar`` comes out of
+       it directly. This is the forward kernel's scheme (see its docstring); the earlier form
+       ``u[c] = u[s] - m[s](dv[s] + drecv[s])`` is a difference of nearly equal numbers for every
+       species under the lane holding the row's donor mass and is rounding noise there.
+
+    THE PRIMAL MASSES. Each lane's primal valid receiver mass, ``valid[s] = sum of m over every
+    species that is neither s nor an ancestor of s``, is built the same additive way -- subtree
+    masses bottom-up, off-chain masses top-down, ``valid[s] = R[s] + M[c1] + M[c2]`` -- and never
+    as ``total - ancestor chain``: that subtraction is exactly the rounding floor the forward
+    kernel removed, and the tangent must linearize the primal the forward actually computed.
 
     HOW THE WALKS RUN HERE. This kernel is register-resident -- one program per clade row, the
     whole species row in one tile, children and parents reached with ``tl.gather`` -- and there is
@@ -607,7 +630,7 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
 
     Every lane computes the update; only the lanes at this level keep it, and their children sit at
     strictly lower heights and are therefore already final. ``2 * N_LEVELS`` such passes, each two
-    gathers wide, replace ``n_iters`` sweeps each carrying a ``MAX_ANCESTOR_DEPTH``-deep ancestor
+    gathers wide, replace ``n_iters`` sweeps each carrying an ancestor-depth-deep ancestor
     gather -- and unlike them, the answer does not depend on how many were run.
 
     Lanes whose primal reconciliation is impossible have zero event mass, hence zero ``b``, ``d``,
@@ -660,24 +683,59 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     )
     total_receiver_mass = tl.sum(receiver_mass, axis=0)
 
-    ancestor_species = s_offs
-    excluded_ancestor_mass = zero
-    for _ in range(0, MAX_ANCESTOR_DEPTH):
-        ancestor_valid = mask & (ancestor_species >= 0) & (ancestor_species < S)
-        ancestor_receiver_mass = tl.where(
-            ancestor_valid,
-            tl.gather(receiver_mass, tl.where(ancestor_valid, ancestor_species, 0), axis=0),
-            zero,
+    # Species-tree neighbourhood of every lane: children, parent, and the sibling (the parent's
+    # other child), all as whole-row gathers.
+    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
+    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
+    c1_valid = mask & (c1 < S)
+    c2_valid = mask & (c2 < S)
+    c1_safe = tl.where(c1_valid, c1, 0)
+    c2_safe = tl.where(c2_valid, c2, 0)
+    species_height = tl.load(species_height_ptr + s_offs, mask=mask, other=0)
+    parent_species = tl.load(species_parent_ptr + s_offs, mask=mask, other=-1)
+    has_parent = mask & (parent_species >= 0) & (parent_species < S)
+    parent_safe = tl.where(has_parent, parent_species, 0)
+    parent_height = tl.where(has_parent, tl.gather(species_height, parent_safe, axis=0), 0)
+    parent_child1 = tl.gather(c1, parent_safe, axis=0)
+    parent_child2 = tl.gather(c2, parent_safe, axis=0)
+    sibling = tl.where(parent_child1 == s_offs, parent_child2, parent_child1)
+    has_sibling = has_parent & (sibling < S)
+    sibling_safe = tl.where(has_sibling, sibling, 0)
+    is_root = mask & (parent_species < 0)
+
+    # ---- primal valid receiver mass, by addition only (docstring, THE PRIMAL MASSES). Subtree
+    # masses bottom-up: a lane of height ``level`` reads its children, already final.
+    subtree_receiver_mass = receiver_mass
+    for level in range(1, N_LEVELS + 1):
+        at_level = mask & (species_height == level)
+        subtree_receiver_mass = tl.where(
+            at_level,
+            receiver_mass
+            + tl.where(c1_valid, tl.gather(subtree_receiver_mass, c1_safe, axis=0), zero)
+            + tl.where(c2_valid, tl.gather(subtree_receiver_mass, c2_safe, axis=0), zero),
+            subtree_receiver_mass,
         )
-        excluded_ancestor_mass += ancestor_receiver_mass
-        ancestor_species = tl.load(
-            species_parent_ptr + ancestor_species, mask=ancestor_valid, other=-1
-        ).to(tl.int32)
+    # Off-chain masses top-down: what hangs off a lane's ancestor chain is what hangs off its
+    # parent's chain plus the sibling's whole subtree. A lane is settled in the pass of its
+    # PARENT's height, when the parent is already final.
+    off_chain_receiver_mass = zero
+    for level_index in range(0, N_LEVELS):
+        level = N_LEVELS - level_index
+        at_level = has_parent & (parent_height == level)
+        off_chain_receiver_mass = tl.where(
+            at_level,
+            tl.gather(off_chain_receiver_mass, parent_safe, axis=0)
+            + tl.where(has_sibling, tl.gather(subtree_receiver_mass, sibling_safe, axis=0), zero),
+            off_chain_receiver_mass,
+        )
+    children_receiver_mass = tl.where(
+        c1_valid, tl.gather(subtree_receiver_mass, c1_safe, axis=0), zero
+    ) + tl.where(c2_valid, tl.gather(subtree_receiver_mass, c2_safe, axis=0), zero)
 
     const_offsets = const_base + s_offs
     max_transfer = tl.load(max_transfer_ptr + const_offsets, mask=mask, other=0.0)
     d_max_transfer = tl.load(dmax_transfer_ptr + const_offsets, mask=mask, other=0.0)
-    valid_receiver_mass = total_receiver_mass - excluded_ancestor_mass
+    valid_receiver_mass = off_chain_receiver_mass + children_receiver_mass
     has_valid_receiver_mass = valid_receiver_mass > 0.0
     safe_valid_receiver_mass = tl.where(
         has_valid_receiver_mass, valid_receiver_mass, tl.full([BLOCK_S], 1.0, DTYPE)
@@ -702,12 +760,6 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     speciation_child2_const = tl.load(speciation_child2_const_ptr + const_offsets, mask=mask, other=NEG)
     d_speciation_child2_const = tl.load(d_speciation_child2_const_ptr + const_offsets, mask=mask, other=0.0)
 
-    c1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S)
-    c2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S)
-    c1_valid = mask & (c1 < S)
-    c2_valid = mask & (c2 < S)
-    c1_safe = tl.where(c1_valid, c1, 0)
-    c2_safe = tl.where(c2_valid, c2, 0)
     reconciliation_child1_log_likelihood = tl.where(
         c1_valid, tl.gather(reconciliation_log_likelihood, c1_safe, axis=0), NEG
     )
@@ -820,11 +872,14 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
     receiver_tangent_offset = receiver_mass * d_receiver_log_probability
 
     # ---- walk 1, bottom-up. Every lane starts at the leaf case; level ``level`` then rewrites the
-    # lanes of that height, whose children are already final.
-    species_height = tl.load(species_height_ptr + s_offs, mask=mask, other=0)
+    # lanes of that height, whose children are already final. Alongside alpha and gamma, each
+    # lane's subtree donor tangent as an affine function of what enters it (docstring, step 2).
     gamma = donor_coefficient / diagonal
     alpha = source / diagonal - gamma * receiver_tangent_offset
+    subtree_tangent_gain = receiver_mass * gamma
+    subtree_tangent_constant = receiver_mass * (alpha + d_receiver_log_probability)
     guard_trips = tl.sum(tl.where(mask & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0)
+    smallest_gain_margin = tl.full([1], 1.0, DTYPE)
     for level in range(1, N_LEVELS + 1):
         child_source = (
             speciation_child1_coefficient
@@ -845,67 +900,82 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
         alpha = tl.where(at_level, level_alpha, alpha)
         gamma = tl.where(at_level, level_gamma, gamma)
         guard_trips += tl.sum(tl.where(at_level & (pivot <= 0.0), 1, 0).to(tl.int32), axis=0)
+        children_gain = tl.where(
+            c1_valid, tl.gather(subtree_tangent_gain, c1_safe, axis=0), zero
+        ) + tl.where(c2_valid, tl.gather(subtree_tangent_gain, c2_safe, axis=0), zero)
+        children_constant = tl.where(
+            c1_valid, tl.gather(subtree_tangent_constant, c1_safe, axis=0), zero
+        ) + tl.where(c2_valid, tl.gather(subtree_tangent_constant, c2_safe, axis=0), zero)
+        children_gain_margin = 1.0 - children_gain
+        own_gain = receiver_mass * level_gamma
+        subtree_tangent_gain = tl.where(
+            at_level, own_gain + children_gain * (1.0 - own_gain), subtree_tangent_gain
+        )
+        subtree_tangent_constant = tl.where(
+            at_level,
+            receiver_mass * (level_alpha + d_receiver_log_probability) * children_gain_margin
+            + children_constant,
+            subtree_tangent_constant,
+        )
+        guard_trips += tl.sum(
+            tl.where(at_level & (children_gain_margin <= 0.0), 1, 0).to(tl.int32), axis=0
+        )
+        smallest_gain_margin = tl.minimum(
+            smallest_gain_margin,
+            tl.min(tl.where(at_level, children_gain_margin, tl.full([BLOCK_S], 1.0, DTYPE)), axis=0),
+        )
 
-    # ---- walk 2, top-down. The root keeps the seed u = M (U0 = 0, U1 = 1); every other lane is
-    # rewritten by the pass whose level is its PARENT's height, and reads its parent's settled
-    # values there.
-    parent_species = tl.load(species_parent_ptr + s_offs, mask=mask, other=-1)
-    has_parent = mask & (parent_species >= 0) & (parent_species < S)
-    parent_safe = tl.where(has_parent, parent_species, 0)
-    donor_tangent_constant = zero
-    donor_tangent_gain = tl.full([BLOCK_S], 1.0, DTYPE)
-    parent_height = tl.where(has_parent, tl.gather(species_height, parent_safe, axis=0), 0)
+    # ---- close the loop at the root: M = A[root] + G[root] M (docstring, step 3).
+    root_tangent_constant = tl.sum(tl.where(is_root, subtree_tangent_constant, zero), axis=0)
+    root_tangent_gain = tl.sum(tl.where(is_root, subtree_tangent_gain, zero), axis=0)
+    loop_denominator = 1.0 - root_tangent_gain
+    total_donor_tangent = root_tangent_constant / loop_denominator
+    smallest_gain_margin = tl.minimum(smallest_gain_margin, loop_denominator)
+
+    # ---- walk 2, top-down, additions only. The root holds u = M and nothing hangs off its
+    # chain; every other lane is settled in the pass whose level is its PARENT's height, from
+    # the parent's settled R and the sibling's final subtree coefficients.
+    available_donor_tangent = tl.where(is_root, total_donor_tangent, zero)
+    off_chain_donor_tangent = zero
     for level_index in range(0, N_LEVELS):
         level = N_LEVELS - level_index
-        parent_p0 = alpha + gamma * donor_tangent_constant
-        parent_p1 = gamma * donor_tangent_gain
-        taken_constant = receiver_mass * (parent_p0 + d_receiver_log_probability)
-        taken_gain = receiver_mass * parent_p1
         at_level = has_parent & (parent_height == level)
-        donor_tangent_constant = tl.where(
-            at_level,
-            tl.gather(donor_tangent_constant, parent_safe, axis=0)
-            - tl.gather(taken_constant, parent_safe, axis=0),
-            donor_tangent_constant,
+        parent_off_chain = tl.gather(off_chain_donor_tangent, parent_safe, axis=0)
+        sibling_constant = tl.where(
+            has_sibling, tl.gather(subtree_tangent_constant, sibling_safe, axis=0), zero
         )
-        donor_tangent_gain = tl.where(
+        sibling_gain = tl.where(
+            has_sibling, tl.gather(subtree_tangent_gain, sibling_safe, axis=0), zero
+        )
+        level_available = (parent_off_chain + subtree_tangent_constant + sibling_constant) / (
+            1.0 - subtree_tangent_gain - sibling_gain
+        )
+        available_donor_tangent = tl.where(at_level, level_available, available_donor_tangent)
+        off_chain_donor_tangent = tl.where(
             at_level,
-            tl.gather(donor_tangent_gain, parent_safe, axis=0)
-            - tl.gather(taken_gain, parent_safe, axis=0),
-            donor_tangent_gain,
+            parent_off_chain + sibling_constant + sibling_gain * level_available,
+            off_chain_donor_tangent,
         )
 
-    # ---- close the loop: M = sum m (dv + drecv) = M0 + M1 M.
-    total_tangent_constant = tl.sum(
-        tl.where(
-            mask,
-            receiver_mass
-            * (alpha + gamma * donor_tangent_constant + d_receiver_log_probability),
-            zero,
-        ),
-        axis=0,
-    )
-    total_tangent_gain = tl.sum(
-        tl.where(mask, receiver_mass * gamma * donor_tangent_gain, zero), axis=0
-    )
-    loop_denominator = 1.0 - total_tangent_gain
-    total_donor_tangent = total_tangent_constant / loop_denominator
-
-    available_donor_tangent = donor_tangent_constant + donor_tangent_gain * total_donor_tangent
     d_reconciliation_log_likelihood = tl.where(
         valid, alpha + gamma * available_donor_tangent, zero
     )
     tl.store(dPi_new_ptr + out_base + s_offs, d_reconciliation_log_likelihood, mask=mask)
     if STORE_PIBAR:
+        # The tangent of s's valid receiver mass is what both of its children see: the mass off
+        # s's chain plus its children's subtree tangents, again a sum.
+        children_gain = tl.where(
+            c1_valid, tl.gather(subtree_tangent_gain, c1_safe, axis=0), zero
+        ) + tl.where(c2_valid, tl.gather(subtree_tangent_gain, c2_safe, axis=0), zero)
+        children_constant = tl.where(
+            c1_valid, tl.gather(subtree_tangent_constant, c1_safe, axis=0), zero
+        ) + tl.where(c2_valid, tl.gather(subtree_tangent_constant, c2_safe, axis=0), zero)
+        d_valid_receiver_mass = (off_chain_donor_tangent + children_constant) / (
+            1.0 - children_gain
+        )
         d_transfer_complement_log_likelihood = tl.where(
             has_valid_receiver_mass,
-            (
-                available_donor_tangent
-                - receiver_mass
-                * (d_reconciliation_log_likelihood + d_receiver_log_probability)
-            )
-            * inverse_valid_receiver_mass
-            + d_max_transfer,
+            d_valid_receiver_mass * inverse_valid_receiver_mass + d_max_transfer,
             zero,
         )
         tl.store(
@@ -917,13 +987,13 @@ def _solve_reconciliation_self_loop_jvp_exact_kernel(
         tl.store(guard_trips_ptr + w * 3, guard_trips.to(DTYPE))
         tl.store(
             guard_trips_ptr + w * 3 + 1,
-            tl.where(loop_denominator <= 0.0, 1.0, 0.0).to(DTYPE),
+            tl.where(smallest_gain_margin <= 0.0, 1.0, 0.0).to(DTYPE),
         )
-        # How far the one scalar closure stayed from singular. Everything the solve computes is
-        # divided by this once, so a row whose margin is near zero is a row whose tangent carries
-        # the reciprocal of that margin in relative error -- the number to look at when the
-        # answer disagrees with the sweeps but no guard actually tripped.
-        tl.store(guard_trips_ptr + w * 3 + 2, loop_denominator.to(DTYPE))
+        # How far the closure and the per-node ``1 - gain`` divisors stayed from singular. The
+        # solve divides by each of them, so a row whose smallest margin is near zero is a row
+        # whose tangent carries the reciprocal of that margin in relative error -- the number to
+        # look at when the answer disagrees with the sweeps but no guard actually tripped.
+        tl.store(guard_trips_ptr + w * 3 + 2, smallest_gain_margin.to(DTYPE))
 
 
 def _prepare_wave_offsets(Pi_in, pi_offset, gene_split_offset, has_splits, W):
@@ -1108,7 +1178,6 @@ def compute_wave_step_tangent_selfloop(
             stride=S,
             CONST_ROW_STRIDE=const_row_stride,
             BLOCK_S=block_s,
-            MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
             N_LEVELS=n_levels,
             USE_LEAF_INDEX=bool(has_leaf_term),
             STORE_PIBAR=bool(store_pibar),
