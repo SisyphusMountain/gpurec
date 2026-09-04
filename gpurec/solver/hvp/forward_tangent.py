@@ -206,7 +206,8 @@ def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
     }
 
 
-def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAULT_SELF_MAX_ITER, e_tol=None,
+def jvp_root_scores(static, theta, v, sv, *, primal_gene_split, self_tol=None,
+                    self_max_iter=DEFAULT_SELF_MAX_ITER, e_tol=None,
                     self_iters=None, return_full=False, keep_d_dts=True, fused_selfloop=True,
                     alpha=None, u_alpha=None, leaf_fm_log=None):
     """d(Pi_root)/d[theta;alpha] . [v;u_alpha]  -> tensor [n_root_rows, S].
@@ -223,6 +224,16 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
     E-step tangent fixed point AND the wave-step tangent (use_receiver_weights=True). At a non-uniform
     base this is what makes the tangent FINITE and self-consistent with the weighted primal (the
     legacy uniform tangent NaNs there). ``alpha=None`` -> legacy uniform theta-only tangent.
+
+    ``primal_gene_split`` is a ``{wave start: (rows, row offsets)}`` dict, or ``None``. The tangent
+    sweep needs each split wave's PRIMAL gene-split (DTS) rows before it can build their tangent,
+    and those rows depend only on theta -- not on the direction ``v`` -- so a caller that runs this
+    function several times at one theta (the exact Hessian fires three probes per batch) can hand
+    in a dict and pay the reduction once instead of once per probe. An EMPTY dict is filled here
+    and reused on the next call; a filled one is read; ``None`` recomputes every time, which is
+    what this function always did. Keeping the rows costs one more [batch clades x species]
+    tensor, so the caller decides against its own memory budget (no default: reading rows that did
+    not come from the matching theta would be silently wrong).
 
     ``leaf_fm_log`` ([S], log2) is the fixed fraction-missing leaf boundary threaded into the
     E-step tangent fixed point so the PRIMAL E_s1/E_s2 recomputed there match the fraction-missing
@@ -327,17 +338,25 @@ def jvp_root_scores(static, theta, v, sv, *, self_tol=None, self_max_iter=DEFAUL
         has_splits = "sl" in meta
         has_leaf = not has_splits
         if has_splits:
-            gene_split_log_likelihood, gene_split_offset = compute_dts_forward(
-                pi, pi_offset, pibar, pibar_offset,
-                meta["sl"], meta["sr"], species_child1, species_child2,
-                W, meta["reduce_idx"],
-                base["duplication_log_probability_param"],
-                base["speciation_log_probability_param"], family_idx=family_idx,
-                log_split_probs=_select_log_split_probs(meta, pi.dtype), n_single_split_parents=meta.get("n_eq1"),
-                single_split_parent_rows=meta.get("eq1_reduce_idx"), multiple_split_group_ptr=meta.get("ge2_ptr"),
-                multiple_split_parent_rows=meta.get("ge2_parent_ids"),
-                max_splits_per_multiple_parent=meta.get("ge2_max_fanout"), family_offset=ws,
-            )
+            kept = None if primal_gene_split is None else primal_gene_split.get(ws)
+            if kept is not None:
+                # Same theta, same Pi/Pibar, same wave: an earlier call already reduced these rows
+                # (see ``primal_gene_split`` above), so reading them back is exact.
+                gene_split_log_likelihood, gene_split_offset = kept
+            else:
+                gene_split_log_likelihood, gene_split_offset = compute_dts_forward(
+                    pi, pi_offset, pibar, pibar_offset,
+                    meta["sl"], meta["sr"], species_child1, species_child2,
+                    W, meta["reduce_idx"],
+                    base["duplication_log_probability_param"],
+                    base["speciation_log_probability_param"], family_idx=family_idx,
+                    log_split_probs=_select_log_split_probs(meta, pi.dtype), n_single_split_parents=meta.get("n_eq1"),
+                    single_split_parent_rows=meta.get("eq1_reduce_idx"), multiple_split_group_ptr=meta.get("ge2_ptr"),
+                    multiple_split_parent_rows=meta.get("ge2_parent_ids"),
+                    max_splits_per_multiple_parent=meta.get("ge2_max_fanout"), family_offset=ws,
+                )
+                if primal_gene_split is not None:
+                    primal_gene_split[ws] = (gene_split_log_likelihood, gene_split_offset)
             d_gene_split_log_likelihood = compute_dts_tangent(
                 pi, pibar, dpi, dpibar, meta["sl"], meta["sr"],
                 species_child1, species_child2, W, meta["reduce_idx"],

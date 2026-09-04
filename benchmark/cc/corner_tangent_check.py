@@ -39,7 +39,8 @@ def main() -> int:
     print(f"[tan] corner D={d} L={l} T={t} NLL={float(loss0.sum()):.6f} root rows {tuple(root0.shape)}", flush=True)
     for k, name in enumerate(("D", "L", "T")):
         v = torch.zeros_like(th0); v[..., k] = 1.0
-        tang = jvp_root_scores(static, th0, v, sv, leaf_fm_log=getattr(static, "leaf_fm_log", None)).double()
+        tang = jvp_root_scores(static, th0, v, sv, primal_gene_split=None,
+                               leaf_fm_log=getattr(static, "leaf_fm_log", None)).double()
         e = torch.zeros_like(th0); e[..., k] = args.step
         _, svp = forward_solve([static], th0 + e, rw); rp = svp["root_rows"].double().clone()
         _, svm = forward_solve([static], th0 - e, rw); rm = svm["root_rows"].double().clone()

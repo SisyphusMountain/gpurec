@@ -448,6 +448,16 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     )
     _head_grad_ctx.__exit__(None, None, None)
 
+    # Each probe's tangent forward starts by reducing every split wave's PRIMAL gene-split (DTS)
+    # rows out of Pi/Pibar. Those rows depend on theta only, and theta is fixed for the life of
+    # this closure, so the three probes of one Hessian were reducing the identical rows three
+    # times -- 17 ms of the 502 ms a probe costs on the 200-family Coleman batch. Keep them after
+    # the first probe and hand them back on the next two. The cost is one more
+    # [batch clades x species] tensor (0.75 GiB on that batch, on top of a 6.5 GiB probe peak),
+    # which is the same tensor the gradient path already budgets for, so reuse its build-time
+    # memory decision: a card that cannot afford it keeps recomputing, exactly as before.
+    primal_gene_split = {} if bool(getattr(static, "forward_gene_split_ok", False)) else None
+
     def hvp(u_vec, probe_id=None):
         # Joint split: u = [u_theta (theta_numel); u_alpha (S)]. The theta-milestone harness still
         # passes a length-(theta_numel) vector (u_alpha implicitly 0); accept both. theta_shape is
@@ -486,6 +496,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             _u_alpha = u_alpha if use_receiver_weights else None
             t_root, full = jvp_root_scores(static, theta, u, sv, return_full=True,
                                            keep_d_dts=False, self_iters=tangent_self_iters,
+                                           primal_gene_split=primal_gene_split,
                                            alpha=_alpha, u_alpha=_u_alpha,
                                            leaf_fm_log=leaf_fm_log)
             tangent_constants = full["tangent_constants"]
