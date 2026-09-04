@@ -857,8 +857,12 @@ cuts hold: 386 to 275 ms (-29 %; -38 % on the 4090). The register-resident trans
 than 16 on the 4090. The launch therefore has to choose its warp count by device (32 on compute
 capability 9.x, 16 otherwise).
 
-**Full dataset (job r4c_full, batch node with a normal 24 s build, so the least loaded node of the round):
-650.5 s**, NLL 9048935.150 bits (3.1 bits better than every earlier run), 65 Newton steps, all 5123
+**Full dataset, final state of the round (job r4d_full, quiet batch node, 19 s build): 580.7 s**, NLL
+9048935.022 bits (3.3 bits better than every earlier run), 47 Newton steps, all 5123 certified, peak 28.7 GiB;
+split: warm-up (3 Adam gradients) 71 s, Newton gradients 376 s, curvature 42 s, verification 45 s, re-plans
+12 s, certificate 15 s. One Newton iteration over the whole population costs 26.0 s against 32.5 s in the
+747 s run (-20 %). The intermediate state before agent H's tiles and the device-dependent warp count
+(job r4c_full, batch node with a normal 24 s build): 650.5 s**, NLL 9048935.150 bits (3.1 bits better than every earlier run), 65 Newton steps, all 5123
 certified, peak 28.4 GiB; split: warm-up (3 Adam gradients) 83 s, Newton gradients 387 s, curvature 64 s,
 verification 45 s, re-plans 14 s, certificate 15 s, build 24 s. One Newton iteration over the whole
 population costs 27.7 s against 32.5 s in the 747 s run (-15 %). Two earlier full runs of intermediate

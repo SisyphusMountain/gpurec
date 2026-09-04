@@ -339,9 +339,9 @@ certification, likelihood 0.07 bits better. Exact Newton (an analytic Hessian ev
 at full scale, so it does not pay; batching the three probe directions would bring it to 6.5, not the 1.5
 that would change the verdict.
 
-**Full dataset so far: 650 s** (batch node, all 5123 families certified, likelihood 3.1 bits better than
-every earlier run; split: warm-up 83 s, Newton gradients 387 s, curvature 64 s, verification 45 s,
-re-plans 14 s, certificate 15 s, build 24 s). The 200 s target on one GPU is not within reach of what is
+**Full dataset: 581 s** (quiet batch node, all 5123 families certified, likelihood 3.3 bits better than
+every earlier run, 47 Newton steps; split: warm-up 71 s, Newton gradients 376 s, curvature 42 s,
+verification 45 s, re-plans 12 s, certificate 15 s, build 19 s). The 200 s target on one GPU is not within reach of what is
 left in the profile; sharding the families across the four H100s of one node, which the code supports,
 is the path that gets there.
 
@@ -385,6 +385,7 @@ agree at every depth of every row, so either is an oracle.
 | + exact adjoint (D3) | 782 to 794 s | 9048938.3 | 5120 |
 | + exact tangent, additive prepare kernel (D4), fp64 fix (final) | 777 to 786 s | 9048938.28 | 5119 to 5121 |
 | + every transfer sum additive (E), all first- and second-order kernels | 747 s (shared node) | 9048938.29 | 5123 |
+| + fourth round: dead backward work, host stalls, forward-solve traffic, node tiles, recipe (F) | 581 s | 9048935.02 | 5123 |
 
 The 747 s run (job final_fulli, interactive node shared with other users: its warm-up took 148 s
 against 125 s on a quiet node) needed 68 Newton steps instead of about 110, because the two to four
