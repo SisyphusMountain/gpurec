@@ -307,6 +307,44 @@ now passes at all 27 corners (3 failed before), with the likelihood within 8e-3 
 that the rate box is now trustworthy where the fit may wander, for the likelihood and for the
 gradient, in both precisions.
 
+### F. Fourth round: from 747 s towards 200 s (in progress)
+
+**Where the 747 s went.** About 30 s per gradient over the whole population, and roughly 20 such
+gradient-equivalents in the warm-up and the first twelve Newton iterations; the tail of slow families
+costs only about 8 s. So there are two levers, the cost of one gradient and the number of full-population
+iterations, and both were worked.
+
+**Cheaper gradients.** Nsight Compute showed the remaining kernels bandwidth-bound on large waves, not
+latency-bound, so the work went into traffic and stalls: the backward no longer computes the receiver-weight
+gradient of frozen weights nor launches its series solver for rows that have none, it keeps the forward's
+gene-split rows instead of reducing them again, and its redundant zero-fills are gone (backward −21 %);
+the forward's per-wave device-to-host reads and the extinction step's per-iteration read are gone (GPU idle
+in a gradient 30 % to 11 %); the exact forward solve stores each species' four working numbers side by side
+and gives its tree walks one node per thread (that solve −38 % on the 4090, −29 % on the H100); the
+transfer VJP stores in node order. Measured on the H100 with the 200-family proxy, one gradient went from
+2261 to 1898 ms (−16 %) within the round; on the full population one Newton iteration went from 32.5 to
+27.7 s (−15 %). Two directions were tried and closed with numbers: fusing the adjoint's prepare step into a
+register-resident transposed solve (correct and traffic-free, but latency-bound at 16 % occupancy; a small
+gain on the 4090 and a loss on the H100 unless it runs with 32 warps there), and CUDA-graph capture of the
+wave loops (1.02x forward, 1.17x backward, for a large memory cost).
+
+**Fewer iterations.** Per-family traces of every gradient evaluation showed why Newton took 8 to 14 steps:
+the Adam warm-up moves every rate about one log2 unit per step and overshoots, and the curvature floor of
+0.01 throttled flat directions (a rate heading to zero moved 0.1 log2 units per step for twenty steps while
+its likelihood changed by 0.01 bits). The step now bounds each eigen-direction by the trust radius with a
+1e-4 sign guard, the warm-up is three steps, and the radius may grow to 8 under a ratio test gated on the
+float32 noise of a family's likelihood: 23.5 to 19.9 gradient-equivalents on 200 families, same
+certification, likelihood 0.07 bits better. Exact Newton (an analytic Hessian every iteration) converges in
+10 to 11 steps but each Hessian costs about eight gradients when its cache does not fit, which is the case
+at full scale, so it does not pay; batching the three probe directions would bring it to 6.5, not the 1.5
+that would change the verdict.
+
+**Full dataset so far: 650 s** (batch node, all 5123 families certified, likelihood 3.1 bits better than
+every earlier run; split: warm-up 83 s, Newton gradients 387 s, curvature 64 s, verification 45 s,
+re-plans 14 s, certificate 15 s, build 24 s). The 200 s target on one GPU is not within reach of what is
+left in the profile; sharding the families across the four H100s of one node, which the code supports,
+is the path that gets there.
+
 ## Is the likelihood preserved?
 
 Yes in total and for almost every family; a few dozen families with two competing optima changed
