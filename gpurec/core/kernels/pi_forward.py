@@ -37,13 +37,23 @@ _NUM_WARPS_UPDATE_RECONCILIATION = 8
 # few times it.
 _BLOCK_SPECIES_SELF_LOOP = 256
 
-# Species-tree nodes per tile inside ``_exact_tree_pi_self_loop_kernel``'s two level walks, and
-# that kernel's warps per program. Launch-shape tuning only: the walks visit every node of a level
-# either way. 128 matches the backward pass's own level walk
-# (``gpurec/core/kernels/wave_backward.py``'s ``block_nodes``), which reads the same
-# ``compact_level_*`` tables.
-_BLOCK_NODES_EXACT_TREE = 128
+# Warps per program for ``_exact_tree_pi_self_loop_kernel``, and the species-tree nodes its two
+# level walks put in one tile. Launch-shape tuning only: the walks visit every node of a level
+# either way.
+#
+# The tile MUST hold one node per thread, so it is the warp count times the 32 threads in a warp
+# and not a number of its own. A narrower tile does not make the walk cheaper: every thread of the
+# program still issues every instruction of it, and the threads past the end of the tile issue
+# them on lanes that hold nothing. The old 128 with 8 warps threw away half of every level-walk
+# instruction that way. Measured on 200 Coleman families (2013 species, float32, RTX 4090), the
+# kernel's total GPU time over its 1977 launches: 128 nodes 403.7 ms, 256 nodes 304.0 ms,
+# 512 nodes 332.1 ms, 1024 nodes 508.6 ms -- wider than one node per thread costs again, because
+# most of this tree's 33 levels hold fewer than 20 nodes and the surplus lanes are pure padding.
 _NUM_WARPS_EXACT_TREE = 8
+# A CUDA warp is 32 threads on every NVIDIA GPU. Not a setting: it is a fact about the hardware,
+# and it is named here only so the tile width above reads as "one node per thread".
+_THREADS_PER_WARP = 32
+_BLOCK_NODES_EXACT_TREE = _NUM_WARPS_EXACT_TREE * _THREADS_PER_WARP
 
 # Per-row species arrays the exact tree solve keeps live at once: the two affine coefficients
 # alpha and gamma, plus two working arrays that each carry three roles in turn (see the kernel
