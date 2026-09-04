@@ -1131,19 +1131,31 @@ def _solve_reconciliation_self_loop_transpose_row_kernel(
     ``a``, ``P`` and ``v`` carry signs and a subtree whose adjoint changes sign cancels. That
     cancellation is in the system, not in this method -- the series sums the same signed terms.
 
-    WHERE THE NUMBERS LIVE, AND WHY IT CHANGED. The two kernels this one replaces passed eight ``[wave clades, species]``
-    arrays through global memory: five coefficients a prepare kernel wrote and a block-tiled
-    elimination read back (``self_loop_diagonal``, ``donor_adjoint_coefficient``, ``receiver_mass`` and the two
-    speciation edge probabilities), two running sums for the valid receiver mass, and three
-    working arrays that elimination's own walks wrote and re-read at every species-tree level. On the
-    200-family Coleman batch each of those is 12 GB per gradient, and Nsight Compute measured both
-    kernels memory-bound (41 % and 62 % of peak L2, 36 % DRAM, 16 % occupancy) rather than short
-    of arithmetic. Here one program owns one clade row, the whole species row sits in registers as
-    ``BLOCK_S`` lanes spread over several warps, and the coefficients are computed from the primal
-    row on the spot, so none of those eight arrays is written or read.
+    WHERE THE NUMBERS LIVE. The two kernels this one replaces passed eight
+    ``[wave clades, species]`` arrays through global memory: five coefficients a prepare kernel
+    wrote and a block-tiled elimination read back (``self_loop_diagonal``,
+    ``donor_adjoint_coefficient``, ``receiver_mass`` and the two speciation edge probabilities),
+    two running sums for the valid receiver mass, and three working arrays that elimination's own
+    walks wrote and re-read at every species-tree level. On the 200-family Coleman batch each of
+    those is 12 GB per gradient. Here one program owns one clade row, the whole species row sits
+    in registers as ``BLOCK_S`` lanes spread over several warps, and the coefficients are computed
+    from the primal row on the spot, so none of those eight arrays is written or read.
 
-    The two walks change shape to match. The block-tiled elimination walked one level's node list at a
-    time out of the ``compact_level_*`` tables; a register-resident program cannot scatter into
+    HOW MUCH THAT WAS WORTH, measured rather than assumed. The round trip really does go: Nsight
+    Compute on one wave puts this kernel's DRAM throughput at 1.5 % of peak against the old pair's
+    36 %. But the two kernels were never bandwidth-bound -- they were latency-bound at 16 %
+    occupancy -- so the gradient only got about 2 % faster (325.4 ms of 1926 ms in the two kernels
+    before, 318.5 ms of 1912 ms in this one plus the residual prepare launch after). ``tl.gather``
+    stages through shared memory, and it pays back there what the arrays cost in DRAM: the top
+    stall is now ``mio_throttle`` at 2.43 warps per issue, L1 throughput 53 %, SM throughput 7.6 %,
+    112 registers per thread at 16 warps for 33 % occupancy. Re-launching one captured 254-row
+    wave says where the time goes: 58.3 us in all, of which the coefficient setup above is 18.4 us
+    and the two walks below are 40 us, 1.21 us per species-tree level. The saving is the setup
+    half; the walks cost what the block-tiled walks through global memory cost. See
+    docs/genewise_h100_runtime.md, round five, for what would pay next.
+
+    The two walks change shape to match. The block-tiled elimination walked one level's node list
+    at a time out of the ``compact_level_*`` tables; a register-resident program cannot scatter into
     another lane's register, so each level here is a WHOLE-ROW update masked to the lanes at that
     height (``species_height``, 0 at a leaf), with children, parent and sibling reached by
     ``tl.gather``. Every lane computes every level's update and only the lanes at that height keep
