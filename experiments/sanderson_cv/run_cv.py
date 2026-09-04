@@ -53,10 +53,19 @@ HOGENOM_ROOT = Path(os.environ.get("GPUREC_HOGENOM_ROOT", DATA / "alerax_hogenom
 # archaea data root is env-overridable so the same code runs on the cluster (data shipped to /work)
 ARCHAEA_ROOT = Path(os.environ.get("GPUREC_ARCHAEA_ROOT", DATA / "alerax_archaea_davin2017"))
 
+# The linear extinction-adjoint solve used to be BiCGSTAB, configured by bicgstab_max_iter /
+# bicgstab_tol / bicgstab_breakdown_tol. It is now a Neumann series (the E-step self-map is a
+# contraction, so the series converges and there is no breakdown to guard against), configured by
+# e_adjoint_max_iter / e_adjoint_tol -- so the three old names no longer exist on SolverOptions and
+# this dict raised TypeError on construction, i.e. run_cv.py did not import at all.
+# The 500-iteration budget carries over unchanged. The old 1e-7 tolerance does NOT: SolverOptions
+# documents it as sitting below float32's own achievable floor, which made the solve raise on an
+# essentially converged iterate, and ``None`` means "use the dtype's own resolution" (1e-6 in
+# float32, 1e-12 in float64), which is the robust setting.
 _CV_SO = dict(
     e_max_iter=2000, e_tol=1e-8, pi_iters=64, neumann_terms=64,
-    bicgstab_max_iter=500, bicgstab_tol=1e-7,
-    bicgstab_breakdown_tol=1e-30, adjoint_pruning_threshold=1e-6,
+    e_adjoint_max_iter=500, e_adjoint_tol=None,
+    adjoint_pruning_threshold=1e-6,
     use_adjoint_pruning=True, pibar_side_threshold=0.0,
 )
 
@@ -204,7 +213,11 @@ def gbm_fit(batch_statics, theta0, rw, sp_parent, *, lam_tree, adam_steps=40, ad
 def heldout_nll(batch_statics, theta, rw):
     """Pure predictive NLL sum_i NLL_i(theta) over the families in batch_statics (no penalty, no grad)."""
     from gpurec.api._execution import stream_batches
-    loss, _g, _gr = stream_batches(batch_statics, theta, rw, genewise=False, need_grad=False)
+    # stream_batches gained a fourth positional argument, the per-species ORIGINATION logits, and a
+    # fourth return value, their gradient. All-zero logits are the uniform origination prior this
+    # CV has always assumed, so passing zeros reproduces the original behaviour exactly.
+    loss, _g, _gr, _go = stream_batches(batch_statics, theta, rw, torch.zeros_like(rw),
+                                        genewise=False, need_grad=False)
     return float(loss)
 
 
