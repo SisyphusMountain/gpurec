@@ -1073,8 +1073,10 @@ def _exact_tree_pi_self_loop_kernel(
         ebar[s] = 2**Ebar[s]                     stay in place, transferred copy lost
         e[s]    = 2**E[s]                        transfer out, donor copy lost
 
-    The first four arrive as their own pointers; ``dl``, ``ebar`` and ``e`` reach the kernel only
-    folded into ``self_diagonal_lin`` and ``transfer_coefficient_lin`` below.
+    ``sl1``, ``sl2``, ``diag`` and ``q`` (the last two defined below) arrive interleaved four to a
+    species in ``exact_tree_constants``; ``mt`` and ``recv`` arrive as arrays of their own. ``dl``,
+    ``ebar`` and ``e`` never reach the kernel at all -- they are only ever folded into ``diag`` and
+    ``q``.
 
     The whole solve is written in terms of
 
@@ -1087,8 +1089,8 @@ def _exact_tree_pi_self_loop_kernel(
     recv[s] p[s]`` the per-species equation reads
 
         diag[s] p[s] - q[s] u[s] - sl1[s] p[c1] - sl2[s] p[c2] = src[s]
-        q[s]    = e[s] * mt[s]                                  (``transfer_coefficient_lin``)
-        diag[s] = 1 - dl[s] - ebar[s] + q[s] recv[s]            (``self_diagonal_lin``)
+        q[s]    = e[s] * mt[s]                       (the transfer coefficient, slot 3)
+        diag[s] = 1 - dl[s] - ebar[s] + q[s] recv[s]  (the self diagonal, slot 2)
 
     so species ``s`` couples to everything above it through the single number ``u[s]`` and to
     everything below it through ``p[c1]``, ``p[c2]``. Four O(S) walks over the species tree solve
