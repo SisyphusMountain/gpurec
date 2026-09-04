@@ -1004,56 +1004,59 @@ def _exact_tree_pi_self_loop_kernel(
        Every quantity here is non-negative and nothing is subtracted: the pivot is the diagonal
        plus the children's feedback, never minus it, so it is bounded BELOW by ``diag[s]``.
 
-    2. Top-down (root first, same levels reversed). ``u`` is not known until ``T`` is, so this
-       pass carries ``u[s] = U0[s] + U1[s] T`` and with it ``p[s] = P0[s] + P1[s] T``, where
-       ``P0 = alpha + gamma U0`` and ``P1 = gamma U1``. The root has ``u = T``, so
-       ``U0[root] = 0``, ``U1[root] = 1``, and a child of ``s`` gets ``U0[c] = U0[s] - recv[s]
-       P0[s]``, ``U1[c] = U1[s] - recv[s] P1[s]``. Then ``T = sum_s recv[s] p[s]`` is one scalar
-       equation ``T = T0 + T1 T`` with ``T0 = sum recv (alpha + gamma U0)`` and
-       ``T1 = sum recv gamma U1``, so ``T = T0 / (1 - T1)``; ``T1`` is the total gain of the
-       transfer loop, well below 1.
+    2. In the SAME bottom-up walk, each subtree's total receiver mass becomes an affine function
+       of the available mass entering its top,
 
-    3. Why two more walks. ``u = U0 + U1 T`` is mathematically ``T - (what the ancestors took)``,
-       and for a deep species whose ancestors hold nearly all of the row's transfer mass that is a
-       difference of two nearly equal numbers. In float32 it loses every significant digit, and
-       since ``p = alpha + gamma u`` those lanes then come out orders of magnitude too small or
-       even negative. (Measured on the fitted-rate benchmark: in float64 the two-walk solve
-       matches a converged log-space forward to 2.5e-7 log2 -- the elimination is right -- while
-       in float32 ~1e-5 of the entries were off by more than 5 log2.) So ``u`` is rebuilt from
-       ADDITIONS only, using the first-pass ``p`` (call it ``p1``) purely to weigh masses:
+           M[s] = sum over r in subtree(s) of recv[r] p[r] = mA[s] + mG[s] u[s].
 
-           M[s] = recv[s] p1[s] + M[c1] + M[c2]          bottom-up: mass of s's whole subtree
-           R[root] = 0,  R[c1] = R[s] + M[c2],           top-down: mass hanging off the
-                         R[c2] = R[s] + M[c1]            ancestor chain, s's subtree excluded
-           u[s] = R[s] + M[s]
-           T - X[s] = R[s] + M[c1] + M[c2]
+       A leaf has ``mA = recv alpha``, ``mG = recv gamma``. An internal node's children both see
+       ``u[c] = u[s] - recv[s] p[s]``, and substituting the affine forms gives
 
-       Every step is a sum of non-negative terms, so ``u > 0`` always and ``p = alpha + gamma u``
-       is non-negative by construction -- no lane can come out negative and be published as
-       ``-inf``, which is what the two-walk form did to 16010 of 6.2e8 entries on the benchmark.
-       ``M`` and ``R`` are dominated by the row's largest lanes, which ``p1`` already gets right,
-       so one correction round is all this buys and all it needs.
+           mG[s] = recv[s] gamma[s] + (mG[c1] + mG[c2]) (1 - recv[s] gamma[s])
+           mA[s] = recv[s] alpha[s] (1 - mG[c1] - mG[c2]) + mA[c1] + mA[c2].
 
-    What remains is not this solve's to fix. Scaled linear space carries a row over about 24 log2
-    units of range in float32: a lane whose share of the row's transfer mass is below float32's
-    unit roundoff gets that roundoff instead of its true value, and comes out too LARGE. That
-    floor belongs to scaled linear space itself rather than to the elimination -- the fused
-    linear-space iteration this kernel replaced landed on the same wrong value, 12.5 log2 above
-    the log path, for the same entry on the fitted-rate benchmark. Only the log-space path is
-    free of it.
+       ``mG`` is the fraction of the mass entering a subtree that the subtree turns into receiver
+       mass of its own; it stays in ``[0, 1)`` as long as the fixed point converges, so the two
+       ``1 - ...`` factors are one minus a probability, like the pivots, and never cancel.
 
-    Pivots and ``1 - T1`` are the only divisions. Both are positive for any parameter set the
-    fixed point converges for (``dl + ebar < 1`` per species, loop gain < 1), and NEITHER is
-    substituted or clipped: a non-positive one divides through to an infinity or a NaN that shows
-    up immediately in the likelihood. ``guard_trips_ptr`` counts them per row so a run can say so.
+    3. Top-down (root first, same levels reversed), by ADDITION only. The root has ``u = T`` and
+       ``T = M[root]`` closes the loop: ``T = mA[root] / (1 - mG[root])``. Then at every node
+       ``s`` with ``u[s]`` and ``R[s]`` (the receiver mass hanging off ``s``'s ancestor chain,
+       ``R[root] = 0``) known:
 
-    Scratch: ``[4, rows, S]`` in the model dtype, four per-row species arrays, two of them reused
-    as each role finishes:
+           p[s]  = alpha[s] + gamma[s] u[s]
+           v     = (R[s] + mA[c1] + mA[c2]) / (1 - mG[c1] - mG[c2])     the mass BOTH children see
+           u[c1] = u[c2] = v
+           R[c1] = R[s] + mA[c2] + mG[c2] v          R[c2] = R[s] + mA[c1] + mG[c1] v
 
-        slot 0  alpha[s]
-        slot 1  gamma[s]
-        slot 2  src[s]  -> U0[s] -> R[s]
-        slot 3  U1[s]   -> M[s]
+       ``v`` is ``T - X[s]``, what is left for ``s``'s children once ``s`` and its ancestors have
+       taken their share, and it is also ``s``'s own valid receiver mass, the Pibar of this lane.
+       It comes out as a ratio of sums of non-negative terms, never as ``T`` minus something.
+
+    Why not the obvious ``u[c] = u[s] - recv[s] p[s]``. That is a difference of two nearly equal
+    numbers for every species under the lane that holds the row's mass, and it loses every digit
+    once the true remainder is below the dtype's unit roundoff of the row total (2^-24 in float32,
+    2^-53 in float64). An earlier version of this kernel walked that way and then rebuilt the masses
+    from the resulting first-pass ``p``; the rebuilt lanes inherited the noise, and on a
+    1007-species / 29,000-clade family at the loss-rate cap the error grew wave by wave from 1e-9
+    to 100 log2 units, because a lane 60 orders under its own row maximum can still be the
+    dominant factor of a product in a parent's gene-split source. Measured against a lane-by-lane
+    residual of the fixed-point equation on that family (benchmark/cc/exact_row_host_check.py),
+    the subtractive walk was off by 2e-8 relative in the deep lanes and this walk by 1e-15.
+
+    Pivots and the ``1 - gain`` factors (one per internal node, plus ``1 - mG[root]`` at the
+    closure) are the only divisions. All are positive for any parameter set the fixed point
+    converges for (``dl + ebar < 1`` per species, every gain < 1), and NONE is substituted or
+    clipped: a non-positive one divides through to an infinity or a NaN that shows up immediately
+    in the likelihood. ``guard_trips_ptr`` counts them per row so a run can say so.
+
+    Scratch: ``[4, rows, S]`` in the model dtype, four per-row species arrays, each reused as its
+    first role finishes (a slot's second value is written only once its first is dead):
+
+        slot 0  alpha[s]  -> p[s]      (internal nodes; a leaf keeps alpha)
+        slot 1  gamma[s]  -> valid[s]  (internal nodes; a leaf keeps gamma)
+        slot 2  src[s]    -> mA[s]  -> u[s]
+        slot 3  mG[s]     -> R[s]
 
     The species-tree walks read values written by other warps of the same program, so every level
     ends in a ``tl.debug_barrier()``, exactly as ``_reconciliation_self_loop_transpose_term`` does
@@ -1072,10 +1075,10 @@ def _exact_tree_pi_self_loop_kernel(
     span = slot_span.to(tl.int64)
     alpha_base = row_base
     gamma_base = span + row_base
-    # slot 2: the source term, then U0, then the off-chain mass R.
-    mass_off_chain_base = 2 * span + row_base
-    # slot 3: U1, then the subtree mass M.
-    mass_subtree_base = 3 * span + row_base
+    # slot 2: the source term, then the subtree mass constant mA, then the available mass u.
+    slot2_base = 2 * span + row_base
+    # slot 3: the subtree mass gain mG, then the off-chain mass R.
+    slot3_base = 3 * span + row_base
 
     # ---- entry pass 1: exact absolute row maximum, which becomes the linear gauge, and the
     # smallest finite lane, which says whether this row FITS in that single gauge at all.
@@ -1159,7 +1162,7 @@ def _exact_tree_pi_self_loop_kernel(
                 source_span_min, gene_split_min.to(ACC_DTYPE) + gene_split_row_offset - scale
             )
         tl.store(
-            scratch_ptr + mass_off_chain_base + s_offs,
+            scratch_ptr + slot2_base + s_offs,
             tl.where(mask, source, tl.zeros([BLOCK_S], dtype=DTYPE)),
             mask=mask,
         )
@@ -1206,6 +1209,9 @@ def _exact_tree_pi_self_loop_kernel(
 
     guard_trips = tl.full((), value=0, dtype=tl.int32)
     smallest_pivot = tl.full((), value=POS_LARGE, dtype=DTYPE)
+    # The smallest ``1 - gain`` divisor of the row: one per internal node (its children's
+    # combined gain) and the closure's ``1 - mG[root]``.
+    smallest_gain_margin = tl.full((), value=POS_LARGE, dtype=DTYPE)
 
     # ---- walk 1a: the species-tree leaves, which have no children to fold in. They are not in
     # the ``compact_level_*`` tables (those hold internal nodes only), so they are done in one
@@ -1220,9 +1226,18 @@ def _exact_tree_pi_self_loop_kernel(
         transfer_coefficient = tl.load(
             transfer_coefficient_lin_ptr + const_offsets, mask=is_leaf, other=0.0
         )
-        source = tl.load(scratch_ptr + mass_off_chain_base + s_offs, mask=is_leaf, other=0.0)
-        tl.store(scratch_ptr + alpha_base + s_offs, source / diagonal, mask=is_leaf)
-        tl.store(scratch_ptr + gamma_base + s_offs, transfer_coefficient / diagonal, mask=is_leaf)
+        source = tl.load(scratch_ptr + slot2_base + s_offs, mask=is_leaf, other=0.0)
+        leaf_alpha = source / diagonal
+        leaf_gamma = transfer_coefficient / diagonal
+        tl.store(scratch_ptr + alpha_base + s_offs, leaf_alpha, mask=is_leaf)
+        tl.store(scratch_ptr + gamma_base + s_offs, leaf_gamma, mask=is_leaf)
+        # A leaf's subtree is itself: M = recv (alpha + gamma u). Its source is dead once read.
+        if USE_RECEIVER_WEIGHTS:
+            leaf_receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=is_leaf, other=0.0)
+        else:
+            leaf_receiver_weight = tl.full([BLOCK_S], value=1.0, dtype=DTYPE)
+        tl.store(scratch_ptr + slot2_base + s_offs, leaf_receiver_weight * leaf_alpha, mask=is_leaf)
+        tl.store(scratch_ptr + slot3_base + s_offs, leaf_receiver_weight * leaf_gamma, mask=is_leaf)
         guard_trips += tl.sum(
             tl.where(is_leaf & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0
         )
@@ -1273,44 +1288,101 @@ def _exact_tree_pi_self_loop_kernel(
                 receiver_weight = tl.load(receiver_lin_ptr + parent, mask=node_mask, other=0.0)
             else:
                 receiver_weight = tl.full([BLOCK_NODES], value=1.0, dtype=DTYPE)
-            source = tl.load(scratch_ptr + mass_off_chain_base + parent, mask=node_mask, other=0.0)
+            source = tl.load(scratch_ptr + slot2_base + parent, mask=node_mask, other=0.0)
 
             pivot = diagonal + child_transfer_gain * receiver_weight
+            parent_alpha = (source + child_constant) / pivot
+            parent_gamma = (transfer_coefficient + child_transfer_gain) / pivot
+            tl.store(scratch_ptr + alpha_base + parent, parent_alpha, mask=node_mask)
+            tl.store(scratch_ptr + gamma_base + parent, parent_gamma, mask=node_mask)
+            guard_trips += tl.sum(
+                tl.where(node_mask & (pivot <= 0.0), 1, 0).to(tl.int32), axis=0
+            )
+
+            # The subtree's receiver mass as an affine function of the mass entering it (step 2
+            # of the docstring). The children's coefficients are final; the parent's source, read
+            # above, is dead, so mA takes its slot.
+            mass_constant_child1 = tl.load(
+                scratch_ptr + slot2_base + child1, mask=child1_mask, other=0.0
+            )
+            mass_gain_child1 = tl.load(scratch_ptr + slot3_base + child1, mask=child1_mask, other=0.0)
+            mass_constant_child2 = tl.load(
+                scratch_ptr + slot2_base + child2, mask=child2_mask, other=0.0
+            )
+            mass_gain_child2 = tl.load(scratch_ptr + slot3_base + child2, mask=child2_mask, other=0.0)
+            children_gain_margin = 1.0 - mass_gain_child1 - mass_gain_child2
+            own_gain = receiver_weight * parent_gamma
             tl.store(
-                scratch_ptr + alpha_base + parent,
-                (source + child_constant) / pivot,
+                scratch_ptr + slot3_base + parent,
+                own_gain + (mass_gain_child1 + mass_gain_child2) * (1.0 - own_gain),
                 mask=node_mask,
             )
             tl.store(
-                scratch_ptr + gamma_base + parent,
-                (transfer_coefficient + child_transfer_gain) / pivot,
+                scratch_ptr + slot2_base + parent,
+                receiver_weight * parent_alpha * children_gain_margin
+                + mass_constant_child1
+                + mass_constant_child2,
                 mask=node_mask,
             )
             guard_trips += tl.sum(
-                tl.where(node_mask & (pivot <= 0.0), 1, 0).to(tl.int32), axis=0
+                tl.where(node_mask & (children_gain_margin <= 0.0), 1, 0).to(tl.int32), axis=0
+            )
+            smallest_gain_margin = tl.minimum(
+                smallest_gain_margin,
+                tl.min(tl.where(node_mask, children_gain_margin, POS_LARGE), axis=0),
             )
             node_start += BLOCK_NODES
         tl.debug_barrier()
 
-    # ---- seed walk 2 with the ROOT's value of u, namely u = T (U0 = 0, U1 = 1). The seed is
-    # written to every species: the root keeps it (it has no ancestors to take mass), and every
-    # other node's entry is overwritten by its parent before anything reads it. This also retires
-    # the source term, whose slot U0 takes over.
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+    # ---- close the loop at the root: u[root] = T and T = M[root] = mA[root] + mG[root] T. The
+    # deepest level holds exactly the root (its height exceeds every other node's); a one-species
+    # tree has no internal node and its root is lane 0.
+    if n_levels > 0:
+        root = tl.load(level_parents_ptr + tl.load(level_ptr_ptr + n_levels - 1)).to(tl.int64)
+    else:
+        root = tl.full((), value=0, dtype=tl.int64)
+    root_mass_constant = tl.load(scratch_ptr + slot2_base + root)
+    root_mass_gain = tl.load(scratch_ptr + slot3_base + root)
+    loop_denominator = 1.0 - root_mass_gain
+    total_receiver_mass = root_mass_constant / loop_denominator
+    smallest_gain_margin = tl.minimum(smallest_gain_margin, loop_denominator)
+    if WRITE_GUARD_TRIPS:
+        tl.store(guard_trips_ptr + 4 * global_row, guard_trips.to(DTYPE))
         tl.store(
-            scratch_ptr + mass_off_chain_base + s_offs, tl.zeros([BLOCK_S], dtype=DTYPE), mask=mask
+            guard_trips_ptr + 4 * global_row + 1,
+            tl.where(smallest_gain_margin <= 0.0, 1.0, 0.0).to(DTYPE),
         )
-        tl.store(
-            scratch_ptr + mass_subtree_base + s_offs,
-            tl.full([BLOCK_S], value=1.0, dtype=DTYPE),
-            mask=mask,
-        )
+        # The two conditioning margins themselves, so a row that came out wrong without tripping
+        # a sign can still be explained.
+        tl.store(guard_trips_ptr + 4 * global_row + 2, smallest_pivot)
+        tl.store(guard_trips_ptr + 4 * global_row + 3, smallest_gain_margin)
+
+    # ---- the conditioning decision, and the second reason to hand a row over. Range was the
+    # first: a row too tall for one scale. This is the other way the elimination fails -- every
+    # lane divides by a pivot, and every internal node and the closure divide by a ``1 - gain``,
+    # so a row whose smallest divisor is within a rounding of zero loses digits in proportion.
+    # All margins are order-1 quantities (one minus probabilities), so ``conditioning_floor``
+    # compares against them directly. Deciding here, before the top-down walk and before
+    # anything is published, leaves the row exactly as this kernel found it, same as the range
+    # check does.
+    if (smallest_pivot < conditioning_floor) or (smallest_gain_margin < conditioning_floor):
+        tl.store(wide_row_ptr + global_row, 1)
+        tl.atomic_add(wide_row_count_ptr + wave_index, 1)
+        return
     tl.debug_barrier()
 
-    # ---- walk 2: the same levels, deepest-subtree level (the root) first. A node's U0 / U1 are
-    # written exactly once, by its parent.
+    # ---- seed the top-down walk: the root's available mass is the whole row's, and nothing
+    # hangs off its (empty) ancestor chain. The root's mA and mG were consumed just above, so
+    # its two slots are free to take u and R.
+    tl.store(scratch_ptr + slot2_base + root, total_receiver_mass)
+    tl.store(scratch_ptr + slot3_base + root, tl.zeros_like(total_receiver_mass))
+    tl.debug_barrier()
+
+    # ---- walk 2: the same levels, deepest-subtree level (the root) first, additions only (step
+    # 3 of the docstring). A node reads its own u and R (written by its parent, or the seed), and
+    # its children's mA and mG (final since walk 1); it publishes its own p over alpha and its
+    # own valid receiver mass over gamma, and writes u and R for both children over the
+    # children's mA and mG, which nothing reads again.
     for level_index in range(0, n_levels):
         level = n_levels - 1 - level_index
         level_start = tl.load(level_ptr_ptr + level)
@@ -1327,161 +1399,44 @@ def _exact_tree_pi_self_loop_kernel(
 
             parent_alpha = tl.load(scratch_ptr + alpha_base + parent, mask=node_mask, other=0.0)
             parent_gamma = tl.load(scratch_ptr + gamma_base + parent, mask=node_mask, other=0.0)
-            parent_u0 = tl.load(scratch_ptr + mass_off_chain_base + parent, mask=node_mask, other=0.0)
-            parent_u1 = tl.load(scratch_ptr + mass_subtree_base + parent, mask=node_mask, other=0.0)
-            if USE_RECEIVER_WEIGHTS:
-                receiver_weight = tl.load(receiver_lin_ptr + parent, mask=node_mask, other=0.0)
-            else:
-                receiver_weight = tl.full([BLOCK_NODES], value=1.0, dtype=DTYPE)
-            # Both children see the same remaining mass: the parent's, minus the parent's own.
-            child_u0 = parent_u0 - receiver_weight * (parent_alpha + parent_gamma * parent_u0)
-            child_u1 = parent_u1 - receiver_weight * (parent_gamma * parent_u1)
-
-            tl.store(scratch_ptr + mass_off_chain_base + child1, child_u0, mask=child1_mask)
-            tl.store(scratch_ptr + mass_subtree_base + child1, child_u1, mask=child1_mask)
-            tl.store(scratch_ptr + mass_off_chain_base + child2, child_u0, mask=child2_mask)
-            tl.store(scratch_ptr + mass_subtree_base + child2, child_u1, mask=child2_mask)
-            node_start += BLOCK_NODES
-        tl.debug_barrier()
-
-    # ---- close the loop: T = sum recv p = T0 + T1 T, so T = T0 / (1 - T1).
-    transfer_constant = tl.full((), value=0.0, dtype=DTYPE)
-    transfer_gain = tl.full((), value=0.0, dtype=DTYPE)
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        alpha = tl.load(scratch_ptr + alpha_base + s_offs, mask=mask, other=0.0)
-        gamma = tl.load(scratch_ptr + gamma_base + s_offs, mask=mask, other=0.0)
-        u0 = tl.load(scratch_ptr + mass_off_chain_base + s_offs, mask=mask, other=0.0)
-        u1 = tl.load(scratch_ptr + mass_subtree_base + s_offs, mask=mask, other=0.0)
-        p0 = alpha + gamma * u0
-        p1 = gamma * u1
-        if USE_RECEIVER_WEIGHTS:
-            receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=mask, other=0.0)
-            p0 = p0 * receiver_weight
-            p1 = p1 * receiver_weight
-        transfer_constant += tl.sum(tl.where(mask, p0, 0.0), axis=0)
-        transfer_gain += tl.sum(tl.where(mask, p1, 0.0), axis=0)
-    loop_denominator = 1.0 - transfer_gain
-    total_receiver_mass = transfer_constant / loop_denominator
-    if WRITE_GUARD_TRIPS:
-        tl.store(guard_trips_ptr + 4 * global_row, guard_trips.to(DTYPE))
-        tl.store(
-            guard_trips_ptr + 4 * global_row + 1,
-            tl.where(loop_denominator <= 0.0, 1.0, 0.0).to(DTYPE),
-        )
-        # The two conditioning margins themselves, so a row that came out wrong without tripping
-        # a sign can still be explained.
-        tl.store(guard_trips_ptr + 4 * global_row + 2, smallest_pivot)
-        tl.store(guard_trips_ptr + 4 * global_row + 3, loop_denominator)
-
-    # ---- the conditioning decision, and the second reason to hand a row over. Range was the
-    # first: a row too tall for one scale. This is the other way the elimination fails -- every
-    # lane divides by a pivot, and the whole row divides once by ``1 - loop gain``, so a row whose
-    # smallest divisor is within a rounding of zero loses digits in proportion. Both margins are
-    # order-1 quantities (one minus probabilities), so ``conditioning_floor`` compares against
-    # them directly. Deciding here, before walks 3 and 4 and before anything is published, leaves
-    # the row exactly as this kernel found it, same as the range check does.
-    if (smallest_pivot < conditioning_floor) or (loop_denominator < conditioning_floor):
-        tl.store(wide_row_ptr + global_row, 1)
-        tl.atomic_add(wide_row_count_ptr + wave_index, 1)
-        return
-    tl.debug_barrier()
-
-    # ---- seed walk 3 with each species' OWN receiver mass, from the first-pass solution
-    # p1 = alpha + gamma (U0 + U1 T). A first-pass lane that came out negative is a lane whose
-    # true value is far below the row maximum and whose two nearly-equal terms cancelled; it
-    # carries no mass, so it enters the mass sums as zero. This retires U0 and U1.
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        alpha = tl.load(scratch_ptr + alpha_base + s_offs, mask=mask, other=0.0)
-        gamma = tl.load(scratch_ptr + gamma_base + s_offs, mask=mask, other=0.0)
-        u0 = tl.load(scratch_ptr + mass_off_chain_base + s_offs, mask=mask, other=0.0)
-        u1 = tl.load(scratch_ptr + mass_subtree_base + s_offs, mask=mask, other=0.0)
-        first_pass = alpha + gamma * (u0 + u1 * total_receiver_mass)
-        own_mass = tl.where(
-            mask & (first_pass > 0.0), first_pass, tl.zeros([BLOCK_S], dtype=DTYPE)
-        )
-        if USE_RECEIVER_WEIGHTS:
-            receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=mask, other=0.0)
-            own_mass = own_mass * receiver_weight
-        tl.store(scratch_ptr + mass_subtree_base + s_offs, own_mass, mask=mask)
-    tl.debug_barrier()
-
-    # ---- walk 3: M[s] += M[c1] + M[c2], leaves upward. Each M[s] ends as the total receiver mass
-    # of s's whole subtree, built by addition only.
-    for level in range(0, n_levels):
-        level_start = tl.load(level_ptr_ptr + level)
-        level_end = tl.load(level_ptr_ptr + level + 1)
-        node_start = level_start
-        while node_start < level_end:
-            node_offs = node_start + tl.arange(0, BLOCK_NODES)
-            node_mask = node_offs < level_end
-            parent = tl.load(level_parents_ptr + node_offs, mask=node_mask, other=0).to(tl.int64)
-            child1 = tl.load(level_child1_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
-            child2 = tl.load(level_child2_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
-            parent_mass = tl.load(scratch_ptr + mass_subtree_base + parent, mask=node_mask, other=0.0)
-            child1_mass = tl.load(
-                scratch_ptr + mass_subtree_base + child1, mask=node_mask & (child1 < S), other=0.0
+            parent_available = tl.load(scratch_ptr + slot2_base + parent, mask=node_mask, other=0.0)
+            parent_off_chain = tl.load(scratch_ptr + slot3_base + parent, mask=node_mask, other=0.0)
+            mass_constant_child1 = tl.load(
+                scratch_ptr + slot2_base + child1, mask=child1_mask, other=0.0
             )
-            child2_mass = tl.load(
-                scratch_ptr + mass_subtree_base + child2, mask=node_mask & (child2 < S), other=0.0
+            mass_gain_child1 = tl.load(scratch_ptr + slot3_base + child1, mask=child1_mask, other=0.0)
+            mass_constant_child2 = tl.load(
+                scratch_ptr + slot2_base + child2, mask=child2_mask, other=0.0
             )
+            mass_gain_child2 = tl.load(scratch_ptr + slot3_base + child2, mask=child2_mask, other=0.0)
+
+            children_available = (
+                parent_off_chain + mass_constant_child1 + mass_constant_child2
+            ) / (1.0 - mass_gain_child1 - mass_gain_child2)
             tl.store(
-                scratch_ptr + mass_subtree_base + parent,
-                parent_mass + child1_mass + child2_mass,
+                scratch_ptr + alpha_base + parent,
+                parent_alpha + parent_gamma * parent_available,
                 mask=node_mask,
             )
-            node_start += BLOCK_NODES
-        tl.debug_barrier()
-
-    # ---- seed walk 4: R[root] = 0, the mass hanging off an empty ancestor chain. Written to
-    # every species for the same reason as the walk-2 seed; this retires U0's slot.
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        tl.store(
-            scratch_ptr + mass_off_chain_base + s_offs, tl.zeros([BLOCK_S], dtype=DTYPE), mask=mask
-        )
-    tl.debug_barrier()
-
-    # ---- walk 4: R[c1] = R[s] + M[c2], R[c2] = R[s] + M[c1], root downward. Each R[s] ends as
-    # the receiver mass sitting outside s's subtree and outside s's ancestors -- again addition
-    # only, so u[s] = R[s] + M[s] never cancels.
-    for level_index in range(0, n_levels):
-        level = n_levels - 1 - level_index
-        level_start = tl.load(level_ptr_ptr + level)
-        level_end = tl.load(level_ptr_ptr + level + 1)
-        node_start = level_start
-        while node_start < level_end:
-            node_offs = node_start + tl.arange(0, BLOCK_NODES)
-            node_mask = node_offs < level_end
-            parent = tl.load(level_parents_ptr + node_offs, mask=node_mask, other=0).to(tl.int64)
-            child1 = tl.load(level_child1_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
-            child2 = tl.load(level_child2_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
-            child1_mask = node_mask & (child1 < S)
-            child2_mask = node_mask & (child2 < S)
-            parent_off_chain = tl.load(
-                scratch_ptr + mass_off_chain_base + parent, mask=node_mask, other=0.0
-            )
-            child1_mass = tl.load(scratch_ptr + mass_subtree_base + child1, mask=child1_mask, other=0.0)
-            child2_mass = tl.load(scratch_ptr + mass_subtree_base + child2, mask=child2_mask, other=0.0)
+            tl.store(scratch_ptr + gamma_base + parent, children_available, mask=node_mask)
+            tl.store(scratch_ptr + slot2_base + child1, children_available, mask=child1_mask)
+            tl.store(scratch_ptr + slot2_base + child2, children_available, mask=child2_mask)
             tl.store(
-                scratch_ptr + mass_off_chain_base + child1,
-                parent_off_chain + child2_mass,
+                scratch_ptr + slot3_base + child1,
+                parent_off_chain + mass_constant_child2 + mass_gain_child2 * children_available,
                 mask=child1_mask,
             )
             tl.store(
-                scratch_ptr + mass_off_chain_base + child2,
-                parent_off_chain + child1_mass,
+                scratch_ptr + slot3_base + child2,
+                parent_off_chain + mass_constant_child1 + mass_gain_child1 * children_available,
                 mask=child2_mask,
             )
             node_start += BLOCK_NODES
         tl.debug_barrier()
 
-    # ---- publish: p = alpha + gamma (R + M) and Pibar = mt (R + M[c1] + M[c2]), both sums of
-    # non-negative terms, then the log2 residual + offset pair for each row.
+    # ---- publish. An internal node's p and valid receiver mass were settled by walk 2 (slots 0
+    # and 1); a leaf still holds alpha and gamma there, its u in slot 2 and, with no children, its
+    # valid receiver mass R in slot 3. Then the log2 residual + offset pair for each row.
     final_receiver_max = tl.full((), value=0.0, dtype=DTYPE)
     max_log2_change = tl.full((), value=0.0, dtype=tl.float32)
     pi_has_finite = tl.full((), value=0, dtype=tl.int32)
@@ -1496,25 +1451,20 @@ def _exact_tree_pi_self_loop_kernel(
             entry_residual = tl.load(
                 Pi_in_ptr + global_base + s_offs, mask=mask, other=NEG_LARGE
             )
-        alpha = tl.load(scratch_ptr + alpha_base + s_offs, mask=mask, other=0.0)
-        gamma = tl.load(scratch_ptr + gamma_base + s_offs, mask=mask, other=0.0)
-        off_chain_mass = tl.load(scratch_ptr + mass_off_chain_base + s_offs, mask=mask, other=0.0)
-        subtree_mass = tl.load(scratch_ptr + mass_subtree_base + s_offs, mask=mask, other=0.0)
+        slot0 = tl.load(scratch_ptr + alpha_base + s_offs, mask=mask, other=0.0)
+        slot1 = tl.load(scratch_ptr + gamma_base + s_offs, mask=mask, other=0.0)
+        slot2 = tl.load(scratch_ptr + slot2_base + s_offs, mask=mask, other=0.0)
+        slot3 = tl.load(scratch_ptr + slot3_base + s_offs, mask=mask, other=0.0)
         child1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=S).to(tl.int64)
-        child2 = tl.load(species_child2_ptr + s_offs, mask=mask, other=S).to(tl.int64)
-        child1_mass = tl.load(
-            scratch_ptr + mass_subtree_base + child1, mask=mask & (child1 < S), other=0.0
-        )
-        child2_mass = tl.load(
-            scratch_ptr + mass_subtree_base + child2, mask=mask & (child2 < S), other=0.0
-        )
+        is_leaf = mask & (child1 >= S)
 
-        available_mass = off_chain_mass + subtree_mass
         final_likelihood = tl.where(
-            mask, alpha + gamma * available_mass, tl.zeros([BLOCK_S], dtype=DTYPE)
+            mask,
+            tl.where(is_leaf, slot0 + slot1 * slot2, slot0),
+            tl.zeros([BLOCK_S], dtype=DTYPE),
         )
-        # T - X[s]: what is left once s's OWN subtree mass is dropped from ``available_mass``.
-        valid_receiver_mass = off_chain_mass + child1_mass + child2_mass
+        # T - X[s]: the mass left once s and its ancestors have taken theirs.
+        valid_receiver_mass = tl.where(is_leaf, slot3, slot1)
         max_transfer = tl.load(max_transfer_lin_ptr + const_offsets, mask=mask, other=0.0)
         transfer_complement_likelihood = max_transfer * tl.where(
             valid_receiver_mass > 0.0, valid_receiver_mass, tl.zeros([BLOCK_S], dtype=DTYPE)
@@ -2274,8 +2224,9 @@ def compute_exact_tree_self_loop(
     Python rather than in int32 device arithmetic.
 
     ``guard_trips_out`` is an optional tensor of shape ``[clade rows, 4]`` in the model dtype:
-    how many of this row's pivots were non-positive, whether ``1 - loop gain`` was, and then the
-    two margins themselves -- the row's smallest pivot and its ``1 - loop gain``. The counts are
+    how many of this row's divisors (pivots and per-node ``1 - gain`` factors) were non-positive,
+    whether the smallest ``1 - gain`` (per node or at the closure) was, and then the two margins
+    themselves -- the row's smallest pivot and its smallest ``1 - gain``. The counts are
     small integers, exact in either float type, and one dtype keeps the kernel's stores uniform.
     The margins are what explains a row that came out wrong without tripping a sign. Diagnostic
     only; pass ``None`` in production.
