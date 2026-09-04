@@ -301,7 +301,8 @@ depth; the analytic gradient there is -71.944 / +2748.83 / -407.69 (D, L, T) aga
 differences -71.951 / +2749.09 / -407.73, the truncation floor, identically for both adjoint
 solvers. At fitted rates nothing changed: the full fit with the forward fix alone gave
 9048938.300 bits (previous runs 9048938.28 to 9048938.31), 5119 of 5123 certified; the full fit
-with every kernel converted is reported in the progression table. The point of the change is
+with every kernel converted (747 s, 9048938.292 bits) certifies all 5123 families for the first time,
+in 68 Newton steps instead of about 110. The point of the change is
 that the rate box is now trustworthy where the fit may wander, for the likelihood and for the
 gradient, in both precisions.
 
@@ -344,6 +345,13 @@ agree at every depth of every row, so either is an oracle.
 | + exact forward (D3), single tier | 1053 to 1101 s | 9048938.4 | 5119 to 5120 |
 | + exact adjoint (D3) | 782 to 794 s | 9048938.3 | 5120 |
 | + exact tangent, additive prepare kernel (D4), fp64 fix (final) | 777 to 786 s | 9048938.28 | 5119 to 5121 |
+| + every transfer sum additive (E), all first- and second-order kernels | 747 s (shared node) | 9048938.29 | 5123 |
+
+The 747 s run (job final_fulli, interactive node shared with other users: its warm-up took 148 s
+against 125 s on a quiet node) needed 68 Newton steps instead of about 110, because the two to four
+families that used to iterate to the cap now converge: warm-up 148 s, Newton gradients 449 s, curvature
+53 s, verification 47 s, re-plans 13 s, certificate 18 s; peak memory 26.7 GiB (2 GiB more than
+before: the additive backward kernels park each node's own term in a scratch buffer).
 
 Time split of the 777 s run: warm-up (5 Adam gradients) 125 s, Newton gradients 397 s, curvature
 38 s, verification 44 s, re-plans 13 s, certificate 17 s, first build 20 s, and a tail of a few

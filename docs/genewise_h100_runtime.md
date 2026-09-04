@@ -373,10 +373,12 @@ the analytic gradient there is -71.944 / +2748.83 / -407.69 (D, L, T) against ce
 -71.951 / +2749.09 / -407.73, the step's truncation floor, identically for both adjoint solvers; in a mild regime
 nothing moved (8e-5). As a bonus the log sweep got 8-18 % faster: two prefix scans replace a 34-deep ancestor walk.
 
-**Effect at fitted rates: none.** Full fit with the forward fix (job 57791446): 856 s on a shared
-node, NLL 9048938.300 bits (previously 9048938.28-9048938.31), 5119/5123 certified. The tails only
-matter at the extreme corners; the point of the fix is that the rate box is now trustworthy there,
-for the likelihood and for the gradient.
+**Effect at fitted rates: same optimum, cleaner fit.** Full fit with the forward fix alone (job 57791446):
+856 s on a shared node, NLL 9048938.300 bits, 5119/5123 certified. With every kernel converted (job
+final_fulli, interactive node shared with other users, warm-up 148 s against 125 s quiet): **747.2 s**,
+NLL 9048938.292 bits, **5123/5123 certified** in 68 Newton steps instead of about 110, peak 26.7 GiB
+(+2 GiB of scratch in the additive backward kernels). The families that used to iterate to the cap were
+the ones whose gradient was rounding noise in a high-loss region.
 
 ## What is left
 
