@@ -1148,11 +1148,21 @@ def _exact_tree_pi_self_loop_kernel(
     # A wholly impossible row keeps the canonical zero gauge.
     scale = tl.where(scale != NEG_LARGE, scale, tl.zeros_like(scale))
 
-    # ---- entry pass 2: the iteration-invariant source term src[s], in this row's frame.
+    # ---- entry pass 2: the iteration-invariant source term src[s], in this row's frame, AND the
+    # species-tree leaves' own solution, which is a division by the diagonal and nothing else.
     # ``scale`` is at least the maximum of every log2 term entering it, so each exponent is <= 0.
     # The same pass records how far the SOURCE reaches below the gauge, because a row's range is
     # set by everything that enters it, not only by the iterate it was handed.
+    #
+    # The leaf work (walk 1a) is done here rather than in a sweep of its own because a leaf's
+    # ``alpha`` is ``src/diag`` and nothing more: the source it needs is the value this loop has
+    # just put in a register. Splitting the two meant writing every lane's source to the scratch
+    # slot and reading the leaf half of it straight back, one whole species-length load and one
+    # extra store of the same lanes; keeping it in the register skips both. Everything else in
+    # walk 1a already read per-species arrays this pass touches anyway.
     source_span_min = tl.full((), value=POS_LARGE, dtype=ACC_DTYPE)
+    guard_trips = tl.full((), value=0, dtype=tl.int32)
+    smallest_pivot = tl.full((), value=POS_LARGE, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
@@ -1169,8 +1179,20 @@ def _exact_tree_pi_self_loop_kernel(
                     leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE
                 )
                 fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=mask, other=NEG_LARGE)
-                baseline = tl.exp2(leaf_logp_col + fm_col - scale.to(DTYPE))
-                source += tl.where(leaf_hit, mapped_term, baseline)
+                baseline_log = leaf_logp_col + fm_col
+                source += tl.where(
+                    leaf_hit, mapped_term, tl.exp2(baseline_log - scale.to(DTYPE))
+                )
+                # This baseline is a source too, so it sets the row's range like the rest. It is
+                # measured here, off the sum already in hand, rather than in a repeat sweep.
+                source_span_min = tl.minimum(
+                    source_span_min,
+                    tl.min(
+                        tl.where(mask & (baseline_log != NEG_LARGE), baseline_log, POS_LARGE),
+                        axis=0,
+                    ).to(ACC_DTYPE)
+                    - scale,
+                )
             else:
                 source += tl.where(leaf_hit, mapped_term, tl.zeros([BLOCK_S], dtype=DTYPE))
         if HAS_SPLITS:
@@ -1191,39 +1213,58 @@ def _exact_tree_pi_self_loop_kernel(
             source_span_min = tl.minimum(
                 source_span_min, gene_split_min.to(ACC_DTYPE) + gene_split_row_offset - scale
             )
+
+        # ---- walk 1a, folded in: the species-tree leaves, which have no children to fold in.
+        # They are not in the ``compact_level_*`` tables (those hold internal nodes only), so they
+        # are done in this contiguous sweep, masked to the lanes whose first child is the S
+        # sentinel. A leaf's subtree is itself: M = recv (alpha + gamma u).
+        const_offsets = const_base + s_offs
+        child1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
+        is_leaf = mask & (child1 >= S)
+        diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=mask, other=1.0)
+        transfer_coefficient = tl.load(
+            transfer_coefficient_lin_ptr + const_offsets, mask=is_leaf, other=0.0
+        )
+        leaf_alpha = source / diagonal
+        leaf_gamma = transfer_coefficient / diagonal
+        tl.store(scratch_ptr + alpha_base + s_offs, leaf_alpha, mask=is_leaf)
+        tl.store(scratch_ptr + gamma_base + s_offs, leaf_gamma, mask=is_leaf)
+        if USE_RECEIVER_WEIGHTS:
+            leaf_receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=is_leaf, other=0.0)
+        else:
+            leaf_receiver_weight = tl.full([BLOCK_S], value=1.0, dtype=DTYPE)
+        # Slot 2 carries the source for the internal nodes, which read it in walk 1b, and the
+        # leaf's own subtree mass for the leaves, whose source is dead the moment it is divided.
+        # One store settles both, where before the source was stored for every lane and the leaf
+        # lanes were then overwritten.
         tl.store(
             scratch_ptr + slot2_base + s_offs,
-            tl.where(mask, source, tl.zeros([BLOCK_S], dtype=DTYPE)),
+            tl.where(is_leaf, leaf_receiver_weight * leaf_alpha, source),
             mask=mask,
+        )
+        tl.store(scratch_ptr + slot3_base + s_offs, leaf_receiver_weight * leaf_gamma, mask=is_leaf)
+        guard_trips += tl.sum(
+            tl.where(is_leaf & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0
+        )
+        # Every internal node's pivot is its diagonal PLUS a non-negative children term, so the
+        # smallest diagonal in the row bounds every divisor this solve will use from below.
+        smallest_pivot = tl.minimum(
+            smallest_pivot, tl.min(tl.where(mask, diagonal, POS_LARGE), axis=0)
         )
 
     if USE_LEAF_INDEX:
-        # The leaf observation sits at one lane, and with fraction-missing every other lane of
-        # this row's leaf column carries the present-but-unobserved baseline; both are sources.
+        # The leaf observation sits at one lane, and it is a source like the rest.
         source_span_min = tl.minimum(
             source_span_min, leaf_observation_log_probability.to(ACC_DTYPE) - scale
         )
-        if USE_FRACTION_MISSING:
-            for s_start in range(0, S, BLOCK_S):
-                s_offs = s_start + tl.arange(0, BLOCK_S)
-                mask = s_offs < S
-                leaf_logp_col = tl.load(
-                    leaf_logp_ptr + family_const * S + s_offs, mask=mask, other=NEG_LARGE
-                )
-                fm_col = tl.load(leaf_fm_log_ptr + s_offs, mask=mask, other=NEG_LARGE)
-                baseline = leaf_logp_col + fm_col
-                source_span_min = tl.minimum(
-                    source_span_min,
-                    tl.min(
-                        tl.where(mask & (baseline != NEG_LARGE), baseline, POS_LARGE), axis=0
-                    ).to(ACC_DTYPE)
-                    - scale,
-                )
 
     # ---- the range decision. Scaled linear space carries ONE exponent for the whole row, so a
     # lane this far under the gauge is an exact zero here while the log path, which keeps an
     # exponent per lane, still holds it. Hand such a row back untouched: the caller sweeps it in
     # log space instead, and the row's published state is left exactly as this kernel found it.
+    # The pass above has written this row's scratch, which is private per-row working memory the
+    # caller neither reads nor carries between waves, so a row handed back here is still handed
+    # back with everything the caller can see exactly as it was.
     row_span_min = tl.minimum(
         source_span_min,
         tl.where(
@@ -1237,45 +1278,9 @@ def _exact_tree_pi_self_loop_kernel(
         tl.atomic_add(wide_row_count_ptr + wave_index, 1)
         return
 
-    guard_trips = tl.full((), value=0, dtype=tl.int32)
-    smallest_pivot = tl.full((), value=POS_LARGE, dtype=DTYPE)
     # The smallest ``1 - gain`` divisor of the row: one per internal node (its children's
     # combined gain) and the closure's ``1 - mG[root]``.
     smallest_gain_margin = tl.full((), value=POS_LARGE, dtype=DTYPE)
-
-    # ---- walk 1a: the species-tree leaves, which have no children to fold in. They are not in
-    # the ``compact_level_*`` tables (those hold internal nodes only), so they are done in one
-    # contiguous sweep, masked to the lanes whose first child is the S sentinel.
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
-        const_offsets = const_base + s_offs
-        child1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
-        is_leaf = mask & (child1 >= S)
-        diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=mask, other=1.0)
-        transfer_coefficient = tl.load(
-            transfer_coefficient_lin_ptr + const_offsets, mask=is_leaf, other=0.0
-        )
-        source = tl.load(scratch_ptr + slot2_base + s_offs, mask=is_leaf, other=0.0)
-        leaf_alpha = source / diagonal
-        leaf_gamma = transfer_coefficient / diagonal
-        tl.store(scratch_ptr + alpha_base + s_offs, leaf_alpha, mask=is_leaf)
-        tl.store(scratch_ptr + gamma_base + s_offs, leaf_gamma, mask=is_leaf)
-        # A leaf's subtree is itself: M = recv (alpha + gamma u). Its source is dead once read.
-        if USE_RECEIVER_WEIGHTS:
-            leaf_receiver_weight = tl.load(receiver_lin_ptr + s_offs, mask=is_leaf, other=0.0)
-        else:
-            leaf_receiver_weight = tl.full([BLOCK_S], value=1.0, dtype=DTYPE)
-        tl.store(scratch_ptr + slot2_base + s_offs, leaf_receiver_weight * leaf_alpha, mask=is_leaf)
-        tl.store(scratch_ptr + slot3_base + s_offs, leaf_receiver_weight * leaf_gamma, mask=is_leaf)
-        guard_trips += tl.sum(
-            tl.where(is_leaf & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0
-        )
-        # Every internal node's pivot is its diagonal PLUS a non-negative children term, so the
-        # smallest diagonal in the row bounds every divisor this solve will use from below.
-        smallest_pivot = tl.minimum(
-            smallest_pivot, tl.min(tl.where(mask, diagonal, POS_LARGE), axis=0)
-        )
     tl.debug_barrier()
 
     # ---- walk 1b: internal nodes, shallowest-subtree level first. Every node in level ``level``
