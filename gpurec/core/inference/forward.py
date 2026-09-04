@@ -236,6 +236,15 @@ def pi_wave_forward(
             use_receiver_weights,
             accumulator_dtype,
         )
+        # The four constants the two tree walks read together, side by side per species. The walks
+        # want all four of ONE species at a scattered index, so keeping them in one array makes
+        # that a single memory request instead of four to four places far apart -- the same reason
+        # the working slots below are interleaved. The order is the one the kernel unpacks, and it
+        # puts the diagonal and the transfer coefficient last because the source sweep reads just
+        # those two and wants them adjacent.
+        exact_tree_constants = torch.stack(
+            (sl1_lin, sl2_lin, self_diag_lin, transfer_coefficient_lin), dim=-1
+        ).contiguous()
         # Four numbers per species: the elimination's two affine coefficients plus two working
         # values (see ``_exact_tree_pi_self_loop_kernel``'s slot table). They are the LAST axis, so
         # a species' four sit side by side and one memory request fetches all four of them.
@@ -405,10 +414,7 @@ def pi_wave_forward(
                     ws,
                     W,
                     S,
-                    self_diag_lin,
-                    transfer_coefficient_lin,
-                    sl1_lin,
-                    sl2_lin,
+                    exact_tree_constants,
                     max_transfer_lin,
                     receiver_lin,
                     sp_child1,

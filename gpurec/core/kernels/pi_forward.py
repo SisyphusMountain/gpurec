@@ -55,6 +55,13 @@ _NUM_WARPS_EXACT_TREE = 8
 _THREADS_PER_WARP = 32
 _BLOCK_NODES_EXACT_TREE = _NUM_WARPS_EXACT_TREE * _THREADS_PER_WARP
 
+# The per-species event constants the exact tree solve's two tree walks read together, stored side
+# by side per species for the same reason the working slots are (see ``_read_species_slots``): the
+# two speciation coefficients, the self diagonal and the transfer coefficient, in that order. The
+# per-donor transfer normalizer is deliberately NOT among them -- only the publish sweep reads it,
+# and it reads every species in order, so it gains nothing from being gathered alongside these.
+_EXACT_TREE_CONSTANTS_PER_SPECIES = 4
+
 # Per-row species arrays the exact tree solve keeps live at once: the two affine coefficients
 # alpha and gamma, plus two working arrays that each carry three roles in turn (see the kernel
 # docstring's slot table).
@@ -996,10 +1003,7 @@ def _exact_tree_pi_self_loop_kernel(
     pibar_row_max_ptr,
     pi_residual_out_ptr,
     guard_trips_ptr,
-    self_diagonal_lin_ptr,
-    transfer_coefficient_lin_ptr,
-    speciation_child1_lin_ptr,
-    speciation_child2_lin_ptr,
+    exact_tree_constants_ptr,
     max_transfer_lin_ptr,
     receiver_lin_ptr,
     species_child1_ptr,
@@ -1025,6 +1029,7 @@ def _exact_tree_pi_self_loop_kernel(
     S: tl.constexpr,
     stride: tl.constexpr,
     CONST_ROW_STRIDE: tl.constexpr,
+    MAX_TRANSFER_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
     BLOCK_NODES: tl.constexpr,
     HAS_SPLITS: tl.constexpr,
@@ -1183,7 +1188,13 @@ def _exact_tree_pi_self_loop_kernel(
     global_base = global_row * stride
     row_base = w * stride
     family_const = tl.load(family_idx_ptr + global_row)
+    # The four per-species event constants the tree walks want together are stored side by side
+    # for the same reason the working slots are, so a family's block for one species starts at
+    # ``species index * 4``. The per-donor transfer normalizer is not one of them -- only the
+    # publish sweep reads it, and it reads every species in order -- so it keeps its own array
+    # and its own row stride.
     const_base = family_const * CONST_ROW_STRIDE
+    max_transfer_base = family_const * MAX_TRANSFER_ROW_STRIDE
     # The four working numbers of a species sit side by side (see the scratch note in the
     # docstring), so a species' block of four starts at ``species index * 4`` inside the row and a
     # row is ``S * 4`` numbers long. Slot 0 is alpha then p, slot 1 gamma then the valid receiver
@@ -1299,13 +1310,17 @@ def _exact_tree_pi_self_loop_kernel(
         # They are not in the ``compact_level_*`` tables (those hold internal nodes only), so they
         # are done in this contiguous sweep, masked to the lanes whose first child is the S
         # sentinel. A leaf's subtree is itself: M = recv (alpha + gamma u).
-        const_offsets = const_base + s_offs
         child1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
         is_leaf = mask & (child1 >= S)
-        diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=mask, other=1.0)
-        transfer_coefficient = tl.load(
-            transfer_coefficient_lin_ptr + const_offsets, mask=is_leaf, other=0.0
+        # The diagonal and the transfer coefficient are slots 2 and 3 of the interleaved
+        # constants, so one load brings both. Past the end of the species axis the diagonal is
+        # forced to 1 and off leaves the transfer coefficient to 0, the values the two separate
+        # masked loads used to supply, so those lanes divide by one and contribute nothing.
+        diagonal, transfer_coefficient = _read_species_slot_pair(
+            exact_tree_constants_ptr, const_base + s_offs * 4 + 2, mask
         )
+        diagonal = tl.where(mask, diagonal, 1.0)
+        transfer_coefficient = tl.where(is_leaf, transfer_coefficient, 0.0)
         leaf_alpha = source / diagonal
         leaf_gamma = transfer_coefficient / diagonal
         if USE_RECEIVER_WEIGHTS:
@@ -1383,16 +1398,19 @@ def _exact_tree_pi_self_loop_kernel(
             child2 = tl.load(level_child2_ptr + node_offs, mask=node_mask, other=S).to(tl.int64)
             child1_mask = node_mask & (child1 < S)
             child2_mask = node_mask & (child2 < S)
-            const_offsets = const_base + parent
-
-            speciation_child1 = tl.load(
-                speciation_child1_lin_ptr + const_offsets, mask=node_mask, other=0.0
+            # The node's four event constants come in on one load, and the same for each child's
+            # four working numbers: the two affine coefficients used just below and the two
+            # subtree masses used further down.
+            (
+                speciation_child1,
+                speciation_child2,
+                diagonal,
+                transfer_coefficient,
+            ) = _read_species_slots(
+                exact_tree_constants_ptr, const_base + parent * 4, node_mask, BLOCK_NODES
             )
-            speciation_child2 = tl.load(
-                speciation_child2_lin_ptr + const_offsets, mask=node_mask, other=0.0
-            )
-            # Each child's four numbers come in on one load: the two affine coefficients used just
-            # below and the two subtree masses used further down.
+            # Past the end of a level the diagonal is forced to 1, as its own masked load used to
+            # supply, so those lanes divide by one instead of by zero.
             (
                 alpha_child1,
                 gamma_child1,
@@ -1414,10 +1432,7 @@ def _exact_tree_pi_self_loop_kernel(
                 speciation_child1 * gamma_child1 + speciation_child2 * gamma_child2
             )
 
-            diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=node_mask, other=1.0)
-            transfer_coefficient = tl.load(
-                transfer_coefficient_lin_ptr + const_offsets, mask=node_mask, other=0.0
-            )
+            diagonal = tl.where(node_mask, diagonal, 1.0)
             if USE_RECEIVER_WEIGHTS:
                 receiver_weight = tl.load(receiver_lin_ptr + parent, mask=node_mask, other=0.0)
             else:
@@ -1578,7 +1593,6 @@ def _exact_tree_pi_self_loop_kernel(
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
-        const_offsets = const_base + s_offs
         if COMPUTE_DIFF:
             # Read BEFORE this loop's stores: for a leaf wave ``Pi_in`` is the same tensor as
             # ``Pibar_out``, and for a split wave it is the same tensor as ``Pi_out``.
@@ -1598,7 +1612,9 @@ def _exact_tree_pi_self_loop_kernel(
         )
         # T - X[s]: the mass left once s and its ancestors have taken theirs.
         valid_receiver_mass = tl.where(is_leaf, slot3, slot1)
-        max_transfer = tl.load(max_transfer_lin_ptr + const_offsets, mask=mask, other=0.0)
+        max_transfer = tl.load(
+            max_transfer_lin_ptr + max_transfer_base + s_offs, mask=mask, other=0.0
+        )
         transfer_complement_likelihood = max_transfer * tl.where(
             valid_receiver_mass > 0.0, valid_receiver_mass, tl.zeros([BLOCK_S], dtype=DTYPE)
         )
@@ -2331,10 +2347,7 @@ def compute_exact_tree_self_loop(
     ws,
     W,
     S,
-    self_diagonal_lin,
-    transfer_coefficient_lin,
-    speciation_child1_lin,
-    speciation_child2_lin,
+    exact_tree_constants,
     max_transfer_lin,
     receiver_lin,
     species_child1,
@@ -2395,10 +2408,7 @@ def compute_exact_tree_self_loop(
         Pi_out=Pi_out,
         Pibar=Pibar,
         scratch=scratch,
-        self_diagonal_lin=self_diagonal_lin,
-        transfer_coefficient_lin=transfer_coefficient_lin,
-        speciation_child1_lin=speciation_child1_lin,
-        speciation_child2_lin=speciation_child2_lin,
+        exact_tree_constants=exact_tree_constants,
         max_transfer_lin=max_transfer_lin,
         receiver_lin=receiver_lin,
         leaf_logp=leaf_logp,
@@ -2483,7 +2493,16 @@ def compute_exact_tree_self_loop(
     # ``Pi_in`` is passed rather than a fresh 1-element tensor because this runs on every wave
     # launch, and an allocation per launch is one more thing the host does while the GPU waits.
     leaf_fm_log_arg = leaf_fm_log.contiguous() if use_fraction_missing else Pi_in
-    _, const_row_stride = _prepare_wave_launch(S, self_diagonal_lin)
+    if exact_tree_constants.ndim != 3 or tuple(exact_tree_constants.shape[1:]) != (
+        int(S),
+        _EXACT_TREE_CONSTANTS_PER_SPECIES,
+    ):
+        raise ValueError(
+            "exact tree constants must have shape "
+            f"[families, S, {_EXACT_TREE_CONSTANTS_PER_SPECIES}]"
+        )
+    _, const_row_stride = _prepare_wave_launch(S, exact_tree_constants)
+    _, max_transfer_row_stride = _prepare_wave_launch(S, max_transfer_lin)
     block_s = min(_BLOCK_SPECIES_SELF_LOOP, triton.next_power_of_2(S))
     _exact_tree_pi_self_loop_kernel[(W,)](
         Pi_in,
@@ -2496,10 +2515,7 @@ def compute_exact_tree_self_loop(
         pibar_row_max,
         pi_residual_out if compute_diff else pibar_row_max,
         guard_trips_out if write_guard_trips else Pi_in,
-        self_diagonal_lin,
-        transfer_coefficient_lin,
-        speciation_child1_lin,
-        speciation_child2_lin,
+        exact_tree_constants,
         max_transfer_lin,
         receiver_lin,
         species_child1,
@@ -2525,6 +2541,7 @@ def compute_exact_tree_self_loop(
         S,
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
+        MAX_TRANSFER_ROW_STRIDE=max_transfer_row_stride,
         BLOCK_S=block_s,
         BLOCK_NODES=_BLOCK_NODES_EXACT_TREE,
         HAS_SPLITS=has_splits,
