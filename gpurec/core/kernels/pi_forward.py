@@ -57,6 +57,20 @@ _EXACT_TREE_SCRATCH_SLOTS = 4
 _EXACT_RANGE_REFERENCE_DTYPE = torch.float32
 
 
+def exact_conditioning_floor(dtype) -> float:
+    """Smallest divisor the exact elimination is allowed to use, for ``dtype``.
+
+    Every lane divides by its pivot and the whole row divides once by ``1 - loop gain``. Both are
+    one minus a probability, so they are order-1 numbers and a margin can be compared against them
+    directly. A margin ``m`` costs about ``eps/m`` in relative error, so ``sqrt(eps)`` is the point
+    where half the dtype's digits are gone: float32 -> 3.5e-4, float64 -> 1.5e-8. Beyond it the row
+    goes to the log-space path, which has no such division.
+
+    NOT a setting: it is a property of the arithmetic, not of a dataset.
+    """
+    return float(torch.finfo(dtype).eps) ** 0.5
+
+
 def exact_range_for_dtype(range_log2, dtype) -> float:
     """Rescale the configured exact-solve range limit to the exponent range of ``dtype``.
 
@@ -1301,6 +1315,7 @@ def _exact_tree_pi_self_loop_kernel(
     slot_span,
     n_levels,
     range_limit,
+    conditioning_floor,
     wave_index,
     S: tl.constexpr,
     stride: tl.constexpr,
@@ -1574,6 +1589,7 @@ def _exact_tree_pi_self_loop_kernel(
         return
 
     guard_trips = tl.full((), value=0, dtype=tl.int32)
+    smallest_pivot = tl.full((), value=POS_LARGE, dtype=DTYPE)
 
     # ---- walk 1a: the species-tree leaves, which have no children to fold in. They are not in
     # the ``compact_level_*`` tables (those hold internal nodes only), so they are done in one
@@ -1584,7 +1600,7 @@ def _exact_tree_pi_self_loop_kernel(
         const_offsets = const_base + s_offs
         child1 = tl.load(species_child1_ptr + s_offs, mask=mask, other=0)
         is_leaf = mask & (child1 >= S)
-        diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=is_leaf, other=1.0)
+        diagonal = tl.load(self_diagonal_lin_ptr + const_offsets, mask=mask, other=1.0)
         transfer_coefficient = tl.load(
             transfer_coefficient_lin_ptr + const_offsets, mask=is_leaf, other=0.0
         )
@@ -1593,6 +1609,11 @@ def _exact_tree_pi_self_loop_kernel(
         tl.store(scratch_ptr + gamma_base + s_offs, transfer_coefficient / diagonal, mask=is_leaf)
         guard_trips += tl.sum(
             tl.where(is_leaf & (diagonal <= 0.0), 1, 0).to(tl.int32), axis=0
+        )
+        # Every internal node's pivot is its diagonal PLUS a non-negative children term, so the
+        # smallest diagonal in the row bounds every divisor this solve will use from below.
+        smallest_pivot = tl.minimum(
+            smallest_pivot, tl.min(tl.where(mask, diagonal, POS_LARGE), axis=0)
         )
     tl.debug_barrier()
 
@@ -1728,11 +1749,27 @@ def _exact_tree_pi_self_loop_kernel(
     loop_denominator = 1.0 - transfer_gain
     total_receiver_mass = transfer_constant / loop_denominator
     if WRITE_GUARD_TRIPS:
-        tl.store(guard_trips_ptr + 2 * global_row, guard_trips)
+        tl.store(guard_trips_ptr + 4 * global_row, guard_trips.to(DTYPE))
         tl.store(
-            guard_trips_ptr + 2 * global_row + 1,
-            tl.where(loop_denominator <= 0.0, 1, 0).to(tl.int32),
+            guard_trips_ptr + 4 * global_row + 1,
+            tl.where(loop_denominator <= 0.0, 1.0, 0.0).to(DTYPE),
         )
+        # The two conditioning margins themselves, so a row that came out wrong without tripping
+        # a sign can still be explained.
+        tl.store(guard_trips_ptr + 4 * global_row + 2, smallest_pivot)
+        tl.store(guard_trips_ptr + 4 * global_row + 3, loop_denominator)
+
+    # ---- the conditioning decision, and the second reason to hand a row over. Range was the
+    # first: a row too tall for one scale. This is the other way the elimination fails -- every
+    # lane divides by a pivot, and the whole row divides once by ``1 - loop gain``, so a row whose
+    # smallest divisor is within a rounding of zero loses digits in proportion. Both margins are
+    # order-1 quantities (one minus probabilities), so ``conditioning_floor`` compares against
+    # them directly. Deciding here, before walks 3 and 4 and before anything is published, leaves
+    # the row exactly as this kernel found it, same as the range check does.
+    if (smallest_pivot < conditioning_floor) or (loop_denominator < conditioning_floor):
+        tl.store(wide_row_ptr + global_row, 1)
+        tl.atomic_add(wide_row_count_ptr + wave_index, 1)
+        return
     tl.debug_barrier()
 
     # ---- seed walk 3 with each species' OWN receiver mass, from the first-pass solution
@@ -2801,10 +2838,12 @@ def compute_exact_tree_self_loop(
     ``rows >= W``; ``rows * S`` is passed as the slot stride so the offset arithmetic is built in
     Python rather than in int32 device arithmetic.
 
-    ``guard_trips_out`` is an optional ``int32`` tensor of shape ``[clade rows, 2]``: column 0
-    counts this row's non-positive elimination pivots and column 1 flags a non-positive
-    ``1 - loop gain``. Both are zero for any parameter set the fixed point converges for; it is a
-    diagnostic, not a fallback, so pass ``None`` in production.
+    ``guard_trips_out`` is an optional tensor of shape ``[clade rows, 4]`` in the model dtype:
+    how many of this row's pivots were non-positive, whether ``1 - loop gain`` was, and then the
+    two margins themselves -- the row's smallest pivot and its ``1 - loop gain``. The counts are
+    small integers, exact in either float type, and one dtype keeps the kernel's stores uniform.
+    The margins are what explains a row that came out wrong without tripping a sign. Diagnostic
+    only; pass ``None`` in production.
 
     ``wide_row`` (``int8``, ``[clade rows]``) and ``wide_row_count`` (``int32``, one entry per
     wave, indexed by ``wave_index``) carry the range fallback. A row whose lanes reach more than
@@ -2899,6 +2938,8 @@ def compute_exact_tree_self_loop(
         gene_split_center_offset = Pi_in_offset
     compute_diff = pi_residual_out is not None
     write_guard_trips = guard_trips_out is not None
+    if write_guard_trips and tuple(guard_trips_out.shape) != (int(Pi_out.shape[0]), 4):
+        raise ValueError("guard_trips_out must have shape [clade rows, 4]")
     use_fraction_missing = leaf_fm_log is not None
     # When there is no fraction-missing tensor the constexpr short-circuits the
     # off-hit load, so a valid-but-unused 1-element placeholder is enough.
@@ -2919,7 +2960,7 @@ def compute_exact_tree_self_loop(
         Pibar_offset,
         pibar_row_max,
         pi_residual_out if compute_diff else pibar_row_max,
-        guard_trips_out if write_guard_trips else species_child1,
+        guard_trips_out if write_guard_trips else Pi_in,
         self_diagonal_lin,
         transfer_coefficient_lin,
         speciation_child1_lin,
@@ -2945,6 +2986,7 @@ def compute_exact_tree_self_loop(
         slot_rows * int(S),
         n_levels,
         exact_range_for_dtype(range_log2, Pi_in.dtype),
+        exact_conditioning_floor(Pi_in.dtype),
         int(wave_index),
         S,
         stride=S,

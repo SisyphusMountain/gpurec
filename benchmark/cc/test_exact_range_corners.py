@@ -118,6 +118,14 @@ def main() -> int:
     oracle_model = _build(*common, "log", "series", torch.float64, args.exact_range_log2)
     log_model = _build(*common, "log", "series", torch.float32, args.exact_range_log2)
     exact_model = _build(*common, "exact", "exact", torch.float32, args.exact_range_log2)
+    # Bisecting the two halves of the exact path against the same oracle says which one a bad
+    # corner belongs to: the forward with its range fallback, or the adjoint with its series one.
+    bisect = {
+        "log/series": log_model,
+        "exact/series": _build(*common, "exact", "series", torch.float32, args.exact_range_log2),
+        "log/exact": _build(*common, "log", "exact", torch.float32, args.exact_range_log2),
+        "exact/exact": exact_model,
+    }
     print(
         f"[grid] {len(paths)} families, {len(exact_model.batch_statics)} batches, "
         f"S={int(exact_model.species_helpers['S'])}, window={args.window} log2, "
@@ -134,23 +142,40 @@ def main() -> int:
                 device="cuda", dtype=model.theta.dtype,
             ).expand(len(paths), 3).contiguous()
 
-        oracle_rows, _ = _forward_rows(oracle_model, theta_for(oracle_model))
-        oracle_loss, oracle_grad = _loss_and_grad(oracle_model, theta_for(oracle_model))
+        try:
+            oracle_rows, _ = _forward_rows(oracle_model, theta_for(oracle_model))
+            oracle_loss, oracle_grad = _loss_and_grad(oracle_model, theta_for(oracle_model))
+        except Exception as error:  # noqa: BLE001 - one bad corner must not end the sweep
+            print(
+                f"[grid] D={duplication:6.2f} L={loss_rate:6.2f} T={transfer:6.2f} | "
+                f"ORACLE RAISED {type(error).__name__}: {error}",
+                flush=True,
+            )
+            failures.append((duplication, loss_rate, transfer))
+            continue
 
         report = []
         for label, model in (("log", log_model), ("exact", exact_model)):
-            rows, flagged = _forward_rows(model, theta_for(model))
-            worst, lost = _score(oracle_rows, rows, args.window)
-            model_loss, model_grad = _loss_and_grad(model, theta_for(model))
-            report.append({
-                "label": label,
-                "pi": worst,
-                "lost": lost,
-                "flagged": flagged,
-                "nll": float((model_loss - oracle_loss).abs().max()),
-                "grad": float((model_grad - oracle_grad).abs().max()),
-            })
-            del rows
+            try:
+                rows, flagged = _forward_rows(model, theta_for(model))
+                worst, lost = _score(oracle_rows, rows, args.window)
+                model_loss, model_grad = _loss_and_grad(model, theta_for(model))
+                report.append({
+                    "label": label,
+                    "pi": worst,
+                    "lost": lost,
+                    "flagged": flagged,
+                    "rows": sum(int(r.shape[0]) for r in rows),
+                    "nll": float((model_loss - oracle_loss).abs().max()),
+                    "grad": float((model_grad - oracle_grad).abs().max()),
+                })
+                del rows
+            except Exception as error:  # noqa: BLE001
+                report.append({
+                    "label": label, "pi": float("nan"), "lost": -1, "flagged": -1, "rows": -1,
+                    "nll": float("nan"), "grad": float("nan"),
+                    "error": f"{type(error).__name__}: {error}",
+                })
             torch.cuda.empty_cache()
         del oracle_rows
         torch.cuda.empty_cache()
@@ -159,23 +184,45 @@ def main() -> int:
         # The log path is the standard the exact path has to meet, so the comparison is relative
         # to it, with a little slack for the two paths' different arithmetic order.
         diverged = (
-            exact_row["lost"] > log_row["lost"]
+            "error" in exact_row
+            or exact_row["lost"] > log_row["lost"]
             or exact_row["pi"] > max(10.0 * log_row["pi"], 1e-2)
             or exact_row["nll"] > max(10.0 * log_row["nll"], 1e-2)
+            or exact_row["grad"] > max(10.0 * log_row["grad"], 1e-2)
             or not exact_row["pi"] == exact_row["pi"]
         )
         flag = "  <-- EXACT WORSE THAN LOG" if diverged else ""
+        errors = " ".join(f"{row['label']}:{row['error']}" for row in report if "error" in row)
         print(
             f"[grid] D={duplication:6.2f} L={loss_rate:6.2f} T={transfer:6.2f} | "
-            f"flagged rows={exact_row['flagged']:6d} | "
+            f"flagged {exact_row['flagged']} of {exact_row['rows']} rows | "
             f"max|dPi| vs fp64 log={log_row['pi']:.3e} exact={exact_row['pi']:.3e} | "
             f"lanes lost log={log_row['lost']} exact={exact_row['lost']} | "
             f"max|dNLL| log={log_row['nll']:.3e} exact={exact_row['nll']:.3e} | "
-            f"max|dgrad| log={log_row['grad']:.3e} exact={exact_row['grad']:.3e}{flag}",
+            f"max|dgrad| log={log_row['grad']:.3e} exact={exact_row['grad']:.3e}"
+            f"{' | ' + errors if errors else ''}{flag}",
             flush=True,
         )
         if diverged:
             failures.append((duplication, loss_rate, transfer))
+            # Which half of the exact path owns this corner: run the two mixed builds too.
+            for label, model in bisect.items():
+                try:
+                    rows, flagged = _forward_rows(model, theta_for(model))
+                    worst, lost = _score(oracle_rows, rows, args.window)
+                    model_loss, model_grad = _loss_and_grad(model, theta_for(model))
+                    print(
+                        f"[bisect]   {label:<14} flagged={flagged:7d} "
+                        f"max|dPi|={worst:.3e} lost={lost} "
+                        f"max|dNLL|={float((model_loss - oracle_loss).abs().max()):.3e} "
+                        f"max|dgrad|={float((model_grad - oracle_grad).abs().max()):.3e}",
+                        flush=True,
+                    )
+                    del rows
+                except Exception as error:  # noqa: BLE001
+                    print(f"[bisect]   {label:<14} RAISED {type(error).__name__}: {error}",
+                          flush=True)
+                torch.cuda.empty_cache()
     print(f"[grid] corners where the exact path is worse than the log path: {failures}", flush=True)
     return 0
 
