@@ -1,0 +1,142 @@
+"""The single mode-aware entry point for DTL rate fitting.
+
+There is one right recipe per parameterization, dictated by the Hessian structure of the mode --
+this module is the ONLY place that choice is made, so no caller can drift onto the wrong recipe:
+
+  - ``genewise`` (theta ``[G,3]``): the per-family Hessian is BLOCK-DIAGONAL (family f's rates affect
+    only family f), so the fit decomposes into G independent 3x3 problems. ``fit_genewise`` exploits
+    that -- 5 Adam warm-up steps, a per-family 3x3 trust-region Newton, convergence-based rebatching
+    (drop families as they converge), and pi-tier escalation. Far faster than joint descent.
+  - ``global`` (theta ``[3]``): a single shared 3-parameter box-bounded MLE -- the same 3x3 sub-problem
+    as one genewise family, with the family gradients/curvature summed into one aggregate 3x3. So it
+    uses the SAME recipe (``fit_global``): Adam warm-up + a 3x3 trust-region Newton on the analytic
+    exact Hessian.
+    (Validated to reach optimize()'s optimum to <1e-4 rel, ~5x faster.)
+  - ``specieswise`` (theta ``[S,3]``): the parameters are COUPLED (a species rate affects every family;
+    families couple species through the transfer matrix), so the raw MLE is non-identifiable and
+    boundary-saturated -- there is no well-posed one-shot fit. It is instead fit by MAP+CV: a single
+    MAP prior fit via ``gpurec.fit.specieswise_fit.fit_specieswise``, with the prior strength
+    cross-validated by ``gpurec.fit.map_cv.map_cv``. ``fit_dtl`` raises ``NotImplementedError`` for
+    this mode and points callers at those two entry points directly.
+
+``fit_genewise`` / ``fit_global`` / ``optimize`` are the internal engines this selects between; they
+are not user-facing fit entry points. Everything that fits DTL rates (the ``gpurec fit`` CLI, the
+non-regression benchmark) goes through ``fit_dtl`` so the mode->recipe mapping lives in exactly one
+place.
+"""
+from __future__ import annotations
+
+import math
+import time
+
+import torch
+
+from gpurec.config import GpurecConfig
+from gpurec.fit.genewise_fit import TRUST_TEST_OFF, fit_genewise
+from gpurec.fit.global_fit import fit_global
+
+_LN2 = 0.6931471805599453
+_MODES = ("global", "specieswise", "genewise")
+
+
+def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
+            dtype: torch.dtype | str | None = None, max_steps=300, init_rate=None,
+            solver_options=None, config: GpurecConfig | None = None, clade_budget=None,
+            verbose=False) -> dict:
+    """Fit DTL rates with the best recipe for ``mode``. Returns a normalized result dict:
+    ``{mode, theta[cpu], rates[cpu], nll_bits, nll_nats, n_families, wall_s, ...}`` (``gnorm`` for the
+    coupled modes; ``genewise_result`` -- the full ``fit_genewise`` dict -- for genewise).
+
+    ``clade_budget`` (genewise only) caps how many clades one batch holds, which is what sizes the
+    fit's peak GPU memory. ``None`` derives it from the card -- the tuned 315,000 when it fits, less
+    when it does not -- so the same fit runs on a 94 GiB H100 and on a 24 GB card. See
+    ``fit_genewise``.
+
+    ``init_rate`` (a rate, not log2) seeds theta for the coupled modes; ignored for genewise (which has
+    its own box-projected warm start). ``solver_options`` overrides solver knobs (iteration caps,
+    tolerances, pruning); the E-adjoint linear solve always uses a Neumann series, which converges
+    to the fp32 floor in a handful of terms with no orthogonalization residual floor.
+
+    The genewise start uses ``init_curvature="adam_bfgs"``: the first Newton iteration's 3x3
+    curvature is built from the Adam warm-up's own (step, gradient-change) pairs instead of an exact
+    3-probe Hessian. Measured at 500 Coleman families (job 57481509, all four arms in one process):
+    392 s vs 430 s for the exact start, same 499/500 converged, likelihood 1.1 bits BETTER -- the
+    exact first Hessian cost 63 s and the slightly worse-aimed early steps cost 25 s of extra
+    gradient, so it nets out ahead.
+
+    For genewise this calls ``fit_genewise`` with ``certify_curvature=False``: the final certificate
+    reports the projected gradient, the converged / unconverged / bound-active counts and the total
+    NLL, but NOT the count of families at an interior positive-definite optimum -- that needs the
+    3-probe Hessian over every family (about 7 extra gradients, ~17 min of the 5123-family Coleman
+    run). Call ``fit_genewise(..., certify=True, certify_curvature=True)`` directly when you want the
+    ``interior_pd`` count.
+    """
+    if mode not in _MODES:
+        raise ValueError(f"unknown mode {mode!r}; expected one of {_MODES}")
+    t0 = time.perf_counter()
+
+    if mode == "genewise":
+        # fit_genewise resolves its own gene-tree spec and rebuilds tiered models internally.
+        # min_drop / rebuild_frac / hessian_refresh / init_curvature / certify_curvature have no
+        # signature default in fit_genewise (one value, one place): the production values are here.
+        # Genewise start: ``init_rate`` (a rate) for all three events when given; otherwise the
+        # DTL-typical start D=0.01, L=0.1, T=0.01 relative to speciation (ALE-style defaults),
+        # far cheaper to iterate from than the historical all-rates-equal-1.0 start.
+        if init_rate is None:
+            init_log2_rates = (math.log2(0.01), math.log2(0.1), math.log2(0.01))
+        else:
+            init_log2_rates = (math.log2(init_rate),) * 3
+        # Fourth-round recipe values. The per-direction step cap with mu = 1e-4 replaces the
+        # mu = 1e-2 curvature floor (200-family Coleman sweep: 21.6 full-dataset gradient
+        # equivalents against 23.5, same certification). An exact STARTING Hessian would cut the
+        # gradient work further (17.8) and landed 7.6 bits better on the full dataset, but at full
+        # scale the three Hessian probes run cold (their cache does not fit even in 94 GiB) and one
+        # Hessian over all families then costs several gradients: the full-dataset run with it
+        # spent 376 s in four Hessians against 317 s in Newton gradients. Until the Hessian is
+        # cheaper the warm-up's own curvature (adam_bfgs) stays the start.
+        # Three Adam warm-up steps, not five: per-family traces showed the fixed-size Adam moves
+        # overshoot on the last steps (200-family sweep: 19.9 gradient equivalents with 3 steps
+        # against 21.1 with 5, same certification, NLL 0.07 bits better).
+        res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype, adam_steps=3,
+                           certify=True, certify_curvature=False, min_drop=32, rebuild_frac=0.25,
+                           hessian_refresh=15, init_curvature="adam_bfgs", mu=1e-4,
+                           # How the 3x3 curvature is carried between exact Hessians. "bfgs" is the
+                           # measured production choice; "sr1" and "multisecant" are the alternatives
+                           # fit_genewise implements (see its ``curvature_update`` documentation).
+                           curvature_update="bfgs",
+                           solver_options=solver_options, config=config, verbose=verbose,
+                           init_log2_rates=init_log2_rates, clade_budget=clade_budget,
+                           stall_patience=120,   # = max_iter: the stall rule is available but off (it settled 3-4 near-converged families early)
+                           # Round-5 step experiments, all left OFF in production (each reproduces
+                           # the measured recipe bit for bit at these values): no step
+                           # extrapolation, the quadratic step model, no predicted-remaining-NLL
+                           # stopping rule and no coarse-gradient approach phase.
+                           step_extrapolation=1.0, step_model="quadratic",
+                           stop_nll_bits=0.0, approach_pruning_threshold=0.0,
+                           # Round-6 experiments, also OFF in production (each reproduces the
+                           # measured recipe bit for bit at these values): no targeted exact
+                           # Hessian for stuck families, no coordinate staging, and the ratio
+                           # test's own four measured numbers.
+                           targeted_hessian=(0, 0.0), coordinate_staging=(0, 0),
+                           trust_test=TRUST_TEST_OFF,
+                           trust_max=8.0)   # radius growth up to 8: on the full dataset growth to 16 needed 48 Newton iterations against 65 with a fixed radius, but 16 sent one of 200 local families into oscillation; 4 and 8 behaved like 2 locally
+        wall_s = time.perf_counter() - t0
+        nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)
+        return {"mode": mode, "theta": res["theta"].detach().cpu(),
+                "rates": res["rates"].detach().float().cpu(),  # [G,3] order D,L,T
+                "nll_bits": nll_bits, "nll_nats": nll_bits * _LN2,
+                "n_families": int(res["n_families"]), "wall_s": wall_s, "genewise_result": res}
+
+    if mode == "global":
+        # single shared 3x3 block -> genewise's 3x3 TR-Newton (fit_global). Returns the normalized dict.
+        return fit_global(species_tree, gene_trees, device=device, dtype=dtype,
+                          init_rate=init_rate, solver_options=solver_options, config=config,
+                          verbose=verbose)
+
+    if mode == "specieswise":
+        raise NotImplementedError(
+            "specieswise has no well-posed one-shot fit: the raw MLE over theta[S,3] is "
+            "non-identifiable and boundary-saturated. Fit a single MAP prior with "
+            "gpurec.fit.specieswise_fit.fit_specieswise(model.batch_statics, theta0, rw, lam=<chosen>), "
+            "or cross-validate the prior with gpurec.fit.map_cv.map_cv(species, genes)."
+        )

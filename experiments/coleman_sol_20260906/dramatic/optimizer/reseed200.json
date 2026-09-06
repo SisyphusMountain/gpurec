@@ -1,0 +1,199 @@
+{
+  "schema": "gpurec.em2_first_gradient_reseed.v1",
+  "artifact": "/home/enzo/Documents/git/gpurec/gpurec/experiments/coleman_sol_20260906/em/hybrid_shared_200_v2.pt",
+  "production_source_sha256": "7d398d3e596f150c7eb5fc36f5eccce3b94b7dd14561c337bbbf5d7363409cd5",
+  "n_families": 200,
+  "shared_em": {
+    "gradient_calls": 2,
+    "clades_per_call": 1491100,
+    "gradient_clades": 2982200,
+    "timing_full_200_artifact": {
+      "parse_seconds": 0.6098155820000102,
+      "build_seconds": 0.6213385039991408,
+      "pass_seconds": [
+        2.4907428509977763,
+        2.11013242899935
+      ],
+      "em_pass_seconds": 4.600875279997126,
+      "total_seconds": 5.928965522998624
+    }
+  },
+  "arms": {
+    "native_old": {
+      "wall_seconds_continuation": 29.948662146998686,
+      "prototype_wall_with_shared_em_seconds": 35.87762766999731,
+      "continuation_gradient_clades": 17285618,
+      "gradient_clades_with_shared_em": 20267818,
+      "full_clade_equivalents_with_shared_em": 13.592527664140567,
+      "reseed": null,
+      "fit": {
+        "loss_bits": 613261.8000574112,
+        "n_steps": 21,
+        "n_builds": 10,
+        "n_verify_builds": 0,
+        "n_hessians": 1,
+        "n_rebuilds": 9,
+        "converged": 200,
+        "unconverged": 0,
+        "bound_active": 16,
+        "pg_max": 0.000998190836980939,
+        "newton_grad_seconds": 26.148920761006593,
+        "hessian_seconds": 0.8409480430018448,
+        "verify_seconds": 0.0,
+        "rebuild_seconds": 1.5747603049931058,
+        "certify_seconds": 0.00030452999999397434,
+        "opt_seconds": 29.331844700998772
+      }
+    },
+    "native_reseed": {
+      "wall_seconds_continuation": 27.106980652002676,
+      "prototype_wall_with_shared_em_seconds": 33.0359461750013,
+      "continuation_gradient_clades": 16118942,
+      "gradient_clades_with_shared_em": 19101142,
+      "full_clade_equivalents_with_shared_em": 12.810101267520622,
+      "reseed": {
+        "calls": 1,
+        "scale_valid": 193,
+        "scale": {
+          "min": 0.11654640051987904,
+          "p10": 0.40789782337874125,
+          "median": 0.5411378308769044,
+          "p90": 0.6899113841165601,
+          "max": 1.8069807913867713
+        },
+        "step_norm": {
+          "min": 0.3039345250338313,
+          "p10": 0.5258898817994738,
+          "median": 0.6973687423435263,
+          "p90": 1.7929825038459466,
+          "max": 6.620892074381693
+        },
+        "gradient_change_norm": {
+          "min": 0.10501839081183173,
+          "p10": 0.4425151651962096,
+          "median": 14.509929527409067,
+          "p90": 80.95874133234511,
+          "max": 154.79308824469317
+        },
+        "secant_relative_residual": {
+          "min": 0.0,
+          "p10": 1.572425590009589e-18,
+          "median": 1.3890304641576693e-16,
+          "p90": 2.6959518532746007e-16,
+          "max": 2.220290691562685
+        }
+      },
+      "fit": {
+        "loss_bits": 613261.7836961746,
+        "n_steps": 17,
+        "n_builds": 8,
+        "n_verify_builds": 0,
+        "n_hessians": 1,
+        "n_rebuilds": 7,
+        "converged": 200,
+        "unconverged": 0,
+        "bound_active": 19,
+        "pg_max": 0.000972486799582839,
+        "newton_grad_seconds": 23.967776661993412,
+        "hessian_seconds": 0.49202433999744244,
+        "verify_seconds": 0.0,
+        "rebuild_seconds": 1.4301016809986322,
+        "certify_seconds": 0.0002559509994171094,
+        "opt_seconds": 26.540034362998995
+      }
+    },
+    "hierarchical_old": {
+      "wall_seconds_continuation": 31.078529001999414,
+      "prototype_wall_with_shared_em_seconds": 37.00749452499804,
+      "continuation_gradient_clades": 18131502,
+      "gradient_clades_with_shared_em": 21113702,
+      "full_clade_equivalents_with_shared_em": 14.15981624304205,
+      "reseed": null,
+      "fit": {
+        "loss_bits": 613261.7978172302,
+        "n_steps": 21,
+        "n_builds": 8,
+        "n_verify_builds": 0,
+        "n_hessians": 1,
+        "n_rebuilds": 7,
+        "converged": 200,
+        "unconverged": 0,
+        "bound_active": 16,
+        "pg_max": 0.0009875332470983267,
+        "newton_grad_seconds": 27.182346391000465,
+        "hessian_seconds": 0.7125011210009689,
+        "verify_seconds": 0.0,
+        "rebuild_seconds": 1.8735708659987722,
+        "certify_seconds": 0.00024424699950031936,
+        "opt_seconds": 30.483203708001383
+      }
+    },
+    "hierarchical_reseed": {
+      "wall_seconds_continuation": 27.062151648999134,
+      "prototype_wall_with_shared_em_seconds": 32.99111717199776,
+      "continuation_gradient_clades": 16020176,
+      "gradient_clades_with_shared_em": 19002376,
+      "full_clade_equivalents_with_shared_em": 12.743864261283615,
+      "reseed": {
+        "calls": 1,
+        "scale_valid": 193,
+        "scale": {
+          "min": 0.09348733999374632,
+          "p10": 0.38935314377549973,
+          "median": 0.527039090691889,
+          "p90": 0.7299060631280853,
+          "max": 1.8174525206736123
+        },
+        "step_norm": {
+          "min": 0.2556708268874853,
+          "p10": 0.4791178296810875,
+          "median": 0.7177332249690509,
+          "p90": 2.050241456154289,
+          "max": 4.889011680481891
+        },
+        "gradient_change_norm": {
+          "min": 0.10570258472226256,
+          "p10": 0.42091497827948476,
+          "median": 15.321618821866608,
+          "p90": 87.74335147142916,
+          "max": 169.44746568705364
+        },
+        "secant_relative_residual": {
+          "min": 0.0,
+          "p10": 1.3785293784487224e-17,
+          "median": 1.306432993351845e-16,
+          "p90": 2.778868817775083e-16,
+          "max": 2.363322020846899
+        }
+      },
+      "fit": {
+        "loss_bits": 613261.7844848633,
+        "n_steps": 18,
+        "n_builds": 7,
+        "n_verify_builds": 0,
+        "n_hessians": 1,
+        "n_rebuilds": 6,
+        "converged": 200,
+        "unconverged": 0,
+        "bound_active": 19,
+        "pg_max": 0.0009882136946544051,
+        "newton_grad_seconds": 23.976751536993106,
+        "hessian_seconds": 0.4985028700029943,
+        "verify_seconds": 0.0,
+        "rebuild_seconds": 1.28876694200153,
+        "certify_seconds": 0.0003034309993381612,
+        "opt_seconds": 26.474638796000363
+      }
+    }
+  },
+  "fresh_audit": {
+    "seconds": 7.788804913001513,
+    "note": "Outside arm fit timings; one common pi64/Neumann64 model.",
+    "nll_bits": {
+      "native_old": 613261.7994411254,
+      "native_reseed": 613261.7842211443,
+      "hierarchical_old": 613261.7979378329,
+      "hierarchical_reseed": 613261.7830947187
+    }
+  }
+}

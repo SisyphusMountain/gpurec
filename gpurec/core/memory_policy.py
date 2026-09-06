@@ -62,8 +62,8 @@ def cuda_memory_budget_bytes(
     # driver, so the memory truly available to the next allocation is free_b + (reserved -
     # allocated). Omitting it makes the budget collapse to ~0 mid-run (when torch holds a large
     # reserved pool, e.g. the fp64 final_eval backward) and falsely rejects a scratch that fits.
-    # At build time reserved ~= allocated (empty pool) so this adds nothing and the warm-adjoint
-    # fit decision is unchanged; it only credits genuinely-reusable memory when a pool exists.
+    # At build time reserved ~= allocated (empty pool), so this only credits genuinely reusable
+    # memory once a caching-allocator pool exists.
     reclaimable_b = max(0, int(torch.cuda.memory_reserved(idx)) - int(torch.cuda.memory_allocated(idx)))
     available_b = int(free_b) + reclaimable_b
     fraction = float(os.environ.get("GPUREC_MEMORY_POLICY_FRACTION", str(default_fraction)))
@@ -93,15 +93,9 @@ def proposal0_memory_gate(
 ) -> tuple[bool, int, int | None]:
     """Gate a transient per-wave self-loop scratch allocation of ``W*S`` against the memory budget.
 
-    ``reserved_scratch_bytes`` (default ``None``): when the warm-adjoint fit decision has ALREADY
-    reserved transient scratch headroom for this backward (``warm_adjoint_fits`` verified
-    ``cache + max_batch_scratch <= budget`` at build time, BEFORE the resident cache depleted free
-    memory), pass that reservation here. A single wave's scratch (``W <= max_batch_clades``) is a
-    subset of the reserved ``max_batch_scratch``, so it provably fits -- we must NOT re-read the now
-    depleted ``cuda_memory_budget_bytes`` (which excludes the resident cache and would falsely reject
-    a scratch the build already accounted for). The gate then validates the wave scratch against the
-    reservation instead, so a scratch that GENUINELY exceeds what was reserved is still rejected.
-    When ``None`` (cold path, no resident warm cache) the gate reads current free memory as before.
+    ``reserved_scratch_bytes`` can provide a sweep-wide budget already read by the caller. The gate
+    then avoids another blocking free-memory query for every wave. When it is ``None``, the gate
+    reads the current device budget directly.
     """
     scratch = proposal0_wave_scratch_bytes(W, S, dtype)
     required = _nonnegative_int("already_live_bytes", already_live_bytes) + scratch
@@ -117,13 +111,12 @@ def proposal0_memory_gate(
 def wave_scratch_budget_bytes(reserved_scratch_bytes: int | None, *, device) -> int | None:
     """Resolve, ONCE for a whole reverse sweep, the byte budget every wave's scratch is gated on.
 
-    ``proposal0_memory_gate`` above compares one wave's scratch against either a build-time
-    reservation (``reserved_scratch_bytes``, the warm-adjoint path) or the free memory it reads on
-    the spot (``reserved_scratch_bytes is None``, the cold path). Reading it on the spot costs one
-    blocking ``cudaMemGetInfo`` plus two ``torch.cuda.memory_stats()`` nested-dict builds, and the
-    cold path is the production path whenever the warm-adjoint cache does not fit, so a 1977-wave
-    gradient paid for it 1977 times: 88.7 ms of GPU idle (the card drains at every
-    ``cudaMemGetInfo``) and 65.3 ms of host time, about 6 % of one 200-family Coleman gradient.
+    ``proposal0_memory_gate`` above compares one wave's scratch against either an already resolved
+    sweep-wide budget (``reserved_scratch_bytes``) or the free memory it reads on the spot. Reading
+    it on the spot costs one blocking ``cudaMemGetInfo`` plus two
+    ``torch.cuda.memory_stats()`` nested-dict builds, so a 1977-wave gradient once paid for that
+    query 1977 times: 88.7 ms of GPU idle and 65.3 ms of host time, about 6 % of one 200-family
+    Coleman gradient.
 
     Every wave of one sweep gets the same answer anyway -- the scratch is transient (allocated and
     freed inside the wave), so nothing a wave does moves the budget the next wave would read. Read
@@ -137,18 +130,6 @@ def wave_scratch_budget_bytes(reserved_scratch_bytes: int | None, *, device) -> 
     if reserved_scratch_bytes is not None:
         return _nonnegative_int("reserved_scratch_bytes", reserved_scratch_bytes)
     return cuda_memory_budget_bytes(device)
-
-
-def warm_adjoint_cache_bytes(total_clades: int, S: int, dtype: torch.dtype) -> int:
-    """Resident bytes of the GPUREC_WARM_ADJOINT per-wave adjoint cache (``warm_v``).
-
-    The cache stores one adjoint vector per clade-row per species node, accumulated over every wave of
-    every batch and held resident for the whole run, so it scales as ``total_clades * S * dtype`` -- the
-    SAME clades x species product as the per-batch backward scratch, but resident rather than transient.
-    On large family sets this is the dominant consumer (full Hogenom: ~3.6M clades x 1331 species x 4 B
-    ~ 19 GiB), far larger than the static base (~0.25 GiB) or one batch's scratch (~1.8 GiB).
-    """
-    return _nonnegative_int("total_clades", total_clades) * _positive_int("S", S) * dtype_nbytes(dtype)
 
 
 def forward_gene_split_cache_fits(
@@ -180,38 +161,6 @@ def forward_gene_split_cache_fits(
     if budget is None:
         return True, cache, working, budget
     return (working + cache) <= budget, cache, working, budget
-
-
-def warm_adjoint_fits(
-    total_clades: int,
-    S: int,
-    dtype: torch.dtype,
-    *,
-    device: torch.device | int | None = None,
-    max_batch_clades: int = 0,
-    resident_caches: int,
-) -> tuple[bool, int, int, int | None]:
-    """Decide whether the warm-adjoint cache(s) + one batch's backward scratch fit the memory budget.
-
-    Returns ``(ok, cache_bytes, scratch_bytes, budget_bytes)``. ``ok`` is True (warm allowed) when the
-    resident warm-adjoint caches PLUS the largest single batch's transient backward scratch fit within
-    ``cuda_memory_budget_bytes`` (free - reserve, capped at a fraction of total). When it does not fit,
-    the caller should run COLD -- the cache, not the clade batcher, is what exhausts memory on large
-    family sets. This gates GPUREC_WARM_ADJOINT by the right quantity (clades x species x dtype) instead
-    of a family count.
-
-    ``resident_caches`` is how many ``[total_clades, S]`` caches stay resident: 1 for the gradient
-    adjoint (``static.warm_v``) alone, plus one per Hessian-vector-product probe direction when the
-    HVP warm start (``static.warm_v_tangent[probe_id]``) is enabled -- each probe keeps its own cache.
-    Counting only the gradient cache let a 500-family / 13-batch run on a 94 GiB H100 pass the gate
-    (32 GiB) and then OOM at 90 GiB inside the 3-probe Hessian.
-    """
-    cache = warm_adjoint_cache_bytes(total_clades, S, dtype) * _positive_int("resident_caches", resident_caches)
-    scratch = proposal0_wave_scratch_bytes(max_batch_clades, S, dtype) if max_batch_clades else 0
-    budget = cuda_memory_budget_bytes(device)
-    if budget is None:
-        return True, cache, scratch, budget
-    return (cache + scratch) <= budget, cache, scratch, budget
 
 
 # ---------------------------------------------------------------------------------------------

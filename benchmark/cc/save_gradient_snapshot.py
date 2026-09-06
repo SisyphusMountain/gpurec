@@ -68,7 +68,7 @@ def main() -> int:
 
     dtype = getattr(torch, args.dtype)
     paths = [ln.strip() for ln in open(args.families) if ln.strip() and not ln.startswith("#")][: args.limit]
-    so = SolverOptions(**{**_BASE_SOLVER, "forward_self_loop": "exact", "adjoint_self_loop": "exact"})
+    so = SolverOptions(**_BASE_SOLVER)
     m = GeneReconModel(args.species, paths, mode="genewise", device="cuda", dtype=dtype,
                        solver_options=so, clade_budget=args.clade_budget)
     m.receiver_weights.requires_grad_(bool(args.receiver_grad))

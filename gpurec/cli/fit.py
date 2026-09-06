@@ -75,8 +75,6 @@ def run_fit(args) -> int:
         or args.pi_iters is not None
         or args.neumann_terms is not None
         or args.e_max_iter is not None
-        or args.forward_self_loop is not None
-        or args.adjoint_self_loop is not None
     )
     # Pass a config ONLY when the user actually supplied one, for the same reason as solver_options
     # above: the recipes treat a config's [solver] table as authoritative, so handing them a

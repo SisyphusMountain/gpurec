@@ -1,0 +1,421 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{xcolor}
+
+\geometry{margin=27mm}
+\setlength{\emergencystretch}{1em}
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\bits}{\text{ bits}}
+
+\title{Latent Reconciliation Histories, Missing Information,\\
+and Coordinate Changes in GPURec}
+\author{A mathematical synthesis of two optimisation-agent transcripts}
+\date{6 September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report explains what two agents learned about gene-wise optimisation in GPURec's
+duplication--transfer--loss reconciliation model.  The three base-2 log rates are already the
+natural parameters of the complete-data model, whose negative log-likelihood is convex.  The
+observed objective can nevertheless be non-convex because reconciliation histories are latent:
+its curvature is complete-data multinomial information minus a posterior covariance of event
+counts, with an additional contribution from conditioning on family survival.  Nonlinear
+coordinates such as square-root rates substantially improve the measured local geometry, but
+they do not reduce the production cost when curvature is carried by BFGS updates.  The measured
+cost remains about eleven clade-weighted population passes.  The EM-focused agent derived an EM
+iteration from the same structure, but its transcript ended before count extraction,
+missing-information fractions, or EM convergence were measured; those quantities therefore
+remain open rather than being inferred from the coordinate experiment.
+\end{abstract}
+
+\section{Model and notation}
+
+For one gene family, let
+\[
+  \theta=(\theta_D,\theta_L,\theta_T)
+  = (\log_2 D,\log_2 L,\log_2 T)
+\]
+denote the duplication, loss, and transfer log rates.  Speciation is the reference category with
+fixed logit zero.  With
+\[
+  Z(\theta)=1+2^{\theta_D}+2^{\theta_L}+2^{\theta_T},
+\]
+the four event probabilities are
+\begin{equation}
+  p_S=\frac1Z,
+  \qquad
+  p_k=\frac{2^{\theta_k}}Z,
+  \quad k\in\{D,L,T\}.
+  \label{eq:softmax}
+\end{equation}
+The transfer probability is subsequently distributed among permissible recipient species by a
+factor that does not depend on the three rates.  The fitted rates are constrained to
+$10^{-6}\leq D,L,T\leq 2$, or approximately
+$-19.93\leq\theta_k\leq1$.
+
+A \emph{complete history} $h$ records every event of every lineage, including extinct lineages.
+Write $n_k(h)$ for its number of events of type $k$ and
+$n_\bullet(h)=\sum_{k\in\{S,D,L,T\}}n_k(h)$.  Rate-independent factors, including gene-tree split
+weights and recipient choices, are collected into $w_h$.  Thus
+\begin{equation}
+  P(h\mid\theta)
+  =w_h\prod_{k\in\{S,D,L,T\}}p_k(\theta)^{n_k(h)}.
+  \label{eq:history-probability}
+\end{equation}
+
+For observed gene-tree data $y$, let $\mathcal H_y$ be the compatible histories and define the
+unconditioned numerator
+\[
+  A_y(\theta)=\sum_{h\in\mathcal H_y}P(h\mid\theta).
+\]
+If $q(\theta)=P_\theta(\text{family survives})$, GPURec uses the conditional likelihood
+\begin{equation}
+  L_y(\theta)=\frac{A_y(\theta)}{q(\theta)},
+  \qquad
+  \ell(\theta)=-\log_2 A_y(\theta)+\log_2 q(\theta).
+  \label{eq:conditioned-likelihood}
+\end{equation}
+The survival probability is obtained from extinction probabilities computed by a fixed point.
+
+\section{Why the log rates are the natural coordinates}
+
+For a fixed complete history, substitution of \eqref{eq:softmax} into
+\eqref{eq:history-probability} gives
+\begin{align}
+  -\log_2 P(h\mid\theta)
+  &=n_\bullet(h)\log_2 Z(\theta)
+    -\sum_{k\in\{D,L,T\}}n_k(h)\theta_k
+    -\log_2 w_h.                                      \label{eq:complete-nll}
+\end{align}
+This is a log-sum-exp minus a linear term.  Consequently the complete-data negative
+log-likelihood is convex.  More precisely, for
+\[
+  p=(p_D,p_L,p_T)^\mathsf T,
+  \qquad
+  C(p)=\diag(p)-pp^\mathsf T,
+\]
+its Hessian in base-2 log-rate coordinates is
+\begin{equation}
+  \nabla_\theta^2[-\log_2P(h\mid\theta)]
+  =n_\bullet(h)\ln(2)\,C(p)\succeq0.                 \label{eq:complete-hessian}
+\end{equation}
+The usual natural parameters are $\eta_k=\ln(D_k)=\ln(2)\theta_k$; multiplication by the common
+positive constant $\ln(2)$ is immaterial.  Hence the existing log rates are already the natural
+coordinates, and the event counts are sufficient statistics.  A nonlinear power transform may
+be computationally useful, but it is not more intrinsic to the complete-data statistical model.
+
+\section{Where observed-data non-convexity comes from}
+
+Marginalisation over histories changes the curvature.  Define the complete-history score statistic
+\[
+  s(h)=
+  \begin{pmatrix}n_D(h)\\n_L(h)\\n_T(h)\end{pmatrix}
+  -n_\bullet(h)p.
+\]
+For the unconditioned data term, the missing-information identity gives
+\begin{equation}
+  H_y
+  =\ln(2)\left\{
+     \E_y[n_\bullet]C(p)-\Cov_y[s(h)]
+   \right\}.                                         \label{eq:louis-data}
+\end{equation}
+Here the expectation and covariance are under the posterior distribution of histories conditional
+on $y$ at the current parameter.  The first term is the expected complete-data information.  It is
+positive semidefinite and depends only on one expected total count and the four event probabilities.
+The second term is the information missing because the history was not observed.  It is a posterior
+covariance and is also positive semidefinite, but it is subtracted.  If alternative histories have
+very different event counts, this covariance can dominate the multinomial term and make $H_y$
+indefinite.
+
+Survival conditioning in \eqref{eq:conditioned-likelihood} must also be included.  One direct form is
+\begin{equation}
+  H
+  =\ln(2)\left[
+    \bigl\{\E_y[n_\bullet]C-\Cov_y(s)\bigr\}
+    -\bigl\{\E_{\rm surv}[n_\bullet]C-\Cov_{\rm surv}(s)\bigr\}
+  \right].                                           \label{eq:conditioned-information}
+\end{equation}
+Thus the survival histories enter with the opposite sign.  The EM transcript also identified a
+useful equivalent augmentation.  If $e=1-q$ is the extinction probability, then
+\[
+  \frac1q=\frac1{1-e}=\sum_{m=0}^{\infty}e^m.
+\]
+The conditional likelihood may therefore be augmented by an observed family together with a
+geometrically distributed number of unobserved extinct ``ghost'' families.  In this augmentation
+all expected event counts are positive and an identity of the form
+$H=I_c-I_m$ again holds with $I_c\succeq0$ and $I_m\succeq0$.  The direct survival-difference
+counts and ghost-augmented counts give the same score: their discrepancy is proportional to the
+probability vector and is annihilated by the softmax Jacobian.  The decomposition into complete and
+missing information depends on the chosen augmentation, whereas the observed Hessian $H$ does not.
+
+\subsection{Why a coordinate map cannot remove the statistical ambiguity}
+
+Let $\phi$ be any smooth invertible coordinate system, write $\theta=t(\phi)$, let
+$J=\partial\theta/\partial\phi$, and put $g=\nabla_\theta\ell$.  The transformed Hessian is
+\begin{equation}
+  \nabla_\phi^2\ell
+  =J^\mathsf T HJ+sum_{k\in\{D,L,T\}}g_k\nabla_\phi^2t_k.
+  \label{eq:hessian-transform}
+\end{equation}
+At a stationary point $g=0$, only the congruence $J^\mathsf THJ$ remains.  Sylvester's law of
+inertia then preserves the numbers of positive and negative eigenvalues.  Away from a stationary
+point, a nonlinear map can add helpful curvature through the second term in
+\eqref{eq:hessian-transform}; it cannot eliminate the posterior competition itself, and that added
+curvature vanishes at the optimum.
+
+For example, power coordinates $\phi_k=r_k^\alpha=2^{\alpha\theta_k}$ have inverse
+\[
+  \theta_k=\frac{\ln\phi_k}{\alpha\ln2},\qquad
+  \frac{d\theta_k}{d\phi_k}=\frac1{\alpha\ln2\,\phi_k},\qquad
+  \frac{d^2\theta_k}{d\phi_k^2}=-\frac1{\alpha\ln2\,\phi_k^2}.
+\]
+This explains both observations in the experiment: square-root rates can add useful curvature far
+from the optimum, while rate coordinates become numerically delicate near the $10^{-6}$ floor
+because the second derivative of the inverse map is very large.
+
+\section{The principled latent-variable iteration}
+
+The expectation--maximisation (EM) algorithm follows directly from
+\eqref{eq:complete-nll}.  Its E-step computes posterior expected event counts
+\[
+  N_k=\E[n_k\mid y,\theta^{(r)}],
+  \qquad N_\bullet=\sum_kN_k.
+\]
+Using the positive ghost-family augmentation for survival conditioning, the M-step minimises the
+expected complete-data NLL and has the multinomial closed form
+\begin{equation}
+  p_k^{(r+1)}=\frac{N_k}{N_\bullet},
+  \qquad
+  \theta_k^{(r+1)}=\log_2\frac{N_k}{N_S},
+  \quad k\in\{D,L,T\}.                               \label{eq:em-update}
+\end{equation}
+If instead one uses data-side minus survival-side counts directly, the same formula applies when
+all effective counts are positive.  A nonpositive effective count sends the unconstrained optimum
+to a boundary; an active-set M-step or a Newton minimisation of the convex surrogate is then the
+appropriate implementation.
+
+The box-constrained M-step also remains analytic.  Suppose a set $B$ of rates is pinned at log-rate
+bounds $b_k$, and let $F$ denote the free rates.  With
+\[
+  c=1+\sum_{k\in B}2^{b_k},
+\]
+the free solution is
+\begin{equation}
+  \theta_k^{(r+1)}
+  =\log_2\left(
+       \frac{N_kc}{N_S+\sum_{j\in B}N_j}
+    \right),\qquad k\in F,                          \label{eq:box-em}
+\end{equation}
+followed by the usual active-set and Karush--Kuhn--Tucker sign checks.
+
+The existing reverse pass already accumulates adjoints with respect to the four free event
+log-probabilities before folding them through the softmax.  If
+$a_k=\partial\ell/\partial\log_2p_k=-N_k$, then the ordinary log-rate gradient is
+\begin{equation}
+  g_k=a_k-p_k\sum_j a_j=p_kN_\bullet-N_k.             \label{eq:gradient-counts}
+\end{equation}
+Thus the E-step should require essentially the same backward computation as a gradient pass.
+
+Near an optimum, define the complete information $I_c$, observed information $I_o=H$, and missing
+information $I_m=I_c-I_o$.  The local EM error-propagation matrix is
+\begin{equation}
+  R_{\rm EM}=I_c^{-1}I_m,                             \label{eq:em-rate}
+\end{equation}
+up to a similar symmetric representation.  Its spectral radius is the fraction of missing
+information and determines the linear convergence rate.  A generalized eigenvalue larger than
+one is equivalent to negative observed curvature in the corresponding direction.  This supplies
+a statistical explanation for why BFGS--Newton can be viewed as an acceleration: it attempts to
+learn $I_o=I_c-I_m$, whereas plain EM uses the inexpensive $I_c$.
+
+\paragraph{Evidence boundary.}
+The EM transcript stopped immediately after writing this derivation.  It did not create the planned
+count-extraction script, validate \eqref{eq:gradient-counts}, measure the missing-information
+fractions, or run EM, SQUAREM, or a hybrid method.  The report therefore makes no numerical claim
+about EM's actual convergence on the Coleman data.
+
+\section{What the coordinate experiment measured}
+
+The completed experiment used the first 500 Coleman gene families and exact $3\times3$ Hessians at
+the common start, after three Adam steps, and at the fitted optimum.  A distance is the largest of
+the three absolute log-rate gaps from the optimum, followed by the median across families.  The
+post-Adam median distance was $2.48$ log-rate units and the 90th percentile journey was about $8.5$.
+
+\subsection{Direct evidence for competing reconciliation explanations}
+
+At the post-Adam point, duplication was above its eventual optimum in $72\%$ of families and
+transfer was below its optimum in $93\%$.  The median transfer gap was $2.09$ log-rate units, or
+approximately a fourfold rate increase.  Nevertheless, the local duplication gradient requested
+an \emph{increase} in $69\%$ of families.  At artificially low transfer, duplication temporarily
+explains discordant gene histories; as transfer rises, those duplications are no longer needed.
+
+This competition also appears in exact negative-curvature eigenvectors.  At the post-Adam point,
+$320/500=64\%$ of Hessians were indefinite.  The most negative direction had mean squared weights
+$83\%$ duplication, $16\%$ transfer, and $1\%$ loss; its duplication and transfer components had
+opposite signs in $95\%$ of indefinite families.  At the common start, $410/500=82\%$ were
+indefinite and the corresponding direction was $63\%$ loss, $31\%$ transfer, and $6\%$
+duplication.  These measurements are exactly the pattern predicted by the covariance term in
+\eqref{eq:louis-data}: histories exchange duplication or loss events for transfer events.
+
+\subsection{Coordinate screening and exact-Hessian trajectories}
+
+Table~\ref{tab:coordinates} reports the principal coordinate results.  ``Indefinite'' gives the
+percentage at the start, post-Adam point, and optimum.  ``Drift'' is the median relative Frobenius
+distance between the post-Adam and optimum Hessians in the stated coordinates.  Multi-step entries
+are GPU-evaluated, accepted exact-Hessian steps; one-step-only entries are from the CPU screening.
+
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{4.5pt}
+\caption{Geometry and median distance to the optimum for candidate coordinates.}
+\label{tab:coordinates}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccrrrr}
+\toprule
+Coordinates & Indefinite start/Adam/opt. & Drift & Step 1 & Step 2 & Step 3 &
+  NLL excess after step 3 \\
+\midrule
+Log$_2$ rates, production radius rule & $82/64/0.2\%$ & $1.01$ & $1.65$ & $1.40$ & $0.75$ & $697\bits$ \\
+Log$_2$ rates, radius fixed at 2       & $82/64/0.2\%$ & $1.01$ & $1.65$ & $0.98$ & $0.47$ & $876\bits$ \\
+Square-root rates                      & $26/10/0\%$    & $0.90$ & $1.27$ & $0.55$ & $0.07$ & $141\bits$ \\
+Cube-root rates                        & $47/23/0.2\%$  & $0.56$ & $1.30$ & $0.61$ & $0.08$ & $46\bits$ \\
+Square-root event probabilities        & $47/10/0.2\%$  & $0.86$ & $1.40$ & $0.49$ & $0.04$ & $55\bits$ \\
+Linear rates                           & $35/33/36\%$   & $3.70$ & $1.73$ & --- & --- & --- \\
+Event-probability simplex              & $16/12/11\%$   & $3.02$ & $1.77$ & --- & --- & --- \\
+Per-event log odds                     & $86/53/0.2\%$  & $0.94$ & $1.70$ & --- & --- & --- \\
+Log total rate plus event shares       & $30/7/6\%$     & $4.70$ & $1.98$ & --- & --- & --- \\
+Oracle whitening by optimum Hessian    & $82/64/0.2\%$ & $2.33$ & $2.57$ & --- & --- & --- \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Square-root rates reduced post-Adam indefiniteness from $64\%$ to $10\%$ and reduced the median
+optimum condition number from about $80$ to $5.4$; square-root probabilities achieved a condition
+number near $6.1$.  Cube-root rates gave the lowest Hessian drift, $0.56$, and the smallest measured
+quadratic-model error in the screening.  Exact-Hessian trajectories consequently improved from
+\[
+  2.48\to1.65\to0.98\to0.47
+  \quad\text{(fixed-radius log rates)}
+\]
+to
+\[
+  2.48\to1.27\to0.55\to0.07
+  \quad\text{(square-root rates)}.
+\]
+The apparent indefiniteness of linear-rate and raw-probability coordinates at the constrained
+optimum is not evidence of an interior saddle.  Many points lie at a rate bound, so the residual
+gradient term in \eqref{eq:hessian-transform} need not vanish; the inverse map also has derivatives
+of order $r^{-2}$ near the floor.
+
+The production trust radius itself imposes a lower bound on one-step progress.  A perfect
+straight-line displacement toward the optimum, capped at two log-rate units, would still leave a
+median distance of $0.64$.  Moreover, after three exact steps only $5$--$11\%$ of families in any
+coordinate system passed the actual certificate
+$\lVert g_{\rm projected}\rVert_\infty<10^{-3}$.  Median geometric proximity is therefore not the
+same as convergence of the costly tail, particularly because large-clade families converge last.
+
+\subsection{Why improved geometry did not improve production cost}
+
+An exact Hessian costs about $7.7$ whole-population gradient passes.  Three exact-Hessian steps in
+square-root coordinates therefore cost approximately
+$3(7.7+1)\simeq26$ passes.  Taking one exact Hessian and then carrying it with BFGS cost $15.8$
+clade-weighted passes, compared with about $11.0$ for the production replay.
+
+The decisive production-like test used one gradient pass per round and a BFGS-carried curvature.
+Table~\ref{tab:bfgs} shows the state after twelve rounds.  The native seeds were constructed in
+each coordinate system from the same start-to-post-Adam gradient pair.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Production-like BFGS replay after twelve rounds.}
+\label{tab:bfgs}
+\begin{tabular}{lrrrr}
+\toprule
+Run & Frozen families & Live clades & Weighted cost & NLL excess \\
+\midrule
+Log$_2$ rates, production seed & $63\%$ & $21\%$ & $11.0$ & $1.7\bits$ \\
+Log$_2$ rates, native seed     & $58\%$ & $32\%$ & $11.01$ & $2.0\bits$ \\
+Square-root rates, native seed & $37\%$ & $73\%$ & $11.76$ & $22.7\bits$ \\
+Cube-root rates, native seed   & $73\%$ & $24\%$ & $11.25$ & $0.9\bits$ \\
+Square-root probabilities, native seed & $80\%$ & $19\%$ & $11.10$ & $34.3\bits$ \\
+Square-root rates, exact seed & $80\%$ & $6\%$ & $15.8$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Thus the useful nonlinear maps changed curvature but not end-to-end cost under the curvature scheme
+that production can afford.  A rank-two BFGS update still has to learn a drifting $3\times3$
+matrix from successive gradient pairs; the trust radius limits long moves; and the clade-weighted
+tail dominates wall time.  The non-convexity is also structural rather than a mere scaling defect:
+the posterior over histories changes as transfer rises, so the Hessian changes with it.
+
+\section{Conclusions}
+
+The combined mathematical and empirical conclusions are:
+\begin{enumerate}
+  \item The base-2 log rates are the model's natural coordinates and make every fixed-history
+        complete-data objective convex.
+  \item Marginalising reconciliation histories subtracts a posterior score covariance from the
+        multinomial information.  Survival conditioning contributes an analogous term.  This
+        missing information is the source of the measured duplication--transfer and
+        loss--transfer negative directions.
+  \item Nonlinear power coordinates can improve off-optimum curvature through a
+        gradient-dependent Hessian term.  Square-root and cube-root variants markedly improve
+        exact-Newton trajectories, but no smooth map removes the latent ambiguity, and at a true
+        stationary point coordinate changes preserve inertia.
+  \item With production's BFGS-carried curvature, the tested maps cost about
+        $11.0$--$11.8$ clade-weighted passes, while an exact-Hessian seed is too expensive.
+        Reparameterisation therefore does not cut the Newton phase from roughly eleven passes to a
+        few.
+  \item EM is the principled remaining experiment: its M-step is analytic and its E-step should be
+        obtainable from the existing adjoints, but neither its counts nor its missing-information
+        fraction nor its convergence trace was measured in the supplied transcript.
+\end{enumerate}
+
+\paragraph{One-sentence verdict.}
+The agents learned that the optimisation difficulty is caused primarily by posterior uncertainty
+between competing reconciliation histories, not by a poor choice of rate coordinates: nonlinear
+coordinates improve exact local geometry, but they do not reduce affordable production passes,
+and the proposed EM alternative remains theoretically motivated but experimentally untested.
+
+\section*{Provenance}
+
+This synthesis is based on the two supplied JSONL task outputs.  The completed reparameterisation
+study reported that it changed no repository source files and stored its scripts and measurements
+under the scratchpad's \texttt{reparam/} directory.  The EM task wrote only its derivation record
+under \texttt{em/PROGRESS.md} before its transcript ended.  This document is the only new source
+artifact created for the present request.
+
+\begin{thebibliography}{9}
+\bibitem{DLR1977}
+A. P. Dempster, N. M. Laird, and D. B. Rubin,
+``Maximum likelihood from incomplete data via the EM algorithm,''
+\emph{Journal of the Royal Statistical Society, Series B}, 39(1):1--38, 1977.
+
+\bibitem{Louis1982}
+T. A. Louis,
+``Finding the observed information matrix when using the EM algorithm,''
+\emph{Journal of the Royal Statistical Society, Series B}, 44(2):226--233, 1982.
+
+\bibitem{MengRubin1994}
+X.-L. Meng and D. B. Rubin,
+``On the global and componentwise rates of convergence of the EM algorithm,''
+\emph{Linear Algebra and its Applications}, 199:413--425, 1994.
+\end{thebibliography}
+
+\end{document}

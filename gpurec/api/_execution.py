@@ -1,5 +1,3 @@
-import os
-
 import torch
 
 from gpurec.api import _failure_dump
@@ -115,8 +113,7 @@ def evaluate_static_loss_grad(
     # None restores the behaviour of always recomputing.
     static.forward_gene_split = (
         {}
-        # getattr, like the warm-adjoint gate above it, because a hand-built static (tests,
-        # probes) has no such field and must keep the recompute path.
+        # getattr keeps hand-built statics used by tests and probes on the recompute path.
         if (need_grad and bool(getattr(static, "forward_gene_split_ok", False)))
         else None
     )
@@ -155,14 +152,6 @@ def evaluate_static_loss_grad(
         if not need_grad:
             return loss, None, None, None
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
-        # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
-        # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
-        if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
-            if static.warm_v is None:
-                static.warm_v = {}
-            _warm_v = static.warm_v
-        else:
-            _warm_v = None
         # Hand the kept rows over as a local and drop the static's reference before the backward
         # starts, so nothing keeps that block alive past this call -- including on an exception.
         gene_split_rows = static.forward_gene_split
@@ -193,14 +182,11 @@ def evaluate_static_loss_grad(
             genewise=static.genewise,
             neumann_terms=static.solver_options.neumann_terms,
             neumann_term_tol=static.solver_options.neumann_term_tol,
-            adjoint_self_loop=static.solver_options.adjoint_self_loop,
             e_adjoint_max_iter=static.solver_options.e_adjoint_max_iter,
             e_adjoint_tol=static.solver_options.e_adjoint_tol,
             adjoint_pruning_threshold=static.solver_options.adjoint_pruning_threshold,
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
-            warm_v=_warm_v,
-            reserved_scratch_bytes=(static.warm_scratch_reserved_bytes if _warm_v is not None else None),
             origination_log_probs=o_lp,
             origination_probs=o_p,
             accumulator_dtype=accumulator_dtype,
@@ -229,24 +215,12 @@ def evaluate_static_convergence(
     receiver_weights: torch.Tensor,
     *,
     pi_iters_high: int,
-    neumann_terms: int | None = None,
 ):
-    """Per-family solver-convergence diagnostics for one batch (batch-local index).
-
-    Runs ONE forward solve at a high ``pi_iters`` (so the forward fixed point is
-    converged — required for the backward signal to be meaningful), capturing the
-    final Pi update size, then a no-grad backward self-loop pass measuring the last
-    Neumann increment. Returns ``(forward_resid, backward_relres, backward_vk_mag)``,
-    each a 1-D float tensor of length ``n_families_in_batch``.
-    """
+    """Return each family's largest forward-fallback update in one batch."""
     with torch.no_grad():
-        accumulator_dtype = _static_accumulator_dtype(static, theta.dtype)
         C = int(static.wave_layout["leaf_species_index"].numel())
         pi_residual = torch.zeros(C, device=theta.device, dtype=torch.float32)
-        (
-            E, E_s1, E_s2, Ebar, root_rows, pi_wave, pibar_wave, pibar_row_max,
-            log_pS, log_pD, log_pL, max_transfer_vec, receiver_log_probs,
-        ) = solve_resident_e_pi(
+        solve_resident_e_pi(
             static, theta, receiver_weights,
             warm_start_E=None, pi_iters=pi_iters_high, pi_residual_out=pi_residual,
         )
@@ -254,48 +228,7 @@ def evaluate_static_convergence(
         n_fam = int(static.family_index_tensor.numel())
         forward_resid = torch.zeros(n_fam, device=theta.device, dtype=torch.float32)
         forward_resid.scatter_reduce_(0, fam_local, pi_residual, reduce="amax", include_self=True)
-
-        use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
-        nt = static.solver_options.neumann_terms if neumann_terms is None else int(neumann_terms)
-        backward_relres, backward_vk_mag = implicit_grad_loglik_vjp_wave(
-            static.wave_layout,
-            static.species_helpers,
-            Pi_star_wave=pi_wave,
-            Pibar_star_wave=pibar_wave,
-            E_star=E,
-            Ebar=Ebar,
-            E_s1=E_s1,
-            E_s2=E_s2,
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            max_transfer_mat=max_transfer_vec,
-            receiver_log_probs=receiver_log_probs,
-            use_receiver_weights=use_receiver_weights,
-            # This call returns only the per-wave residual diagnostics (collect_backward_relres
-            # below short-circuits before any parameter gradient is formed), so no receiver
-            # gradient is ever read from it.
-            need_receiver_grad=False,
-            # This diagnostic runs its own forward above with no gene-split cache installed.
-            forward_gene_split=None,
-            theta=theta,
-            receiver_weights=receiver_weights,
-            family_idx=static.rate_family_idx,
-            leaf_fm_log=static.leaf_fm_log,
-            uniform_pibar_row_max=pibar_row_max,
-            specieswise=static.specieswise,
-            genewise=static.genewise,
-            neumann_terms=nt,
-            neumann_term_tol=static.solver_options.neumann_term_tol,
-            adjoint_self_loop=static.solver_options.adjoint_self_loop,
-            adjoint_pruning_threshold=static.solver_options.adjoint_pruning_threshold,
-            use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
-            pibar_side_threshold=static.solver_options.pibar_side_threshold,
-            collect_backward_relres=True,
-            accumulator_dtype=accumulator_dtype,
-            **_backward_offsets(static),
-        )
-    return forward_resid, backward_relres, backward_vk_mag
+    return forward_resid
 
 
 def evaluate_static_loss_vector_grad(
@@ -308,6 +241,7 @@ def evaluate_static_loss_vector_grad(
     need_receiver_grad: bool,
     update_warm_start: bool,
     need_origination_grad: bool = False,
+    event_counts_out: torch.Tensor | None = None,
 ):
     if not static.genewise:
         raise ValueError("per-family loss vectors require genewise mode")
@@ -319,8 +253,7 @@ def evaluate_static_loss_vector_grad(
     # None restores the behaviour of always recomputing.
     static.forward_gene_split = (
         {}
-        # getattr, like the warm-adjoint gate above it, because a hand-built static (tests,
-        # probes) has no such field and must keep the recompute path.
+        # getattr keeps hand-built statics used by tests and probes on the recompute path.
         if (need_grad and bool(getattr(static, "forward_gene_split_ok", False)))
         else None
     )
@@ -360,18 +293,13 @@ def evaluate_static_loss_vector_grad(
         if not need_grad:
             return loss_vec, None, None, None
         use_receiver_weights = not receiver_weights_are_uniform(receiver_weights)
-        # Opt-in adjoint warm-start (GPUREC_WARM_ADJOINT): reuse the previous call's per-wave Pi-adjoint
-        # as the Neumann initial guess (cached in-place on static.warm_v). Default off -> behaviour unchanged.
-        if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
-            if static.warm_v is None:
-                static.warm_v = {}
-            _warm_v = static.warm_v
-        else:
-            _warm_v = None
         # Hand the kept rows over as a local and drop the static's reference before the backward
         # starts, so nothing keeps that block alive past this call -- including on an exception.
         gene_split_rows = static.forward_gene_split
         static.forward_gene_split = None
+        event_count_kwargs = (
+            {} if event_counts_out is None else {"event_counts_out": event_counts_out}
+        )
         grad_theta, grad_receiver = implicit_grad_loglik_vjp_wave(
             static.wave_layout,
             static.species_helpers,
@@ -398,17 +326,15 @@ def evaluate_static_loss_vector_grad(
             genewise=static.genewise,
             neumann_terms=static.solver_options.neumann_terms,
             neumann_term_tol=static.solver_options.neumann_term_tol,
-            adjoint_self_loop=static.solver_options.adjoint_self_loop,
             e_adjoint_max_iter=static.solver_options.e_adjoint_max_iter,
             e_adjoint_tol=static.solver_options.e_adjoint_tol,
             adjoint_pruning_threshold=static.solver_options.adjoint_pruning_threshold,
             use_adjoint_pruning=static.solver_options.use_adjoint_pruning,
             pibar_side_threshold=static.solver_options.pibar_side_threshold,
-            warm_v=_warm_v,
-            reserved_scratch_bytes=(static.warm_scratch_reserved_bytes if _warm_v is not None else None),
             origination_log_probs=o_lp,
             origination_probs=o_p,
             accumulator_dtype=accumulator_dtype,
+            **event_count_kwargs,
             **_backward_offsets(static),
         )
         grad_theta = grad_theta.detach()
@@ -515,6 +441,7 @@ def stream_genewise_loss_vector_grad(
     need_receiver_grad: bool,
     update_warm_starts: bool = False,
     need_origination_grad: bool = False,
+    event_counts_out: torch.Tensor | None = None,
 ):
     if theta.ndim < 1:
         raise ValueError("genewise theta must have a family batch dimension")
@@ -531,6 +458,18 @@ def stream_genewise_loss_vector_grad(
         if not static.genewise:
             raise ValueError("per-family loss vectors require genewise mode")
         theta_batch = theta_for_static(static, theta, genewise=True)
+        event_counts_batch = (
+            None
+            if event_counts_out is None
+            else torch.empty(
+                (int(theta_batch.shape[0]), 4),
+                dtype=event_counts_out.dtype,
+                device=event_counts_out.device,
+            )
+        )
+        event_count_kwargs = (
+            {} if event_counts_batch is None else {"event_counts_out": event_counts_batch}
+        )
         loss_i, grad_i, grad_receiver_i, grad_origination_i = evaluate_static_loss_vector_grad(
             static,
             theta_batch,
@@ -540,12 +479,15 @@ def stream_genewise_loss_vector_grad(
             need_receiver_grad=need_receiver_grad,
             update_warm_start=update_warm_starts,
             need_origination_grad=need_origination_grad,
+            **event_count_kwargs,
         )
         loss_total.index_copy_(
             0,
             static.family_index_tensor,
             loss_i.to(device=theta.device, dtype=loss_dtype),
         )
+        if event_counts_out is not None and event_counts_batch is not None:
+            event_counts_out.index_copy_(0, static.family_index_tensor, event_counts_batch)
         if need_grad:
             if grad_i is None or grad_total is None:
                 raise RuntimeError("missing batch gradient")

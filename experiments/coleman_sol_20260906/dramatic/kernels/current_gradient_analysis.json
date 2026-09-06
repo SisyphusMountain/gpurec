@@ -1,0 +1,509 @@
+{
+  "schema": "gpurec.current_exact_gradient_profile_analysis.v1",
+  "profiles": [
+    {
+      "label": "em2_endpoint",
+      "total_cuda_event_ms": 2173.260498046875,
+      "forward_cuda_event_ms": 667.0381469726562,
+      "reverse_cuda_event_ms": 1499.259033203125,
+      "forward_fraction": 0.3069296789649139,
+      "reverse_fraction": 0.689866233040411,
+      "gpu_busy_ms": 2058.1242919921874,
+      "gpu_span_ms": 2172.91036328125,
+      "gpu_idle_fraction": 0.05282595786221357,
+      "active_fraction": 0.4759513111126014,
+      "wide_rows": 0,
+      "top_cuda_events": [
+        {
+          "name": "_solve_reconciliation_self_loop_transpose_row_kernel",
+          "time_ms": 403.00495499999965,
+          "launches": 1045
+        },
+        {
+          "name": "_accumulate_gene_split_event_vjp_kernel",
+          "time_ms": 341.0486999999997,
+          "launches": 1030
+        },
+        {
+          "name": "_accumulate_transfer_subtree_vjp_kernel",
+          "time_ms": 333.6265280000004,
+          "launches": 1030
+        },
+        {
+          "name": "_exact_tree_pi_self_loop_kernel",
+          "time_ms": 304.52921999999984,
+          "launches": 1045
+        },
+        {
+          "name": "_stage_multiple_gene_split_event_reduction_kernel",
+          "time_ms": 179.19373100000018,
+          "launches": 1022
+        },
+        {
+          "name": "void at::native::indexFuncLargeIndex<float, long, unsigned int, 2, 2, -2, true, at::native::(anonymous namespace)::ReduceAdd>(at::cuda::detail::TensorInfo<float, unsigned int>, at::cuda::detail::TensorInfo<float const, unsigned int>, at::cuda::detail::TensorInfo<long const, unsigned int>, int, int, unsigned int, unsigned int, long, long, at::native::(anonymous namespace)::ReduceAdd const&, float)",
+          "time_ms": 109.48485699999995,
+          "launches": 5157
+        },
+        {
+          "name": "_accumulate_reconciliation_event_vjp_kernel",
+          "time_ms": 108.36867099999986,
+          "launches": 1045
+        },
+        {
+          "name": "_update_reconciliation_likelihood_kernel",
+          "time_ms": 79.75177499999991,
+          "launches": 1030
+        },
+        {
+          "name": "_reduce_single_gene_split_events_kernel",
+          "time_ms": 32.420075,
+          "launches": 1018
+        },
+        {
+          "name": "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrapper_t<float, at::native::sum_functor<float, float, float>::operator()(at::TensorIterator&)::{lambda(float, float)#1}>, unsigned int, float, 4, 4> >(at::native::ReduceOp<float, at::native::func_wrapper_t<float, at::native::sum_functor<float, float, float>::operator()(at::TensorIterator&)::{lambda(float, float)#1}>, unsigned int, float, 4, 4>)",
+          "time_ms": 29.285241999999997,
+          "launches": 2154
+        },
+        {
+          "name": "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)",
+          "time_ms": 27.80344300000042,
+          "launches": 2624
+        },
+        {
+          "name": "void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul> >(int, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>)",
+          "time_ms": 25.233418,
+          "launches": 1434
+        },
+        {
+          "name": "_update_extinction_log_probabilities_kernel",
+          "time_ms": 15.306927999999964,
+          "launches": 731
+        },
+        {
+          "name": "_select_active_adjoint_rows_kernel",
+          "time_ms": 14.558449999999965,
+          "launches": 1045
+        },
+        {
+          "name": "_finalize_multiple_gene_split_event_reduction_kernel",
+          "time_ms": 14.048117000000003,
+          "launches": 1022
+        },
+        {
+          "name": "_prepare_reconciliation_self_loop_vjp_kernel",
+          "time_ms": 6.473205999999999,
+          "launches": 1045
+        },
+        {
+          "name": "void at::native::indexFuncLargeIndex<float, long, unsigned int, 1, 1, -2, true, at::native::(anonymous namespace)::ReduceAdd>(at::cuda::detail::TensorInfo<float, unsigned int>, at::cuda::detail::TensorInfo<float const, unsigned int>, at::cuda::detail::TensorInfo<long const, unsigned int>, int, int, unsigned int, unsigned int, long, long, at::native::(anonymous namespace)::ReduceAdd const&, float)",
+          "time_ms": 4.861884000000009,
+          "launches": 2062
+        },
+        {
+          "name": "_stage_extinction_and_transfer_complement_vjp_kernel",
+          "time_ms": 3.868801,
+          "launches": 103
+        },
+        {
+          "name": "_reconciliation_self_loop_transpose_series_kernel",
+          "time_ms": 2.4202200000000014,
+          "launches": 1045
+        },
+        {
+          "name": "void at::native::unrolled_elementwise_kernel<at::native::AUnaryFunctor<long, long, bool, at::native::(anonymous namespace)::CompareEqFunctor<long> >, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::AUnaryFunctor<long, long, bool, at::native::(anonymous namespace)::CompareEqFunctor<long> >, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+          "time_ms": 2.4039629999999974,
+          "launches": 1045
+        },
+        {
+          "name": "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#2}::operator()() const::{lambda(signed char)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#2}::operator()() const::{lambda(signed char)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+          "time_ms": 2.078618000000006,
+          "launches": 1045
+        },
+        {
+          "name": "_initialize_leaf_reconciliation_likelihood_kernel",
+          "time_ms": 1.8101720000000001,
+          "launches": 15
+        },
+        {
+          "name": "void at::native::reduce_kernel<128, 4, at::native::ReduceOp<bool, at::native::func_wrapper_t<bool, at::native::or_kernel_cuda(at::TensorIterator&)::{lambda()#1}::operator()() const::{lambda()#12}::operator()() const::{lambda(bool, bool)#1}>, unsigned int, bool, 4, 4> >(at::native::ReduceOp<bool, at::native::func_wrapper_t<bool, at::native::or_kernel_cuda(at::TensorIterator&)::{lambda()#1}::operator()() const::{lambda()#12}::operator()() const::{lambda(bool, bool)#1}>, unsigned int, bool, 4, 4>)",
+          "time_ms": 1.6578149999999983,
+          "launches": 284
+        },
+        {
+          "name": "void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<double>, std::array<char*, 1ul> >(int, at::native::FillFunctor<double>, std::array<char*, 1ul>)",
+          "time_ms": 1.5080880000000152,
+          "launches": 1182
+        }
+      ],
+      "exact_forward_wave_shape": {
+        "launches": 1045,
+        "rows_sum": 1491100,
+        "rows_median": 922.0,
+        "rows_mean": 1426.88995215311,
+        "rows_max": 8192,
+        "fit_intercept_us": 65.59051772691896,
+        "fit_us_per_row": 0.15826378443791142,
+        "fit_r2": 0.7328271391453628,
+        "bins": [
+          {
+            "low": 1,
+            "high": 8,
+            "launches": 10,
+            "time_ms": 0.429831,
+            "median_us": 42.08
+          },
+          {
+            "low": 9,
+            "high": 32,
+            "launches": 14,
+            "time_ms": 0.5618019999999999,
+            "median_us": 40.8
+          },
+          {
+            "low": 33,
+            "high": 128,
+            "launches": 31,
+            "time_ms": 1.2861960000000001,
+            "median_us": 41.44
+          },
+          {
+            "low": 129,
+            "high": 512,
+            "launches": 280,
+            "time_ms": 24.05305,
+            "median_us": 75.457
+          },
+          {
+            "low": 513,
+            "high": 4096,
+            "launches": 651,
+            "time_ms": 213.09056099999998,
+            "median_us": 266.468
+          },
+          {
+            "low": 4097,
+            "high": 1000000000,
+            "launches": 59,
+            "time_ms": 65.10778,
+            "median_us": 1236.978
+          }
+        ]
+      },
+      "exact_reverse_wave_shape": {
+        "launches": 1045,
+        "rows_sum": 1491100,
+        "rows_median": 922.0,
+        "rows_mean": 1426.88995215311,
+        "rows_max": 8192,
+        "fit_intercept_us": -160.42845933859698,
+        "fit_us_per_row": 0.38270585139080804,
+        "fit_r2": 0.7922614903833975,
+        "bins": [
+          {
+            "low": 1,
+            "high": 8,
+            "launches": 10,
+            "time_ms": 0.5084879999999999,
+            "median_us": 56.321
+          },
+          {
+            "low": 9,
+            "high": 32,
+            "launches": 14,
+            "time_ms": 0.792109,
+            "median_us": 56.385
+          },
+          {
+            "low": 33,
+            "high": 128,
+            "launches": 31,
+            "time_ms": 2.503846,
+            "median_us": 56.353
+          },
+          {
+            "low": 129,
+            "high": 512,
+            "launches": 280,
+            "time_ms": 33.71192799999999,
+            "median_us": 112.386
+          },
+          {
+            "low": 513,
+            "high": 4096,
+            "launches": 651,
+            "time_ms": 197.25783,
+            "median_us": 174.083
+          },
+          {
+            "low": 4097,
+            "high": 1000000000,
+            "launches": 59,
+            "time_ms": 168.230754,
+            "median_us": 2832.234
+          }
+        ]
+      },
+      "amdahl": {
+        "max_speedup_if_reverse_free": 3.2244150961165787,
+        "reverse_speedup_required_for_2x": 3.6334329806479095,
+        "dominant_four_reverse_ms": 1186.0488539999997,
+        "max_speedup_if_dominant_four_free": 2.201412950457139,
+        "dominant_four_speedup_required_for_2x": 11.929848083058593,
+        "semiring_forward_multiple_for_2x": 1.6185984805402776,
+        "semiring_forward_multiple_for_2x_with_20pct_fewer_passes": 2.0258578906486404
+      }
+    },
+    {
+      "label": "late_native_final",
+      "total_cuda_event_ms": 2219.18505859375,
+      "forward_cuda_event_ms": 672.5765075683594,
+      "reverse_cuda_event_ms": 1540.1536712646484,
+      "forward_fraction": 0.30307364632067085,
+      "reverse_fraction": 0.6940176824372686,
+      "gpu_busy_ms": 2101.2876162109374,
+      "gpu_span_ms": 2219.11510546875,
+      "gpu_idle_fraction": 0.05309660998090654,
+      "active_fraction": 0.48599959761250083,
+      "wide_rows": 0,
+      "top_cuda_events": [
+        {
+          "name": "_solve_reconciliation_self_loop_transpose_row_kernel",
+          "time_ms": 419.119855,
+          "launches": 1045
+        },
+        {
+          "name": "_accumulate_gene_split_event_vjp_kernel",
+          "time_ms": 357.94926199999964,
+          "launches": 1030
+        },
+        {
+          "name": "_accumulate_transfer_subtree_vjp_kernel",
+          "time_ms": 340.51366000000047,
+          "launches": 1030
+        },
+        {
+          "name": "_exact_tree_pi_self_loop_kernel",
+          "time_ms": 302.63613799999996,
+          "launches": 1045
+        },
+        {
+          "name": "_stage_multiple_gene_split_event_reduction_kernel",
+          "time_ms": 183.48804999999993,
+          "launches": 1022
+        },
+        {
+          "name": "void at::native::indexFuncLargeIndex<float, long, unsigned int, 2, 2, -2, true, at::native::(anonymous namespace)::ReduceAdd>(at::cuda::detail::TensorInfo<float, unsigned int>, at::cuda::detail::TensorInfo<float const, unsigned int>, at::cuda::detail::TensorInfo<long const, unsigned int>, int, int, unsigned int, unsigned int, long, long, at::native::(anonymous namespace)::ReduceAdd const&, float)",
+          "time_ms": 108.34117700000023,
+          "launches": 5157
+        },
+        {
+          "name": "_accumulate_reconciliation_event_vjp_kernel",
+          "time_ms": 106.61054900000006,
+          "launches": 1045
+        },
+        {
+          "name": "_update_reconciliation_likelihood_kernel",
+          "time_ms": 82.17357699999994,
+          "launches": 1030
+        },
+        {
+          "name": "_reduce_single_gene_split_events_kernel",
+          "time_ms": 36.18868800000003,
+          "launches": 1018
+        },
+        {
+          "name": "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrapper_t<float, at::native::sum_functor<float, float, float>::operator()(at::TensorIterator&)::{lambda(float, float)#1}>, unsigned int, float, 4, 4> >(at::native::ReduceOp<float, at::native::func_wrapper_t<float, at::native::sum_functor<float, float, float>::operator()(at::TensorIterator&)::{lambda(float, float)#1}>, unsigned int, float, 4, 4>)",
+          "time_ms": 29.620558999999986,
+          "launches": 2154
+        },
+        {
+          "name": "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int, at::native::FillFunctor<float>, std::array<char*, 1ul>)",
+          "time_ms": 28.09823000000023,
+          "launches": 2716
+        },
+        {
+          "name": "void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul> >(int, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>)",
+          "time_ms": 24.88675800000001,
+          "launches": 1503
+        },
+        {
+          "name": "_select_active_adjoint_rows_kernel",
+          "time_ms": 15.562567000000001,
+          "launches": 1045
+        },
+        {
+          "name": "_finalize_multiple_gene_split_event_reduction_kernel",
+          "time_ms": 14.53068300000001,
+          "launches": 1022
+        },
+        {
+          "name": "_update_extinction_log_probabilities_kernel",
+          "time_ms": 11.274651999999978,
+          "launches": 533
+        },
+        {
+          "name": "_prepare_reconciliation_self_loop_vjp_kernel",
+          "time_ms": 6.007653000000002,
+          "launches": 1045
+        },
+        {
+          "name": "void at::native::indexFuncLargeIndex<float, long, unsigned int, 1, 1, -2, true, at::native::(anonymous namespace)::ReduceAdd>(at::cuda::detail::TensorInfo<float, unsigned int>, at::cuda::detail::TensorInfo<float const, unsigned int>, at::cuda::detail::TensorInfo<long const, unsigned int>, int, int, unsigned int, unsigned int, long, long, at::native::(anonymous namespace)::ReduceAdd const&, float)",
+          "time_ms": 4.905230999999986,
+          "launches": 2062
+        },
+        {
+          "name": "_stage_extinction_and_transfer_complement_vjp_kernel",
+          "time_ms": 4.779726999999999,
+          "launches": 126
+        },
+        {
+          "name": "_reconciliation_self_loop_transpose_series_kernel",
+          "time_ms": 2.4407110000000007,
+          "launches": 1045
+        },
+        {
+          "name": "void at::native::unrolled_elementwise_kernel<at::native::AUnaryFunctor<long, long, bool, at::native::(anonymous namespace)::CompareEqFunctor<long> >, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::AUnaryFunctor<long, long, bool, at::native::(anonymous namespace)::CompareEqFunctor<long> >, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+          "time_ms": 2.4224249999999983,
+          "launches": 1045
+        },
+        {
+          "name": "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#2}::operator()() const::{lambda(signed char)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#2}::operator()() const::{lambda(signed char)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+          "time_ms": 2.1182490000000045,
+          "launches": 1045
+        },
+        {
+          "name": "_initialize_leaf_reconciliation_likelihood_kernel",
+          "time_ms": 1.7925389999999999,
+          "launches": 15
+        },
+        {
+          "name": "void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<double>, std::array<char*, 1ul> >(int, at::native::FillFunctor<double>, std::array<char*, 1ul>)",
+          "time_ms": 1.5170540000000112,
+          "launches": 1182
+        },
+        {
+          "name": "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<bool, at::native::func_wrapper_t<bool, at::native::or_kernel_cuda(at::TensorIterator&)::{lambda()#1}::operator()() const::{lambda()#12}::operator()() const::{lambda(bool, bool)#1}>, unsigned int, bool, 4, 4> >(at::native::ReduceOp<bool, at::native::func_wrapper_t<bool, at::native::or_kernel_cuda(at::TensorIterator&)::{lambda()#1}::operator()() const::{lambda()#12}::operator()() const::{lambda(bool, bool)#1}>, unsigned int, bool, 4, 4>)",
+          "time_ms": 1.1025050000000034,
+          "launches": 485
+        }
+      ],
+      "exact_forward_wave_shape": {
+        "launches": 1045,
+        "rows_sum": 1491100,
+        "rows_median": 922.0,
+        "rows_mean": 1426.88995215311,
+        "rows_max": 8192,
+        "fit_intercept_us": 57.98438936940739,
+        "fit_us_per_row": 0.16232476098784074,
+        "fit_r2": 0.763703324676163,
+        "bins": [
+          {
+            "low": 1,
+            "high": 8,
+            "launches": 10,
+            "time_ms": 0.422821,
+            "median_us": 42.241
+          },
+          {
+            "low": 9,
+            "high": 32,
+            "launches": 14,
+            "time_ms": 0.573193,
+            "median_us": 41.249
+          },
+          {
+            "low": 33,
+            "high": 128,
+            "launches": 31,
+            "time_ms": 1.760446,
+            "median_us": 42.432
+          },
+          {
+            "low": 129,
+            "high": 512,
+            "launches": 280,
+            "time_ms": 23.73789,
+            "median_us": 76.353
+          },
+          {
+            "low": 513,
+            "high": 4096,
+            "launches": 651,
+            "time_ms": 208.856515,
+            "median_us": 264.612
+          },
+          {
+            "low": 4097,
+            "high": 1000000000,
+            "launches": 59,
+            "time_ms": 67.285273,
+            "median_us": 1239.059
+          }
+        ]
+      },
+      "exact_reverse_wave_shape": {
+        "launches": 1045,
+        "rows_sum": 1491100,
+        "rows_median": 922.0,
+        "rows_mean": 1426.88995215311,
+        "rows_max": 8192,
+        "fit_intercept_us": -173.9141420149621,
+        "fit_us_per_row": 0.402964344045091,
+        "fit_r2": 0.7863670119416779,
+        "bins": [
+          {
+            "low": 1,
+            "high": 8,
+            "launches": 10,
+            "time_ms": 0.513577,
+            "median_us": 56.417
+          },
+          {
+            "low": 9,
+            "high": 32,
+            "launches": 14,
+            "time_ms": 0.801866,
+            "median_us": 56.385
+          },
+          {
+            "low": 33,
+            "high": 128,
+            "launches": 31,
+            "time_ms": 2.3523539999999996,
+            "median_us": 56.448
+          },
+          {
+            "low": 129,
+            "high": 512,
+            "launches": 280,
+            "time_ms": 35.994817,
+            "median_us": 112.929
+          },
+          {
+            "low": 513,
+            "high": 4096,
+            "launches": 651,
+            "time_ms": 202.08474800000002,
+            "median_us": 177.251
+          },
+          {
+            "low": 4097,
+            "high": 1000000000,
+            "launches": 59,
+            "time_ms": 177.372493,
+            "median_us": 3102.159
+          }
+        ]
+      },
+      "amdahl": {
+        "max_speedup_if_reverse_free": 3.2681627094186037,
+        "reverse_speedup_required_for_2x": 3.5770846951625876,
+        "dominant_four_reverse_ms": 1224.193326,
+        "max_speedup_if_dominant_four_free": 2.230355274217974,
+        "dominant_four_speedup_required_for_2x": 10.682240972296986,
+        "semiring_forward_multiple_for_2x": 1.6401667871576857,
+        "semiring_forward_multiple_for_2x_with_20pct_fewer_passes": 2.052607794541555
+      }
+    }
+  ]
+}

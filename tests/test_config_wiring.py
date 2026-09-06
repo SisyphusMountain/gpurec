@@ -244,9 +244,13 @@ def _run_fit_genewise_capture(monkeypatch, **kwargs):
     gf.fit_genewise(
         "sp.nwk", ["g.nwk"], device="cpu", adam_steps=0, pi_tiers=(16,),
         max_iter=0, min_drop=32, rebuild_frac=0.25, hessian_refresh=15,
-        init_curvature="exact", certify=False,
+        init_curvature="exact", curvature_update="bfgs", certify=False,
         certify_curvature=False, verbose=False, **kwargs,
     init_log2_rates=(0.0, 0.0, 0.0), stall_patience=120, trust_max=16.0,
+    step_extrapolation=1.0, step_model="quadratic", stop_nll_bits=0.0,
+    approach_pruning_threshold=0.0,
+    targeted_hessian=(0, 0.0), coordinate_staging=(0, 0),
+    trust_test=(0.25, 0.75, 0.5, 0.05),
     )
     return captured["kwargs"]["solver_options"], bounds_seen[0]
 

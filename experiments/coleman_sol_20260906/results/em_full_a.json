@@ -1,0 +1,359 @@
+{
+  "tag": "em_full_a",
+  "warmup_method": "em",
+  "init_rate": "none",
+  "clade_budget": 0,
+  "n_families": 5124,
+  "wall_s": 396.305361431092,
+  "nll_bits": 9049360.743571281,
+  "nll_nats": 6272538.885276284,
+  "opt_seconds": 388.40911566186696,
+  "n_steps": 28,
+  "n_builds": 13,
+  "adam_seconds": 0.0,
+  "hessian_seconds": 11.417517236899585,
+  "em_seconds": 48.96713862102479,
+  "gradient_work": [
+    {
+      "phase": "em",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "em",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 2727,
+      "clades": 12579699
+    },
+    {
+      "phase": "newton",
+      "families": 2727,
+      "clades": 12579699
+    },
+    {
+      "phase": "newton",
+      "families": 1613,
+      "clades": 5082183
+    },
+    {
+      "phase": "newton",
+      "families": 1613,
+      "clades": 5082183
+    },
+    {
+      "phase": "newton",
+      "families": 1103,
+      "clades": 2737083
+    },
+    {
+      "phase": "newton",
+      "families": 1103,
+      "clades": 2737083
+    },
+    {
+      "phase": "newton",
+      "families": 790,
+      "clades": 1916222
+    },
+    {
+      "phase": "newton",
+      "families": 790,
+      "clades": 1916222
+    },
+    {
+      "phase": "newton",
+      "families": 790,
+      "clades": 1916222
+    },
+    {
+      "phase": "newton",
+      "families": 790,
+      "clades": 1916222
+    },
+    {
+      "phase": "newton",
+      "families": 355,
+      "clades": 1186593
+    },
+    {
+      "phase": "newton",
+      "families": 355,
+      "clades": 1186593
+    },
+    {
+      "phase": "newton",
+      "families": 355,
+      "clades": 1186593
+    },
+    {
+      "phase": "newton",
+      "families": 355,
+      "clades": 1186593
+    },
+    {
+      "phase": "newton",
+      "families": 110,
+      "clades": 559486
+    },
+    {
+      "phase": "newton",
+      "families": 110,
+      "clades": 559486
+    },
+    {
+      "phase": "newton",
+      "families": 69,
+      "clades": 417865
+    },
+    {
+      "phase": "newton",
+      "families": 69,
+      "clades": 417865
+    },
+    {
+      "phase": "newton",
+      "families": 46,
+      "clades": 244384
+    },
+    {
+      "phase": "newton",
+      "families": 46,
+      "clades": 244384
+    },
+    {
+      "phase": "newton",
+      "families": 30,
+      "clades": 139818
+    },
+    {
+      "phase": "newton",
+      "families": 30,
+      "clades": 139818
+    },
+    {
+      "phase": "newton",
+      "families": 16,
+      "clades": 52444
+    },
+    {
+      "phase": "newton",
+      "families": 16,
+      "clades": 52444
+    },
+    {
+      "phase": "newton",
+      "families": 8,
+      "clades": 8082
+    },
+    {
+      "phase": "newton",
+      "families": 8,
+      "clades": 8082
+    },
+    {
+      "phase": "newton",
+      "families": 8,
+      "clades": 8082
+    },
+    {
+      "phase": "newton",
+      "families": 8,
+      "clades": 8082
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 486
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 486
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 486
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 486
+    }
+  ],
+  "gradient_calls": 43,
+  "gradient_clades": 312731288,
+  "gradient_full_clade_equivalents": 13.403126391822777,
+  "n_hessians": 1,
+  "newton_grad_seconds": 306.78218576312065,
+  "n_verify_builds": 0,
+  "verify_seconds": 0.0,
+  "n_rebuilds": 12,
+  "rebuild_seconds": 10.730672661680728,
+  "certify_seconds": 0.0005719326436519623,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 180,
+        "remain": 4944
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 2217,
+        "remain": 2727
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 1114,
+        "remain": 1613
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 510,
+        "remain": 1103
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 313,
+        "remain": 790
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 220,
+        "remain": 570
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 215,
+        "remain": 355
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 85,
+        "remain": 270
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 160,
+        "remain": 110
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 41,
+        "remain": 69
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 23,
+        "remain": 46
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 16,
+        "remain": 30
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 14,
+        "remain": 16
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 8,
+        "remain": 8
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 5,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 2,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 23.590484619140625,
+  "memory_phases": null,
+  "certificate": {
+    "converged": 5124,
+    "bound_active": 575,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009997361339628696
+  }
+}

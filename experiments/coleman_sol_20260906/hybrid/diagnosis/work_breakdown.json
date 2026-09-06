@@ -1,0 +1,453 @@
+{
+  "full_dataset_clades": 1491100,
+  "arms": {
+    "native": {
+      "gradient_clades": {
+        "frozen_resident": 28636,
+        "live_same_point": 1857617,
+        "live_new_point": 15456675
+      },
+      "gradient_equivalents": {
+        "frozen_resident": 0.01920461404332372,
+        "live_same_point": 1.2458030983837436,
+        "live_new_point": 10.36595466434176
+      },
+      "same_point_after_rebuild_clades": 1857617,
+      "continuation_total_clades": 17342928,
+      "including_common_em_equivalents": 13.630962376768828,
+      "live_family_proposals": 1944,
+      "frozen_residency_by_pass": [
+        {
+          "iteration": 0,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 1,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 2,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 3,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 4,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 5,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 6,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 7,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 8,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 9,
+          "resident_clades": 991303,
+          "frozen_clades": 0,
+          "resident_families": 115,
+          "live_families": 115
+        },
+        {
+          "iteration": 10,
+          "resident_clades": 991303,
+          "frozen_clades": 0,
+          "resident_families": 115,
+          "live_families": 115
+        },
+        {
+          "iteration": 11,
+          "resident_clades": 418167,
+          "frozen_clades": 0,
+          "resident_families": 69,
+          "live_families": 69
+        },
+        {
+          "iteration": 12,
+          "resident_clades": 418167,
+          "frozen_clades": 0,
+          "resident_families": 69,
+          "live_families": 69
+        },
+        {
+          "iteration": 13,
+          "resident_clades": 198335,
+          "frozen_clades": 0,
+          "resident_families": 47,
+          "live_families": 47
+        },
+        {
+          "iteration": 14,
+          "resident_clades": 198335,
+          "frozen_clades": 0,
+          "resident_families": 47,
+          "live_families": 47
+        },
+        {
+          "iteration": 15,
+          "resident_clades": 137120,
+          "frozen_clades": 0,
+          "resident_families": 34,
+          "live_families": 34
+        },
+        {
+          "iteration": 16,
+          "resident_clades": 137120,
+          "frozen_clades": 0,
+          "resident_families": 34,
+          "live_families": 34
+        },
+        {
+          "iteration": 17,
+          "resident_clades": 85203,
+          "frozen_clades": 0,
+          "resident_families": 21,
+          "live_families": 21
+        },
+        {
+          "iteration": 18,
+          "resident_clades": 85203,
+          "frozen_clades": 0,
+          "resident_families": 21,
+          "live_families": 21
+        },
+        {
+          "iteration": 19,
+          "resident_clades": 85203,
+          "frozen_clades": 14318,
+          "resident_families": 21,
+          "live_families": 19
+        },
+        {
+          "iteration": 20,
+          "resident_clades": 85203,
+          "frozen_clades": 14318,
+          "resident_families": 21,
+          "live_families": 19
+        },
+        {
+          "iteration": 21,
+          "resident_clades": 31874,
+          "frozen_clades": 0,
+          "resident_families": 12,
+          "live_families": 12
+        },
+        {
+          "iteration": 22,
+          "resident_clades": 31874,
+          "frozen_clades": 0,
+          "resident_families": 12,
+          "live_families": 12
+        },
+        {
+          "iteration": 23,
+          "resident_clades": 8699,
+          "frozen_clades": 0,
+          "resident_families": 3,
+          "live_families": 3
+        },
+        {
+          "iteration": 24,
+          "resident_clades": 8699,
+          "frozen_clades": 0,
+          "resident_families": 3,
+          "live_families": 3
+        },
+        {
+          "iteration": 25,
+          "resident_clades": 4768,
+          "frozen_clades": 0,
+          "resident_families": 2,
+          "live_families": 2
+        },
+        {
+          "iteration": 26,
+          "resident_clades": 4768,
+          "frozen_clades": 0,
+          "resident_families": 2,
+          "live_families": 2
+        },
+        {
+          "iteration": 27,
+          "resident_clades": 421,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        },
+        {
+          "iteration": 28,
+          "resident_clades": 421,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        },
+        {
+          "iteration": 29,
+          "resident_clades": 421,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        },
+        {
+          "iteration": 30,
+          "resident_clades": 421,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        }
+      ]
+    },
+    "hierarchical_native_metric": {
+      "gradient_clades": {
+        "frozen_resident": 684372,
+        "live_same_point": 575524,
+        "live_new_point": 16475928
+      },
+      "gradient_equivalents": {
+        "frozen_resident": 0.45897122929380996,
+        "live_same_point": 0.3859727717792234,
+        "live_new_point": 11.049512440480182
+      },
+      "same_point_after_rebuild_clades": 575524,
+      "continuation_total_clades": 17735824,
+      "including_common_em_equivalents": 13.894456441553215,
+      "live_family_proposals": 2216,
+      "frozen_residency_by_pass": [
+        {
+          "iteration": 0,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 1,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 2,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 3,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 4,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 5,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 6,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 7,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 8,
+          "resident_clades": 1491100,
+          "frozen_clades": 0,
+          "resident_families": 200,
+          "live_families": 200
+        },
+        {
+          "iteration": 9,
+          "resident_clades": 1491100,
+          "frozen_clades": 338674,
+          "resident_families": 200,
+          "live_families": 146
+        },
+        {
+          "iteration": 10,
+          "resident_clades": 1491100,
+          "frozen_clades": 338674,
+          "resident_families": 200,
+          "live_families": 146
+        },
+        {
+          "iteration": 11,
+          "resident_clades": 317998,
+          "frozen_clades": 0,
+          "resident_families": 84,
+          "live_families": 84
+        },
+        {
+          "iteration": 12,
+          "resident_clades": 317998,
+          "frozen_clades": 0,
+          "resident_families": 84,
+          "live_families": 84
+        },
+        {
+          "iteration": 13,
+          "resident_clades": 134396,
+          "frozen_clades": 0,
+          "resident_families": 68,
+          "live_families": 68
+        },
+        {
+          "iteration": 14,
+          "resident_clades": 134396,
+          "frozen_clades": 0,
+          "resident_families": 68,
+          "live_families": 68
+        },
+        {
+          "iteration": 15,
+          "resident_clades": 83476,
+          "frozen_clades": 0,
+          "resident_families": 52,
+          "live_families": 52
+        },
+        {
+          "iteration": 16,
+          "resident_clades": 83476,
+          "frozen_clades": 0,
+          "resident_families": 52,
+          "live_families": 52
+        },
+        {
+          "iteration": 17,
+          "resident_clades": 83476,
+          "frozen_clades": 3512,
+          "resident_families": 52,
+          "live_families": 44
+        },
+        {
+          "iteration": 18,
+          "resident_clades": 83476,
+          "frozen_clades": 3512,
+          "resident_families": 52,
+          "live_families": 44
+        },
+        {
+          "iteration": 19,
+          "resident_clades": 35723,
+          "frozen_clades": 0,
+          "resident_families": 27,
+          "live_families": 27
+        },
+        {
+          "iteration": 20,
+          "resident_clades": 35723,
+          "frozen_clades": 0,
+          "resident_families": 27,
+          "live_families": 27
+        },
+        {
+          "iteration": 21,
+          "resident_clades": 3931,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        },
+        {
+          "iteration": 22,
+          "resident_clades": 3931,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        },
+        {
+          "iteration": 23,
+          "resident_clades": 3931,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        },
+        {
+          "iteration": 24,
+          "resident_clades": 3931,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        },
+        {
+          "iteration": 25,
+          "resident_clades": 3931,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        },
+        {
+          "iteration": 26,
+          "resident_clades": 3931,
+          "frozen_clades": 0,
+          "resident_families": 1,
+          "live_families": 1
+        }
+      ]
+    }
+  },
+  "hierarchical_minus_native_clades": {
+    "frozen_resident": 655736,
+    "live_same_point": -1282093,
+    "live_new_point": 1019253
+  },
+  "note": "Traced diagnostic trajectories, not new timing benchmarks. New-point includes the first endpoint evaluation and rejected trials; same-point is exact equality with the previous evaluation for that family, not a claim that repeated FP32 gradients are bit-identical. Shared EM is identical, and Hessian probes are separate."
+}

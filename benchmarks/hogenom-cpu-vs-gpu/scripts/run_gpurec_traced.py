@@ -43,9 +43,13 @@ res = gpurec.fit_genewise(
     min_rate=MIN_RATE, max_rate=MAX_RATE, pi_tiers=PIS, neu_opt=NEU_OPT, neu_cert=NEU_CERT,
     clade_budget=CLADE_BUDGET, adam_steps=ADAM, adam_lr=ADAM_LR, grad_clip=GRAD_CLIP,
     tol=TOL, max_iter=MAXIT, min_drop=32, rebuild_frac=0.25, hessian_refresh=15,
-    init_curvature="exact",
+    init_curvature="exact", curvature_update="bfgs",
     certify=CERT, certify_curvature=CERT, verbose=True,   # certify_curvature: this driver prints interior_pd,
 init_log2_rates=(0.0, 0.0, 0.0), stall_patience=120,
+step_extrapolation=1.0, step_model="quadratic", stop_nll_bits=0.0,
+approach_pruning_threshold=0.0,
+targeted_hessian=(0, 0.0), coordinate_staging=(0, 0),
+trust_test=(0.25, 0.75, 0.5, 0.05),
 )
 total = time.perf_counter() - t0
 fit = res["opt_seconds"]; cert_s = total - fit

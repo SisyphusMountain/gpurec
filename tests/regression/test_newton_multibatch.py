@@ -18,7 +18,7 @@ Two multi-batch-unsafe accesses had to be guarded for this to work end-to-end:
 
 Together these unblock global AND genewise multi-batch full recipes.
 
-3. Specieswise (theta `(S,3)`) routes through the exact-HVP `hvp_mode="exact"` path AND the
+3. Specieswise (theta `(S,3)`) routes through the analytic exact-HVP path AND the
    exact-HVP ridge estimator. Both now STREAM over batches: `make_exact_hvp` accumulates
    `H u = sum_b H_b u`, rebuilding each batch's forward saved-intermediates + point cache per HVP
    and freeing before the next (memory-bounded). The streamed multi-batch curvature is
@@ -51,7 +51,7 @@ def test_newton_polish_multibatch_full_recipe(mode, tmp_path):
 
     model = GeneReconModel(
         sp, genes, mode=mode, device="cuda", dtype=torch.float32,
-        solver_options=SolverOptions(e_adjoint_solver="neumann"),
+        solver_options=SolverOptions(),
     )
     assert len(model.batch_statics) > 1, "fixture is not genuinely multi-batch"
 

@@ -72,13 +72,9 @@ def _streamed_hessian(m, theta, pi_cur):
         for j in range(3):
             u_b = torch.zeros(G_b, 3, device=dev, dtype=dtype)
             u_b[:, j] = 1.0
-            out_b = hvp(u_b.reshape(-1), probe_id=j)[: G_b * 3].reshape(G_b, 3)
+            out_b = hvp(u_b.reshape(-1))[: G_b * 3].reshape(G_b, 3)
             cols[j].index_add_(0, fam, out_b)
         del hvp, sv
-        # Drop this batch's tangent-adjoint warm-start cache (3 probes x clades x species floats,
-        # ~7.6 GiB for a 315k-clade batch): it is only reused across repeated HVP calls on the SAME
-        # batch, and keeping all batches' copies alive is what exhausts the GPU.
-        static.warm_v_tangent = None
         free_cuda_cache_if_tight()
     H = torch.stack(cols, dim=-1)
     return 0.5 * (H + H.transpose(1, 2))
@@ -92,9 +88,6 @@ def main() -> int:
     ap.add_argument("--clade-budget", required=True, type=int, help="clades per batch (model clade_budget)")
     ap.add_argument("--out", required=True, help="path of the JSON summary to write")
     args = ap.parse_args()
-
-    # Same environment knob the recipe sets (the library memory-gate may still disable it).
-    os.environ["GPUREC_WARM_ADJOINT"] = "1"
 
     from gpurec.api.model import GeneReconModel
     from gpurec.api.solver_options import SolverOptions
@@ -176,10 +169,9 @@ def main() -> int:
         per_batch_clades=per_batch_clades, per_batch_waves=per_batch_waves,
         per_batch_families=per_batch_families,
         total_clades=sum(per_batch_clades), total_waves=sum(per_batch_waves),
-        warm_adjoint_ok=bool(m.warm_adjoint_ok),
     )
     print(f"[build] batches={n_batches}  species_nodes={S}  total_clades={sum(per_batch_clades):,}  "
-          f"total_waves={sum(per_batch_waves)}  warm_adjoint_ok={m.warm_adjoint_ok}", flush=True)
+          f"total_waves={sum(per_batch_waves)}", flush=True)
     for i, (c, w, f) in enumerate(zip(per_batch_clades, per_batch_waves, per_batch_families)):
         print(f"[build]   batch {i:3d}: families={f:5d} clades={c:9,d} waves={w:4d}", flush=True)
     rec["peak_gib_after_build"] = _peak_gib()

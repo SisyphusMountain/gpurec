@@ -8,13 +8,10 @@ through the whole forward solve, mirroring ``solve_e_pi`` + ``pi_wave_forward``:
   3. Pi-wave tangent: per wave (topological order), the cross-wave ``dts`` tangent then the
      self-loop tangent solved to convergence (the same true fixed point the adjoint differentiates).
 
-This is the ``J`` of the Gauss-Newton operator ``M = J^T B J``; the matching ``J^T`` reuses the
-existing backward (see ``gauss_newton.py``).
+The exact Hessian uses this differentiated primal solve before its tangent-adjoint sweep.
 """
 
 from __future__ import annotations
-
-import warnings
 
 import torch
 from torch.func import jvp
@@ -32,10 +29,8 @@ from gpurec.core.kernels.pi_forward import (
 from gpurec.core.kernels.dts_tangent import compute_dts_tangent
 from gpurec.core.kernels.e_step_tangent import e_tangent_fixed_point
 from gpurec.core.kernels.wave_tangent import (
-    compute_wave_step_tangent, compute_wave_step_tangent_selfloop,
+    compute_wave_step_tangent,
 )
-
-DEFAULT_SELF_MAX_ITER = 200
 
 
 def param_jvp_uniform(static, theta, v):
@@ -206,17 +201,14 @@ def _wave_tangent_constants(static, theta, v, sv, S, e_tol, raw_out=None,
     }
 
 
-def jvp_root_scores(static, theta, v, sv, *, primal_gene_split, self_tol=None,
-                    self_max_iter=DEFAULT_SELF_MAX_ITER, e_tol=None,
-                    self_iters=None, return_full=False, keep_d_dts=True, fused_selfloop=True,
+def jvp_root_scores(static, theta, v, sv, *, primal_gene_split, e_tol=None,
+                    self_iters=None, return_full=False, keep_d_dts=True,
                     alpha=None, u_alpha=None, leaf_fm_log=None):
     """d(Pi_root)/d[theta;alpha] . [v;u_alpha]  -> tensor [n_root_rows, S].
 
-    ``self_iters`` (int): run the per-wave self-loop for a FIXED number of Jacobi steps with
-    no per-iteration host sync — this matches the primal forward's ``pi_iters`` truncation
-    (N Jacobi steps from a zero tangent == the N-term Neumann partial sum the primal uses) and
-    streams the tangent sweep without CPU<->GPU stalls. ``self_iters=None`` (default) keeps the
-    adaptive converge-to-``self_tol`` loop used by the fp64 verification gates.
+    ``self_iters`` bounds the iterative numerical fallback used only for rows that the exact
+    elimination rejects because of dynamic range or conditioning. When omitted it uses the
+    primal solver's ``pi_iters`` budget.
 
     ``alpha``/``u_alpha`` turn on the WEIGHTED forward tangent (S3): the parameter JVP goes through
     ``extract_parameters_weighted_receivers`` so ``dmax_transfer`` carries the alpha->receiver_norm coupling,
@@ -247,10 +239,10 @@ def jvp_root_scores(static, theta, v, sv, *, primal_gene_split, self_tol=None,
     """
     sh, wl = static.species_helpers, static.wave_layout
     S = int(sh["S"])
-    if self_tol is None:
-        self_tol = _default_tol(theta.dtype)
     if e_tol is None:
         e_tol = _default_tol(theta.dtype)
+    if self_iters is None:
+        self_iters = int(static.solver_options.pi_iters)
     family_idx = static.rate_family_idx
     leaf_species_idx = wl["leaf_species_index"].to(torch.int32)
     species_child1 = sh["sp_child1"]
@@ -260,12 +252,6 @@ def jvp_root_scores(static, theta, v, sv, *, primal_gene_split, self_tol=None,
     # The species tree's height. One bucket per height in the compact level tables, so this is a
     # shape rather than a value: no device-to-host copy, unlike reducing species_height itself.
     species_levels = int(sh["compact_level_ptr"].numel()) - 1
-    # The tangent is the forward tree system with a different right-hand side, so
-    # SolverOptions.adjoint_self_loop -- which already says "solve the wave's linear system
-    # exactly rather than iterating it" for the adjoint -- selects it here too.
-    exact_selfloop = getattr(static, "solver_options", None) is not None and (
-        static.solver_options.adjoint_self_loop == "exact"
-    )
     if species_height is None:
         raise ValueError(
             "the wave-tangent self-loop needs species_helpers['sp_height']; rebuild the "
@@ -302,36 +288,6 @@ def jvp_root_scores(static, theta, v, sv, *, primal_gene_split, self_tol=None,
     dpi = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
     dpibar = torch.zeros((C, S), device=pi.device, dtype=pi.dtype)
     d_gene_split_by_wave_start = {} if return_full else None
-
-    def step(
-        dPi_out,
-        gene_split_log_likelihood,
-        d_gene_split_log_likelihood,
-        gene_split_offset,
-        ws,
-        W,
-        has_leaf,
-        store,
-    ):
-        compute_wave_step_tangent(
-            pi, dpi, dPi_out, ws, W, S,
-            base["max_transfer"], tangent_constants["d_max_transfer"],
-            base["duplication_loss_const"], tangent_constants["d_duplication_loss_const"],
-            base["extinction_complement"], tangent_constants["d_extinction_complement"],
-            base["extinction"], tangent_constants["d_extinction"],
-            base["speciation_child1_const"], tangent_constants["d_speciation_child1_const"],
-            base["speciation_child2_const"], tangent_constants["d_speciation_child2_const"],
-            receiver_log_probs, species_child1, species_child2, species_parent,
-            gene_split_log_likelihood, d_gene_split_log_likelihood,
-            leaf_species_idx=leaf_species_idx,
-            leaf_logp=base["leaf_log_probability"],
-            d_leaf_logp=tangent_constants["d_leaf_log_probability"],
-            family_idx=family_idx, dPibar_out=(dpibar if store else None),
-            has_leaf_term=has_leaf, input_ws=None, use_receiver_weights=use_receiver_weights,
-            dreceiver_log_probs=dreceiver_log_probs,
-            species_height=species_height, species_levels=species_levels,
-            pi_offset=pi_offset, gene_split_offset=gene_split_offset,
-        )
 
     for meta in wl["wave_metas"]:
         ws, W = int(meta["start"]), int(meta["W"])
@@ -380,97 +336,25 @@ def jvp_root_scores(static, theta, v, sv, *, primal_gene_split, self_tol=None,
         ):
             d_gene_split_by_wave_start[ws] = d_gene_split_log_likelihood
 
-        if self_iters is not None and fused_selfloop:
-            # fixed-count, sync-free Jacobi matching the primal forward's pi_iters truncation.
-            # Fused into ONE launch: the n_it-step in-place self-loop runs register-resident
-            # (primal weights/r/constants are loop-invariant -> loaded once), collapsing n_it
-            # launches -> 1 and the invariant global traffic ~n_it x. Numerically identical to
-            # looping `step` n_it times in-place (last step writes dpibar).
-            compute_wave_step_tangent_selfloop(
-                pi, dpi, ws, W, S, max(int(self_iters), 1),
-                base["max_transfer"], tangent_constants["d_max_transfer"],
-                base["duplication_loss_const"], tangent_constants["d_duplication_loss_const"],
-                base["extinction_complement"], tangent_constants["d_extinction_complement"],
-                base["extinction"], tangent_constants["d_extinction"],
-                base["speciation_child1_const"], tangent_constants["d_speciation_child1_const"],
-                base["speciation_child2_const"], tangent_constants["d_speciation_child2_const"],
-                receiver_log_probs, species_child1, species_child2, species_parent,
-                gene_split_log_likelihood, d_gene_split_log_likelihood,
-                leaf_species_idx=leaf_species_idx,
-                leaf_logp=base["leaf_log_probability"],
-                d_leaf_logp=tangent_constants["d_leaf_log_probability"],
-                family_idx=family_idx, dPibar_out=dpibar, has_leaf_term=has_leaf,
-                use_receiver_weights=use_receiver_weights, dreceiver_log_probs=dreceiver_log_probs,
-                pi_offset=pi_offset, gene_split_offset=gene_split_offset,
-                species_height=species_height, species_levels=species_levels,
-                exact=exact_selfloop,
-                wide_row=tangent_wide_row if exact_selfloop else None,
-            )
-        elif self_iters is not None:
-            # reference (unfused) fixed-count path: one launch per Jacobi step
-            n_it = max(int(self_iters), 1)
-            for _ in range(n_it - 1):
-                step(
-                    dpi,
-                    gene_split_log_likelihood,
-                    d_gene_split_log_likelihood,
-                    gene_split_offset,
-                    ws,
-                    W,
-                    has_leaf,
-                    store=False,
-                )
-            step(
-                dpi,
-                gene_split_log_likelihood,
-                d_gene_split_log_likelihood,
-                gene_split_offset,
-                ws,
-                W,
-                has_leaf,
-                store=True,
-            )
-        else:
-            prev = dpi.narrow(0, ws, W).clone()
-            converged = False
-            for _ in range(int(self_max_iter)):
-                step(
-                    dpi,
-                    gene_split_log_likelihood,
-                    d_gene_split_log_likelihood,
-                    gene_split_offset,
-                    ws,
-                    W,
-                    has_leaf,
-                    store=False,
-                )
-                cur = dpi.narrow(0, ws, W)
-                diff = float((cur - prev).abs().max())
-                scale = float(cur.abs().max())
-                if diff <= self_tol * max(1.0, scale):
-                    converged = True
-                    break
-                prev = cur.clone()
-            if not converged:
-                # Silent truncation here returns a NON-converged tangent -> the Jvp
-                # (hence the HVP / GGN curvature, and any PD certificate built on it)
-                # is wrong. Fail loud. Constant message so warnings dedupes to once.
-                warnings.warn(
-                    "jvp_root_scores tangent self-loop hit self_max_iter without "
-                    "converging; the tangent (Jvp/HVP/GGN curvature) is truncated and "
-                    "may be inaccurate. Raise self_max_iter (default 200) or self_tol.",
-                    RuntimeWarning, stacklevel=2,
-                )
-            step(
-                dpi,
-                gene_split_log_likelihood,
-                d_gene_split_log_likelihood,
-                gene_split_offset,
-                ws,
-                W,
-                has_leaf,
-                store=True,
-            )
+        compute_wave_step_tangent(
+            pi, dpi, ws, W, S, max(int(self_iters), 1),
+            base["max_transfer"], tangent_constants["d_max_transfer"],
+            base["duplication_loss_const"], tangent_constants["d_duplication_loss_const"],
+            base["extinction_complement"], tangent_constants["d_extinction_complement"],
+            base["extinction"], tangent_constants["d_extinction"],
+            base["speciation_child1_const"], tangent_constants["d_speciation_child1_const"],
+            base["speciation_child2_const"], tangent_constants["d_speciation_child2_const"],
+            receiver_log_probs, species_child1, species_child2, species_parent,
+            gene_split_log_likelihood, d_gene_split_log_likelihood,
+            leaf_species_idx=leaf_species_idx,
+            leaf_logp=base["leaf_log_probability"],
+            d_leaf_logp=tangent_constants["d_leaf_log_probability"],
+            family_idx=family_idx, dPibar_out=dpibar, has_leaf_term=has_leaf,
+            use_receiver_weights=use_receiver_weights, dreceiver_log_probs=dreceiver_log_probs,
+            pi_offset=pi_offset, gene_split_offset=gene_split_offset,
+            species_height=species_height, species_levels=species_levels,
+            wide_row=tangent_wide_row,
+        )
 
     roots = dpi.index_select(0, wl["root_clade_ids"])
     if return_full:

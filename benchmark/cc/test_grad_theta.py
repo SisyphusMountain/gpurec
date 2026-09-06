@@ -33,7 +33,6 @@ def main() -> int:
     from gpurec.api.solver_options import SolverOptions
     from gpurec.fit.genewise_fit import _BASE_SOLVER
 
-    os.environ.pop("GPUREC_WARM_ADJOINT", None)
     so = SolverOptions(**{**_BASE_SOLVER, "pi_iters": 16, "neumann_terms": 16})
     m = GeneReconModel(args.species, paths, mode="genewise", device="cuda", dtype=torch.float32,
                        solver_options=so, clade_budget=args.clade_budget)

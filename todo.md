@@ -1,0 +1,4 @@
+- Make sure RTX 4090 can optimize whole dataset, including the 400k clade family.
+- Further improve performance while keeping the codebase clean and lean.
+- Measure improvements for the smaller HOGENOM dataset.
+- Prepare report explaining the functionality of gpurec and the performance improvements over AleRax.

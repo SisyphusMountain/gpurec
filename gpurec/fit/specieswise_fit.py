@@ -60,7 +60,7 @@ def fit_specieswise(batch_statics, theta0, receiver_weights, *, lam, theta_ref=N
 
     # 2. saddle-aware Newton with the ridge/MAP term (exact HVP for specieswise theta[S,3]).
     theta_hat, hist = newton_lanczos(
-        batch_statics, theta, receiver_weights, hvp_mode="exact", lam=float(lam),
+        batch_statics, theta, receiver_weights, lam=float(lam),
         theta_ref=theta_ref, lanczos_m=lanczos_m, sigma=sigma, max_newton=max_newton,
         gtol=gtol, verbose=verbose)
     gnorm = float(hist[-1]["gnorm"]) if hist else float("nan")  # MAP projected-gradient norm

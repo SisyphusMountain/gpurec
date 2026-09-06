@@ -284,7 +284,6 @@ def main() -> int:
     if args.mode == "diag":
         install_spec_recorder()
 
-    os.environ["GPUREC_WARM_ADJOINT"] = "1"
     model = build_model(args.species, paths, args.clade_budget)
     theta = torch.full((len(paths), 3), -6.0, device="cuda")
 

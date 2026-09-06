@@ -26,11 +26,8 @@ e_adjoint_max_iter = 128
 # be expressed in TOML, omitted so the dataclass default is kept.
 adjoint_pruning_threshold = 1e-6
 use_adjoint_pruning = true
-use_hvp_warm_start = true
 pibar_side_threshold = 0.0
 e_tangent_tol = 1e-9
-forward_self_loop = "exact"
-adjoint_self_loop = "exact"
 exact_range_log2 = 100.0
 
 [precision]

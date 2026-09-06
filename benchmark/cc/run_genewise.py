@@ -103,10 +103,10 @@ def main() -> int:
     ap.add_argument("--tag", required=True)
     ap.add_argument("--init-rate", required=True,
                     help="start every family at this rate for D, L and T; 'none' = fit_dtl's default start")
-    ap.add_argument("--forward-self-loop", required=True, choices=("log", "exact"),
-                    help="forward self-loop kernel path (SolverOptions.forward_self_loop)")
-    ap.add_argument("--adjoint-self-loop", required=True, choices=("series", "exact"),
-                    help="wave-backward adjoint self-loop path (SolverOptions.adjoint_self_loop)")
+    ap.add_argument("--warmup-method", choices=("adam", "em"), default="adam",
+                    help="genewise initialization; em uses complete-history M-steps")
+    ap.add_argument("--em-steps", type=int, choices=(2, 3), default=2,
+                    help="number of EM warm-up steps (ignored for Adam)")
     # Optional because it is a debugging aid, not a setting: leaving it out is exactly the
     # behaviour of a build without the facility. When given, a batch whose curvature probe or
     # gradient goes non-finite is reported and written there before the run dies, so the failure
@@ -142,8 +142,6 @@ def main() -> int:
 
     # The recipe's own reference config (identical to passing no config) with the kernel path set.
     cfg = GpurecConfig.genewise_reference()
-    cfg.solver.forward_self_loop = args.forward_self_loop
-    cfg.solver.adjoint_self_loop = args.adjoint_self_loop
 
     ledger = None
     if args.memory_table:
@@ -158,6 +156,8 @@ def main() -> int:
     init_rate = None if args.init_rate == "none" else float(args.init_rate)
     res = fit_dtl(args.species, paths, "genewise", device="cuda", verbose=True, config=cfg,
                   init_rate=init_rate,
+                  genewise_warmup_method=args.warmup_method,
+                  genewise_em_steps=args.em_steps,
                   clade_budget=(None if args.clade_budget == 0 else args.clade_budget))
     wall = time.perf_counter() - t0
     # The ledger resets the peak counter at every phase boundary, so with it installed
@@ -170,15 +170,25 @@ def main() -> int:
         print(ledger.table())
     peak_gib = peak_b / 2**30
     g = res["genewise_result"]
+    gradient_work = g["gradient_work"]
+    initial_clades = gradient_work[0]["clades"] if gradient_work else 0
     summary = {
-        "tag": args.tag, "forward_self_loop": args.forward_self_loop,
-        "adjoint_self_loop": args.adjoint_self_loop,
+        "tag": args.tag,
+        "warmup_method": args.warmup_method,
+        "em_steps": g["em_steps"],
         "init_rate": args.init_rate, "clade_budget": args.clade_budget,
         "n_families": res["n_families"], "wall_s": wall,
         "nll_bits": res["nll_bits"], "nll_nats": res["nll_nats"],
         "opt_seconds": g["opt_seconds"], "n_steps": g["n_steps"], "n_builds": g["n_builds"],
         # per-phase wall-clock split (see fit_genewise's result dict)
         "adam_seconds": g["adam_seconds"], "hessian_seconds": g["hessian_seconds"],
+        "em_seconds": g["em_seconds"],
+        "gradient_work": gradient_work,
+        "gradient_calls": len(gradient_work),
+        "gradient_clades": sum(row["clades"] for row in gradient_work),
+        "gradient_full_clade_equivalents": (
+            sum(row["clades"] for row in gradient_work) / initial_clades
+            if initial_clades else 0.0),
         "n_hessians": g["n_hessians"], "newton_grad_seconds": g["newton_grad_seconds"],
         "n_verify_builds": g["n_verify_builds"], "verify_seconds": g["verify_seconds"],
         "n_rebuilds": g["n_rebuilds"], "rebuild_seconds": g["rebuild_seconds"],
@@ -190,7 +200,7 @@ def main() -> int:
     }
     print(f"[driver] DONE wall={wall:.1f}s nll_bits={res['nll_bits']:.3f} nll_nats={res['nll_nats']:.3f} "
           f"steps={g['n_steps']} builds={g['n_builds']} peak={peak_gib:.2f}GiB "
-          f"adam={g['adam_seconds']:.0f}s hess={g['n_hessians']}x/{g['hessian_seconds']:.0f}s "
+          f"adam={g['adam_seconds']:.0f}s em={g['em_seconds']:.0f}s hess={g['n_hessians']}x/{g['hessian_seconds']:.0f}s "
           f"grad={g['newton_grad_seconds']:.0f}s "
           f"verify={g['n_verify_builds']}x/{g['verify_seconds']:.0f}s "
           f"rebuild={g['n_rebuilds']}x/{g['rebuild_seconds']:.0f}s "

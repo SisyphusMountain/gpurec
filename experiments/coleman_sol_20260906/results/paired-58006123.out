@@ -1,0 +1,128 @@
+**********************************************************************
+*                         SLURM Batch System                         *
+*              IN2P3 Computing Centre, Villeurbanne FR               *
+**********************************************************************
+* Date:                 Sun Sep  6 21:19:31 CEST 2026
+* Job name:             sol_coleman_em2
+* Job id:               58006123
+* User:                 emarsot
+* Account:              biometr
+* Submit host:          cca016
+* Partition:            gpu_h100_interactive
+* Quality of service:   gpu
+* Nodelist:             ccwgislurm0200
+* Operating System:     Red Hat Enterprise Linux release 9.8 (Plow)
+* Architecture:         x86_64
+**********************************************************************
+[campaign] host=ccwgislurm0200 job=58006123 start=2026-09-06T21:19:31+02:00
+name, uuid, driver_version, memory.total [MiB]
+NVIDIA H100 NVL, GPU-8a9add16-cb62-9282-f039-9213619d52fa, 590.48.01, 95830 MiB
+808544177bb14855c44c62a86c9d8d9aa283f114a56a4ee6e5d09f4ba5d4d4c6  gpurec/fit/genewise_fit.py
+8e5ab5b627b2ab2921f86d2e775cb321fe937de5428cf9168da6d98fb2298399  gpurec/fit/em_warmup.py
+e76f7f9f133b2dec259b30168f3289752b831ebdea7649b825538393f857c477  gpurec/api/_implicit_grad.py
+e62a9a93070ca53ea72702c91430bb86021cc509de1ab17d5ffb09b2c3f6ceb0  gpurec/config/gpurec_config.py
+53be2dc26f9d8b50038d9c0415541503fd138900e4520f2e53561c0d1c00dff2  /sps/biometr/emarsot/gpurec-data/coleman/families_all.txt
+1c3957c584ec3b64da13310dcafaa8a6babe1b88528bb07ca79ec966b1462490  /sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk
+[     4.23s] [driver] 5124 families, species=/sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk, torch 2.13.0+cu130, gpu=NVIDIA H100 NVL
+[     9.88s] [fit_genewise] clade_budget=315,000 (the tuned default; it fits): device budget 79.1 GiB, statics 1.79 GiB, one batch 23.62 GiB, predicted peak 25.41 GiB
+[    18.01s] [fit_genewise] tier pi=16: 5124 families
+/sps/biometr/emarsot/envs/gpurec-h100/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: RuntimeWarning: neumann tol=1.00e-07 is below the torch.float32 finite-precision residual floor 4.77e-07; clamping to the floor. A tighter relative residual is unreachable in this precision -- use fp64.
+  return func(*args, **kwargs)
+[    41.29s] [fit_genewise] EM warm-up 1/2: nll=11284079.268557 bits
+[    67.15s] [fit_genewise] EM warm-up 2/2: nll=9195263.478286 bits
+[    93.36s]   [pi16 it0] live=5124 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.71e+02 clades: live 23.33M of 23.33M in model
+[   147.50s]   [pi16 it2] live=5124 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=5.23e+02 clades: live 23.33M of 23.33M in model
+[   201.06s]   [pi16 it4] live=5124 (+0 settled in batch) conv=7 (nll_stop=0) |Pg|max=1.11e+02 clades: live 23.33M of 23.33M in model
+[   254.78s]   [pi16 it6] live=5124 (+0 settled in batch) conv=180 (nll_stop=0) |Pg|max=3.73e+01 clades: live 23.33M of 23.33M in model
+[   308.42s]   [pi16 it8] live=4944 (+180 settled in batch) conv=2217 (nll_stop=0) |Pg|max=2.18e+01 clades: live 23.03M of 23.33M in model
+[   312.94s]   [pi16 it8] re-planned over 2727 live families
+[   341.71s]   [pi16 it10] live=2727 (+0 settled in batch) conv=1114 (nll_stop=0) |Pg|max=2.18e+01 clades: live 12.58M of 12.58M in model
+[   343.79s]   [pi16 it10] re-planned over 1613 live families
+[   355.79s]   [pi16 it12] live=1613 (+0 settled in batch) conv=510 (nll_stop=0) |Pg|max=5.05e+01 clades: live 5.08M of 5.08M in model
+[   357.10s]   [pi16 it12] re-planned over 1103 live families
+[   363.66s]   [pi16 it14] live=1103 (+0 settled in batch) conv=313 (nll_stop=0) |Pg|max=7.85e+00 clades: live 2.74M of 2.74M in model
+[   364.53s]   [pi16 it14] re-planned over 790 live families
+[   369.20s]   [pi16 it16] live=790 (+0 settled in batch) conv=220 (nll_stop=0) |Pg|max=7.93e+00 clades: live 1.92M of 1.92M in model
+[   374.04s]   [pi16 it18] live=570 (+220 settled in batch) conv=215 (nll_stop=0) |Pg|max=2.50e+00 clades: live 1.55M of 1.92M in model
+[   374.75s]   [pi16 it18] re-planned over 355 live families
+[   377.85s]   [pi16 it20] live=355 (+0 settled in batch) conv=85 (nll_stop=0) |Pg|max=3.39e+00 clades: live 1.19M of 1.19M in model
+[   392.23s]   [pi16 it22] live=270 (+85 settled in batch) conv=160 (nll_stop=0) |Pg|max=1.00e+00 clades: live 1.00M of 1.19M in model
+[   392.82s]   [pi16 it22] re-planned over 110 live families
+[   394.14s]   [pi16 it24] live=110 (+0 settled in batch) conv=41 (nll_stop=0) |Pg|max=5.36e-01 clades: live 0.56M of 0.56M in model
+[   394.67s]   [pi16 it24] re-planned over 69 live families
+[   395.69s]   [pi16 it26] live=69 (+0 settled in batch) conv=23 (nll_stop=0) |Pg|max=8.48e-01 clades: live 0.42M of 0.42M in model
+[   396.07s]   [pi16 it26] re-planned over 46 live families
+[   396.68s]   [pi16 it28] live=46 (+0 settled in batch) conv=16 (nll_stop=0) |Pg|max=4.54e-01 clades: live 0.24M of 0.24M in model
+[   396.90s]   [pi16 it28] re-planned over 30 live families
+[   397.30s]   [pi16 it30] live=30 (+0 settled in batch) conv=14 (nll_stop=0) |Pg|max=4.90e-01 clades: live 0.14M of 0.14M in model
+[   397.69s]   [pi16 it30] re-planned over 16 live families
+[   397.87s]   [pi16 it32] live=16 (+0 settled in batch) conv=8 (nll_stop=0) |Pg|max=1.80e-01 clades: live 0.05M of 0.05M in model
+[   397.90s]   [pi16 it32] re-planned over 8 live families
+[   398.06s]   [pi16 it34] live=8 (+0 settled in batch) conv=5 (nll_stop=0) |Pg|max=2.39e-01 clades: live 0.01M of 0.01M in model
+[   398.22s]   [pi16 it36] live=3 (+5 settled in batch) conv=1 (nll_stop=0) |Pg|max=3.36e-02 clades: live 0.01M of 0.01M in model
+[   398.22s]   [pi16 it36] re-planned over 2 live families
+[   398.26s]   [pi16 it38] live=2 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=5.10e-03 clades: live 0.00M of 0.00M in model
+[   398.30s]   [pi16 it40] live=2 (+0 settled in batch) conv=2 (nll_stop=0) |Pg|max=6.00e-04 clades: live 0.00M of 0.00M in model
+[   400.66s] [driver] DONE wall=396.3s nll_bits=9049360.744 nll_nats=6272538.885 steps=28 builds=13 peak=23.59GiB adam=0s em=49s hess=1x/11s grad=307s verify=0x/0s rebuild=12x/11s cert=0s {'converged': 5124, 'bound_active': 575, 'unconverged': 0, 'premature_drops': 0, 'pg_max': 0.0009997361339628696}
+[     0.33s] [driver] 5124 families, species=/sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk, torch 2.13.0+cu130, gpu=NVIDIA H100 NVL
+[     6.14s] [fit_genewise] clade_budget=315,000 (the tuned default; it fits): device budget 79.1 GiB, statics 1.79 GiB, one batch 23.62 GiB, predicted peak 25.41 GiB
+[    14.61s] [fit_genewise] tier pi=16: 5124 families
+/sps/biometr/emarsot/envs/gpurec-h100/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: RuntimeWarning: neumann tol=1.00e-07 is below the torch.float32 finite-precision residual floor 4.77e-07; clamping to the floor. A tighter relative residual is unreachable in this precision -- use fp64.
+  return func(*args, **kwargs)
+[   110.04s]   [pi16 it0] live=5124 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.12e+02 clades: live 23.33M of 23.33M in model
+[   163.16s]   [pi16 it2] live=5124 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.14e+02 clades: live 23.33M of 23.33M in model
+[   216.64s]   [pi16 it4] live=5124 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.15e+02 clades: live 23.33M of 23.33M in model
+[   270.30s]   [pi16 it6] live=5124 (+0 settled in batch) conv=103 (nll_stop=0) |Pg|max=6.92e+01 clades: live 23.33M of 23.33M in model
+[   324.13s]   [pi16 it8] live=5021 (+103 settled in batch) conv=600 (nll_stop=0) |Pg|max=2.33e+01 clades: live 23.31M of 23.33M in model
+[   377.99s]   [pi16 it10] live=4421 (+703 settled in batch) conv=1413 (nll_stop=0) |Pg|max=8.26e+00 clades: live 22.00M of 23.33M in model
+[   382.77s]   [pi16 it10] re-planned over 3008 live families
+[   412.40s]   [pi16 it12] live=3008 (+0 settled in batch) conv=577 (nll_stop=0) |Pg|max=1.38e+01 clades: live 12.71M of 12.71M in model
+[   415.47s]   [pi16 it12] re-planned over 2431 live families
+[   434.11s]   [pi16 it14] live=2431 (+0 settled in batch) conv=334 (nll_stop=0) |Pg|max=1.38e+01 clades: live 7.84M of 7.84M in model
+[   436.48s]   [pi16 it14] re-planned over 2097 live families
+[   448.45s]   [pi16 it16] live=2097 (+0 settled in batch) conv=212 (nll_stop=0) |Pg|max=1.05e+01 clades: live 4.67M of 4.67M in model
+[   450.31s]   [pi16 it16] re-planned over 1885 live families
+[   458.48s]   [pi16 it18] live=1885 (+0 settled in batch) conv=144 (nll_stop=0) |Pg|max=4.73e+00 clades: live 3.20M of 3.20M in model
+[   497.16s]   [pi16 it20] live=1741 (+144 settled in batch) conv=1254 (nll_stop=0) |Pg|max=9.28e+00 clades: live 2.75M of 3.20M in model
+[   497.96s]   [pi16 it20] re-planned over 487 live families
+[   501.02s]   [pi16 it22] live=487 (+0 settled in batch) conv=55 (nll_stop=0) |Pg|max=4.99e+00 clades: live 1.24M of 1.24M in model
+[   504.07s]   [pi16 it24] live=432 (+55 settled in batch) conv=268 (nll_stop=0) |Pg|max=3.50e+00 clades: live 1.16M of 1.24M in model
+[   504.71s]   [pi16 it24] re-planned over 164 live families
+[   506.18s]   [pi16 it26] live=164 (+0 settled in batch) conv=72 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.62M of 0.62M in model
+[   506.67s]   [pi16 it26] re-planned over 92 live families
+[   507.55s]   [pi16 it28] live=92 (+0 settled in batch) conv=34 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.34M of 0.34M in model
+[   507.85s]   [pi16 it28] re-planned over 58 live families
+[   508.35s]   [pi16 it30] live=58 (+0 settled in batch) conv=22 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.19M of 0.19M in model
+[   508.51s]   [pi16 it30] re-planned over 36 live families
+[   508.84s]   [pi16 it32] live=36 (+0 settled in batch) conv=5 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.11M of 0.11M in model
+[   508.88s]   [pi16 it32] re-planned over 31 live families
+[   509.05s]   [pi16 it34] live=31 (+0 settled in batch) conv=4 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.03M of 0.03M in model
+[   509.21s]   [pi16 it36] live=27 (+4 settled in batch) conv=9 (nll_stop=0) |Pg|max=3.63e+00 clades: live 0.02M of 0.03M in model
+[   509.23s]   [pi16 it36] re-planned over 18 live families
+[   509.38s]   [pi16 it38] live=18 (+0 settled in batch) conv=1 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.01M of 0.01M in model
+[   509.52s]   [pi16 it40] live=17 (+1 settled in batch) conv=4 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.01M of 0.01M in model
+[   510.22s]   [pi16 it42] live=13 (+5 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.91e-01 clades: live 0.01M of 0.01M in model
+[   510.36s]   [pi16 it44] live=13 (+5 settled in batch) conv=4 (nll_stop=0) |Pg|max=1.80e+00 clades: live 0.01M of 0.01M in model
+[   510.37s]   [pi16 it44] re-planned over 9 live families
+[   510.45s]   [pi16 it46] live=9 (+0 settled in batch) conv=2 (nll_stop=0) |Pg|max=2.23e+00 clades: live 0.00M of 0.00M in model
+[   510.52s]   [pi16 it48] live=7 (+2 settled in batch) conv=4 (nll_stop=0) |Pg|max=3.41e-01 clades: live 0.00M of 0.00M in model
+[   510.59s]   [pi16 it50] live=3 (+6 settled in batch) conv=1 (nll_stop=0) |Pg|max=3.43e-01 clades: live 0.00M of 0.00M in model
+[   510.66s]   [pi16 it52] live=2 (+7 settled in batch) conv=0 (nll_stop=0) |Pg|max=6.99e-01 clades: live 0.00M of 0.00M in model
+[   510.73s]   [pi16 it54] live=2 (+7 settled in batch) conv=0 (nll_stop=0) |Pg|max=6.21e-01 clades: live 0.00M of 0.00M in model
+[   510.80s]   [pi16 it56] live=2 (+7 settled in batch) conv=0 (nll_stop=0) |Pg|max=5.76e-01 clades: live 0.00M of 0.00M in model
+[   511.03s]   [pi16 it58] live=2 (+7 settled in batch) conv=0 (nll_stop=0) |Pg|max=1.65e-02 clades: live 0.00M of 0.00M in model
+[   511.10s]   [pi16 it60] live=2 (+7 settled in batch) conv=2 (nll_stop=0) |Pg|max=7.19e-05 clades: live 0.00M of 0.00M in model
+[   513.05s] [driver] DONE wall=512.7s nll_bits=9049362.377 nll_nats=6272540.018 steps=48 builds=13 peak=39.74GiB adam=71s em=0s hess=3x/31s grad=378s verify=0x/0s rebuild=12x/13s cert=0s {'converged': 5124, 'bound_active': 510, 'unconverged': 0, 'premature_drops': 0, 'pg_max': 0.0009998573223128915}
+[     0.37s] [driver] 5124 families, species=/sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk, torch 2.13.0+cu130, gpu=NVIDIA H100 NVL
+[2026-09-06T21:34:58.174] error: *** JOB 58006123 ON ccwgislurm0200 CANCELLED AT 2026-09-06T21:34:58 DUE to SIGNAL Terminated ***
+****************************************************************
+*                      SLURM Batch System                      *
+*           IN2P3 Computing Centre, Villeurbanne FR            *
+****************************************************************
+Date: Sun Sep  6 21:34:58 CEST 2026
+Job informations can be found using these commands:
+Accounting:
+sacct -j 58006123
+Efficiency:
+seff 58006123
+****************************************************************

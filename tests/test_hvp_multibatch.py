@@ -25,9 +25,9 @@ if not torch.cuda.is_available():
 from gpurec.api.model import GeneReconModel
 from gpurec.api.solver_options import SolverOptions
 from gpurec.bench.simulate import simulate_dataset
-from gpurec.fit.newton_cg import _fd_hessian_hvp
 from gpurec.solver.hvp.exact import make_exact_hvp, make_exact_hvp_single
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
+from _hvp_oracle import fd_hessian_hvp
 
 _TSI = 128
 # A deliberately over-converged fp64 solver, so the streamed curvature is compared against a
@@ -95,7 +95,7 @@ def test_streaming_fd_hessian_parity_specieswise():
 
     hvp = make_exact_hvp(m.batch_statics, theta, rw, None, tangent_self_iters=_TSI)
     vg = make_value_and_grad(m.batch_statics, rw, theta_shape=(S, 3))
-    fd = _fd_hessian_hvp(vg, theta.reshape(-1).contiguous(), None, eps=1e-3)
+    fd = fd_hessian_hvp(vg, theta.reshape(-1).contiguous(), None, eps=1e-3)
 
     torch.manual_seed(0)
     worst = 0.0
@@ -151,7 +151,7 @@ def test_streaming_fd_hessian_parity_genewise_theta():
 
     hvp = make_exact_hvp(m.batch_statics, theta, rw, None, tangent_self_iters=_TSI)
     vg = make_value_and_grad(m.batch_statics, rw, theta_shape=tuple(theta.shape))
-    fd = _fd_hessian_hvp(vg, theta.reshape(-1).contiguous(), None, eps=1e-3)  # noise-optimal (see specieswise gate)
+    fd = fd_hessian_hvp(vg, theta.reshape(-1).contiguous(), None, eps=1e-3)  # noise-optimal (see specieswise gate)
     torch.manual_seed(0)
     worst = 0.0
     for k in range(3):
@@ -184,29 +184,9 @@ def test_streaming_with_neumann_e_adjoint():
     rw = m.receiver_weights.detach().clone()
     hvp = make_exact_hvp(m.batch_statics, theta, rw, None, tangent_self_iters=_TSI)
     vg = make_value_and_grad(m.batch_statics, rw, theta_shape=(S, 3))
-    fd = _fd_hessian_hvp(vg, theta.reshape(-1).contiguous(), None, eps=1e-3)  # noise-optimal step (see FD-parity test)
+    fd = fd_hessian_hvp(vg, theta.reshape(-1).contiguous(), None, eps=1e-3)  # noise-optimal step (see FD-parity test)
     torch.manual_seed(2)
     u = torch.randn(theta.numel(), device="cuda", dtype=torch.float64)
     Ha, Hf = hvp(u).double(), fd(u).double()
     rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
     assert torch.isfinite(Ha).all() and rel < 1e-3, f"neumann streaming FD rel={rel:.2e}"
-
-
-@pytest.mark.gpu
-def test_genewise_streaming_tangent_warm_start_probe_id_forwards_to_batches():
-    """probe_id passed to the streaming hvp() must reach each batch's own static.warm_v_tangent."""
-    m = _build(family_chunk_size=3, mode="genewise")  # n_families=8 default -> >=2 batches
-    assert len(m.batch_statics) > 1
-    F = len(m.families)
-    S = int(m.species_helpers["S"])
-    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
-    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
-
-    hvp = make_exact_hvp(m.batch_statics, theta, rw, None, tangent_self_iters=128)
-    u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, 0] = 1.0
-    hvp(u.reshape(-1), probe_id=0)
-
-    for static in m.batch_statics:
-        assert static.warm_v_tangent is not None
-        assert 0 in static.warm_v_tangent
-        assert len(static.warm_v_tangent[0]) > 0

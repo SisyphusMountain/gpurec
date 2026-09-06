@@ -1,0 +1,49 @@
+{
+  "tag": "integrated_smoke5_em",
+  "warmup_method": "em",
+  "init_rate": "none",
+  "clade_budget": 200740,
+  "n_families": 5,
+  "wall_s": 2.3335250559975975,
+  "nll_bits": 29914.400451660156,
+  "nll_nats": 20735.082331209393,
+  "opt_seconds": 2.1511090009989857,
+  "n_steps": 9,
+  "n_builds": 2,
+  "adam_seconds": 0.0,
+  "hessian_seconds": 0.0,
+  "em_seconds": 0.7626975949970074,
+  "n_hessians": 0,
+  "newton_grad_seconds": 1.1238230829949316,
+  "n_verify_builds": 0,
+  "verify_seconds": 0.0,
+  "n_rebuilds": 1,
+  "rebuild_seconds": 0.06777841800067108,
+  "certify_seconds": 0.00041783499909797683,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 3,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 2,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 2.1513028144836426,
+  "memory_phases": null,
+  "certificate": {
+    "converged": 5,
+    "bound_active": 0,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0005830119480378926
+  }
+}

@@ -64,13 +64,10 @@ def _build(args):
     from gpurec.api.solver_options import SolverOptions
     from gpurec.fit.genewise_fit import _BASE_SOLVER
 
-    os.environ.pop("GPUREC_WARM_ADJOINT", None)
     so = SolverOptions(**{
         **_BASE_SOLVER,
         "pi_iters": 16,
         "neumann_terms": 16,
-        "forward_self_loop": "exact",
-        "adjoint_self_loop": "exact",
     })
     dtype = _DTYPES[args.dtype]
     model = GeneReconModel(

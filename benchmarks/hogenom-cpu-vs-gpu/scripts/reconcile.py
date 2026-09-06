@@ -48,7 +48,11 @@ def main():
         dtype=torch.float64 if args.fp64 else torch.float32,
         min_rate=args.min_rate, max_rate=args.max_rate,
         clade_budget=args.clade_budget, certify=args.certify, verbose=not args.quiet,
-    init_log2_rates=(0.0, 0.0, 0.0), stall_patience=120,
+    init_log2_rates=(0.0, 0.0, 0.0), stall_patience=120, curvature_update="bfgs",
+    step_extrapolation=1.0, step_model="quadratic", stop_nll_bits=0.0,
+    approach_pruning_threshold=0.0,
+targeted_hessian=(0, 0.0), coordinate_staging=(0, 0),
+trust_test=(0.25, 0.75, 0.5, 0.05),
     )
 
     rates = res["rates"].cpu()

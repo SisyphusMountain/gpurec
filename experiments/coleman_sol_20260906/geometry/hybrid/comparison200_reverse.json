@@ -1,0 +1,397 @@
+{
+  "schema": "gpurec.hierarchical_shared_endpoint.v1",
+  "artifact": "experiments/coleman_sol_20260906/em/hybrid_shared_200_v2.pt",
+  "n_families": 200,
+  "max_iter": 200,
+  "certify": true,
+  "production_source_sha256": "7d398d3e596f150c7eb5fc36f5eccce3b94b7dd14561c337bbbf5d7363409cd5",
+  "charged_shared_em_gradient_work": [
+    {
+      "phase": "em",
+      "step": 0,
+      "families": 200,
+      "clades": 1491100
+    },
+    {
+      "phase": "em",
+      "step": 1,
+      "families": 200,
+      "clades": 1491100
+    }
+  ],
+  "common_em_timing_full_artifact": {
+    "parse_seconds": 0.6098155820000102,
+    "build_seconds": 0.6213385039991408,
+    "pass_seconds": [
+      2.4907428509977763,
+      2.11013242899935
+    ],
+    "em_pass_seconds": 4.600875279997126,
+    "total_seconds": 5.928965522998624
+  },
+  "arms": {
+    "hierarchical_native_metric": {
+      "loss_bits": 613261.7971153259,
+      "n_steps": 21,
+      "n_builds": 8,
+      "n_hessians": 1,
+      "n_rebuilds": 7,
+      "converged": 200,
+      "unconverged": 0,
+      "bound_active": 20,
+      "pg_max": 0.0009911740198731422,
+      "newton_grad_seconds": 23.74965608201819,
+      "hessian_seconds": 1.0447343419982644,
+      "rebuild_seconds": 1.6636793589968875,
+      "certify_seconds": 0.0004522740018728655,
+      "wall_seconds": 28.12152478799908,
+      "gradient_work": [
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 142,
+          "clades": 1098860
+        },
+        {
+          "phase": "newton",
+          "families": 142,
+          "clades": 1098860
+        },
+        {
+          "phase": "newton",
+          "families": 101,
+          "clades": 578147
+        },
+        {
+          "phase": "newton",
+          "families": 101,
+          "clades": 578147
+        },
+        {
+          "phase": "newton",
+          "families": 79,
+          "clades": 250631
+        },
+        {
+          "phase": "newton",
+          "families": 79,
+          "clades": 250631
+        },
+        {
+          "phase": "newton",
+          "families": 67,
+          "clades": 134367
+        },
+        {
+          "phase": "newton",
+          "families": 67,
+          "clades": 134367
+        },
+        {
+          "phase": "newton",
+          "families": 67,
+          "clades": 134367
+        },
+        {
+          "phase": "newton",
+          "families": 67,
+          "clades": 134367
+        },
+        {
+          "phase": "newton",
+          "families": 32,
+          "clades": 40010
+        },
+        {
+          "phase": "newton",
+          "families": 32,
+          "clades": 40010
+        },
+        {
+          "phase": "newton",
+          "families": 32,
+          "clades": 40010
+        },
+        {
+          "phase": "newton",
+          "families": 32,
+          "clades": 40010
+        },
+        {
+          "phase": "newton",
+          "families": 3,
+          "clades": 19443
+        },
+        {
+          "phase": "newton",
+          "families": 3,
+          "clades": 19443
+        },
+        {
+          "phase": "newton",
+          "families": 1,
+          "clades": 3931
+        },
+        {
+          "phase": "newton",
+          "families": 1,
+          "clades": 3931
+        },
+        {
+          "phase": "newton",
+          "families": 1,
+          "clades": 3931
+        },
+        {
+          "phase": "newton",
+          "families": 1,
+          "clades": 3931
+        }
+      ],
+      "gradient_clades": 18027294,
+      "theta_finite": true,
+      "curvature_finite": true,
+      "theta_min": -19.931568145751953,
+      "theta_max": 1.0,
+      "ray_diagnostics": {
+        "zero_steps": 0,
+        "nearzero_steps": 0,
+        "boundary_zero_steps": 0,
+        "zero_direction_nonconverged_steps": 0,
+        "actual_native_zero_nonconverged_steps": 0,
+        "zero_family_ids": [],
+        "nearzero_family_ids": [],
+        "boundary_zero_family_ids": [],
+        "zero_direction_family_ids": [],
+        "actual_native_zero_family_ids": [],
+        "min_ray_fraction": 0.044811177998781204
+      },
+      "gradient_clades_with_shared_em": 21009494,
+      "gradient_full_clade_equivalents_with_shared_em": 14.089929582187647
+    },
+    "native": {
+      "loss_bits": 613261.8022165298,
+      "n_steps": 21,
+      "n_builds": 10,
+      "n_hessians": 1,
+      "n_rebuilds": 9,
+      "converged": 200,
+      "unconverged": 0,
+      "bound_active": 16,
+      "pg_max": 0.0009981930488720536,
+      "newton_grad_seconds": 21.80082370200762,
+      "hessian_seconds": 0.45171792000110145,
+      "rebuild_seconds": 1.4855621610004164,
+      "certify_seconds": 0.00020297499941079877,
+      "wall_seconds": 24.894097527998383,
+      "gradient_work": [
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 200,
+          "clades": 1491100
+        },
+        {
+          "phase": "newton",
+          "families": 114,
+          "clades": 971648
+        },
+        {
+          "phase": "newton",
+          "families": 114,
+          "clades": 971648
+        },
+        {
+          "phase": "newton",
+          "families": 69,
+          "clades": 420167
+        },
+        {
+          "phase": "newton",
+          "families": 69,
+          "clades": 420167
+        },
+        {
+          "phase": "newton",
+          "families": 46,
+          "clades": 176068
+        },
+        {
+          "phase": "newton",
+          "families": 46,
+          "clades": 176068
+        },
+        {
+          "phase": "newton",
+          "families": 46,
+          "clades": 176068
+        },
+        {
+          "phase": "newton",
+          "families": 46,
+          "clades": 176068
+        },
+        {
+          "phase": "newton",
+          "families": 20,
+          "clades": 70936
+        },
+        {
+          "phase": "newton",
+          "families": 20,
+          "clades": 70936
+        },
+        {
+          "phase": "newton",
+          "families": 13,
+          "clades": 46941
+        },
+        {
+          "phase": "newton",
+          "families": 13,
+          "clades": 46941
+        },
+        {
+          "phase": "newton",
+          "families": 11,
+          "clades": 31755
+        },
+        {
+          "phase": "newton",
+          "families": 11,
+          "clades": 31755
+        },
+        {
+          "phase": "newton",
+          "families": 3,
+          "clades": 8699
+        },
+        {
+          "phase": "newton",
+          "families": 3,
+          "clades": 8699
+        },
+        {
+          "phase": "newton",
+          "families": 2,
+          "clades": 4768
+        },
+        {
+          "phase": "newton",
+          "families": 2,
+          "clades": 4768
+        },
+        {
+          "phase": "newton",
+          "families": 1,
+          "clades": 421
+        },
+        {
+          "phase": "newton",
+          "families": 1,
+          "clades": 421
+        },
+        {
+          "phase": "newton",
+          "families": 1,
+          "clades": 421
+        },
+        {
+          "phase": "newton",
+          "families": 1,
+          "clades": 421
+        }
+      ],
+      "gradient_clades": 17235684,
+      "theta_finite": true,
+      "curvature_finite": true,
+      "theta_min": -19.931568145751953,
+      "theta_max": 1.0,
+      "gradient_clades_with_shared_em": 20217884,
+      "gradient_full_clade_equivalents_with_shared_em": 13.559039635168668
+    }
+  }
+}

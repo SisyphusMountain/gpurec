@@ -22,15 +22,6 @@ class _BatchStatic:
     accumulator_dtype: torch.dtype
     pi_forward_state: PiState | None = None
     warm_E: torch.Tensor | None = None
-    warm_v: dict | None = None   # per-wave backward Pi-adjoint warm-start cache (keyed by wave-start ws)
-    warm_v_tangent: dict | None = None  # gpurec.solver.hvp.exact tangent-adjoint warm-start cache,
-    # keyed by {probe_id: {ws: v_k}} -- see SolverOptions.use_hvp_warm_start.
-    warm_adjoint_ok: bool = True  # memory gate: False -> ignore GPUREC_WARM_ADJOINT (cache won't fit), run cold
-    # Transient per-wave self-loop scratch headroom (bytes) the warm-adjoint fit decision already
-    # reserved at build time (``warm_adjoint_fits``'s max-batch scratch). Passed to the forward
-    # self-loop gate so it trusts the build reservation instead of re-reading the depleted post-cache
-    # free memory. None -> cold path (gate reads current free memory as usual). See memory_policy.
-    warm_scratch_reserved_bytes: int | None = None
     # Per-species fraction-missing leaf boundary (log2(fraction_missing_s), -inf
     # off-leaf/observed). Shared across batches; None => every gene observed.
     leaf_fm_log: torch.Tensor | None = None

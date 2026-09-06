@@ -2277,7 +2277,7 @@ def compute_wave_step(
         )
     compute_diff = pi_residual_out is not None
     # ``row_mask`` restricts the sweep to the clade rows the exact solve handed back; None sweeps
-    # every row, which is what the "log" mode itself does.
+    # every row, as required by the split-input prologue.
     use_row_mask = row_mask is not None
     use_fraction_missing = leaf_fm_log is not None
     # When there is no fraction-missing tensor the constexpr short-circuits the off-hit load, so

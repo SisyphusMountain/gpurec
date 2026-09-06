@@ -52,54 +52,41 @@ def nonfinite_summary(name, tensor) -> str | None:
 
 
 def describe_forward_state(static, theta_batch, receiver_weights) -> str:
-    """Report where the forward solve for one batch turns non-finite, under each self-loop mode.
+    """Report where the exact forward solve for one batch turns non-finite.
 
     ``-inf`` is a legal Pi/Pibar value (an impossible species lane), so it is counted separately
-    from ``nan``/``+inf``, which are not. The two modes are run back to back on the same inputs so
-    the report says whether the exact self-loop is the source or merely inherits the problem.
+    from ``nan``/``+inf``, which are not.
     """
     from gpurec.core.inference.solver import solve_resident_e_pi
 
-    lines = []
-    original_mode = static.solver_options.forward_self_loop
-    for mode in ("log", "exact"):
-        static.solver_options.forward_self_loop = mode
-        try:
-            with torch.no_grad():
-                (
-                    E, E_s1, E_s2, Ebar, root_rows, pi_wave, pibar_wave, pibar_row_max,
-                    log_pS, log_pD, log_pL, max_transfer, receiver_log_probs,
-                ) = solve_resident_e_pi(
-                    static, theta_batch, receiver_weights,
-                    warm_start_E=None, pi_iters=None, pi_residual_out=None,
-                )
-        except Exception as failure:  # noqa: BLE001 - a diagnosis must not mask the real error
-            lines.append(f"  [{mode}] forward raised {type(failure).__name__}: {failure}")
-            continue
-        state = static.pi_forward_state
-        named = {
-            "E": E, "E_s1": E_s1, "E_s2": E_s2, "Ebar": Ebar,
-            "log_pS": log_pS, "log_pD": log_pD, "log_pL": log_pL,
-            "max_transfer": max_transfer, "receiver_log_probs": receiver_log_probs,
-            "root_rows": root_rows, "Pi_residual": pi_wave, "Pibar_residual": pibar_wave,
-            "pibar_row_max": pibar_row_max,
-            "Pi_offset": None if state is None else state.pi_offset,
-            "Pibar_offset": None if state is None else state.pibar_offset,
-        }
-        problems = [text for text in (nonfinite_summary(n, t) for n, t in named.items()) if text]
-        # A whole Pi row of -inf is the shape a scaled-linear-space underflow takes: every lane
-        # of that clade lost its mass at once, which the log path cannot do. Count it separately
-        # from single impossible lanes, which are ordinary.
-        dead_pi = int((~torch.isfinite(pi_wave)).all(dim=1).sum())
-        dead_pibar = int((~torch.isfinite(pibar_wave)).all(dim=1).sum())
-        problems.append(
-            f"all--inf rows: Pi {dead_pi}/{pi_wave.shape[0]}, Pibar {dead_pibar}/{pibar_wave.shape[0]}"
-        )
-        lines.append(f"  [{mode}] " + "; ".join(problems))
-        del E, E_s1, E_s2, Ebar, root_rows, pi_wave, pibar_wave, pibar_row_max
-        torch.cuda.empty_cache()
-    static.solver_options.forward_self_loop = original_mode
-    return "\n".join(lines)
+    try:
+        with torch.no_grad():
+            (
+                E, E_s1, E_s2, Ebar, root_rows, pi_wave, pibar_wave, pibar_row_max,
+                log_pS, log_pD, log_pL, max_transfer, receiver_log_probs,
+            ) = solve_resident_e_pi(
+                static, theta_batch, receiver_weights,
+                warm_start_E=None, pi_iters=None, pi_residual_out=None,
+            )
+    except Exception as failure:  # noqa: BLE001 - a diagnosis must not mask the real error
+        return f"  forward raised {type(failure).__name__}: {failure}"
+    state = static.pi_forward_state
+    named = {
+        "E": E, "E_s1": E_s1, "E_s2": E_s2, "Ebar": Ebar,
+        "log_pS": log_pS, "log_pD": log_pD, "log_pL": log_pL,
+        "max_transfer": max_transfer, "receiver_log_probs": receiver_log_probs,
+        "root_rows": root_rows, "Pi_residual": pi_wave, "Pibar_residual": pibar_wave,
+        "pibar_row_max": pibar_row_max,
+        "Pi_offset": None if state is None else state.pi_offset,
+        "Pibar_offset": None if state is None else state.pibar_offset,
+    }
+    problems = [text for text in (nonfinite_summary(n, t) for n, t in named.items()) if text]
+    dead_pi = int((~torch.isfinite(pi_wave)).all(dim=1).sum())
+    dead_pibar = int((~torch.isfinite(pibar_wave)).all(dim=1).sum())
+    problems.append(
+        f"all--inf rows: Pi {dead_pi}/{pi_wave.shape[0]}, Pibar {dead_pibar}/{pibar_wave.shape[0]}"
+    )
+    return "  " + "; ".join(problems)
 
 
 def save_batch(static, theta_batch, receiver_weights, *, species_tree, family_paths, reason,

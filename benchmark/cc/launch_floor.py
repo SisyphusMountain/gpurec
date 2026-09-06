@@ -22,7 +22,7 @@ def main() -> int:
     from gpurec.api.solver_options import SolverOptions
     from gpurec.fit.genewise_fit import _BASE_SOLVER
     paths = [ln.strip() for ln in open(args.families) if ln.strip() and not ln.startswith("#")][: args.limit]
-    so = SolverOptions(**{**_BASE_SOLVER, "forward_self_loop": "exact", "adjoint_self_loop": "exact"})
+    so = SolverOptions(**_BASE_SOLVER)
     m = GeneReconModel(args.species, paths, mode="genewise", device="cuda", dtype=torch.float32,
                        solver_options=so, clade_budget=args.clade_budget)
     m.receiver_weights.requires_grad_(False)

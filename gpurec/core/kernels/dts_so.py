@@ -29,6 +29,16 @@ _THREADS_PER_WARP = 32
 _BLOCK_NODES_TRANSFER_SUBTREE_SO = _NUM_WARPS_TRANSFER_SUBTREE_SO * _THREADS_PER_WARP
 
 
+# Warps per program for the DTS second-order split contraction
+# (``_gene_split_event_vjp_directional_derivative_kernel``). One program owns one split side and a
+# 512-species tile, so the warp count decides how many species lanes each thread carries. This one
+# is bandwidth bound (74 % of peak DRAM) rather than register bound, and the narrow launch wins:
+# measured on the RTX 4090 at S=2013, one probe's 189 launches cost 23.8 ms at 4 warps, 24.0 at 8,
+# 26.2 at 16, 28.8 at 32. Named rather than left to Triton's default of 4 so the measurement is
+# recorded next to the launch.
+_NUM_WARPS_GENE_SPLIT_SO = 4
+
+
 # ``family_offset``/``ws`` are wave start rows, and the right-side staging views start at
 # row ``n_splits`` of a shared buffer, so their byte offset is only sometimes a multiple
 # of 16. Both would otherwise recompile the kernel per wave (see README.md).
@@ -46,8 +56,10 @@ def _gene_split_event_vjp_directional_derivative_kernel(
     left_donor_adjoint_ptr, right_donor_adjoint_ptr,
     d_left_donor_adjoint_ptr, d_right_donor_adjoint_ptr,
     d_grad_pD_ptr, d_grad_pS_ptr, d_grad_max_transfer_ptr,
+    active_mask_ptr,   # optional [W] bool parent-row activity mask (the adjoint pruner's)
     S: tl.constexpr, BLOCK_S: tl.constexpr, ROW_STRIDE: tl.constexpr,
     BY_SPECIES: tl.constexpr, MAX_TRANSFER_ROW_STRIDE: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     LN2 = 0.6931471805599453
@@ -62,6 +74,16 @@ def _gene_split_event_vjp_directional_derivative_kernel(
     # Metadata remains int32 in memory; flattened address arithmetic is widened
     # locally so row * S cannot overflow.
     parent_wave_row = tl.load(reduce_idx + n).to(tl.int64)
+    if USE_ACTIVE_MASK:
+        # The same gate the first-order twin (_accumulate_gene_split_event_vjp_kernel) has always
+        # taken. Every quantity this kernel produces -- the two donor adjoints, the d_rhs atomics
+        # and the rate cotangents -- is a product with this split's PARENT-row adjoint v, and the
+        # adjoint pruner zeroed that row, so the whole program is a no-op. Measured on the
+        # 200-family Coleman batch: 53 % of the clade rows are pruned. Nothing zeroes the donor
+        # adjoints for a skipped side because the only reader,
+        # _transfer_subtree_vjp_directional_derivative_kernel, returns on the same rows.
+        if tl.load(active_mask_ptr + parent_wave_row) == 0:
+            return
     family = tl.load(family_idx + family_offset + parent_wave_row).to(tl.int64)
     left_clade_row = tl.load(split_left_rows + n).to(tl.int64)
     right_clade_row = tl.load(split_right_rows + n).to(tl.int64)
@@ -315,10 +337,13 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
     level_offsets_ptr, level_parents_ptr,
     level_child1_ptr, level_child2_ptr,
     d_rhs_ptr, d_grad_receiver_log_probs_ptr,
+    reduce_idx_ptr,    # [n_ws] split -> wave-local parent row
+    active_mask_ptr,   # optional [W] bool parent-row activity mask (the adjoint pruner's)
     n_ws,  # runtime int (per-wave split count; constexpr caused one JIT compile per wave shape)
     S: tl.constexpr, stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr, BLOCK_NODES: tl.constexpr,
     N_LEVELS: tl.constexpr, N_COMPACT_NODES: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr, DTYPE: tl.constexpr,
 ):
     """Evaluate the DTS transfer-tree curvature term documented in LaTeX.
@@ -349,6 +374,14 @@ def _transfer_subtree_vjp_directional_derivative_kernel(
     row = tl.program_id(0).to(tl.int64)
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
+    if USE_ACTIVE_MASK:
+        # Same gate as the first-order twin (_accumulate_transfer_subtree_vjp_kernel): this side's
+        # donor adjoint and its tangent are both products with the split's PARENT-row adjoint,
+        # which the pruner zeroed, so every atomic this program would add is zero. The staged
+        # donor adjoints it reads were left untouched by the split kernel above for exactly the
+        # same reason, and its own scratch is program-local.
+        if tl.load(active_mask_ptr + tl.load(reduce_idx_ptr + split_i).to(tl.int64)) == 0:
+            return
     child_l = tl.load(split_left_rows_ptr + split_i).to(tl.int64)
     child_r = tl.load(split_right_rows_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
@@ -558,8 +591,17 @@ def dts_backward_so(
     *, species_parent, compact_level_ptr=None, compact_level_parents=None,
     compact_level_child1=None, compact_level_child2=None,
     use_receiver_weights=False, dreceiver_log_probs=None, pi_offset, pibar_offset,
+    active_mask,
 ):
-    """Accumulate the DTS second-order contraction documented in LaTeX."""
+    """Accumulate the DTS second-order contraction documented in LaTeX.
+
+    ``active_mask`` is the adjoint pruner's per-row activity mask for this wave (``None`` runs
+    every split, which is what this function did before). Both kernels below are pure products
+    with the parent row's first-order adjoint ``v``, so a row the pruner zeroed contributes
+    nothing and its programs return immediately -- the same skip the first-order pair
+    (``accumulate_gene_split_event_vjp`` / ``accumulate_transfer_complement_vjp_from_donor_adjoint``)
+    has always taken.
+    """
     split_left_rows = meta["sl"]
     split_right_rows = meta["sr"]
     n_splits = int(split_left_rows.numel())
@@ -671,9 +713,12 @@ def dts_backward_so(
         left_donor_adjoint, right_donor_adjoint,
         d_left_donor_adjoint, d_right_donor_adjoint,
         d_grad_pD_kernel, d_grad_pS_kernel, d_grad_max_transfer,
+        active_mask if active_mask is not None else meta["reduce_idx"],
         S, BLOCK_S=block_s, ROW_STRIDE=row_stride, BY_SPECIES=bool(by_species),
         MAX_TRANSFER_ROW_STRIDE=max_transfer_row_stride,
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(Pi.dtype),
+        num_warps=_NUM_WARPS_GENE_SPLIT_SO,
     )
     if pd_reduced:
         d_grad_pD += d_grad_pD_kernel.sum(dim=-1, keepdim=True)
@@ -716,9 +761,12 @@ def dts_backward_so(
         compact_level_ptr.contiguous(), compact_level_parents,
         compact_level_child1.contiguous(), compact_level_child2.contiguous(),
         d_rhs, d_grad_receiver_log_probs,
+        meta["reduce_idx"],
+        active_mask if active_mask is not None else meta["reduce_idx"],
         n_ws=n_splits, S=S, stride_C=int(Pi.stride(0)),
         BLOCK_S=block_s, BLOCK_NODES=_BLOCK_NODES_TRANSFER_SUBTREE_SO,
         N_LEVELS=n_levels, N_COMPACT_NODES=n_compact_nodes,
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights), DTYPE=_tl_float_dtype(Pi.dtype),
         # num_warps=8 trims _dts_tree_so ~8% vs 4 on 666x80 (back-to-back wall 997->989ms;
         # nsys kernel 12%->11% of HVP). Each program owns a full side-row walked in BLOCK_S

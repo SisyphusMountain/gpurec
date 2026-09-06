@@ -1,0 +1,184 @@
+{
+  "n_families": 5124,
+  "pruning_threshold": 1e-06,
+  "baseline_path": "/sps/biometr/emarsot/gpurec-sol-em2-20260906-NVUB8w/results/adam_full_b.pt",
+  "candidate_path": "/sps/biometr/emarsot/gpurec-sol-em3-20260906-mBtGwJ/results/em2_full_b.pt",
+  "metrics": {
+    "baseline": {
+      "nll_bits": 9049362.374245338,
+      "cold_certified": 5056,
+      "cold_pg_max": 0.003030904335901141
+    },
+    "candidate": {
+      "nll_bits": 9049360.74335358,
+      "cold_certified": 5051,
+      "cold_pg_max": 0.003818164812400937
+    },
+    "candidate_repeat": {
+      "nll_bits": 9049360.739734966,
+      "cold_certified": 5048,
+      "cold_pg_max": 0.003097418462857604
+    },
+    "baseline_repeat": {
+      "nll_bits": 9049362.374245338,
+      "cold_certified": 5049,
+      "cold_pg_max": 0.0026876218616962433
+    }
+  },
+  "nll_difference_bits": -1.6308917566769736,
+  "max_regression_bits": 1.489737010051602,
+  "max_improvement_bits": 2.3864849575044005,
+  "regressions_above_0_01_bits": 13,
+  "improvements_above_0_01_bits": 12,
+  "changed_families": [
+    {
+      "index": 24,
+      "name": "COG0014_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.30141993801473177
+    },
+    {
+      "index": 117,
+      "name": "COG0057_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.6374207320611944
+    },
+    {
+      "index": 235,
+      "name": "COG0128_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.08835524898663749
+    },
+    {
+      "index": 470,
+      "name": "COG0266_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.43371478935154073
+    },
+    {
+      "index": 543,
+      "name": "COG0304_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.19197170176708767
+    },
+    {
+      "index": 613,
+      "name": "COG0337_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.08835947246610232
+    },
+    {
+      "index": 1100,
+      "name": "COG0604_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.5909590094311064
+    },
+    {
+      "index": 1327,
+      "name": "COG0750_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 1.489737010051602
+    },
+    {
+      "index": 1564,
+      "name": "COG1045_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.8286873450319874
+    },
+    {
+      "index": 1631,
+      "name": "COG1085_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.5516650968204431
+    },
+    {
+      "index": 1752,
+      "name": "COG1180_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.37803643357092653
+    },
+    {
+      "index": 2153,
+      "name": "COG1488_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.7268386218049159
+    },
+    {
+      "index": 2425,
+      "name": "COG1744_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.4284960579068766
+    },
+    {
+      "index": 2954,
+      "name": "COG2169_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.5902271822339671
+    },
+    {
+      "index": 2972,
+      "name": "COG2178_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.19266988721739153
+    },
+    {
+      "index": 3078,
+      "name": "COG2271_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -2.3864849575044005
+    },
+    {
+      "index": 3309,
+      "name": "COG2822_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.24808038938735422
+    },
+    {
+      "index": 3439,
+      "name": "COG2948_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -2.2991336038839663
+    },
+    {
+      "index": 3458,
+      "name": "COG2968_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.2587168314988162
+    },
+    {
+      "index": 3473,
+      "name": "COG2981_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 1.423353084793689
+    },
+    {
+      "index": 4076,
+      "name": "COG3550_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.09268468218933634
+    },
+    {
+      "index": 4509,
+      "name": "COG4137_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -2.1738276545238193
+    },
+    {
+      "index": 4975,
+      "name": "COG5010_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": -0.9561142150393493
+    },
+    {
+      "index": 4983,
+      "name": "COG5019_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 1.3787520659006134
+    },
+    {
+      "index": 5070,
+      "name": "COG5495_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "nll_difference_bits": 0.03300019118336195
+    }
+  ],
+  "audit_seconds": 221.69266002904624,
+  "solver": {
+    "pi_iters": 16,
+    "neumann_terms": 16,
+    "e_max_iter": 128,
+    "e_tol": 1e-08,
+    "e_adjoint_tol": 1e-07
+  },
+  "clade_budget": 315000,
+  "theta_dtype": "torch.float32",
+  "accumulator_dtype": "torch.float64",
+  "torch_version": "2.13.0+cu130",
+  "gpu": "NVIDIA H100 NVL",
+  "baseline_same_theta_repeat": {
+    "nll_difference_bits": 0.0,
+    "max_family_abs_bits": 0.0,
+    "max_pg_change": 0.0015146015211939812
+  },
+  "candidate_fit_repeat": {
+    "path": "/sps/biometr/emarsot/gpurec-sol-em2-20260906-NVUB8w/results/em_full_a.pt",
+    "nll_difference_bits": -0.0036186154660438064,
+    "max_family_abs_bits": 0.0013099662646709476,
+    "families_above_0_01_bits": 0
+  }
+}

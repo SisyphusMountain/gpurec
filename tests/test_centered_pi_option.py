@@ -100,7 +100,6 @@ def test_global_tiers_have_no_representation_option():
     assert (fit_tier.neumann_terms, eval_tier.neumann_terms) == (16, 64)
     # Everything except the two tier counts is carried through from the base unchanged.
     assert fit_tier.e_adjoint_max_iter == SolverOptions().e_adjoint_max_iter
-    assert fit_tier.forward_self_loop == SolverOptions().forward_self_loop
 
 
 def test_pi_wave_forward_has_no_representation_parameter():

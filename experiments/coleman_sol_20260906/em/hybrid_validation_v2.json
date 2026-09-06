@@ -1,0 +1,100 @@
+{
+  "artifact": "experiments/coleman_sol_20260906/em/hybrid_shared_200_v2.pt",
+  "n_families": 200,
+  "trajectory": {
+    "raw_theta1_mstep_abs_max": 0.0,
+    "raw_theta2_mstep_abs_max": 0.0,
+    "theta1_actual_cast_abs_max": 0.0,
+    "theta2_actual_cast_abs_max": 0.0,
+    "theta1_fp32_rounding_abs_max": 4.6977232770473165e-07,
+    "theta2_fp32_rounding_abs_max": 4.736171401731326e-07,
+    "nll_drop_0_to_1_bits": 119187.64561597002,
+    "counts_strictly_positive": true,
+    "count_gradient_g0_abs_max": 2.7951142669735418e-05,
+    "count_gradient_g1_abs_max": 6.773178824914794e-06
+  },
+  "coordinate_checks": {
+    "roundtrip_abs_max": 1.7763568394002505e-15,
+    "jacobian_abs_max": 1.1102230246251565e-16,
+    "gradient_pullback_abs_max": 5.684341886080802e-14,
+    "stored_z_abs_max": 0.0
+  },
+  "endpoint_information": {
+    "direct_vs_autograd_abs_max": 1.7053025658242404e-13,
+    "chain_rule_vs_autograd_abs_max": 2.8421709430404007e-13,
+    "raw_pullback_off_diagonal_abs_max": 6.394884621840902e-14,
+    "raw_pullback_diagonal_error_abs_max": 4.110090685571777e-06
+  },
+  "seed": {
+    "stored_seed_abs_max": 0.0,
+    "scale_valid": 200,
+    "bfgs_valid": 200,
+    "scale_min": 0.2634201506595182,
+    "scale_median": 0.4299243821289851,
+    "scale_p90": 0.6554275752751607,
+    "scale_max": 5.984631122337124,
+    "minimum_eigenvalue": 0.0007365071618517234,
+    "secant_residual_abs_max": 1.7053025658242404e-13
+  },
+  "native_control": {
+    "consistent_seed_recompute_abs_max": 0.0,
+    "legacy_seed_recompute_abs_max": 0.0,
+    "absolute_max": 6.4371869683554905e-06,
+    "relative_frobenius_median": 2.3574726122776254e-08,
+    "relative_frobenius_p90": 4.2055920799612645e-08,
+    "relative_frobenius_max": 9.75783913676121e-08,
+    "float32_absolute_max": 1.52587890625e-05,
+    "float32_relative_frobenius_median": 1.8038210924942177e-08,
+    "float32_relative_frobenius_p90": 6.56558682976538e-08,
+    "float32_relative_frobenius_max": 1.3280801169912593e-07,
+    "float32_bit_identical": false,
+    "endpoint_absolute_max": 4.736171401731326e-07,
+    "pair_point_absolute_max": 4.6977232770473165e-07
+  },
+  "boundary_cases": {
+    "count": 7,
+    "active_coordinates": 9,
+    "active_state": [
+      [
+        -1,
+        0,
+        0
+      ],
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        1
+      ],
+      [
+        1,
+        1,
+        0
+      ],
+      [
+        1,
+        0,
+        1
+      ],
+      [
+        0,
+        1,
+        0
+      ]
+    ],
+    "direct_vs_autograd_abs_max": 1.1102230246251565e-13,
+    "chain_rule_vs_autograd_abs_max": 8.526512829121202e-14,
+    "raw_pullback_off_diagonal_abs_max": 2.478572902475662e-14,
+    "raw_pullback_diagonal_error_abs_max": 69.17608861988253
+  },
+  "conclusion": "The fixed-count surrogate Hessian is diagonal in z everywhere, including constrained native-box M-step endpoints. The nonlinear chain-rule correction is diagonal too, so nonstationarity changes diagonal entries but cannot create cross terms for this map."
+}

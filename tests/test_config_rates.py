@@ -121,9 +121,13 @@ def test_fit_genewise_still_uses_1e6_2p0_box():
     res = fit_genewise(f"{d}/sp.nwk", [f"{d}/g.nwk", f"{d}/g.nwk"], device="cuda",
                         adam_steps=1, pi_tiers=(16,), max_iter=2, check_every=1,
                         min_drop=1, rebuild_frac=0.25, hessian_refresh=5,
-                        init_curvature="exact", verify_drop=False,
+                        init_curvature="exact", curvature_update="bfgs", verify_drop=False,
                         certify=True, certify_curvature=True, init_log2_rates=(0.0, 0.0, 0.0),
-                        stall_patience=120, trust_max=16.0)
+                        stall_patience=120, trust_max=16.0,
+                        step_extrapolation=1.0, step_model="quadratic",
+                        stop_nll_bits=0.0, approach_pruning_threshold=0.0,
+    targeted_hessian=(0, 0.0), coordinate_staging=(0, 0),
+    trust_test=(0.25, 0.75, 0.5, 0.05))
     theta = res["theta"]
     lo, hi = math.log2(1e-6), math.log2(2.0)
     assert torch.isfinite(theta).all()

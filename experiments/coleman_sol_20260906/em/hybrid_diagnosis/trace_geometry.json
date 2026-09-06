@@ -1,0 +1,657 @@
+{
+  "schema": "gpurec.em_hybrid_trace_geometry_diagnosis.v1",
+  "trace": "/home/enzo/Documents/git/gpurec/gpurec/experiments/coleman_sol_20260906/geometry/hybrid/diagnosis/trace200.pt",
+  "scope": "Counterfactual exact-G comparison uses live rows with no current fixed/working face and neither the recorded full proposal nor exact linearized proposal crossing the box.",
+  "counts": {
+    "live_proposals": 2216,
+    "current_face_rows": 121,
+    "working_face_promotions": 11,
+    "working_face_promoted_rows": 11,
+    "current_full_direction_box_cross_rows": 50,
+    "interior_no_current_box_cross_rows": 2043,
+    "counterfactual_exact_box_cross_rows": 0,
+    "comparison_rows": 2043,
+    "promoted_rows_where_exact_G_step_is_already_tangent_cone_feasible": 0
+  },
+  "actual_saved_step_metric": {
+    "G_condition": {
+      "p00": 4.018469711998411,
+      "p10": 5.525031152079008,
+      "p50": 7.206339839416535,
+      "p90": 8.404860013426367,
+      "p100": 10.770723387621914
+    },
+    "max_normalized_G_offdiagonal_in_raw_B_eigenbasis": {
+      "p00": 0.09689519769118307,
+      "p10": 0.5220666857004286,
+      "p50": 0.6560786047781396,
+      "p90": 0.7144684942857111,
+      "p100": 0.7513334360100873
+    },
+    "physical_metric_cosine_current_vs_exact_G": {
+      "p00": 0.5865087941525855,
+      "p10": 0.9983783454675296,
+      "p50": 0.9999999999998339,
+      "p90": 0.9999999999999967,
+      "p100": 1.0
+    },
+    "raw_B_convexified_quadratic_gain_ratio_current_vs_exact_G": {
+      "p00": 0.698366166776136,
+      "p10": 0.9811781349560145,
+      "p50": 0.9999999999813722,
+      "p90": 0.999999999999913,
+      "p100": 0.9999999999999977
+    },
+    "recorded_actual_step_gain_ratio_vs_exact_linear_G": {
+      "p00": 0.698366166776136,
+      "p10": 0.9812795999056788,
+      "p50": 0.9999999999832576,
+      "p90": 0.9999999999999206,
+      "p100": 1.0141917213799259
+    },
+    "gain_ratio_vs_exact_G_after_exact_step_nonlinear_radius_rescale": {
+      "p00": 0.7053932633231302,
+      "p10": 0.9873222001437976,
+      "p50": 0.9999999999837361,
+      "p90": 0.9999999999999208,
+      "p100": 1.0141917213799259
+    },
+    "current_ray_alpha": {
+      "p00": 0.42549055516679185,
+      "p10": 0.7952863782710728,
+      "p50": 1.0,
+      "p90": 1.0,
+      "p100": 1.0
+    },
+    "recorded_steps_outside_local_linear_G_radius": 62,
+    "rows_below_0_90_exact_gain": 38,
+    "rows_below_0_75_exact_gain": 4
+  },
+  "recorded_trust_ratio": {
+    "pending_judgments": 787,
+    "rejections": 156,
+    "actual_over_recorded_predicted": {
+      "p00": -4.871365070343018,
+      "p10": -0.7895198345184326,
+      "p50": 0.861319899559021,
+      "p90": 1.3868655920028685,
+      "p100": 3.029785633087158
+    }
+  },
+  "by_step": [
+    {
+      "global_step": 0,
+      "pi": 16,
+      "rows": 186,
+      "gain_ratio_median": 0.9876696721319355,
+      "gain_ratio_min": 0.9298701750763266,
+      "metric_cosine_median": 0.9996152022049734,
+      "current_ray_alpha_min": 0.5332304886967895
+    },
+    {
+      "global_step": 1,
+      "pi": 16,
+      "rows": 182,
+      "gain_ratio_median": 0.977466502766322,
+      "gain_ratio_min": 0.7053062818697299,
+      "metric_cosine_median": 0.9860115203232637,
+      "current_ray_alpha_min": 0.42549055516679185
+    },
+    {
+      "global_step": 2,
+      "pi": 16,
+      "rows": 190,
+      "gain_ratio_median": 0.9999999999996838,
+      "gain_ratio_min": 0.6986803117469724,
+      "metric_cosine_median": 0.9999999999999605,
+      "current_ray_alpha_min": 0.5116832612308179
+    },
+    {
+      "global_step": 3,
+      "pi": 16,
+      "rows": 185,
+      "gain_ratio_median": 0.999999999999666,
+      "gain_ratio_min": 0.9307004892895907,
+      "metric_cosine_median": 0.999999999999955,
+      "current_ray_alpha_min": 0.6456947475080795
+    },
+    {
+      "global_step": 4,
+      "pi": 16,
+      "rows": 188,
+      "gain_ratio_median": 0.9999999999971539,
+      "gain_ratio_min": 0.7673518988197771,
+      "metric_cosine_median": 0.9999999999999534,
+      "current_ray_alpha_min": 0.5580182601072243
+    },
+    {
+      "global_step": 5,
+      "pi": 16,
+      "rows": 188,
+      "gain_ratio_median": 0.9999999999932444,
+      "gain_ratio_min": 0.698366166776136,
+      "metric_cosine_median": 0.9999999999999624,
+      "current_ray_alpha_min": 0.5996470083441849
+    },
+    {
+      "global_step": 6,
+      "pi": 16,
+      "rows": 187,
+      "gain_ratio_median": 0.9999999999943373,
+      "gain_ratio_min": 0.9847795594417922,
+      "metric_cosine_median": 0.9999999999999302,
+      "current_ray_alpha_min": 0.8077259986144809
+    },
+    {
+      "global_step": 7,
+      "pi": 16,
+      "rows": 187,
+      "gain_ratio_median": 0.9999999999965254,
+      "gain_ratio_min": 0.9799674561459553,
+      "metric_cosine_median": 0.9999999999998422,
+      "current_ray_alpha_min": 0.843479941357377
+    },
+    {
+      "global_step": 8,
+      "pi": 16,
+      "rows": 138,
+      "gain_ratio_median": 0.999999999979183,
+      "gain_ratio_min": 0.9879832537007113,
+      "metric_cosine_median": 0.99999999999988,
+      "current_ray_alpha_min": 0.976226263136318
+    },
+    {
+      "global_step": 9,
+      "pi": 16,
+      "rows": 138,
+      "gain_ratio_median": 0.9999999999812615,
+      "gain_ratio_min": 0.9938778687173848,
+      "metric_cosine_median": 0.9999999999999223,
+      "current_ray_alpha_min": 0.9919850349503503
+    },
+    {
+      "global_step": 10,
+      "pi": 16,
+      "rows": 76,
+      "gain_ratio_median": 0.9999998148227341,
+      "gain_ratio_min": 0.9938018167344483,
+      "metric_cosine_median": 0.9999999999994729,
+      "current_ray_alpha_min": 0.9790460767958047
+    },
+    {
+      "global_step": 11,
+      "pi": 16,
+      "rows": 59,
+      "gain_ratio_median": 0.9999994132247086,
+      "gain_ratio_min": 0.9883628393636855,
+      "metric_cosine_median": 0.9999999999982047,
+      "current_ray_alpha_min": 0.9921900155823405
+    },
+    {
+      "global_step": 12,
+      "pi": 16,
+      "rows": 44,
+      "gain_ratio_median": 0.9999979197554114,
+      "gain_ratio_min": 0.9854022721258192,
+      "metric_cosine_median": 0.9999999999958425,
+      "current_ray_alpha_min": 0.9987419346624596
+    },
+    {
+      "global_step": 13,
+      "pi": 16,
+      "rows": 35,
+      "gain_ratio_median": 0.9999954569474147,
+      "gain_ratio_min": 0.99631288347548,
+      "metric_cosine_median": 0.9999999999643057,
+      "current_ray_alpha_min": 0.9983954629570344
+    },
+    {
+      "global_step": 14,
+      "pi": 16,
+      "rows": 35,
+      "gain_ratio_median": 0.9999902016576527,
+      "gain_ratio_min": 0.9994153532378083,
+      "metric_cosine_median": 0.99999999983911,
+      "current_ray_alpha_min": 0.9958155931038029
+    },
+    {
+      "global_step": 15,
+      "pi": 16,
+      "rows": 20,
+      "gain_ratio_median": 0.9999240398446715,
+      "gain_ratio_min": 0.9987366163277551,
+      "metric_cosine_median": 0.9999999967504553,
+      "current_ray_alpha_min": 0.9940080001410196
+    },
+    {
+      "global_step": 16,
+      "pi": 16,
+      "rows": 1,
+      "gain_ratio_median": 0.9999067868925309,
+      "gain_ratio_min": 0.9999067868925309,
+      "metric_cosine_median": 0.9999999829977201,
+      "current_ray_alpha_min": 0.9999555474516034
+    },
+    {
+      "global_step": 17,
+      "pi": 16,
+      "rows": 1,
+      "gain_ratio_median": 0.9999340662661556,
+      "gain_ratio_min": 0.9999340662661556,
+      "metric_cosine_median": 0.9999999914913575,
+      "current_ray_alpha_min": 0.999968415472174
+    },
+    {
+      "global_step": 18,
+      "pi": 16,
+      "rows": 1,
+      "gain_ratio_median": 0.9999534211147042,
+      "gain_ratio_min": 0.9999534211147042,
+      "metric_cosine_median": 0.9999999957502885,
+      "current_ray_alpha_min": 0.9999570909116035
+    },
+    {
+      "global_step": 19,
+      "pi": 16,
+      "rows": 1,
+      "gain_ratio_median": 0.9999670507412072,
+      "gain_ratio_min": 0.9999670507412072,
+      "metric_cosine_median": 0.9999999978754054,
+      "current_ray_alpha_min": 0.9999721080486517
+    },
+    {
+      "global_step": 20,
+      "pi": 16,
+      "rows": 1,
+      "gain_ratio_median": 0.9999766608954672,
+      "gain_ratio_min": 0.9999766608954672,
+      "metric_cosine_median": 0.9999999989373369,
+      "current_ray_alpha_min": 0.999972464859917
+    }
+  ],
+  "worst_exact_G_counterfactual_rows": [
+    {
+      "global_family_id": 54,
+      "global_step": 5,
+      "pi": 16,
+      "row": 54,
+      "physical_metric_cosine": 0.5865087941525855,
+      "gain_ratio_linear_exact": 0.698366166776136,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7079034779818406,
+      "current_ray_alpha": 0.5996470083441849
+    },
+    {
+      "global_family_id": 41,
+      "global_step": 2,
+      "pi": 16,
+      "row": 41,
+      "physical_metric_cosine": 0.6747581228505815,
+      "gain_ratio_linear_exact": 0.6986803117469724,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7098173388056183,
+      "current_ray_alpha": 0.6235472315489383
+    },
+    {
+      "global_family_id": 112,
+      "global_step": 1,
+      "pi": 16,
+      "row": 112,
+      "physical_metric_cosine": 0.7090550549884769,
+      "gain_ratio_linear_exact": 0.7053062818697299,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7053932633231302,
+      "current_ray_alpha": 0.42549055516679185
+    },
+    {
+      "global_family_id": 73,
+      "global_step": 1,
+      "pi": 16,
+      "row": 73,
+      "physical_metric_cosine": 0.7382945581036302,
+      "gain_ratio_linear_exact": 0.7459319990209782,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7459695903618488,
+      "current_ray_alpha": 0.49123431110548993
+    },
+    {
+      "global_family_id": 21,
+      "global_step": 1,
+      "pi": 16,
+      "row": 21,
+      "physical_metric_cosine": 0.8090928217316364,
+      "gain_ratio_linear_exact": 0.751340749668479,
+      "gain_ratio_nonlinear_rescaled_exact": 0.754761212998482,
+      "current_ray_alpha": 0.5959390185754939
+    },
+    {
+      "global_family_id": 71,
+      "global_step": 1,
+      "pi": 16,
+      "row": 71,
+      "physical_metric_cosine": 0.8365574935443462,
+      "gain_ratio_linear_exact": 0.7661677241926468,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7670868445146449,
+      "current_ray_alpha": 0.5453188895838629
+    },
+    {
+      "global_family_id": 93,
+      "global_step": 4,
+      "pi": 16,
+      "row": 93,
+      "physical_metric_cosine": 0.7768470427979256,
+      "gain_ratio_linear_exact": 0.7673518988197771,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7673518988197771,
+      "current_ray_alpha": 0.5580182601072243
+    },
+    {
+      "global_family_id": 54,
+      "global_step": 2,
+      "pi": 16,
+      "row": 54,
+      "physical_metric_cosine": 0.8246972921907112,
+      "gain_ratio_linear_exact": 0.7763648430109131,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7828464718395278,
+      "current_ray_alpha": 0.6529453395195067
+    },
+    {
+      "global_family_id": 66,
+      "global_step": 1,
+      "pi": 16,
+      "row": 66,
+      "physical_metric_cosine": 0.8437579691536308,
+      "gain_ratio_linear_exact": 0.7802385819419534,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7802672730239805,
+      "current_ray_alpha": 0.5715223572615366
+    },
+    {
+      "global_family_id": 134,
+      "global_step": 1,
+      "pi": 16,
+      "row": 134,
+      "physical_metric_cosine": 0.8692060967143358,
+      "gain_ratio_linear_exact": 0.7881359784311773,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7884902606074564,
+      "current_ray_alpha": 0.5357139146599061
+    },
+    {
+      "global_family_id": 4,
+      "global_step": 1,
+      "pi": 16,
+      "row": 4,
+      "physical_metric_cosine": 0.8563359162643449,
+      "gain_ratio_linear_exact": 0.7926251083901564,
+      "gain_ratio_nonlinear_rescaled_exact": 0.7926251083901564,
+      "current_ray_alpha": 0.6059922014370492
+    },
+    {
+      "global_family_id": 13,
+      "global_step": 1,
+      "pi": 16,
+      "row": 13,
+      "physical_metric_cosine": 0.8166637671778687,
+      "gain_ratio_linear_exact": 0.7953909668373815,
+      "gain_ratio_nonlinear_rescaled_exact": 0.8080670426019336,
+      "current_ray_alpha": 0.6568114798632023
+    }
+  ],
+  "families_most_affected_by_metric_approximation": [
+    {
+      "global_family_id": 54,
+      "min_gain_ratio": 0.698366166776136,
+      "rows_below_0_99": 5,
+      "rows_below_0_90": 3,
+      "affected_steps": [
+        0,
+        1,
+        2,
+        4,
+        5
+      ]
+    },
+    {
+      "global_family_id": 41,
+      "min_gain_ratio": 0.6986803117469724,
+      "rows_below_0_99": 1,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        2
+      ]
+    },
+    {
+      "global_family_id": 112,
+      "min_gain_ratio": 0.7053062818697299,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 73,
+      "min_gain_ratio": 0.7459319990209782,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 21,
+      "min_gain_ratio": 0.751340749668479,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 71,
+      "min_gain_ratio": 0.7661677241926468,
+      "rows_below_0_99": 3,
+      "rows_below_0_90": 2,
+      "affected_steps": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "global_family_id": 93,
+      "min_gain_ratio": 0.7673518988197771,
+      "rows_below_0_99": 5,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "global_family_id": 66,
+      "min_gain_ratio": 0.7802385819419534,
+      "rows_below_0_99": 3,
+      "rows_below_0_90": 2,
+      "affected_steps": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "global_family_id": 134,
+      "min_gain_ratio": 0.7881359784311773,
+      "rows_below_0_99": 3,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "global_family_id": 4,
+      "min_gain_ratio": 0.7926251083901564,
+      "rows_below_0_99": 3,
+      "rows_below_0_90": 2,
+      "affected_steps": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "global_family_id": 13,
+      "min_gain_ratio": 0.7953909668373815,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 144,
+      "min_gain_ratio": 0.7964763052945469,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 137,
+      "min_gain_ratio": 0.8030403621799399,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 147,
+      "min_gain_ratio": 0.803082072835366,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 9,
+      "min_gain_ratio": 0.8041457108970888,
+      "rows_below_0_99": 3,
+      "rows_below_0_90": 2,
+      "affected_steps": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "global_family_id": 59,
+      "min_gain_ratio": 0.8140091319829322,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        2
+      ]
+    },
+    {
+      "global_family_id": 122,
+      "min_gain_ratio": 0.8167410673235806,
+      "rows_below_0_99": 4,
+      "rows_below_0_90": 2,
+      "affected_steps": [
+        0,
+        1,
+        2,
+        4
+      ]
+    },
+    {
+      "global_family_id": 181,
+      "min_gain_ratio": 0.8219791944589749,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        2
+      ]
+    },
+    {
+      "global_family_id": 118,
+      "min_gain_ratio": 0.8324484736221793,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 117,
+      "min_gain_ratio": 0.8364472494194924,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 1,
+      "affected_steps": [
+        1,
+        2
+      ]
+    }
+  ],
+  "root_identified_heavy_slower_families": [
+    {
+      "global_family_id": 16,
+      "min_gain_ratio": 0.9591221260145969,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 0,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 83,
+      "min_gain_ratio": 0.9734687405781998,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 0,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 169,
+      "min_gain_ratio": 0.9768959574971716,
+      "rows_below_0_99": 2,
+      "rows_below_0_90": 0,
+      "affected_steps": [
+        0,
+        1
+      ]
+    },
+    {
+      "global_family_id": 101,
+      "min_gain_ratio": 0.9856197403257976,
+      "rows_below_0_99": 1,
+      "rows_below_0_90": 0,
+      "affected_steps": [
+        0
+      ]
+    },
+    {
+      "global_family_id": 177,
+      "min_gain_ratio": 0.9999999999979351,
+      "rows_below_0_99": 0,
+      "rows_below_0_90": 0,
+      "affected_steps": []
+    }
+  ],
+  "working_set_note": "Only counts promotions. A release-optimality test needs the inequality face QP; the existing trace establishes whether this can be material by its frequency."
+}

@@ -28,7 +28,7 @@ def test_fit_global_matches_optimize(tmp_path):
 
     # baseline: the generic optimize() global recipe
     m = GeneReconModel(sp, genes, mode="global", device="cuda", dtype=torch.float32,
-                       solver_options=SolverOptions(e_adjoint_solver="neumann"))
+                       solver_options=SolverOptions())
     th, _ = optimize(m.batch_statics, m.theta.detach(), m.receiver_weights.detach(), verbose=False)
     nll_opt, _g = final_eval(m.batch_statics, th, m.receiver_weights.detach())
     rates_opt = (2.0 ** th.detach().float().cpu()).numpy().reshape(3)

@@ -1,5 +1,8 @@
 # The genewise fit, 7x faster: what was done and why it is safe
 
+> Historical report for `perf/genewise-cc-h100`. Mode-selector references below describe the
+> experiments that led to the exact-only implementation; they are not part of the current API.
+
 Written 2026-09-03. Companion to the chronological measurement log
 `docs/genewise_h100_runtime.md` (every number below is taken from a run recorded there or in
 `benchmark/cc/results/*.json`).

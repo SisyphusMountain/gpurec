@@ -2,7 +2,8 @@
 for each family, the Newton iteration at which its NLL last improved by more than --nll-eps bits,
 versus the iteration at which its projected gradient first fell below --tol.
 
-Usage: recipe_trace.py --species S --families LIST --limit 200 --clade-budget 100000 --out trace.pt --nll-eps 1e-4 --tol 1e-3
+Usage: recipe_trace.py --species S --families LIST --limit 200 --clade-budget 100000 --out trace.pt \
+          --nll-eps 1e-4 --tol 1e-3 --curvature-update bfgs --dtype float32
 """
 from __future__ import annotations
 
@@ -19,6 +20,21 @@ def main() -> int:
     ap.add_argument("--limit", required=True, type=int); ap.add_argument("--clade-budget", required=True, type=int)
     ap.add_argument("--out", required=True); ap.add_argument("--nll-eps", required=True, type=float)
     ap.add_argument("--tol", required=True, type=float)
+    ap.add_argument("--curvature-update", required=True, choices=("bfgs", "sr1", "multisecant"))
+    ap.add_argument("--dtype", required=True, choices=("float32", "float64"))
+    ap.add_argument("--step-extrapolation", required=True, type=float)
+    ap.add_argument("--step-model", required=True, choices=("quadratic", "rate_affine"))
+    ap.add_argument("--stop-nll-bits", required=True, type=float)
+    ap.add_argument("--approach-pruning-threshold", required=True, type=float)
+    # Round-6 experiments; off = 0 / 0.0 / 0 / 0 and the ratio test's own 0.25 / 0.75 / 0.5 / 0.05.
+    ap.add_argument("--stuck-from", required=True, type=int)
+    ap.add_argument("--stuck-max-frac", required=True, type=float)
+    ap.add_argument("--stage-freeze-t", required=True, type=int)
+    ap.add_argument("--stage-d-only", required=True, type=int)
+    ap.add_argument("--trust-shrink", required=True, type=float)
+    ap.add_argument("--trust-grow-ratio", required=True, type=float)
+    ap.add_argument("--trust-radius-min", required=True, type=float)
+    ap.add_argument("--trust-min-predicted-bits", required=True, type=float)
     args = ap.parse_args()
     from gpurec.api import model as model_module
     from gpurec.fit.genewise_fit import fit_genewise, _GENEWISE_RATE_BOUNDS
@@ -45,11 +61,18 @@ def main() -> int:
 
     model_module.GeneReconModel.genewise_loss_vector_and_grad = traced
     fit_genewise(
-        args.species, paths, device="cuda", dtype=None, certify=True, certify_curvature=False,
+        args.species, paths, device="cuda", dtype=args.dtype, certify=True, certify_curvature=False,
         min_drop=32, rebuild_frac=0.25, hessian_refresh=15, init_curvature="adam_bfgs",
+        curvature_update=args.curvature_update,
         solver_options=None, config=None, verbose=False,
         init_log2_rates=(math.log2(0.01), math.log2(0.1), math.log2(0.01)),
-        clade_budget=(None if args.clade_budget == 0 else args.clade_budget), stall_patience=120, trust_max=16.0,
+        clade_budget=(None if args.clade_budget == 0 else args.clade_budget), stall_patience=120, trust_max=8.0, adam_steps=3, mu=1e-4,
+        step_extrapolation=args.step_extrapolation, step_model=args.step_model,
+        stop_nll_bits=args.stop_nll_bits, approach_pruning_threshold=args.approach_pruning_threshold,
+        targeted_hessian=(args.stuck_from, args.stuck_max_frac),
+        coordinate_staging=(args.stage_freeze_t, args.stage_d_only),
+        trust_test=(args.trust_shrink, args.trust_grow_ratio,
+                    args.trust_radius_min, args.trust_min_predicted_bits),
     )
     model_module.GeneReconModel.genewise_loss_vector_and_grad = orig
     model_module.GeneReconModel.__init__ = orig_init

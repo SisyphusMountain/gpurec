@@ -1,0 +1,169 @@
+{
+  "schema": "gpurec.hybrid_cohort_analysis.v1",
+  "trace": "experiments/coleman_sol_20260906/geometry/hybrid/diagnosis/trace200.pt",
+  "ever_bound_families": 28,
+  "always_interior_families": 172,
+  "changed_point_penalty_clades": 1019253,
+  "interior_changed_point_penalty_clades": 993152,
+  "interior_penalty_fraction": 0.9743920302417555,
+  "heaviest_hierarchical_penalties": [
+    {
+      "index": 16,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0009_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 29015,
+      "extra_changed_evaluations": 3,
+      "extra_changed_point_clades": 87045,
+      "ever_bound": false
+    },
+    {
+      "index": 169,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0084_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 23479,
+      "extra_changed_evaluations": 3,
+      "extra_changed_point_clades": 70437,
+      "ever_bound": false
+    },
+    {
+      "index": 83,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0037_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 23351,
+      "extra_changed_evaluations": 3,
+      "extra_changed_point_clades": 70053,
+      "ever_bound": false
+    },
+    {
+      "index": 101,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0047_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 13823,
+      "extra_changed_evaluations": 4,
+      "extra_changed_point_clades": 55292,
+      "ever_bound": false
+    },
+    {
+      "index": 177,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0092_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 17365,
+      "extra_changed_evaluations": 3,
+      "extra_changed_point_clades": 52095,
+      "ever_bound": false
+    },
+    {
+      "index": 58,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0024_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 22439,
+      "extra_changed_evaluations": 2,
+      "extra_changed_point_clades": 44878,
+      "ever_bound": false
+    },
+    {
+      "index": 125,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 20621,
+      "extra_changed_evaluations": 2,
+      "extra_changed_point_clades": 41242,
+      "ever_bound": false
+    },
+    {
+      "index": 188,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0101_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 20611,
+      "extra_changed_evaluations": 2,
+      "extra_changed_point_clades": 41222,
+      "ever_bound": false
+    },
+    {
+      "index": 131,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0063_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 20223,
+      "extra_changed_evaluations": 2,
+      "extra_changed_point_clades": 40446,
+      "ever_bound": false
+    },
+    {
+      "index": 178,
+      "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0093_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+      "clades": 19633,
+      "extra_changed_evaluations": 2,
+      "extra_changed_point_clades": 39266,
+      "ever_bound": false
+    }
+  ],
+  "arms": {
+    "native": {
+      "always_interior_events": {
+        "radius_cut_events": 382,
+        "radius_cut_clades": 1372106,
+        "rejection_events": 123,
+        "rejection_clades": 1253635,
+        "radius_shrink_events": 173,
+        "radius_shrink_clades": 1589331
+      },
+      "ever_bound_events": {
+        "radius_cut_events": 113,
+        "radius_cut_clades": 26337,
+        "rejection_events": 22,
+        "rejection_clades": 6658,
+        "radius_shrink_events": 29,
+        "radius_shrink_clades": 7499
+      },
+      "bfgs_guards_all": {
+        "attempt_events": 2219,
+        "attempt_clades": 15734751,
+        "zero_secant_events": 294,
+        "zero_secant_clades": 1858334,
+        "curvature_guard_fail_events": 6,
+        "curvature_guard_fail_clades": 21036,
+        "accepted_events": 1919,
+        "accepted_clades": 13855381
+      },
+      "bfgs_guards_interior": {
+        "attempt_events": 1841,
+        "attempt_clades": 15265655,
+        "zero_secant_events": 224,
+        "zero_secant_clades": 1740942,
+        "curvature_guard_fail_events": 4,
+        "curvature_guard_fail_clades": 20894,
+        "accepted_events": 1613,
+        "accepted_clades": 13503819
+      }
+    },
+    "hierarchical_native_metric": {
+      "always_interior_events": {
+        "radius_cut_events": 407,
+        "radius_cut_clades": 2572799,
+        "rejection_events": 140,
+        "rejection_clades": 1340450,
+        "radius_shrink_events": 163,
+        "radius_shrink_clades": 1500217
+      },
+      "ever_bound_events": {
+        "radius_cut_events": 89,
+        "radius_cut_clades": 87831,
+        "rejection_events": 16,
+        "rejection_clades": 26164,
+        "radius_shrink_events": 19,
+        "radius_shrink_clades": 26427
+      },
+      "bfgs_guards_all": {
+        "attempt_events": 2493,
+        "attempt_clades": 16125525,
+        "zero_secant_events": 321,
+        "zero_secant_clades": 1220661,
+        "curvature_guard_fail_events": 16,
+        "curvature_guard_fail_clades": 83516,
+        "accepted_events": 2156,
+        "accepted_clades": 14821348
+      },
+      "bfgs_guards_interior": {
+        "attempt_events": 2045,
+        "attempt_clades": 15679119,
+        "zero_secant_events": 246,
+        "zero_secant_clades": 1150994,
+        "curvature_guard_fail_events": 13,
+        "curvature_guard_fail_clades": 82851,
+        "accepted_events": 1786,
+        "accepted_clades": 14445274
+      }
+    }
+  }
+}

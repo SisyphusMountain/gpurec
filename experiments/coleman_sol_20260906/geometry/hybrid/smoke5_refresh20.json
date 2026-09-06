@@ -1,0 +1,396 @@
+{
+  "schema": "gpurec.hierarchical_shared_endpoint.v1",
+  "artifact": "experiments/coleman_sol_20260906/em/hybrid_shared_200_v2.pt",
+  "n_families": 5,
+  "max_iter": 20,
+  "certify": false,
+  "production_source_sha256": "7d398d3e596f150c7eb5fc36f5eccce3b94b7dd14561c337bbbf5d7363409cd5",
+  "charged_shared_em_gradient_work": [
+    {
+      "phase": "em",
+      "step": 0,
+      "families": 5,
+      "clades": 56581
+    },
+    {
+      "phase": "em",
+      "step": 1,
+      "families": 5,
+      "clades": 56581
+    }
+  ],
+  "arms": {
+    "native": {
+      "loss_bits": null,
+      "n_steps": 20,
+      "n_builds": 1,
+      "n_hessians": 1,
+      "n_rebuilds": 0,
+      "converged": null,
+      "unconverged": null,
+      "bound_active": null,
+      "pg_max": null,
+      "newton_grad_seconds": 2.459699221988558,
+      "hessian_seconds": 1.0691243360015505,
+      "rebuild_seconds": 0.0,
+      "certify_seconds": 0.0,
+      "wall_seconds": 3.9118091279997316,
+      "gradient_work": [
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        }
+      ],
+      "gradient_clades": 1131620,
+      "theta_finite": true,
+      "curvature_finite": true,
+      "theta_min": -5.964444160461426,
+      "theta_max": -0.599358081817627,
+      "gradient_clades_with_shared_em": 1244782
+    },
+    "hierarchical_native_metric": {
+      "loss_bits": null,
+      "n_steps": 20,
+      "n_builds": 1,
+      "n_hessians": 1,
+      "n_rebuilds": 0,
+      "converged": null,
+      "unconverged": null,
+      "bound_active": null,
+      "pg_max": null,
+      "newton_grad_seconds": 1.921086941005342,
+      "hessian_seconds": 0.6811310459997912,
+      "rebuild_seconds": 0.0,
+      "certify_seconds": 0.0,
+      "wall_seconds": 2.908759997000743,
+      "gradient_work": [
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        }
+      ],
+      "gradient_clades": 1131620,
+      "theta_finite": true,
+      "curvature_finite": true,
+      "theta_min": -5.966557025909424,
+      "theta_max": -0.5993527770042419,
+      "gradient_clades_with_shared_em": 1244782
+    },
+    "hierarchical_coordinate_metric": {
+      "loss_bits": null,
+      "n_steps": 20,
+      "n_builds": 1,
+      "n_hessians": 1,
+      "n_rebuilds": 0,
+      "converged": null,
+      "unconverged": null,
+      "bound_active": null,
+      "pg_max": null,
+      "newton_grad_seconds": 1.8904657130078704,
+      "hessian_seconds": 0.6753229679998185,
+      "rebuild_seconds": 0.0,
+      "certify_seconds": 0.0,
+      "wall_seconds": 2.8569357240012323,
+      "gradient_work": [
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        }
+      ],
+      "gradient_clades": 1131620,
+      "theta_finite": true,
+      "curvature_finite": true,
+      "theta_min": -5.9683942794799805,
+      "theta_max": -0.5993566513061523,
+      "gradient_clades_with_shared_em": 1244782
+    }
+  }
+}

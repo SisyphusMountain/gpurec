@@ -1,0 +1,61 @@
+{
+  "fits": "experiments/coleman_sol_20260906/geometry/hybrid/comparison200.pt",
+  "n_families": 200,
+  "pruning_threshold": 1e-06,
+  "metrics": {
+    "native": {
+      "nll_bits": 613261.7997989748,
+      "fresh_certified": 194,
+      "fresh_pg_max": 0.0021571689285337925
+    },
+    "hierarchical_native_metric": {
+      "nll_bits": 613261.7969004586,
+      "fresh_certified": 195,
+      "fresh_pg_max": 0.0012373491190373898
+    },
+    "hierarchical_coordinate_metric": {
+      "nll_bits": 613261.8140998055,
+      "fresh_certified": 190,
+      "fresh_pg_max": 0.0018442885484546423
+    },
+    "native_repeat": {
+      "nll_bits": 613261.7997989748,
+      "fresh_certified": 195,
+      "fresh_pg_max": 0.001988559029996395
+    }
+  },
+  "differences_from_native": {
+    "hierarchical_native_metric": {
+      "nll_change_bits": -0.002898516129262063,
+      "max_family_abs_bits": 0.0013564695279342232,
+      "regressions_above_0_01": 0,
+      "improvements_above_0_01": 0,
+      "max_pg_change": 0.0017600471328478307,
+      "changed_families": []
+    },
+    "hierarchical_coordinate_metric": {
+      "nll_change_bits": 0.014300830805474618,
+      "max_family_abs_bits": 0.01865139441787278,
+      "regressions_above_0_01": 1,
+      "improvements_above_0_01": 0,
+      "max_pg_change": 0.0015482913586311042,
+      "changed_families": [
+        {
+          "index": 11,
+          "name": "COG0006_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+          "nll_change_bits": 0.01865139441787278
+        }
+      ]
+    },
+    "native_repeat": {
+      "nll_change_bits": 0.0,
+      "max_family_abs_bits": 0.0,
+      "regressions_above_0_01": 0,
+      "improvements_above_0_01": 0,
+      "max_pg_change": 0.0006732651381753385,
+      "changed_families": []
+    }
+  },
+  "audit_seconds": 13.307945918000769,
+  "note": "Separate fresh audit, not part of any fit time; original pruned FP32 recipe."
+}

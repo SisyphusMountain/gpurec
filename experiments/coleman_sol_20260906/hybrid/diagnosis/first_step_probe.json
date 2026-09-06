@@ -1,0 +1,100 @@
+{
+  "proposals": "experiments/coleman_sol_20260906/em/hybrid_diagnosis/latest_secant_first_step.pt",
+  "n_families": 200,
+  "start_nll_bits": 615371.916007135,
+  "candidates": {
+    "old_native_trace": {
+      "nll_bits": 614306.2588840105,
+      "total_actual_gain_bits": 1065.6571231243975,
+      "median_actual_gain_bits": 1.85336857513812,
+      "families_worse_above_0_05_bits": 16,
+      "pending_ratio_tests": 189,
+      "would_reject_under_existing_rule": 16,
+      "would_shrink_under_existing_rule": 48,
+      "rejected_clade_share": 0.014734089374542236,
+      "retained_gain_after_existing_rejection_rule_bits": 1076.651328525321,
+      "median_ratio_when_pending": 0.39466649293899536,
+      "max_family_regression_bits": 3.1515840800765034
+    },
+    "old_hierarchical_trace": {
+      "nll_bits": 616813.3867572232,
+      "total_actual_gain_bits": -1441.4707500883756,
+      "median_actual_gain_bits": -1.0246345464047124,
+      "families_worse_above_0_05_bits": 138,
+      "pending_ratio_tests": 185,
+      "would_reject_under_existing_rule": 132,
+      "would_shrink_under_existing_rule": 148,
+      "rejected_clade_share": 0.8470430970191956,
+      "retained_gain_after_existing_rejection_rule_bits": 147.17527937306394,
+      "median_ratio_when_pending": -0.47521737217903137,
+      "max_family_regression_bits": 43.85063711571274
+    },
+    "latest_native": {
+      "nll_bits": 613869.6201617483,
+      "total_actual_gain_bits": 1502.2958453865413,
+      "median_actual_gain_bits": 3.248979303461283,
+      "families_worse_above_0_05_bits": 9,
+      "pending_ratio_tests": 186,
+      "would_reject_under_existing_rule": 9,
+      "would_shrink_under_existing_rule": 16,
+      "rejected_clade_share": 0.0032345247454941273,
+      "retained_gain_after_existing_rejection_rule_bits": 1531.2877975008482,
+      "median_ratio_when_pending": 0.9239563941955566,
+      "max_family_regression_bits": 12.74627043022744
+    },
+    "latest_hierarchical": {
+      "nll_bits": 613905.407131464,
+      "total_actual_gain_bits": 1466.50887567095,
+      "median_actual_gain_bits": 3.0925175651246946,
+      "families_worse_above_0_05_bits": 3,
+      "pending_ratio_tests": 186,
+      "would_reject_under_existing_rule": 3,
+      "would_shrink_under_existing_rule": 10,
+      "rejected_clade_share": 0.001128696952946484,
+      "retained_gain_after_existing_rejection_rule_bits": 1480.4905028555756,
+      "median_ratio_when_pending": 0.8704817891120911,
+      "max_family_regression_bits": 11.67134720246949
+    },
+    "carry_native": {
+      "nll_bits": 615632.6880577323,
+      "total_actual_gain_bits": -260.7720505974211,
+      "median_actual_gain_bits": 0.36026997082421985,
+      "families_worse_above_0_05_bits": 52,
+      "pending_ratio_tests": 188,
+      "would_reject_under_existing_rule": 52,
+      "would_shrink_under_existing_rule": 73,
+      "rejected_clade_share": 0.28682181239128113,
+      "retained_gain_after_existing_rejection_rule_bits": 765.9937212318935,
+      "median_ratio_when_pending": 0.4593936800956726,
+      "max_family_regression_bits": 232.61620172064795
+    },
+    "carry_hierarchical": {
+      "nll_bits": 614716.9002442898,
+      "total_actual_gain_bits": 655.0157628449904,
+      "median_actual_gain_bits": 1.378046644460028,
+      "families_worse_above_0_05_bits": 18,
+      "pending_ratio_tests": 184,
+      "would_reject_under_existing_rule": 18,
+      "would_shrink_under_existing_rule": 29,
+      "rejected_clade_share": 0.10487022995948792,
+      "retained_gain_after_existing_rejection_rule_bits": 949.3221895961817,
+      "median_ratio_when_pending": 0.7776222229003906,
+      "max_family_regression_bits": 188.0052789496167
+    },
+    "old_hierarchical_radius_0_5": {
+      "nll_bits": 614088.3449376469,
+      "total_actual_gain_bits": 1283.5710694880206,
+      "median_actual_gain_bits": 2.8803848534955705,
+      "families_worse_above_0_05_bits": 1,
+      "pending_ratio_tests": 183,
+      "would_reject_under_existing_rule": 0,
+      "would_shrink_under_existing_rule": 2,
+      "rejected_clade_share": 0.0,
+      "retained_gain_after_existing_rejection_rule_bits": 1283.5710694880206,
+      "median_ratio_when_pending": 0.8037999272346497,
+      "max_family_regression_bits": 0.11998060449951709
+    }
+  },
+  "probe_seconds": 11.18984405500305,
+  "note": "Common-point forward-only counterfactual probes. Not full fits or demonstrated runtime gains."
+}

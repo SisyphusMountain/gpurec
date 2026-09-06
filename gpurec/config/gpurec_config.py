@@ -161,10 +161,6 @@ class GpurecConfig:
                 e_max_iter=128, e_tol=1e-8,
                 e_adjoint_max_iter=128, e_adjoint_tol=1e-7,
                 adjoint_pruning_threshold=1e-6, use_adjoint_pruning=True, pibar_side_threshold=0.0,
-                # Each clade row's self-loop is solved exactly (tree elimination) in the forward,
-                # the adjoint and the Hessian-probe tangent. This is also the library-wide default;
-                # it is repeated here so the recipe's reference config is explicit about it.
-                forward_self_loop="exact", adjoint_self_loop="exact",
             ),
             rates=RateBounds.genewise(),
         )

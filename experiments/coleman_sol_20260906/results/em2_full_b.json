@@ -1,0 +1,492 @@
+{
+  "tag": "em2_full_b",
+  "warmup_method": "em",
+  "em_steps": 2,
+  "init_rate": "none",
+  "clade_budget": 0,
+  "n_families": 5124,
+  "wall_s": 403.4703946718946,
+  "nll_bits": 9049360.754648209,
+  "nll_nats": 6272538.892954225,
+  "opt_seconds": 396.18043361371383,
+  "n_steps": 49,
+  "n_builds": 16,
+  "adam_seconds": 0.0,
+  "hessian_seconds": 11.682887809816748,
+  "em_seconds": 48.96612395532429,
+  "gradient_work": [
+    {
+      "phase": "em",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "em",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 2734,
+      "clades": 12708760
+    },
+    {
+      "phase": "newton",
+      "families": 2734,
+      "clades": 12708760
+    },
+    {
+      "phase": "newton",
+      "families": 1612,
+      "clades": 5082916
+    },
+    {
+      "phase": "newton",
+      "families": 1612,
+      "clades": 5082916
+    },
+    {
+      "phase": "newton",
+      "families": 1097,
+      "clades": 2655745
+    },
+    {
+      "phase": "newton",
+      "families": 1097,
+      "clades": 2655745
+    },
+    {
+      "phase": "newton",
+      "families": 787,
+      "clades": 1873133
+    },
+    {
+      "phase": "newton",
+      "families": 787,
+      "clades": 1873133
+    },
+    {
+      "phase": "newton",
+      "families": 787,
+      "clades": 1873133
+    },
+    {
+      "phase": "newton",
+      "families": 787,
+      "clades": 1873133
+    },
+    {
+      "phase": "newton",
+      "families": 356,
+      "clades": 1192894
+    },
+    {
+      "phase": "newton",
+      "families": 356,
+      "clades": 1192894
+    },
+    {
+      "phase": "newton",
+      "families": 356,
+      "clades": 1192894
+    },
+    {
+      "phase": "newton",
+      "families": 356,
+      "clades": 1192894
+    },
+    {
+      "phase": "newton",
+      "families": 110,
+      "clades": 551282
+    },
+    {
+      "phase": "newton",
+      "families": 110,
+      "clades": 551282
+    },
+    {
+      "phase": "newton",
+      "families": 69,
+      "clades": 387725
+    },
+    {
+      "phase": "newton",
+      "families": 69,
+      "clades": 387725
+    },
+    {
+      "phase": "newton",
+      "families": 44,
+      "clades": 233502
+    },
+    {
+      "phase": "newton",
+      "families": 44,
+      "clades": 233502
+    },
+    {
+      "phase": "newton",
+      "families": 29,
+      "clades": 134867
+    },
+    {
+      "phase": "newton",
+      "families": 29,
+      "clades": 134867
+    },
+    {
+      "phase": "newton",
+      "families": 18,
+      "clades": 61266
+    },
+    {
+      "phase": "newton",
+      "families": 18,
+      "clades": 61266
+    },
+    {
+      "phase": "newton",
+      "families": 10,
+      "clades": 12540
+    },
+    {
+      "phase": "newton",
+      "families": 10,
+      "clades": 12540
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 8098
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 8098
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 651
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 651
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 651
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 651
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 260
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 260
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 260
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 260
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 260
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 260
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 260
+    },
+    {
+      "phase": "newton",
+      "families": 2,
+      "clades": 260
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 95
+    }
+  ],
+  "gradient_calls": 67,
+  "gradient_clades": 312603546,
+  "gradient_full_clade_equivalents": 13.397651588893739,
+  "n_hessians": 3,
+  "newton_grad_seconds": 308.034365514759,
+  "n_verify_builds": 0,
+  "verify_seconds": 0.0,
+  "n_rebuilds": 15,
+  "rebuild_seconds": 10.799759435467422,
+  "certify_seconds": 0.0005830400623381138,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 179,
+        "remain": 4945
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 2211,
+        "remain": 2734
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 1122,
+        "remain": 1612
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 515,
+        "remain": 1097
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 310,
+        "remain": 787
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 217,
+        "remain": 570
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 214,
+        "remain": 356
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 86,
+        "remain": 270
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 160,
+        "remain": 110
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 41,
+        "remain": 69
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 25,
+        "remain": 44
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 15,
+        "remain": 29
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 11,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 8,
+        "remain": 10
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 6,
+        "remain": 4
+      },
+      {
+        "pi": 16,
+        "it": 36,
+        "dropped": 1,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 40,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 48,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 64,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 23.567861080169678,
+  "memory_phases": null,
+  "certificate": {
+    "converged": 5124,
+    "bound_active": 577,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009996003936976194
+  }
+}

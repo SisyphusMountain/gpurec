@@ -15,7 +15,7 @@ Usage (torchrun --nproc_per_node=N -m your_train_script):
         opt.zero_grad(); loss = model(); loss.backward()      # per-rank partial grad
         all_reduce_model_grads_(model)                        # SUM the 3 param grads
         # priors/regularizers are rank-identical and already applied once inside the
-        # per-rank loss; do NOT re-add them post-reduction. warm_E/warm_v stay per-rank.
+        # per-rank loss; do NOT re-add them post-reduction. warm_E stays per-rank.
         opt.step()
 """
 from __future__ import annotations

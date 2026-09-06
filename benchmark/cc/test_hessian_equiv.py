@@ -27,7 +27,7 @@ def _old_analytic_hessian(m, theta, pi_cur):
         cols = []
         for j in range(3):
             u = torch.zeros(G, 3, device=dev, dtype=dtype); u[:, j] = 1.0
-            cols.append(hvp(u.reshape(-1), probe_id=j)[: G * 3].reshape(G, 3))
+            cols.append(hvp(u.reshape(-1))[: G * 3].reshape(G, 3))
         H = torch.stack(cols, dim=-1)
     else:
         static = m.batch_statics[0]
@@ -38,7 +38,7 @@ def _old_analytic_hessian(m, theta, pi_cur):
         cols = []
         for j in range(3):
             u_b = torch.zeros(G, 3, device=dev, dtype=dtype); u_b[:, j] = 1.0
-            out_b = hvp(u_b.reshape(-1), probe_id=j)[: G * 3].reshape(G, 3)
+            out_b = hvp(u_b.reshape(-1))[: G * 3].reshape(G, 3)
             col = torch.zeros(G, 3, device=dev, dtype=dtype)
             col.index_add_(0, fam, out_b)
             cols.append(col)
@@ -61,7 +61,6 @@ def main() -> int:
     from gpurec.api.solver_options import SolverOptions
     from gpurec.fit.genewise_fit import _BASE_SOLVER, _analytic_hessian
 
-    os.environ["GPUREC_WARM_ADJOINT"] = "1"
     so = SolverOptions(**{**_BASE_SOLVER, "pi_iters": 16, "neumann_terms": 16})
     m = GeneReconModel(args.species, paths, mode="genewise", device="cuda", dtype=torch.float32,
                        solver_options=so, clade_budget=args.clade_budget)

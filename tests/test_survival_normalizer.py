@@ -9,7 +9,6 @@ producing spurious ~1e36 gradients.  The compensated form
 non-negative terms) and matches fp64 to the last digit.
 """
 import math
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -20,8 +19,6 @@ from gpurec.api._implicit_grad import (
     _likelihood_log2_survival,
     _likelihood_root_seed,
 )
-from gpurec.solver.hvp import gauss_newton as ggn
-
 LN2 = math.log(2.0)
 
 
@@ -108,49 +105,6 @@ def test_uniform_likelihood_adjoint_head_uses_configured_accumulator(
     reference_survival = _likelihood_log2_survival(extinction_acc, None)
     (reference_grad,) = torch.autograd.grad(reference_survival.sum(), extinction_acc)
     torch.testing.assert_close(actual_grad, reference_grad.float(), rtol=0.0, atol=0.0)
-
-
-@pytest.mark.parametrize("accumulator_dtype", [torch.float32, torch.float64])
-def test_ggn_fisher_head_uses_configured_accumulator(
-    monkeypatch,
-    accumulator_dtype,
-):
-    root = torch.tensor(
-        [[-300.125, -299.75, -301.5]],
-        dtype=torch.float32,
-    )
-    tangent = torch.tensor([[0.25, -0.5, 0.75]], dtype=torch.float32)
-    static = SimpleNamespace(
-        species_helpers={"S": 3},
-        wave_layout={"root_clade_ids": torch.tensor([0])},
-        accumulator_dtype=accumulator_dtype,
-    )
-    saved = {"pi_wave": root}
-    captured = {}
-
-    monkeypatch.setattr(ggn, "jvp_root_scores", lambda *_args, **_kwargs: tangent)
-
-    def fake_vjp(*args, **_kwargs):
-        captured["seed"] = args[2]
-        return torch.zeros((3, 3), dtype=torch.float32), None
-
-    monkeypatch.setattr(ggn, "vjp_root_to_theta", fake_vjp)
-    hvp = ggn.make_ggn_hvp(
-        static,
-        torch.zeros((3, 3), dtype=torch.float32),
-        torch.zeros(3, dtype=torch.float32),
-        saved,
-    )
-    hvp(torch.zeros(9, dtype=torch.float32))
-
-    root_acc = root.to(dtype=accumulator_dtype)
-    tangent_acc = tangent.to(dtype=accumulator_dtype)
-    q = torch.exp2(root_acc - logsumexp2(root_acc, dim=-1, keepdim=True))
-    expected = LN2 * q * (
-        tangent_acc - (q * tangent_acc).sum(dim=-1, keepdim=True)
-    )
-    assert captured["seed"].dtype == accumulator_dtype
-    torch.testing.assert_close(captured["seed"], expected, rtol=0.0, atol=0.0)
 
 
 def test_gradient_is_finite_and_matches_fp64():

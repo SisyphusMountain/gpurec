@@ -168,7 +168,6 @@ def _implicit_kwargs(model, solved, receiver_weights, origination_weights):
         genewise=static.genewise,
         neumann_terms=model.solver_options.neumann_terms,
         neumann_term_tol=model.solver_options.neumann_term_tol,
-        adjoint_self_loop=model.solver_options.adjoint_self_loop,
         # The E-adjoint linear solve is a Neumann series -- its budget and relative-residual target.
         # (The old BiCGSTAB fields and the e_adjoint_solver selector no longer exist.)
         e_adjoint_max_iter=model.solver_options.e_adjoint_max_iter,

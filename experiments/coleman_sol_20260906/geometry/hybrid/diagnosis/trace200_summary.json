@@ -1,0 +1,30 @@
+{
+  "schema": "gpurec.hybrid_diagnostic_trace.v1",
+  "production_source_sha256": "7d398d3e596f150c7eb5fc36f5eccce3b94b7dd14561c337bbbf5d7363409cd5",
+  "arms": {
+    "native": {
+      "wall_seconds_traced": 30.260598442997434,
+      "loss_bits": 613261.8005132675,
+      "converged": 200,
+      "pg_max": 0.0009981902549043298,
+      "n_steps": 21,
+      "n_builds": 10,
+      "n_hessians": 1,
+      "continuation_gradient_clades": 17342928,
+      "evaluations_traced": 31,
+      "proposals_traced": 21
+    },
+    "hierarchical_native_metric": {
+      "wall_seconds_traced": 29.495983516997512,
+      "loss_bits": 613261.8004455566,
+      "converged": 200,
+      "pg_max": 0.000984378857538104,
+      "n_steps": 21,
+      "n_builds": 6,
+      "n_hessians": 1,
+      "continuation_gradient_clades": 17735824,
+      "evaluations_traced": 27,
+      "proposals_traced": 21
+    }
+  }
+}

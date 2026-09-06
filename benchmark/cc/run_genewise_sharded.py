@@ -156,7 +156,10 @@ def launch_shards(python_exe, driver_path, species, out_dir, tag, shard_list_pat
                "--families", list_path,
                "--limit", "0",
                "--out-dir", out_dir,
-               "--tag", f"{tag}.shard{k}"]
+               "--tag", f"{tag}.shard{k}",
+               # the one-GPU driver's required run-record flags
+               "--init-rate", "none",
+               "--clade-budget", "0"]
         log_path = os.path.join(out_dir, f"{tag}.shard{k}.log")
         log_fh = open(log_path, "w")
         print(f"[sharded] launching shard {k} on CUDA_VISIBLE_DEVICES={k} -> {log_path}")

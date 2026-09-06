@@ -1,0 +1,3264 @@
+{
+  "schema": "gpurec.hybrid_diagnostic_analysis.v1",
+  "trace": "experiments/coleman_sol_20260906/geometry/hybrid/diagnosis/trace200.pt",
+  "full_clades": 1491100,
+  "shared_em_full_clade_equivalents": 2.0,
+  "arms": {
+    "native": {
+      "gradient_work": {
+        "resident_clades": 17342928,
+        "live_clades_immediate_removal_lower_bound": 17314292,
+        "settled_resident_clades": 28636,
+        "live_same_theta_remeasurement_clades": 1857617,
+        "live_changed_point_clades": 15456675,
+        "resident_full_clade_equivalents": 11.630962376768828,
+        "immediate_removal_full_clade_equivalents": 11.611757762725505,
+        "avoidable_settled_resident_equivalents_lower_bound": 0.01920461404332372,
+        "same_theta_remeasurement_equivalents": 1.2458030983837436,
+        "changed_point_equivalents": 10.36595466434176,
+        "per_pass": [
+          {
+            "gradient_pass": 1,
+            "iteration": 0,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 2,
+            "iteration": 1,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 3,
+            "iteration": 2,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 4,
+            "iteration": 3,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 5,
+            "iteration": 4,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 6,
+            "iteration": 5,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 7,
+            "iteration": 6,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 8,
+            "iteration": 7,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 9,
+            "iteration": 8,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 10,
+            "iteration": 9,
+            "resident_families": 115,
+            "live_families": 115,
+            "resident_clades": 991303,
+            "live_clades": 991303,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 2,
+            "model_rebuilds": 1
+          },
+          {
+            "gradient_pass": 11,
+            "iteration": 10,
+            "resident_families": 115,
+            "live_families": 115,
+            "resident_clades": 991303,
+            "live_clades": 991303,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 2,
+            "model_rebuilds": 1
+          },
+          {
+            "gradient_pass": 12,
+            "iteration": 11,
+            "resident_families": 69,
+            "live_families": 69,
+            "resident_clades": 418167,
+            "live_clades": 418167,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 3,
+            "model_rebuilds": 2
+          },
+          {
+            "gradient_pass": 13,
+            "iteration": 12,
+            "resident_families": 69,
+            "live_families": 69,
+            "resident_clades": 418167,
+            "live_clades": 418167,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 3,
+            "model_rebuilds": 2
+          },
+          {
+            "gradient_pass": 14,
+            "iteration": 13,
+            "resident_families": 47,
+            "live_families": 47,
+            "resident_clades": 198335,
+            "live_clades": 198335,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 4,
+            "model_rebuilds": 3
+          },
+          {
+            "gradient_pass": 15,
+            "iteration": 14,
+            "resident_families": 47,
+            "live_families": 47,
+            "resident_clades": 198335,
+            "live_clades": 198335,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 4,
+            "model_rebuilds": 3
+          },
+          {
+            "gradient_pass": 16,
+            "iteration": 15,
+            "resident_families": 34,
+            "live_families": 34,
+            "resident_clades": 137120,
+            "live_clades": 137120,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 5,
+            "model_rebuilds": 4
+          },
+          {
+            "gradient_pass": 17,
+            "iteration": 16,
+            "resident_families": 34,
+            "live_families": 34,
+            "resident_clades": 137120,
+            "live_clades": 137120,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 5,
+            "model_rebuilds": 4
+          },
+          {
+            "gradient_pass": 18,
+            "iteration": 17,
+            "resident_families": 21,
+            "live_families": 21,
+            "resident_clades": 85203,
+            "live_clades": 85203,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 19,
+            "iteration": 18,
+            "resident_families": 21,
+            "live_families": 21,
+            "resident_clades": 85203,
+            "live_clades": 85203,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 20,
+            "iteration": 19,
+            "resident_families": 21,
+            "live_families": 19,
+            "resident_clades": 85203,
+            "live_clades": 70885,
+            "settled_resident_clades": 14318,
+            "settled_resident_fraction": 0.16804572608945695,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 21,
+            "iteration": 20,
+            "resident_families": 21,
+            "live_families": 19,
+            "resident_clades": 85203,
+            "live_clades": 70885,
+            "settled_resident_clades": 14318,
+            "settled_resident_fraction": 0.16804572608945695,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 22,
+            "iteration": 21,
+            "resident_families": 12,
+            "live_families": 12,
+            "resident_clades": 31874,
+            "live_clades": 31874,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 7,
+            "model_rebuilds": 6
+          },
+          {
+            "gradient_pass": 23,
+            "iteration": 22,
+            "resident_families": 12,
+            "live_families": 12,
+            "resident_clades": 31874,
+            "live_clades": 31874,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 7,
+            "model_rebuilds": 6
+          },
+          {
+            "gradient_pass": 24,
+            "iteration": 23,
+            "resident_families": 3,
+            "live_families": 3,
+            "resident_clades": 8699,
+            "live_clades": 8699,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 8,
+            "model_rebuilds": 7
+          },
+          {
+            "gradient_pass": 25,
+            "iteration": 24,
+            "resident_families": 3,
+            "live_families": 3,
+            "resident_clades": 8699,
+            "live_clades": 8699,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 8,
+            "model_rebuilds": 7
+          },
+          {
+            "gradient_pass": 26,
+            "iteration": 25,
+            "resident_families": 2,
+            "live_families": 2,
+            "resident_clades": 4768,
+            "live_clades": 4768,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 9,
+            "model_rebuilds": 8
+          },
+          {
+            "gradient_pass": 27,
+            "iteration": 26,
+            "resident_families": 2,
+            "live_families": 2,
+            "resident_clades": 4768,
+            "live_clades": 4768,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 9,
+            "model_rebuilds": 8
+          },
+          {
+            "gradient_pass": 28,
+            "iteration": 27,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 421,
+            "live_clades": 421,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 10,
+            "model_rebuilds": 9
+          },
+          {
+            "gradient_pass": 29,
+            "iteration": 28,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 421,
+            "live_clades": 421,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 10,
+            "model_rebuilds": 9
+          },
+          {
+            "gradient_pass": 30,
+            "iteration": 29,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 421,
+            "live_clades": 421,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 10,
+            "model_rebuilds": 9
+          },
+          {
+            "gradient_pass": 31,
+            "iteration": 30,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 421,
+            "live_clades": 421,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 10,
+            "model_rebuilds": 9
+          }
+        ]
+      },
+      "last_live_pass": {
+        "clade_weighted_median": 11.0,
+        "clade_weighted_p90": 15.0,
+        "per_family": [
+          {
+            "index": 0,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0001_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 16815,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 1,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0002_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14129,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 2,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0003_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 10937,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 3,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0003_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1793,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 4,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0004_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 12907,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 5,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0004_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 241,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 6,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0005_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 10207,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 7,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0005_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 913,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 8,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0005_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 59,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 9,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 28341,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 10,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 147,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 11,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 91,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 12,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 27,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 13,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 14,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0007_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9247,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 15,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0008_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 12477,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 16,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0009_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 29015,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 17,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0010_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11239,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 18,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0010_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1035,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 19,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0012_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15107,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 20,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0012_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 93,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 21,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0012_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 22,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0013_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13497,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 23,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0014_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11141,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 24,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0014_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1023,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 25,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0014_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 173,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 26,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9347,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 27,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4265,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 28,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 5223,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 29,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 615,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 30,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 529,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 31,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0016_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17439,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 32,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0016_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 581,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 33,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0016_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 34,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0016_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 35,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0017_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 5209,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 36,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0017_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4631,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 37,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0017_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 51,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 38,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0018_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8813,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 39,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0018_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6151,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 40,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14401,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 41,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 129,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 42,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 105,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 43,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 61,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 44,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 45,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0020_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18893,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 46,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0020_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1863,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 47,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9391,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 48,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 2031,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 49,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 411,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 50,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 441,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 51,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 427,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 52,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 235,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 53,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_6.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 35,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 54,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_7.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 55,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0022_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6063,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 56,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0022_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 715,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 57,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0023_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4347,
+            "last_live_gradient_pass": 27
+          },
+          {
+            "index": 58,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0024_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 22439,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 59,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4537,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 60,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 67,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 61,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 51,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 62,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 29,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 63,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 64,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0026_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 7061,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 65,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0027_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3517,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 66,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0028_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19439,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 67,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0028_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 68,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0028_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 69,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0029_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9837,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 70,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0030_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17389,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 71,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0031_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 16637,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 72,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0031_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 2239,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 73,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0031_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 699,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 74,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0033_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3595,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 75,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0033_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3295,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 76,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0034_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14919,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 77,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0034_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 307,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 78,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0035_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 10797,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 79,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0035_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 907,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 80,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0035_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 421,
+            "last_live_gradient_pass": 31
+          },
+          {
+            "index": 81,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0035_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 82,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0036_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23339,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 83,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0037_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23351,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 84,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0038_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8989,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 85,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0038_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 173,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 86,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0038_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 87,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0039_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 7317,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 88,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0039_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 111,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 89,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0039_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 90,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0040_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 12819,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 91,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0041_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15091,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 92,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0042_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15997,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 93,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0042_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 123,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 94,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0043_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8537,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 95,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0043_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 653,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 96,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0044_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 16205,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 97,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0044_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 98,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0045_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 7665,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 99,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0046_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6885,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 100,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0046_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 121,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 101,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0047_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13823,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 102,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0048_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 21857,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 103,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0049_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19389,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 104,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0051_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 24267,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 105,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9771,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 106,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 2471,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 107,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1005,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 108,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 605,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 109,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 683,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 110,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 111,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0054_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18709,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 112,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0054_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 603,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 113,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0055_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8909,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 114,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0056_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11755,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 115,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0057_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19655,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 116,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0057_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 643,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 117,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0057_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 95,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 118,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0058_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8451,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 119,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0059_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 10995,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 120,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0059_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 775,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 121,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0059_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 249,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 122,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0059_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 115,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 123,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0060_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8163,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 124,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0060_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4355,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 125,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20621,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 126,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 421,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 127,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 941,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 128,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 119,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 129,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 59,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 130,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0062_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18273,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 131,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0063_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20223,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 132,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0064_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14203,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 133,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0065_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8115,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 134,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0066_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6393,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 135,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0067_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4639,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 136,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0067_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 495,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 137,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0067_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 138,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0068_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6161,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 139,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 5289,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 140,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1705,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 141,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1239,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 142,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 507,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 143,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 144,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 145,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0070_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3605,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 146,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0070_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 589,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 147,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0070_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 148,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0072_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18091,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 149,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0072_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 451,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 150,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0073_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4973,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 151,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0073_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3931,
+            "last_live_gradient_pass": 25
+          },
+          {
+            "index": 152,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0074_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11029,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 153,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0074_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 177,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 154,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0075_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6575,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 155,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0075_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 689,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 156,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 2897,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 157,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 173,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 158,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 309,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 159,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 187,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 160,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 161,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0077_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9405,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 162,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0078_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14171,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 163,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0079_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20881,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 164,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0080_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20945,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 165,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0081_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15917,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 166,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0082_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13989,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 167,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0082_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 168,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0083_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9173,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 169,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0084_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23479,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 170,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0085_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 7237,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 171,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0087_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 22267,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 172,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0088_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20709,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 173,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0089_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 25347,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 174,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0089_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 443,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 175,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0090_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18591,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 176,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0091_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23171,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 177,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0092_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17365,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 178,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0093_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19633,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 179,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0094_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19489,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 180,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0095_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14635,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 181,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0095_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 785,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 182,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0096_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19763,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 183,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0097_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 24215,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 184,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0098_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19183,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 185,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0099_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 22787,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 186,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0099_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 245,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 187,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0100_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17119,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 188,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0101_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20611,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 189,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0102_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 21599,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 190,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0103_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 21521,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 191,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13669,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 192,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 103,
+            "last_live_gradient_pass": 23
+          },
+          {
+            "index": 193,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 194,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 195,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 196,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0105_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17911,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 197,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0105_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 198,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0106_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14093,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 199,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0106_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1161,
+            "last_live_gradient_pass": 13
+          }
+        ]
+      },
+      "bounds": {
+        "live_proposal_family_events": 1944,
+        "live_proposal_clades": 13947302,
+        "authoritative_fixed_coordinate_events": 80,
+        "authoritative_fixed_coordinate_clades": 23056,
+        "working_set_added_coordinate_events": 0,
+        "working_set_added_coordinate_clades": 0,
+        "working_set_added_coordinate_equivalents": 0.0,
+        "working_set_additions_D_L_T": [
+          0,
+          0,
+          0
+        ],
+        "working_set_addition_clades_D_L_T": [
+          0,
+          0,
+          0
+        ],
+        "ray_cut_family_events": 437,
+        "ray_cut_clades": 1338483,
+        "radius_cut_family_events": 495,
+        "radius_cut_clades": 1398443,
+        "box_cut_family_events": 28,
+        "box_cut_clades": 22886,
+        "both_radius_and_box_family_events": 24,
+        "both_radius_and_box_clades": 2040,
+        "ray_fraction_clade_weighted_median": 1.0,
+        "ray_fraction_clade_weighted_p10": 0.9999998807907104,
+        "ray_fraction_min": 0.6167458891868591
+      },
+      "trust_acceptance": {
+        "pending_family_events": 828,
+        "pending_clades": 7930120,
+        "rejected_family_events": 145,
+        "rejected_clades": 1260293,
+        "radius_shrink_family_events": 202,
+        "radius_shrink_clades": 1596830,
+        "radius_grow_family_events": 125,
+        "radius_grow_clades": 476005,
+        "ratio_clade_weighted_p10": -0.9481196999549866,
+        "ratio_clade_weighted_median": 0.6948402523994446,
+        "ratio_clade_weighted_p90": 1.2775405645370483
+      },
+      "convexification": {
+        "negative_eigenvalue_events": 7,
+        "negative_curvature_family_events": 7,
+        "negative_curvature_family_clades": 995,
+        "sign_floor_eigenvalue_events": 35,
+        "sign_floor_family_events": 35,
+        "sign_floor_family_clades": 16849,
+        "directional_trust_floor_eigenvalue_events": 605,
+        "directional_trust_floor_family_events": 533,
+        "directional_trust_floor_family_clades": 1324063,
+        "positive_eigen_adjustment_clade_weighted_median": 1.0,
+        "positive_eigen_adjustment_clade_weighted_p90": 1.0,
+        "trust_limited_positive_adjustment_clade_weighted_median": 1.7280905648666283,
+        "trust_limited_positive_adjustment_clade_weighted_p90": 3.5146688329759663
+      }
+    },
+    "hierarchical_native_metric": {
+      "gradient_work": {
+        "resident_clades": 17735824,
+        "live_clades_immediate_removal_lower_bound": 17051452,
+        "settled_resident_clades": 684372,
+        "live_same_theta_remeasurement_clades": 575524,
+        "live_changed_point_clades": 16475928,
+        "resident_full_clade_equivalents": 11.894456441553215,
+        "immediate_removal_full_clade_equivalents": 11.435485212259406,
+        "avoidable_settled_resident_equivalents_lower_bound": 0.45897122929380996,
+        "same_theta_remeasurement_equivalents": 0.3859727717792234,
+        "changed_point_equivalents": 11.049512440480182,
+        "per_pass": [
+          {
+            "gradient_pass": 1,
+            "iteration": 0,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 2,
+            "iteration": 1,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 3,
+            "iteration": 2,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 4,
+            "iteration": 3,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 5,
+            "iteration": 4,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 6,
+            "iteration": 5,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 7,
+            "iteration": 6,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 8,
+            "iteration": 7,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 9,
+            "iteration": 8,
+            "resident_families": 200,
+            "live_families": 200,
+            "resident_clades": 1491100,
+            "live_clades": 1491100,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 10,
+            "iteration": 9,
+            "resident_families": 200,
+            "live_families": 146,
+            "resident_clades": 1491100,
+            "live_clades": 1152426,
+            "settled_resident_clades": 338674,
+            "settled_resident_fraction": 0.2271303064851452,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 11,
+            "iteration": 10,
+            "resident_families": 200,
+            "live_families": 146,
+            "resident_clades": 1491100,
+            "live_clades": 1152426,
+            "settled_resident_clades": 338674,
+            "settled_resident_fraction": 0.2271303064851452,
+            "model_builds": 1,
+            "model_rebuilds": 0
+          },
+          {
+            "gradient_pass": 12,
+            "iteration": 11,
+            "resident_families": 84,
+            "live_families": 84,
+            "resident_clades": 317998,
+            "live_clades": 317998,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 2,
+            "model_rebuilds": 1
+          },
+          {
+            "gradient_pass": 13,
+            "iteration": 12,
+            "resident_families": 84,
+            "live_families": 84,
+            "resident_clades": 317998,
+            "live_clades": 317998,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 2,
+            "model_rebuilds": 1
+          },
+          {
+            "gradient_pass": 14,
+            "iteration": 13,
+            "resident_families": 68,
+            "live_families": 68,
+            "resident_clades": 134396,
+            "live_clades": 134396,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 3,
+            "model_rebuilds": 2
+          },
+          {
+            "gradient_pass": 15,
+            "iteration": 14,
+            "resident_families": 68,
+            "live_families": 68,
+            "resident_clades": 134396,
+            "live_clades": 134396,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 3,
+            "model_rebuilds": 2
+          },
+          {
+            "gradient_pass": 16,
+            "iteration": 15,
+            "resident_families": 52,
+            "live_families": 52,
+            "resident_clades": 83476,
+            "live_clades": 83476,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 4,
+            "model_rebuilds": 3
+          },
+          {
+            "gradient_pass": 17,
+            "iteration": 16,
+            "resident_families": 52,
+            "live_families": 52,
+            "resident_clades": 83476,
+            "live_clades": 83476,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 4,
+            "model_rebuilds": 3
+          },
+          {
+            "gradient_pass": 18,
+            "iteration": 17,
+            "resident_families": 52,
+            "live_families": 44,
+            "resident_clades": 83476,
+            "live_clades": 79964,
+            "settled_resident_clades": 3512,
+            "settled_resident_fraction": 0.042071972782596195,
+            "model_builds": 4,
+            "model_rebuilds": 3
+          },
+          {
+            "gradient_pass": 19,
+            "iteration": 18,
+            "resident_families": 52,
+            "live_families": 44,
+            "resident_clades": 83476,
+            "live_clades": 79964,
+            "settled_resident_clades": 3512,
+            "settled_resident_fraction": 0.042071972782596195,
+            "model_builds": 4,
+            "model_rebuilds": 3
+          },
+          {
+            "gradient_pass": 20,
+            "iteration": 19,
+            "resident_families": 27,
+            "live_families": 27,
+            "resident_clades": 35723,
+            "live_clades": 35723,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 5,
+            "model_rebuilds": 4
+          },
+          {
+            "gradient_pass": 21,
+            "iteration": 20,
+            "resident_families": 27,
+            "live_families": 27,
+            "resident_clades": 35723,
+            "live_clades": 35723,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 5,
+            "model_rebuilds": 4
+          },
+          {
+            "gradient_pass": 22,
+            "iteration": 21,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 3931,
+            "live_clades": 3931,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 23,
+            "iteration": 22,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 3931,
+            "live_clades": 3931,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 24,
+            "iteration": 23,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 3931,
+            "live_clades": 3931,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 25,
+            "iteration": 24,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 3931,
+            "live_clades": 3931,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 26,
+            "iteration": 25,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 3931,
+            "live_clades": 3931,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          },
+          {
+            "gradient_pass": 27,
+            "iteration": 26,
+            "resident_families": 1,
+            "live_families": 1,
+            "resident_clades": 3931,
+            "live_clades": 3931,
+            "settled_resident_clades": 0,
+            "settled_resident_fraction": 0.0,
+            "model_builds": 6,
+            "model_rebuilds": 5
+          }
+        ]
+      },
+      "last_live_pass": {
+        "clade_weighted_median": 11.0,
+        "clade_weighted_p90": 13.0,
+        "per_family": [
+          {
+            "index": 0,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0001_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 16815,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 1,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0002_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14129,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 2,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0003_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 10937,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 3,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0003_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1793,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 4,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0004_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 12907,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 5,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0004_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 241,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 6,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0005_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 10207,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 7,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0005_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 913,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 8,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0005_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 59,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 9,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 28341,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 10,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 147,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 11,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 91,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 12,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 27,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 13,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0006_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 14,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0007_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9247,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 15,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0008_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 12477,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 16,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0009_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 29015,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 17,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0010_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11239,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 18,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0010_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1035,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 19,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0012_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15107,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 20,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0012_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 93,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 21,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0012_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 22,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0013_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13497,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 23,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0014_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11141,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 24,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0014_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1023,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 25,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0014_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 173,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 26,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9347,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 27,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4265,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 28,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 5223,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 29,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 615,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 30,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0015_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 529,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 31,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0016_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17439,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 32,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0016_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 581,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 33,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0016_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 34,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0016_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 35,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0017_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 5209,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 36,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0017_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4631,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 37,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0017_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 51,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 38,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0018_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8813,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 39,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0018_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6151,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 40,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14401,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 41,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 129,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 42,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 105,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 43,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 61,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 44,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0019_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 45,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0020_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18893,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 46,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0020_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1863,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 47,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9391,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 48,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 2031,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 49,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 411,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 50,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 441,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 51,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 427,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 52,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 235,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 53,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_6.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 35,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 54,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0021_7.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 55,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0022_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6063,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 56,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0022_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 715,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 57,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0023_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4347,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 58,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0024_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 22439,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 59,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4537,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 60,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 67,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 61,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 51,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 62,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 29,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 63,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0025_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 64,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0026_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 7061,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 65,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0027_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3517,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 66,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0028_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19439,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 67,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0028_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 68,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0028_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 69,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0029_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9837,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 70,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0030_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17389,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 71,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0031_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 16637,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 72,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0031_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 2239,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 73,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0031_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 699,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 74,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0033_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3595,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 75,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0033_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3295,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 76,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0034_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14919,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 77,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0034_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 307,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 78,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0035_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 10797,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 79,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0035_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 907,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 80,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0035_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 421,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 81,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0035_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 82,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0036_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23339,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 83,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0037_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23351,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 84,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0038_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8989,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 85,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0038_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 173,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 86,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0038_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 87,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0039_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 7317,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 88,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0039_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 111,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 89,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0039_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 90,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0040_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 12819,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 91,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0041_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15091,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 92,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0042_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15997,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 93,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0042_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 123,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 94,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0043_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8537,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 95,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0043_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 653,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 96,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0044_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 16205,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 97,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0044_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 98,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0045_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 7665,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 99,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0046_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6885,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 100,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0046_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 121,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 101,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0047_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13823,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 102,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0048_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 21857,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 103,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0049_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19389,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 104,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0051_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 24267,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 105,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9771,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 106,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 2471,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 107,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1005,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 108,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 605,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 109,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 683,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 110,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0053_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 111,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0054_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18709,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 112,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0054_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 603,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 113,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0055_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8909,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 114,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0056_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11755,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 115,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0057_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19655,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 116,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0057_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 643,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 117,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0057_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 95,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 118,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0058_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8451,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 119,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0059_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 10995,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 120,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0059_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 775,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 121,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0059_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 249,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 122,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0059_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 115,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 123,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0060_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8163,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 124,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0060_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4355,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 125,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20621,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 126,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 421,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 127,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 941,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 128,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 119,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 129,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0061_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 59,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 130,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0062_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18273,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 131,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0063_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20223,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 132,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0064_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14203,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 133,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0065_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 8115,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 134,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0066_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6393,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 135,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0067_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4639,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 136,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0067_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 495,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 137,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0067_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 138,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0068_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6161,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 139,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 5289,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 140,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1705,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 141,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1239,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 142,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 507,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 143,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 144,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0069_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 145,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0070_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3605,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 146,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0070_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 589,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 147,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0070_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 148,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0072_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18091,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 149,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0072_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 451,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 150,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0073_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 4973,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 151,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0073_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 3931,
+            "last_live_gradient_pass": 27
+          },
+          {
+            "index": 152,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0074_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 11029,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 153,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0074_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 177,
+            "last_live_gradient_pass": 17
+          },
+          {
+            "index": 154,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0075_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 6575,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 155,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0075_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 689,
+            "last_live_gradient_pass": 15
+          },
+          {
+            "index": 156,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 2897,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 157,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 173,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 158,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 309,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 159,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 187,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 160,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0076_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 161,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0077_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9405,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 162,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0078_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14171,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 163,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0079_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20881,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 164,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0080_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20945,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 165,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0081_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15917,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 166,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0082_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13989,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 167,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0082_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 31,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 168,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0083_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 9173,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 169,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0084_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23479,
+            "last_live_gradient_pass": 19
+          },
+          {
+            "index": 170,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0085_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 7237,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 171,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0087_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 22267,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 172,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0088_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20709,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 173,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0089_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 25347,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 174,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0089_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 443,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 175,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0090_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 18591,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 176,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0091_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 23171,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 177,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0092_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17365,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 178,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0093_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19633,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 179,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0094_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19489,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 180,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0095_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14635,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 181,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0095_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 785,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 182,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0096_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19763,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 183,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0097_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 24215,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 184,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0098_X.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 19183,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 185,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0099_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 22787,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 186,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0099_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 245,
+            "last_live_gradient_pass": 13
+          },
+          {
+            "index": 187,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0100_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17119,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 188,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0101_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 20611,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 189,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0102_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 21599,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 190,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0103_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 21521,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 191,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13669,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 192,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 103,
+            "last_live_gradient_pass": 21
+          },
+          {
+            "index": 193,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 194,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 13,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 195,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0104_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 196,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0105_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 17911,
+            "last_live_gradient_pass": 11
+          },
+          {
+            "index": 197,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0105_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 15,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 198,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0106_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 14093,
+            "last_live_gradient_pass": 9
+          },
+          {
+            "index": 199,
+            "family": "/home/enzo/Documents/git/gpurec/gpurec/data/external/benchmarks/large_dataset_capacity/datasets/coleman/ALEs_extract/ALEs/COG0106_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale",
+            "clades": 1161,
+            "last_live_gradient_pass": 13
+          }
+        ]
+      },
+      "bounds": {
+        "live_proposal_family_events": 2216,
+        "live_proposal_clades": 14984828,
+        "authoritative_fixed_coordinate_events": 121,
+        "authoritative_fixed_coordinate_clades": 5221,
+        "working_set_added_coordinate_events": 11,
+        "working_set_added_coordinate_clades": 541,
+        "working_set_added_coordinate_equivalents": 0.0003628193950774596,
+        "working_set_additions_D_L_T": [
+          0,
+          3,
+          8
+        ],
+        "working_set_addition_clades_D_L_T": [
+          0,
+          379,
+          162
+        ],
+        "ray_cut_family_events": 510,
+        "ray_cut_clades": 2662130,
+        "radius_cut_family_events": 496,
+        "radius_cut_clades": 2660630,
+        "box_cut_family_events": 49,
+        "box_cut_clades": 6891,
+        "both_radius_and_box_family_events": 35,
+        "both_radius_and_box_clades": 5391,
+        "ray_fraction_clade_weighted_median": 1.0,
+        "ray_fraction_clade_weighted_p10": 0.7745271921157837,
+        "ray_fraction_min": 0.044896889477968216
+      },
+      "trust_acceptance": {
+        "pending_family_events": 787,
+        "pending_clades": 7756297,
+        "rejected_family_events": 156,
+        "rejected_clades": 1366614,
+        "radius_shrink_family_events": 182,
+        "radius_shrink_clades": 1526644,
+        "radius_grow_family_events": 182,
+        "radius_grow_clades": 1398346,
+        "ratio_clade_weighted_p10": -0.6164026856422424,
+        "ratio_clade_weighted_median": 0.8901732563972473,
+        "ratio_clade_weighted_p90": 1.4437446594238281
+      },
+      "convexification": {
+        "negative_eigenvalue_events": 7,
+        "negative_curvature_family_events": 7,
+        "negative_curvature_family_clades": 149,
+        "sign_floor_eigenvalue_events": 73,
+        "sign_floor_family_events": 73,
+        "sign_floor_family_clades": 9617,
+        "directional_trust_floor_eigenvalue_events": 637,
+        "directional_trust_floor_family_events": 573,
+        "directional_trust_floor_family_clades": 2003485,
+        "positive_eigen_adjustment_clade_weighted_median": 1.0,
+        "positive_eigen_adjustment_clade_weighted_p90": 1.0,
+        "trust_limited_positive_adjustment_clade_weighted_median": 1.44756559245758,
+        "trust_limited_positive_adjustment_clade_weighted_p90": 2.3304924101141546
+      }
+    }
+  }
+}

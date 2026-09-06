@@ -11,8 +11,8 @@ import torch
 
 from gpurec import GeneReconModel, SolverOptions
 from gpurec.solver.hvp.exact import make_exact_hvp
-from gpurec.fit.newton_cg import _fd_hessian_hvp
 from gpurec.solver.value_and_grad import forward_solve, make_value_and_grad
+from _hvp_oracle import fd_hessian_hvp
 
 _D = "tests/data/alerax/test_trees_200"
 # A deliberately over-converged fp64 solver, so the analytic HVP is compared against a
@@ -38,78 +38,6 @@ def build_genewise_model(n_fam=2, dtype=torch.float64, device="cuda", per_family
 
 
 @pytest.mark.gpu
-def test_batch_static_warm_v_tangent_defaults_to_none():
-    m = build_genewise_model()
-    assert m.batch_statics[0].warm_v_tangent is None
-
-
-@pytest.mark.gpu
-def test_build_point_cache_accepts_and_forwards_warm_v():
-    from gpurec.solver.hvp.exact import build_point_cache
-
-    m = build_genewise_model()
-    static = m.batch_statics[0]
-    F = len(m.families)
-    S = int(m.species_helpers["S"])
-    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
-    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
-    _l, sv = forward_solve([static], theta, rw)
-
-    # warm_v=None (today's behavior) and warm_v={} (empty -- no cached entries yet) must agree,
-    # since an empty dict has nothing to look up (init_v is None either way on a first call).
-    g_theta_none, g_col_none, _cache_none = build_point_cache(static, theta, rw, sv, )
-    g_theta_empty, g_col_empty, _cache_empty = build_point_cache(static, theta, rw, sv, warm_v={})
-    torch.testing.assert_close(g_theta_none, g_theta_empty)
-    torch.testing.assert_close(g_col_none, g_col_empty)
-
-
-@pytest.mark.gpu
-def test_build_point_cache_warm_v_poisoned_seed_changes_result():
-    """A warm_v dict populated with deliberately wrong values must measurably perturb
-    the result at a SMALL, non-contracting neumann_terms budget (proving warm_v is
-    actually READ, not silently dropped in forwarding). neumann_terms=1 makes the
-    self-loop's fixed-point update v <- rhs + A @ initial_v exactly LINEAR in
-    initial_v -- no contraction to wash the poisoned seed's effect away, unlike the
-    production neumann_terms=64 default where A^64 would shrink any perturbation
-    below detectable tolerance regardless of whether warm_v is truly consumed.
-
-    ``adjoint_self_loop="series"`` is required and is the whole point of the gate: the warm start
-    seeds the Neumann sum, and only the series path has a sum to seed. The library default
-    ``"exact"`` SOLVES the self-loop by tree elimination instead, so it has no iterate to warm and
-    ignores warm_v by construction -- running this gate there would assert on a mechanism that is
-    not in play.
-    """
-    from gpurec.solver.hvp.exact import build_point_cache
-
-    so = SolverOptions(**{**_SO, "neumann_terms": 1, "adjoint_self_loop": "series"})
-    so.validate()
-    m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 2, mode="genewise",
-                       device="cuda", dtype=torch.float64, solver_options=so)
-    static = m.batch_statics[0]
-    F = len(m.families)
-    S = int(m.species_helpers["S"])
-    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
-    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
-    _l, sv = forward_solve([static], theta, rw)
-
-    g_theta_cold, _g_col_cold, _cache_cold = build_point_cache(static, theta, rw, sv, warm_v=None)
-
-    # Let a real call populate a warm_v dict naturally, then corrupt every cached tensor.
-    warm_v = {}
-    build_point_cache(static, theta, rw, sv, warm_v=warm_v)
-    assert len(warm_v) > 0, "expected at least one wave to populate warm_v"
-    poisoned = {ws: v * 1000.0 + 50.0 for ws, v in warm_v.items()}
-
-    g_theta_poisoned, _g_col_p, _cache_p = build_point_cache(static, theta, rw, sv, warm_v=poisoned)
-
-    assert not torch.allclose(g_theta_poisoned, g_theta_cold), (
-        "poisoned warm_v seed had no effect at neumann_terms=1 (where the self-loop update "
-        "is exactly linear in initial_v) -- warm_v is being silently dropped somewhere in "
-        "vjp_root_to_theta -> implicit_grad_loglik_vjp_wave forwarding"
-    )
-
-
-@pytest.mark.gpu
 def test_genewise_theta_hvp_matches_fd():
     m = build_genewise_model()
     static = m.batch_statics[0]
@@ -120,7 +48,7 @@ def test_genewise_theta_hvp_matches_fd():
 
     _l, sv = forward_solve([static], theta, rw)
     hvp = make_exact_hvp([static], theta, rw, sv, tangent_self_iters=128)
-    fd = _fd_hessian_hvp(make_value_and_grad([static], rw, theta_shape=(F, 3)),
+    fd = fd_hessian_hvp(make_value_and_grad([static], rw, theta_shape=(F, 3)),
                          theta.reshape(-1).contiguous(), None, eps=1e-5)
 
     probes = []
@@ -227,7 +155,7 @@ def test_joint_theta_omega_hvp_matches_fd():
     _l, sv = forward_solve([st], th, rw)
     hvp = make_exact_hvp([st], th, rw, sv, tangent_self_iters=128, origination_weights=om)
     x0 = torch.cat([th.reshape(-1), rw.reshape(-1), om.reshape(-1)])   # [theta; alpha; omega]
-    fd = _fd_hessian_hvp(make_joint_value_and_grad(st, (G, 3), S, G), x0, None, eps=1e-5)
+    fd = fd_hessian_hvp(make_joint_value_and_grad(st, (G, 3), S, G), x0, None, eps=1e-5)
     for name, u in [("theta_e0", _dir_theta(G, S, 0)), ("omega_k", _dir_omega(G, S, S // 3))]:
         Ha, Hf = hvp(u).double(), fd(u).double()
         rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
@@ -256,7 +184,7 @@ def test_joint_theta_omega_alpha_hvp_matches_fd():
     # genewise alpha cotangent is global [S], no per-family reduction), and the analytic HVP's tiny
     # theta<->alpha asymmetry equals the FD's bit-for-bit (a property of the pi_iters-truncated
     # gradient, not a defect). eps=1e-3 clears 5e-4 with ~10x margin on all four directions.
-    fd = _fd_hessian_hvp(make_joint_value_and_grad(st, (G, 3), S, G), x0, None, eps=1e-3)
+    fd = fd_hessian_hvp(make_joint_value_and_grad(st, (G, 3), S, G), x0, None, eps=1e-3)
     P = 3 * G + S + G * S
     dirs = {"theta": _dir_theta(G, S, 1), "omega": _dir_omega(G, S, S // 4)}
     da = torch.zeros(P, device="cuda", dtype=torch.float64)
@@ -343,7 +271,6 @@ def test_multibatch_joint_hvp_matches_fd():
     # Multi-batch genewise joint HVP: sum of per-batch single-batch exact HVPs (per-family
     # gather/scatter) must match the FD Hessian of the multi-batch summed gradient. Forces >=2
     # batches via family_chunk_size so the disjoint-family scatter + shared-alpha sum are exercised.
-    from gpurec.fit.newton_cg import _fd_hessian_hvp
     from gpurec.solver.curvature.genewise import make_multibatch_joint_hvp_genewise, multibatch_joint_vg_genewise
     torch.manual_seed(0)
     m = build_genewise_model(n_fam=4, per_family_origination=True, family_chunk_size=2)
@@ -354,7 +281,7 @@ def test_multibatch_joint_hvp_matches_fd():
     om = torch.randn(G, S, device="cuda", dtype=torch.float64) * 0.1     # NON-uniform omega
     Av = make_multibatch_joint_hvp_genewise(m.batch_statics, th, al, om, tangent_self_iters=128)
     x0 = torch.cat([th.reshape(-1), al.reshape(-1), om.reshape(-1)])     # [theta; alpha; omega]
-    fd = _fd_hessian_hvp(multibatch_joint_vg_genewise(m.batch_statics, (G, 3), S, G), x0, None, eps=1e-3)
+    fd = fd_hessian_hvp(multibatch_joint_vg_genewise(m.batch_statics, (G, 3), S, G), x0, None, eps=1e-3)
     P = 3 * G + S + G * S
 
     def d_theta(j):
@@ -391,58 +318,6 @@ def test_genewise_joint_newton_multibatch():
 
 
 @pytest.mark.gpu
-def test_genewise_point_cache_warm_start_matches_fd_across_repeated_calls():
-    """Two make_exact_hvp calls at nearby theta on the same static: the second call's
-    point-cache backward pass reuses static.warm_v (populated by the first call). The
-    result must still match FD within the existing correctness tolerance."""
-    m = build_genewise_model()
-    static = m.batch_statics[0]
-    F = len(m.families)
-    S = int(m.species_helpers["S"])
-    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
-
-    theta0 = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
-    _l0, sv0 = forward_solve([static], theta0, rw)
-    make_exact_hvp([static], theta0, rw, sv0, tangent_self_iters=128)  # populates static.warm_v
-    assert static.warm_v is not None and len(static.warm_v) > 0
-    warm_v_id_after_call1 = id(static.warm_v)
-
-    theta1 = theta0 + 0.01
-    _l1, sv1 = forward_solve([static], theta1, rw)
-    hvp1 = make_exact_hvp([static], theta1, rw, sv1, tangent_self_iters=128)
-    assert id(static.warm_v) == warm_v_id_after_call1, (
-        "static.warm_v was reassigned instead of reused across calls -- the warm-start gate "
-        "must only create a fresh dict when static.warm_v is None, never unconditionally"
-    )
-    fd1 = _fd_hessian_hvp(make_value_and_grad([static], rw, theta_shape=(F, 3)),
-                          theta1.reshape(-1).contiguous(), None, eps=1e-5)
-    for j in range(3):
-        u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, j] = 1.0
-        u = u.reshape(-1)
-        Ha, Hf = hvp1(u).double(), fd1(u).double()
-        rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
-        assert torch.isfinite(Ha).all() and rel < 5e-4, f"broadcast e_{j}: rel={rel:.2e}"
-
-
-@pytest.mark.gpu
-def test_genewise_point_cache_warm_start_disabled_by_config():
-    """use_hvp_warm_start=False -> static.warm_v is never touched."""
-    so = SolverOptions(**_SO)
-    so.use_hvp_warm_start = False
-    so.validate()
-    m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 2, mode="genewise",
-                       device="cuda", dtype=torch.float64, solver_options=so)
-    static = m.batch_statics[0]
-    F = len(m.families)
-    S = int(m.species_helpers["S"])
-    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
-    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
-    _l, sv = forward_solve([static], theta, rw)
-    make_exact_hvp([static], theta, rw, sv, tangent_self_iters=128)
-    assert static.warm_v is None
-
-
-@pytest.mark.gpu
 def test_stream_batches_multibatch_origination_grad():
     # Multi-batch per-family origination grad: stream_batches must scatter each batch-local [G_b,S]
     # origination grad into the full [G,S] accumulator (index_add_), not shape-mismatch on .add_().
@@ -462,95 +337,6 @@ def test_stream_batches_multibatch_origination_grad():
 
 
 @pytest.mark.gpu
-def test_genewise_tangent_warm_start_matches_fd():
-    """probe_id passed on two nearby-theta calls: warm-started tangent-adjoint result
-    still matches FD within the existing correctness tolerance, AND static.warm_v_tangent's
-    per-probe dicts are genuinely reused (not clobbered) across repeated hvp() calls."""
-    m = build_genewise_model()
-    static = m.batch_statics[0]
-    F = len(m.families)
-    S = int(m.species_helpers["S"])
-    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
-
-    theta0 = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
-    _l0, sv0 = forward_solve([static], theta0, rw)
-    hvp0 = make_exact_hvp([static], theta0, rw, sv0, tangent_self_iters=128)
-    for j in range(3):
-        u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, j] = 1.0
-        hvp0(u.reshape(-1), probe_id=j)
-    assert static.warm_v_tangent is not None
-    assert set(static.warm_v_tangent.keys()) == {0, 1, 2}
-    probe_cache_ids_after_call1 = {j: id(static.warm_v_tangent[j]) for j in range(3)}
-
-    theta1 = theta0 + 0.01
-    _l1, sv1 = forward_solve([static], theta1, rw)
-    hvp1 = make_exact_hvp([static], theta1, rw, sv1, tangent_self_iters=128)
-    fd1 = _fd_hessian_hvp(make_value_and_grad([static], rw, theta_shape=(F, 3)),
-                          theta1.reshape(-1).contiguous(), None, eps=1e-5)
-    for j in range(3):
-        u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, j] = 1.0
-        u = u.reshape(-1)
-        Ha, Hf = hvp1(u, probe_id=j).double(), fd1(u).double()
-        rel = float((Ha - Hf).abs().max()) / max(float(Hf.abs().max()), 1e-30)
-        assert torch.isfinite(Ha).all() and rel < 5e-4, f"warm probe_id={j}: rel={rel:.2e}"
-    for j in range(3):
-        assert id(static.warm_v_tangent[j]) == probe_cache_ids_after_call1[j], (
-            f"static.warm_v_tangent[{j}] was reassigned instead of reused across calls"
-        )
-
-
-@pytest.mark.gpu
-def test_genewise_tangent_warm_start_probes_do_not_cross_contaminate():
-    m = build_genewise_model()
-    static = m.batch_statics[0]
-    F = len(m.families)
-    S = int(m.species_helpers["S"])
-    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
-    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
-    _l, sv = forward_solve([static], theta, rw)
-    hvp = make_exact_hvp([static], theta, rw, sv, tangent_self_iters=128)
-    u0 = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u0[:, 0] = 1.0
-    u1 = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u1[:, 1] = 1.0
-    hvp(u0.reshape(-1), probe_id=0)
-    hvp(u1.reshape(-1), probe_id=1)
-    assert static.warm_v_tangent[0].keys() == static.warm_v_tangent[1].keys()
-    n_checked = 0
-    for ws in static.warm_v_tangent[0]:
-        v0 = static.warm_v_tangent[0][ws]
-        v1 = static.warm_v_tangent[1][ws]
-        # This fixture's adjoint_pruning_threshold=1e-6 (see _SO) marks several of this
-        # 2-family tree's internal-node waves entirely inactive (confirmed via each wave's
-        # pre-existing cache["waves"][i]["active_mask"], built once by build_point_cache --
-        # independent of probe_id); the NaN-safe masking then legitimately zeros v_k for
-        # BOTH probes there (nothing to contaminate). Restrict the distinctness check to
-        # waves where at least one probe's cached v is non-negligible.
-        if max(float(v0.abs().max()), float(v1.abs().max())) < 1e-8:
-            continue
-        n_checked += 1
-        assert not torch.allclose(v0, v1), "different probe directions must cache distinct v_k"
-    assert n_checked > 0, "no non-trivial wave found to check cross-contamination"
-
-
-@pytest.mark.gpu
-def test_genewise_tangent_warm_start_disabled_by_config():
-    so = SolverOptions(**_SO)
-    so.use_hvp_warm_start = False
-    so.validate()
-    m = GeneReconModel(f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 2, mode="genewise",
-                       device="cuda", dtype=torch.float64, solver_options=so)
-    static = m.batch_statics[0]
-    F = len(m.families)
-    S = int(m.species_helpers["S"])
-    rw = torch.zeros(S, device="cuda", dtype=torch.float64)
-    theta = torch.full((F, 3), math.log2(0.1), device="cuda", dtype=torch.float64)
-    _l, sv = forward_solve([static], theta, rw)
-    hvp = make_exact_hvp([static], theta, rw, sv, tangent_self_iters=128)
-    u = torch.zeros(F, 3, device="cuda", dtype=torch.float64); u[:, 0] = 1.0
-    hvp(u.reshape(-1), probe_id=0)
-    assert static.warm_v_tangent is None or 0 not in static.warm_v_tangent
-
-
-@pytest.mark.gpu
 def test_fit_genewise_converges_on_small_fixture():
     """Direct behavior test for fit_genewise itself (previously only covered indirectly via
     signature/config-wiring checks). Runs the real recipe end-to-end on a handful of families
@@ -563,9 +349,14 @@ def test_fit_genewise_converges_on_small_fixture():
         f"{_D}/sp.nwk", [f"{_D}/g.nwk"] * 4,
         device="cuda", dtype=torch.float32,
         adam_steps=5, pi_tiers=(16,), neu_opt=16, neu_cert=16,
-        min_drop=1, rebuild_frac=0.25, hessian_refresh=5, init_curvature="exact", max_iter=60,
+        min_drop=1, rebuild_frac=0.25, hessian_refresh=5, init_curvature="exact",
+        curvature_update="bfgs", max_iter=60,
         certify=True, certify_curvature=True, verbose=False,
     init_log2_rates=(0.0, 0.0, 0.0), stall_patience=120, trust_max=16.0,
+    step_extrapolation=1.0, step_model="quadratic", stop_nll_bits=0.0,
+    approach_pruning_threshold=0.0,
+    targeted_hessian=(0, 0.0), coordinate_staging=(0, 0),
+    trust_test=(0.25, 0.75, 0.5, 0.05),
     )
     assert res["n_families"] == 4
     assert torch.isfinite(res["theta"]).all()
@@ -608,9 +399,13 @@ def test_fit_genewise_converges_with_multibatch_analytic_hvp():
         device="cuda", dtype=torch.float32,
         adam_steps=5, pi_tiers=(16,), neu_opt=16, neu_cert=16,
         clade_budget=clade_budget, min_drop=1, rebuild_frac=0.25, hessian_refresh=5,
-        init_curvature="exact", max_iter=60,
+        init_curvature="exact", curvature_update="bfgs", max_iter=60,
         certify=True, certify_curvature=True, verbose=False,
     init_log2_rates=(0.0, 0.0, 0.0), stall_patience=120, trust_max=16.0,
+    step_extrapolation=1.0, step_model="quadratic", stop_nll_bits=0.0,
+    approach_pruning_threshold=0.0,
+    targeted_hessian=(0, 0.0), coordinate_staging=(0, 0),
+    trust_test=(0.25, 0.75, 0.5, 0.05),
     )
     assert res["n_families"] == n_fam
     assert torch.isfinite(res["theta"]).all()

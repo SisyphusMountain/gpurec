@@ -120,7 +120,6 @@ def test_pi_wave_forward_rejects_accumulator_narrower_than_residual() -> None:
             value.reshape(-1),
             family_idx=torch.zeros(1, device="cuda", dtype=torch.long),
             accumulator_dtype=torch.float32,
-            self_loop_mode="exact",
             exact_range_log2=100.0,
             exact_guard_trips_out=None,
             gene_split_out=None,
@@ -828,7 +827,6 @@ def test_pi_forward_matches_fp64_for_receiver_and_origination_cases(
         model32.theta.detach(),
         receiver32,
         pi_iters_high=8,
-        neumann_terms=16,
     )
     def loss_and_grads(model, receiver, origination):
         theta = model.theta.detach().clone().requires_grad_(True)
@@ -847,8 +845,8 @@ def test_pi_forward_matches_fp64_for_receiver_and_origination_cases(
     assert torch.isfinite(loss32).item()
     torch.testing.assert_close(loss32, loss64, rtol=0.0, atol=2e-5)
     torch.testing.assert_close(residual32, residual64, rtol=0.0, atol=2e-5)
-    torch.testing.assert_close(convergence[0], residual32, rtol=0.0, atol=0.0)
-    assert all(torch.isfinite(value).all().item() for value in convergence)
+    torch.testing.assert_close(convergence, residual32, rtol=0.0, atol=0.0)
+    assert torch.isfinite(convergence).all().item()
     for grad32, grad64 in zip(grads32, grads64):
         assert torch.isfinite(grad32).all().item()
         torch.testing.assert_close(grad32.double(), grad64, rtol=5e-5, atol=2e-5)
@@ -931,104 +929,6 @@ def test_pi_forward_streams_batches_without_losing_fp64_loss(tmp_path: Path) -> 
     torch.testing.assert_close(streamed_loss, 2.0 * single_loss, rtol=0.0, atol=1e-5)
 
 
-@pytest.mark.gpu
-@pytest.mark.parametrize("weighted", [False, True])
-def test_exact_tree_self_loop_matches_converged_log_self_loop(
-    tmp_path: Path,
-    weighted: bool,
-) -> None:
-    """``forward_self_loop="exact"`` solves the fixed point the log path iterates towards.
-
-    The exact solve eliminates the self-loop on the species tree instead of sweeping it, so the
-    only honest reference is the log-space path run far past convergence (``pi_iters=256`` here,
-    against the exact solve's own 8, which it ignores). Everything is float64 so the comparison
-    is about the two algorithms, not about float32 rounding.
-
-    Compared only WITHIN ``window`` log2 units of each row's maximum, for a reason that is a
-    property of the representation and not of this kernel. The exact solve works on a row rescaled
-    so its largest entry is 1; a lane whose true value is further
-    below that maximum than the dtype's roundoff (about 53 log2 units in float64) is built
-    entirely out of terms that round to nothing, so it comes out as an exact zero and is
-    published as -inf. The log-space path has no such floor. ``window`` stays well inside it.
-    """
-    _require_native_cuda()
-    species_tree, gene_trees = _write_tiny_ale_example(tmp_path)
-
-    def build(mode: str, pi_iters: int) -> GeneReconModel:
-        return GeneReconModel(
-            species_tree,
-            gene_trees,
-            device="cuda",
-            dtype=torch.float64,
-            family_chunk_size=1,
-            clade_budget=None,
-            batch_packing="sequential",
-            max_wave_size=8,
-            solver_options=SolverOptions(
-                e_max_iter=64,
-                e_tol=1e-13,
-                pi_iters=pi_iters,
-                neumann_terms=16,
-                forward_self_loop=mode,
-            ),
-        )
-
-    reference = build("log", 256)
-    candidate = build("exact", 8)
-    with torch.no_grad():
-        candidate.theta.copy_(reference.theta)
-    receiver = torch.zeros_like(reference.receiver_weights)
-    if weighted:
-        receiver = torch.linspace(
-            -1.25, 1.75, receiver.numel(), device=receiver.device, dtype=receiver.dtype
-        )
-
-    def solved_rows(model: GeneReconModel):
-        static = model.batch_statics[0]
-        result = solve_resident_e_pi(
-            static, model.theta.detach(), receiver, warm_start_E=None
-        )
-        state = static.pi_forward_state
-        pi = result[5].to(state.pi_offset.dtype) + state.pi_offset.unsqueeze(1)
-        pibar = result[6].to(state.pibar_offset.dtype) + state.pibar_offset.unsqueeze(1)
-        return pi, pibar, result[4]
-
-    # What limits agreement inside the window is not a lane's depth below its row maximum but the
-    # size of the row's whole transfer mass T, which the transfer term multiplies: a lane picks up
-    # about one roundoff of ``gamma[s] * T`` however small the lane itself is. Measured on this
-    # example at window = 30, the worst entry differs by 4.6e-6 log2 units (a relative 6.7e-8 on a
-    # value near 69). ``tolerance`` sits an order of magnitude above that and four orders BELOW
-    # the scale an actual algorithmic regression shows up at -- the two bugs this test was written
-    # after both moved entries by more than 10 log2 units.
-    window = 30.0
-    tolerance = 1e-4
-
-    def in_window(rows: torch.Tensor) -> torch.Tensor:
-        """Reference entries no more than ``window`` log2 units below their own row's maximum."""
-        finite = torch.isfinite(rows)
-        row_max = torch.where(finite, rows, torch.full_like(rows, -float("inf")))
-        row_max = row_max.amax(dim=1, keepdim=True)
-        return finite & torch.isfinite(row_max) & (rows >= row_max - window)
-
-    reference_pi, reference_pibar, reference_root = solved_rows(reference)
-    exact_pi, exact_pibar, exact_root = solved_rows(candidate)
-
-    for name, reference_rows, exact_rows in (
-        ("Pi", reference_pi, exact_pi),
-        ("Pibar", reference_pibar, exact_pibar),
-    ):
-        selected = in_window(reference_rows)
-        assert bool(selected.any()), f"no {name} entries inside the {window} log2 window"
-        # Nothing the reference can still resolve at this depth may vanish on the exact path.
-        assert bool(
-            torch.isfinite(exact_rows[selected]).all()
-        ), f"exact {name} lost an entry the reference resolves"
-        torch.testing.assert_close(
-            exact_rows[selected], reference_rows[selected], rtol=0.0, atol=tolerance
-        )
-    torch.testing.assert_close(exact_root, reference_root, rtol=0.0, atol=tolerance)
-
-
 def _caterpillar_species_tree(leaf_count: int) -> str:
     """A ladder: every internal node has one leaf child, so the tree is as deep as it is wide."""
     newick = "L0:1"
@@ -1054,7 +954,6 @@ def _solve_exact(species_tree, gene_trees, dtype, exact_range_log2, theta_values
         family_chunk_size=1, clade_budget=None, batch_packing="sequential", max_wave_size=8,
         solver_options=SolverOptions(
             e_max_iter=256, e_tol=1e-13, pi_iters=64, neumann_terms=64,
-            forward_self_loop="exact", adjoint_self_loop="exact",
             exact_range_log2=exact_range_log2,
         ),
     )

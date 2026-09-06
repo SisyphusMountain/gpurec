@@ -52,8 +52,6 @@ def main() -> int:
         **_BASE_SOLVER,
         "pi_iters": args.pi_iters,
         "neumann_terms": args.neumann_terms,
-        "forward_self_loop": "exact",
-        "adjoint_self_loop": "exact",
     })
     start = time.perf_counter()
     model = GeneReconModel(

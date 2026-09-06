@@ -1,5 +1,8 @@
 # Genewise fit runtime on the Coleman 1007-leaf dataset (H100, 2026-09-02)
 
+> Historical performance log for `perf/genewise-cc-h100`. Mode-selector references below describe
+> experiments made before the exact-only refactor; they are not part of the current API.
+
 Goal: make `gpurec fit --mode genewise` (the `fit_dtl` genewise recipe, certificate on) faster on
 the Coleman et al. bacterial dataset without changing the fitted likelihood.
 
@@ -905,3 +908,450 @@ the transfer-subtree VJP is now balanced with no unit above 74 %. None of them h
 traffic left to remove; see that section for the per-split accounting and for the three
 experiments -- L2 chunking, two split sides per program, a wider species block -- that were
 measured and not kept.
+
+## Round five: the optimizer itself (2026-09-05)
+
+Goal: 580.7 s -> under 200 s on one H100. Where the 580.7 s went: build 19 s; 14 gradient passes over the
+whole population (3 Adam + 11 Newton, ~26 s each) = 359 s; a shrinking tail of 187 s; certificate 15 s.
+The per-pass kernel cost had been worked over in rounds four to seven above, so this round looked at how many
+passes the recipe spends and why.
+
+**Per-family trace of the production recipe** (`benchmark/cc/recipe_trace.py`, now with the production knobs;
+200 families, RTX 4090). Each family is evaluated a median 18 times (p90 26, max 38) and its NLL is still
+improving by more than 1e-4 bits at its 13th evaluation, so this is slow genuine approach, not noise. The
+median family starts 5.5 log2 units from its optimum, is 2.5 away after the 3 Adam steps, and the Newton
+phase on the BFGS-carried curvature then contracts that distance by only 0.55-0.8x per pass (2.5, 1.9, 1.6,
+1.1, 0.9, 0.7, 0.4, 0.16, 0.04). One Newton step covers 26 % of the remaining distance when the coordinate is
+2-4 units ABOVE its optimum (40 % at 1-2 units, 66 % below 1) and 70-80 % from below. The exact-Hessian
+refresh at Newton step 15 converges 72 % of the families still live in one step, but an exact Hessian costs
+11 gradients (`benchmark/cc/hessian_cost.py`: wall and GPU-time ratios 11.1 and 11.0, launch ratio 8.0).
+
+**Measured and closed** (all on the same 200 families; baseline 41.8 s, 25 steps, NLL 613262.125):
+
+- *Coarse-to-fine on truncated clade tables* (`benchmark/cc/truncate_ccp.py`, `coarse_to_fine_experiment.py`):
+  keeping each clade's top splits up to 80 % of its mass keeps 31 % of the clades and costs 10 % of a forward
+  evaluation, but the coarse optimum sits a median 0.8-1.3 log2 units from the true one, the fine phase still
+  needs 24-29 passes, the total is 35.5 s (15 % better) and two bistable families land 1.16 bits worse.
+- *Poisson-model step* (NLL ~ -k ln2 x + lambda 2^x per rate, cross terms quadratic, solved under the box;
+  spike with exact Hessians on 40 families): the exact Hessian has a negative eigenvalue for 31 of 40 families
+  at the start and 25 of 40 after Adam, the model goes uphill by up to +2915 bits on one family-step, and plain
+  Newton with the exact Hessian needs 5 passes from the post-Adam point (median distance 2.55, 1.85, 1.28, 0.62,
+  0.17, 0.01). The one-line "rate-affine" reshaping of the Newton step gave 21 steps instead of 25 with the
+  BFGS curvature but sent families to the rate floor with exact curvature (65 bound-active, +0.7 bits, 80 steps).
+- *Finite-difference curvature* (3 gradient passes per refresh instead of 11): every schedule costs more
+  passes than it saves -- family-weighted pass cost 8.5 for the baseline against 11.6 (+ probes) with an FD
+  Hessian right after Adam and 6.8 + ~5 probe passes with refreshes every 6 steps.
+- *Recipe knobs*: radius growth on flat capped steps (35 steps instead of 25); check_every 1 (neutral, 41.7 s);
+  Adam step size 2.0 (same pass cost, NLL 0.64 bits better on 200 families -- a quality lever, not a speed one);
+  exact-Hessian refresh interval 10 / 12 / 15 / 20 -> 52.4 / 45.1 / 41.8-45.1 / 41.5 s (an earlier refresh
+  saves passes but its 11-gradient cost lands on a larger population; 15-20 is the plateau).
+- *Several clade rows per program in the exact forward solve* (the largest kernel with the transposed solve,
+  41 % of an H100 gradient, latency-bound: each program walks one row through 34 level passes with ~30 of 256
+  lanes busy): a correct 2D-tile rewrite (bit-identical NLL, byte-identical float64 corner gradients) is
+  monotonically SLOWER -- 288.5 ms -> 299 / 345 / 406 ms at 2 / 4 / 8 rows, 325 / 417 ms when warps are added
+  instead. The idle lanes are already covered by other resident programs; packing rows only removes programs
+  and lengthens the per-level barrier. Reverted.
+- *Per-wave gradient scatter as a one-hot matmul* instead of `index_add_` (7.5 % of an H100 gradient in atomics
+  on a few thousand addresses): gradient equal to 4.6e-6 relative, but total kernel time 1712 -> 1703 ms on
+  the 4090 and an identical 26.2 s per full-population pass on the H100. Reverted.
+
+**Paid.** When the live model already runs at the certificate tier with the exact adjoint (the exact/exact
+production setting), the live gradient IS the certificate measurement -- the exact adjoint reaches the fixed
+point in one shot, so the warm start it ignores cannot change the number -- and the candidate-only verification
+model is no longer built (`live_is_certificate_tier` in `gpurec/fit/genewise_fit.py`). 200 families: 45.9 ->
+41.8 s, model builds 21 -> 8, same 25 steps, all certified, NLL within 0.005 bits. `fit_genewise` also takes a
+per-family `[F,3]` start and `[F,3,3]` curvature and returns its final `curvature` (a re-fit from a returned
+optimum certifies in 0 steps), which any future warm-start scheme needs.
+
+**Full dataset (job r5a_full, quiet batch node, 16 s build): 538.9 s**, NLL 9048935.029 bits (within 0.01 of
+the 580.7 s run), 48 Newton steps, all 5123 certified, peak 29.7 GiB; split: warm-up 72 s, Newton gradients
+370 s, curvature 37 s, verification 0 s (was 45), re-plans 14 s, certificate 16 s. The whole-population pass
+still costs 26.2 s.
+
+**All 5,124 families, including COG3676_X (400,918 clades; job r5d_full5124, same node class): 551.7 s**, NLL
+9049362.370 bits (the extra family contributes 427.3 bits), 47 Newton steps, all 5,124 certified, peak 36.7 GiB
+(the large family runs as a batch of its own at the 315,000 budget: the planner only closes a batch when adding
+a family would exceed the budget and the batch is non-empty), build 20 s, one whole-population pass 26.8 s.
+
+**On the local RTX 4090 (24 GB)** the same family's gradient fits (17.7 GiB in use, 0.6 s per pass) but the
+three analytic-Hessian probes do not (they keep the forward state plus per-probe tangent buffers over the whole
+batch; the refresh at Newton step 15 died allocating one more 3.01 GiB table in the forward tangent). The fit's
+Hessian routine now treats that out-of-memory as the gate: a batch whose probes do not fit is skipped with a
+message and its families keep their carried BFGS curvature (`_analytic_hessian_blocks(...,
+skip_batches_that_do_not_fit=True)`; the strict `_analytic_hessian` used by the global fit and the tests is
+unchanged). The family alone then certifies in 18 steps / 17.5 s at NLL 427.333 bits (the value it contributed on
+the H100), peak 16.1 GiB. **The whole 5,124-family dataset on the RTX 4090: 676.3 s**, NLL 9049362.390 bits
+(0.02 bits from the H100 run), 47 Newton steps, all 5,124 certified, peak 17.2 GiB of 23.5 (device-derived
+batch budget 174,356 clades, 16 builds; the skip fired once, at the step-15 refresh); split: warm-up 91 s,
+Newton gradients 490 s, curvature 44 s, re-plans 16 s, certificate 17 s. The 4090 is only 23 % slower than the
+H100 here, consistent with kernels bound by L1 requests and barriers rather than by DRAM bandwidth.
+
+**Certificate without the final full forward.** By the same argument as the verification skip, the NLL a live
+pass measures at the moment a family is frozen is the certificate-tier NLL at exactly the theta the family keeps,
+so the certificate now sums those (plus a gradient pass over the never-frozen survivors, as before) instead of
+building a model over every family for one forward (16 s of the Coleman fit); the full model is still built when
+the curvature certificate is requested. 200 families: 613262.125 bits either way, all certified. Re-plan schedule:
+a re-plan now costs ~1 s at full scale (15 in 16 s), not the 30-40 s the 25 % clade-share threshold was tuned
+for; on 200 families thresholds of 0.05 (checks every pass) and 0.10 are neutral (43.1 / 41.2 s against 41.6 s,
+freezes come in bursts there), so the full-scale run r5e_replan10 (threshold 0.10, 32 parse threads) decides.
+
+**Why a Newton pass costs 14 % more than a warm-up pass** (200 families, RTX 4090, start rates 1.815 s vs
+fitted rates 2.023 s; scratchpad fitted_profile/probe.py). Not the exact solves' range fallback: at the fitted
+rates 0 of 1,491,100 rows go wide and 0 adjoint rows spill (the two fallback kernels still launch empty every
+wave, 9.9 ms at either theta); across a 1000-family sample holding all 505 box-edge families of the full fit,
+2 rows of one family (COG1847_1, transfer 1.15e-6) trip the 100-order range, and 110 or 118 orders would rescue
+them at the price of the float32 margin for a quarter of a percent of one batch -- keep 100 (NLL bit-identical
+at all three settings). The cost is the adjoint pruner keeping 34 % more rows (541,711 -> 724,718 active rows
+above the 1e-6 threshold), and the three backward kernels that walk the active rows grow in exact proportion
+(+191 of the +217 ms; a fixed-plus-per-row model predicts a midpoint theta within 1 %), plus the extinction
+fixed point taking 65 iterations per batch instead of 15 (+20 ms).
+
+**The adjoint pruner** (`adjoint_pruning_threshold`, 1e-6; scratchpad fitted_profile/prune_*.py). The test is
+absolute and in linear units: a clade row is skipped by the whole backward when the largest |adjoint| across its
+species is below the threshold (the adjoint is seeded with root probability weights summing to 1). At the fitted
+rates the shipping value already skips 51 % of the rows and saves 34 % of the gradient against no pruning, and
+the row-maximum distribution is a smooth heavy tail with 3-12 % of the rows in every decade from 1e-12 to 1e-1,
+so every setting trades a decade of gradient error per decade of threshold: 1e-5 is -5 % for 3.7 % relative error
+at the start rates; 1e-4 is -10.5 % for 20 % and 1.13 absolute at the fitted point; 1e-8 is +11.5 % for 4x the
+accuracy. Keep 1e-6. Two facts to know: (1) at a converged fit the 1e-6 gradient differs from the unpruned one by
+up to 9.6e-3 absolute (9x the 1.1e-3 build-to-build noise), and 172 of 200 families sit with |Pg| between 1e-4
+and 1e-2, so the 1e-3 certificate is read off a gradient with a ~1e-2 pruning bias for the families nearest the
+line (this was always so; the old verification model pruned identically). A truly unpruned certificate is a
+threshold-0 gradient pass over every family, +34 % on one pass, about +35 s of the fit. (2) `use_adjoint_pruning=
+False` only turns `>=` into `>`; with the threshold left at 1e-6 it prunes identically, and four tests plus
+benchmark/cc/test_weighted_equiv.py pass it believing they compare against an unpruned adjoint (threshold 0.0 is
+the actual off switch). Not changed here.
+
+**Full dataset, all 5,124 families, current driver (job r5f_full5124, quiet batch node, 32 parse threads): 520.5 s**,
+NLL 9049362.363 bits (0.007 from the 551.7 s run), 47 Newton steps, all 5,124 certified, peak 36.7 GiB; build done
+at 17.25 s (was 20 s with 12 threads); split: warm-up 70 s, Newton gradients 379 s, curvature 40 s, re-plans 15 s,
+certificate 0 s (was 16 s). The shared interactive node is not usable for timing (the same configuration took
+673.9 s there, warm-up 168 s instead of 70).
+
+**Curvature updates** (`curvature_update` keyword of `fit_genewise`: "bfgs", "sr1", "multisecant"; 200 families,
+5 replicates each, all-iteration pass counts reconstructed from the logs). SR1 (symmetric rank-one, convexified by
+the existing eigenvalue floor) takes 40-41 gradient passes against BFGS's 44 (family-weighted 17.2-17.8 against
+19.0), 28-30 steps against 35 on 500 families with one exact Hessian instead of two, identical certification, NLL
+0.03-0.05 bits worse (3e-8 relative, systematic). A least-squares multi-secant fit over the last four pairs is
+2-10 % MORE work and less repeatable (25-34 steps). Neither improves the contraction near the optimum (BFGS 0.44,
+SR1 0.56, multisecant 0.53 per pass): SR1 wins the approach, where it can represent small and negative curvature,
+not the end game. At full scale it does NOT hold (job r5g_sr1, quiet batch node): 581.9 s against 520.5 s with
+BFGS, NLL 9049365.122 (2.8 bits worse), 46 steps, all 5,124 certified; |Pg|max climbs to 1.5e3 at pass 6 where
+BFGS shows 69 (families taking wild steps on indefinite curvature) and 16.1 M clades are still live after the
+first re-plan against 12.7 M. Production stays at "bfgs".
+
+**The exact Hessian, profiled** (scratchpad so_kernels/PROGRESS.md; batch 0 of the proxy, 99,481 rows, fitted
+theta, idle card): one 3-probe Hessian = 11.0 gradients = forward 0.35 + point cache 0.95 + 3 x 3.23 per probe;
+GPU busy 96-97 % of the wall. Per probe: second-order contraction kernels 47 %, tangent forward 28 %, the
+first-order adjoint re-run on the tangent 18 %, small launches 8 %. Waste found: no second-order kernel takes the
+adjoint pruning mask (47 % of rows are dead at fitted theta); the gene-split tangent is computed twice per wave
+per probe; the primal split rows three times per Hessian. Nsight: the tangent solve and the wave second-order
+contraction use 255 registers at 16 % occupancy (register-bound, so batching the three probes into one tile
+would hurt), the two split second-order kernels are at 74 % and 92 % of DRAM peak. Caching the forward
+elimination's coefficients for the tangent solves would cost 3-3.7 GiB more per batch. Estimated ceiling of
+waste removal: ~7.8 gradients per Hessian; structural floor ~1.7 gradients per probe.
+
+**The exact Hessian, optimized (kept, all gated): 11.2 -> 7.7 gradients** at fitted rates (1419.9 -> 983.0 ms per
+200-family batch on the 4090; 12.1 -> 7.7 at the start rates; `hessian_cost.py` wall / GPU / launch ratios 7.50 /
+7.59 / 7.51). Three changes: (1) the adjoint pruner's active mask on the three second-order kernels (`dts_so.py`,
+`wave_so.py`) -- every output of those kernels multiplies the row's own first-order adjoint, which the pruner has
+zeroed on 53 % of rows, and the first-order twins always skipped them: -274 ms per Hessian; (2) the gene-split
+tangent kept from the tangent forward sweep instead of being rebuilt in the reverse loop (`exact.py`, behind the
+existing memory gate): -67 ms and -567 launches; (3) measured warp counts: the exact tangent solve had inherited
+the iteration kernel's 4 warps, used all 255 registers and spilled on 100 % of its warps (8.1e7 local-memory loads
+in one launch); 4 -> 32 warps takes it 213 -> 144 ms per Hessian, and the wave second-order contraction 8 -> 32
+warps 193 -> 90 ms: -163 ms. Gates: 64 second-order tests before and after; the saved [200,3,3] curvature moved
+max 4.6e-4 / rms 4.7e-5 against a same-code band of 9.8e-4 / 5.3e-5; the fp64 corner Hessian-vs-finite-difference
+check unchanged to every printed digit; no first-order kernel edited. Rejected on the value gate: restricting the
+tangent forward sweep to unpruned rows (max 2.3e-2, 24x the band -- a pruned row's tangent feeds rows that are not
+pruned). Remaining floor: a probe is 2.1 gradients (tangent forward solve + full transposed adjoint solve + a
+second-order contraction the gradient does not contain), so ~4.5-5 gradients per Hessian is the floor of this
+formulation; batching directions is the wrong move (register-bound kernels). **At full scale (job r5h_hvp, quiet
+batch node): 526.6 s**, curvature phase 37 s against 40 s, gradients 380 s, warm-up 70 s, NLL 9049362.362, all
+5,124 certified, peak 39.7 GiB (the kept tangent costs 3 GiB). The three Hessians of a full run land on the late,
+small population (about 14 % of the clades at step 15), so a 30 % cheaper Hessian is worth only a few seconds
+there; the 6 s difference from the 520.5 s run is inside the node's run-to-run spread.
+
+**The end game is curvature-limited, not noise-limited.** The same fit in float64 (100 families; gradient
+run-to-run noise 1.0e-12 against 6.7e-4 in float32) reproduces the float32 iteration count exactly: 35 steps / 50
+passes with BFGS, 25 / 40 with SR1, family-weighted cost equal to two decimals, contraction 0.44 vs 0.45 near the
+optimum, and the same median 2 evaluations from "within 0.05 log2 units of the final theta" to certified. So
+precision or determinism work on the kernels would not shorten the fit; the last decade is geometry.
+
+**The certificate is optimistic.** At the final theta of a 200-family float32 fit, re-measured on one model over
+all families: with the production adjoint pruning (1e-6) 193-197 of 200 families are below |Pg| = 1e-3 (the fit
+itself said 200, from freeze-time measurements on other batch compositions); with the threshold at 0.0, 126;
+in float64 unpruned, 106. The reported |Pg| is 2.4x too small from pruning and 2.7x from float32 arithmetic, 2.8x
+combined; the effect is a cliff at 1e-6 (1e-7 and below all agree with 0.0), and the NLL is untouched. An honest
+final certificate is one unpruned gradient pass, 1.24x a pruned one (~32 s at full scale); reaching honest
+convergence would also need the tail passes unpruned. A decision about what "certified" means, not made here.
+
+**Starting points** (scratchpad starts/PROGRESS.md; distances over all 5,124 fitted optima, honest other-half
+fits). The common start is a median 6.3 log2 units (p90 10.7) from the optima; the population median of fitted
+rates 3.5 (p90 12.7) and it makes the fit WORSE (family-weighted cost 20.0 vs 18.5 on 200 families); a gradient
+boosting regression on parse features (clade, split, leaf, species counts) 2.2 units, -14 to -22 % of the pass cost
+on 200 and 500 families -- but held-out R^2 is 0.64 for D and ~0 for L and T, and trained on the smaller half of
+the dataset it collapses (R^2 0.05 for D), so it is a fit to this dataset, not a rule; not shippable. Structure:
+the distance is almost all the duplication rate, which is bimodal (40 % of families at the floor, log2 D ~ -16,
+the rest ~ -3.9) and flat there (moving all 185 low-D families of 500 from their fitted D to the floor costs
++0.019 bits in total); a start with the true D and the common L, T is 0.78 units off (p90 2.4). A warm start
+front-loads freezing (first freeze at pass 6 instead of 10) but the runs take more Newton steps (33-48 vs 25):
+the saving is a smaller-batch effect. Starting from the exact optimum costs 1.09 passes (all certified in the
+first check), so the 18.5 passes are entirely the search.
+
+**Step-count techniques in the driver** (scratchpad steps/PROGRESS.md; four required keywords of `fit_genewise`, all
+at their off values in production; 200 families, quiet card; the true baseline is 25 steps / 33 gradient passes,
+clade-weighted work 13.9 passes, 40.4 s). Step extrapolation on consistent directions (x1.5 / x2): nothing / worse
+(the radius already doubles on a well-judged capped step). Rate-affine reshaping applied only on carried-curvature
+steps: 20 steps / 27 passes, NLL -0.01 bits, 200/200, but clade-weighted work 13.9 (unchanged: the saved passes are
+cheap tail passes and the first re-plan moves from pass 10 to 12), wall -2-4 %; on 500 families one family lands in a
+0.43-bit-worse stationary point. NLL-based stopping (predicted remaining decrease < 1e-4 bits and |Pg| < 1e-2): the
+only wall gain, -8 %, paid with the certificate (92-96 of 200 below |Pg| 1e-3; NLL +0.09 bits; largest theta move
+7.3 units, a flat direction). Coarse gradients (pruning 1e-4) in the approach: 8 extra steps to undo the 20 %
+gradient error, worse. The expensive part -- 3 warm-up passes plus 7-10 full-population Newton passes before the big
+families freeze -- is untouched by all of them and sits 2-3 passes above the exact-curvature floor (3 + 5).
+At full scale the rate-affine step is a loss (job r5i_t2, quiet batch node): 560.3 s against 520-527 s, NLL
+9049410.550 (48 bits worse), 52 steps, 778 families at a rate bound against 516 -- the floor-bound families that
+were harmless on the proxy are not on the whole dataset. Closed.
+
+**Dense per-family operator on tensor cores** (scratchpad dense/PROGRESS.md; feasibility only). The self-loop
+matrix A = I - J is the same for every clade row of a family (its coefficients depend only on the family's rates and
+extinction probabilities), so the exact forward solve is p = src @ A^-T per family, the adjoint solve the transposed
+product, and the receiver sums a product with a FIXED species matrix Wt[s, r] = recv[r] [r not an ancestor-or-self
+of s]. Assembled from the kernel docstring and validated on the captured waves: the float64 dense solve agrees with
+the float64 tree walk to 6e-14 log2 and with the float32 kernel to the same 2-3.6e-6 the walk does; A^-1 is entrywise
+non-negative (no cancellation). Precision of the product (max log2 per entry / row totals): float32 5.8e-5 / 1e-7,
+TF32 1.4e-3 / 5.3e-4, BF16 9.0e-3 / 4.2e-3, a bfloat16 hi/lo split 6.4e-5 / 9e-6 (torch's bf16 matmul rounds its
+OUTPUT to bf16; measure with float32 accumulation). Cost: the per-family solve is memory-bound, not compute-bound --
+every wave re-reads each family's 16 MB inverse (65 families per batch at full scale, 1 GB per wave), so the tensor
+cores would sit 75 % idle; a Triton grouped GEMM beats the walk on a 5551-row wave (0.80 ms TF32 / 0.49 BF16 vs
+1.05) and loses on a 493-row one (half the waves are smaller). Projected H100 pass: 26.0 -> 20.1 s (TF32), 16.3
+(BF16, too imprecise), 21.4 (precise split). The forward conversion is a wash. The prize is the transfer-subtree
+VJP (17 % of a pass): its matrix is the transpose of Wt, shared by all families and waves, one 16 MB GEMM with no
+per-family inverse, projected 0.17x on the H100 (~3.7 s per pass); the adjoint solve is second (0.62x) and needs the
+streamed inverses. FP16 is not representable (rows span up to 40 log2 units; the kernel tolerates 100).
+Forming A^-1 with the tree walk on unit vectors costs 0.33 ms per family, 11x cheaper than cuSOLVER.
+The transfer-subtree VJP was then built as a GEMM behind `SolverOptions.transfer_subtree_vjp` ("walk" /
+"gemm_tf32" / "gemm_fp32"; scratchpad tsvjp/PROGRESS.md): the float64 product equals the walk to 1e-16, but the
+kernel runs on SPLIT SIDES, 8.96 M per 200-family gradient against 1.49 M clade rows (6x the spike's count), so
+the product is 72.6 TFLOP per gradient, ~220 ms on the H100's tensor cores against the 243 ms walk -- parity, not
+0.17x -- and TF32 fails the gradient gate (2.6e-4 relative, 510x the same-code noise; float32 GEMM passes at 4.6e-6
+but costs 6x the walk on the 4090). Closed; production stays at "walk". Net of the tensor-core exploration: no term
+of this computation gains from them (forward a wash, adjoint memory-bound on streamed inverses, shared-matrix VJP
+at parity, TF32 precision below the gradient gate).
+
+**Three more recipe ideas** (scratchpad recipe2/PROGRESS.md; keywords `targeted_hessian`, `coordinate_staging`,
+`trust_test` on `fit_genewise`, all at their off values in production; the fit is not bit-reproducible run to run,
+so the 200-family baseline is a band: 25 steps, 33-35 passes, clade-weighted work 13.8-14.1, and a technique must
+move it by more than ~0.3). Targeted exact Hessian for families whose |Pg| stalled (from step 6, when they own at
+most 15 % of the live clades): fires once or twice at 200 families and three times at 500, always over 2-6 % of the
+clades; 27 passes instead of 34.5 and 13.69 clade-weighted (200), 46 -> 32 passes at 500 -- but Newton-gradient time
+79.1 -> 77.2 s against 5.0 s of Hessians, net ~2 s slower on a 105 s run: the passes it removes are tail passes over
+a model shrunk to a few families. Coordinate staging (transfer held for 3-5 passes, or duplication alone first):
+clearly harmful (83 / 50 / 48 / 51 passes; the duplication-only steps move the median family AWAY from its joint
+optimum, 2.50 -> 2.95 log2 units). Trust-region knobs (shrink 0.5, growth trigger 0.5, minimum radius 1.0, noise
+gate 0.02): shrink 0.5 and radius floor 1.0 shorten the tail (28-29 passes) with clade-weighted work unchanged at
+14.0-14.1; the others change nothing. Every technique keeps 200/200 and 500/500 certified with the NLL within 0.04
+bits.
+
+**The tolerance is the one knob left with a measurable effect.** Families spend a median 3 (p90 6, max 11)
+extra passes going from "within 0.05 log2 units of their final theta" to `|Pg| < 1e-3`, a tolerance far
+below the float32 NLL noise. On 200 families, `tol` 1e-2 gives a family-weighted pass cost of 7.1 against
+8.4 (wall 40.8 vs 45.1 s in that pair of runs) for an NLL 0.23 bits worse; 3e-3 gives 7.7 and +0.07 bits.
+It changes what the certificate means, so it is a decision, not a default. **Full dataset with `tol` 1e-2
+(job r5b_tol1e2, same node class): 470.6 s**, 46 steps, all 5123 certified at that tolerance, NLL 9048965.579
+bits -- 30.5 bits WORSE than the 1e-3 run (0.006 bits per family; the median family stops ~0.02 log2 units
+short of its optimum). The first freezes come two passes earlier (277 families at it4 instead of 0, 2134 by
+it10 instead of 710) and the first re-plan drops the population to 1528 instead of 2989.
+
+**Two changes of approach, probed the same day (scripts under the session scratchpad, nothing in the repo).**
+
+- *Exact sparse-plus-background structure of the Pi table.* Hypothesis: for a species whose subtree holds none of
+  the clade's leaf species, log2 Pi[c, s] = u_fam(s) + v_c(segment), the segment being the nearest ancestor of s on
+  the clade's skeleton (ancestors-or-self of its leaf species). Fitted on 8 Coleman families (67,942 rows, two rate
+  points): residual rms 0.06 log2 units, max 1.06, against a bit-identical rerun noise of 0; a depth refinement
+  removes 15-20 % of it. Not exact. And on this dataset the skeleton covers 35 % of the table (54 % of rows have
+  51+ leaves, with 61 % coverage), all far entries are finite and within 40 log2 of their row max, so even an
+  exact structure would cap the traffic saving at 2.9x. Within a segment the far values are a step function to
+  0.19-0.30 log2 units (one constant per row and segment). Flattening the far entries to that constant as each
+  wave is produced (a hook on the exact-solve launch, so every later wave and the backward see the flattened
+  table; 65.4 % of the entries rewritten, control path bit-identical) moves per-family NLLs by up to 1.66 bits
+  and rate gradients by up to 20-40 % relative (e.g. a transfer gradient of -248.93 becoming -251.87), with the
+  per-species factor fitted on the exact answer at the same rates still leaving 0.36 bits and 20 %. The error
+  changes sign with the rates, so no fitted correction absorbs it. Not usable even for the bulk passes.
+- *Transposed, level-major tree walks* (species-major wave layout, one program per block of rows, level loop
+  inside, no barriers). A correct Triton prototype (1e-6 against a float64 reference of the plain path) is
+  slower on the walks themselves on every captured wave: 0.84x (W 5551), 0.74x (W 6426), 0.53x (W 493); its best
+  full-kernel number, 1.11x on one wave, comes from skipping the gauge and publish work. Nsight Compute on the
+  production kernel (wave 5551) corrects the "latency-bound at low occupancy" reading above: 398 MB of real DRAM
+  traffic in 1.06 ms (35 % of peak), 96.5 % warp residency, 95.8 % L2 hit rate because one program's working set
+  is one 32 kB row; top stall the level barrier (8.70 warps per issue cycle) then memory latency (5.07); 11x more
+  instructions issued than the arithmetic needs (~30 of 256 lanes hold a node per level pass). Coalescing across
+  rows removed the instruction waste (11x) and the request count (3x) but multiplied the working set by the row
+  block: DRAM traffic 1.66x, occupancy a third. Coalescing and a one-row working set are the same axis.
+- *Subtree-per-lane walks* (same row-major one-row-per-program kernel, the 33 barrier-separated level passes
+  replaced by per-lane sequential walks over a balanced partition of the tree, barriers only between phases;
+  production file patched only in the two walk loops, validated digit for digit against the float64 reference
+  and bit-identical in its level-schedule control). Slower on every schedule and wave: best 0.58x on the walks
+  (wave 5551), 0.57x (6426), 0.71x (493). The species tree is bushy at the bottom and a thin spine above height
+  19 (2 or 1 nodes per height), so the level schedule already runs the 1006 internal nodes in 34 steps against a
+  critical-path floor of 33; any partition adds steps (44-136) to remove barriers that, measured from paired
+  schedules, cost 1.2 us each against 5.8 us per step -- at most 17 % of the walk (8 % of the kernel) even if
+  free. Removing 28 of 33 barriers moved the barrier stall from 8.77 to 8.37 and raised the memory stall from
+  5.02 to 8.07. The same floor applies to the transposed adjoint solve and the transfer-subtree VJP.
+
+**Outlook.** The recipe is now within ~2 passes of what exact curvature and a 2-unit trust radius allow on this
+non-convex surface (5 Newton passes from the post-Adam point with an exact Hessian, spike above), the per-pass
+cost of 26 s is at the floor six rounds of kernel work found, and 14 whole-population passes at 26 s already
+exceed 200 s on their own. Under 200 s on ONE H100 therefore needs a different per-pass algorithm (a sparse or
+structured Pi representation, not a faster kernel for the dense one); `run_genewise_sharded.py` reaches it
+mechanically with 3-4 GPUs (families are independent; 2 GPUs measured at 0.54x of the 1-GPU time in round one).
+
+## Round six: changing the problem instead of the solver (2026-09-06)
+
+After round five the recipe sits within 2-3 whole-population passes of what exact curvature allows, and a pass
+costs 26 s on the H100 at the floor six rounds of kernel work found. The three probes of this round therefore
+change the problem the solver sees, not the solver: a cheaper coarse problem to warm-start from, a better
+starting curvature, and a change of coordinates. (Housekeeping: the machine rebooted at 14:26 and wiped the
+session scratchpad, so every helper script of round five was lost; the clade-weighted cost helper was rewritten
+twice, once per spike, and both reproduce the accepted 14.0 baseline figure on the first 200 families.)
+
+Terms used below. A "pass" is one gradient of the negative log-likelihood over every family still in the model.
+The "clade-weighted cost" of a run is the sum over its passes of (clades still live / clades of the whole set),
+i.e. how many whole-population passes the run is worth; on the first 200 families (1,490,900 clades) the
+production recipe measures 13.8-14.0 over 33-35 passes, and runs diverge from pass 8 onwards because of float32
+atomics, so that range is the baseline band. A 3x3 curvature matrix is "indefinite" when it has a negative
+eigenvalue, i.e. the quadratic model it defines has no minimum.
+
+**Thinned coarse phase: statistically sound, arithmetically hopeless (RTX 4090, scratchpad thin/).** Round five
+closed coarse-to-fine on truncated .ale files (keep each clade's biggest splits until a fraction of the mass)
+because the truncation is biased: the coarse optimum sat 0.8-1.3 log2 units from the true one. The unbiased
+alternative is thinning: draw each split count from a binomial with keep fraction f, as if only f of the 10,000
+bootstrap trees had been sampled (`benchmark/cc/truncate_ccp.py --mode thin --keep-fraction f --seed s`; the
+first version drew each side of a bipartition independently and kept 96 % of the clades at f 0.2; it now draws
+once per complement pair and spreads the kept trees over the clade's splits without replacement, 79 % at f 0.2
+against an arithmetic floor of 72 %). The accuracy hypothesis holds: the coarse optimum's median distance from
+the true one is 0.18 (f 0.35), 0.32 (0.20), 0.37 (0.10), 0.49 (0.05) log2 units, every run certifies 200/200,
+and the final NLL is within 0.9 bits of the baseline. The cost hypothesis does not. A clade seen in B of the
+bootstrap trees survives with probability 1 - (1 - f)^B, and summing that over the 1,490,900 clades gives the
+floor for ANY correct sub-sampling: 0.52 of the clades at f 0.05, 0.60 at 0.10, 0.71 at 0.20, 0.80 at 0.35 --
+the median clade is seen in 9 trees and the 75th percentile in 355, so most clades survive any thinning. And
+neither phase gets short: the coarse phase needs 26-33 passes (a full fit's worth, so it costs 14.0 times the
+coarse clade share), and the fine phase costs 5.1-7.4 pass-equivalents at every f, never the hoped 3-5, because
+a family leaves the live set only once it certifies and the model re-plans only after 32 have dropped, so the
+first three fine passes run over the whole population even at f 0.35. Eleven runs (f 0.05 / 0.10 / 0.20 / 0.35,
+handover of the coarse curvature by BFGS or by an exact Hessian, coarse tolerance 1e-3 or 1e-2): total
+clade-weighted work 14.16-18.06 against the 14.0 baseline, i.e. 1.01x-1.29x; wall 38.2-63.8 s against
+39.8-43.7 s. Closed: total ~ 14.0 x (coarse share) + 3 at best, and beating the baseline would need a coarse
+share below 0.59, under the floor at every keep fraction that leaves usable accuracy.
+
+**Predicted starting curvature: even a perfect prediction buys 5.7 % (H100 batch nodes, scratchpad curv/).**
+Exact Hessians of 500 families at the common start, the post-Adam point and the optimum (28.8 / 31.4 / 33.1 s
+each against a 4.3 s pass, i.e. 6.7-7.7 passes per Hessian). Indefinite: 82.0 % of families at the start,
+64.0 % after Adam, 0.2 % at the optimum; smallest eigenvalue median -11.6 / -0.87 / +0.97, largest 9.4 / 213 /
+114 (p90 up to 826); 23 % of families have a smallest eigenvalue under 1e-4 at the optimum (the rate-floor
+families). The curvature drifts completely between the post-Adam point (median 2.48 log2 units from the
+optimum, p90 8.46) and the optimum: relative Frobenius distance 1.01 median, where 1.0 is what predicting the
+zero matrix scores. What predicts the optimum's curvature: the exact post-Adam Hessian 1.01, the exact start
+Hessian 1.04, the BFGS curvature the recipe already carries 0.55, one population-median 3x3 0.81 (p90 39.9),
+that median scaled by the clade count 0.47, and a least-squares regression on the post-Adam rates plus clade /
+leaf / observation counts 0.29 (p90 0.80) -- cross-fitted on families 250-499 and scored on 0-249 with equal
+training and test error (0.293 / 0.290), so unlike the round-five start regression it is not overfit. It has
+nothing to win, though. On 200 families with matched inputs: production 33 passes / 13.82 clade-weighted; a
+restart from the post-Adam point with the recipe's own curvature 33 / 13.94; the exact post-Adam Hessian as
+starting curvature 41 / 21.67 plus ~7 passes to compute it; the exact Hessian AT THE OPTIMUM (the oracle that no
+predictor can beat) 31 / 12.97, i.e. -5.7 % on the whole run (-7 % on the Newton phase), all 200/200 certified,
+NLL within 0.02 bits. The oracle's whole gain is two full-population passes at the front (first freezes at pass
+8 instead of 11), partly given back in a longer tail. Why the exact post-Adam Hessian is a disaster rather than
+the 10 % gain round four reported: `convexified_step` (genewise_fit.py) replaces each eigenvalue by
+max(eigenvalue, 1e-4, |gradient along it| / trust radius), so a negative eigenvalue -- 64 % of families -- becomes
+a blind full-radius move of 2.0 log2 units, and 95-100 % of the clades are still live at pass 20 where the
+baseline is down to 63 % at pass 12. The population-median and regression variants were not run: they cannot
+beat the oracle. Two side facts: the Adam warm-up clips the gradient norm over the whole [families x 3] tensor,
+so a family's post-Adam point depends on which other families share the run (0.004 log2 units median, 0.013
+max, between a 500- and a 200-family warm-up -- enough to move the Newton tail from 25 to 35 steps with the
+clade-weighted cost unchanged, another face of the float32 tail chaos); and a model built directly with
+`clade_budget=None` puts the whole dataset in one batch (2.2 M clades, 168 GiB working set), whereas
+`fit_genewise` derives the budget from the card first.
+
+**Reparametrisation: square-root rates remove most of the non-convexity, and it does not shorten the fit (RTX
+4090, scratchpad reparam/, 500 families).** Why the surface bends downward far from the optimum, in the log2
+rates: the four event probabilities are a softmax of (0, log2 D, log2 L, log2 T) (extract_parameters.py), and
+the likelihood is a sum over reconciliation histories of products of those probabilities, so the second
+derivative of the NLL is a multinomial term (never negative, proportional to each event's probability) MINUS the
+posterior covariance of the event counts over histories, i.e. how much the model hesitates about how many
+duplications, losses and transfers happened. Where that hesitation exceeds a multinomial's, a direction bends
+downward. Measured: at the post-Adam point 320 of 500 families are indefinite and the downward direction is a
+duplication-versus-transfer trade-off (eigenvector 83 % on duplication, transfer with the opposite sign in 95 %
+of them); transfer is below its optimum in 93 % of families and must rise a median 2.1 log2 units (most of the
+2.5-unit journey), while duplication ends lower in 72 % of families yet its gradient at the post-Adam point says
+"go up" in 69 %: with transfer four times too low the model wants extra duplications to explain discordant genes
+and gives them back once transfer rises. The Hessian drifts along the path because the posterior sharpens as
+transfer rises. Sixteen coordinate systems were scored on the saved exact Hessians and freshly computed
+gradients (one exact-Hessian Newton step from the post-Adam point with production's convexification, radius and
+box; a perfect straight-line step capped at the 2.0 radius would leave a median 0.64 log2 units): log2 rates
+1.65, square-root rates 1.27, cube-root rates 1.30, square-root event probabilities 1.40, linear rates 1.73,
+event probabilities 1.77, log-odds 1.70, total-rate-plus-shares 1.98, any linear whitening 2.6 (a linear map
+cannot change definiteness and only alters the convexification basis), 14 mixed per-rate powers best 1.26.
+Square-root rates are genuinely better conditioned: 10 % indefinite post-Adam instead of 64 %, condition number
+at the optimum 5 instead of 80, and three exact-Hessian steps re-measured on the GPU reach 0.55 then 0.07 (cube
+root 0.61 / 0.08, square-root probabilities 0.49 / 0.04) against 1.40 / 0.75 for the log2 rates with the
+production radius rule. But exact steps cost 7.7 passes each, and production's own scheme (BFGS-carried
+curvature, one gradient per pass, freeze at |projected gradient| < 1e-3) replayed in each coordinate system for
+12 passes costs the same everywhere: clade-weighted 11.0 (log2, reproducing the known trace 1.9, 1.4, 1.1, 0.9,
+0.7, 0.4, 0.16, 0.04), 11.8 (square-root rates), 11.3 (cube root), 11.1 (square-root probabilities); seeding the
+square-root run with the exact post-Adam Hessian gives 8.1 plus 7.7 for the Hessian. The pass count is set by
+how fast a rank-two BFGS update learns a 3x3 curvature from gradient pairs (coordinate-independent), by the
+2-unit radius against a 2.5-unit median / 8.5-unit p90 journey, and by the certification tail; the
+non-convexity is a covariance term no map removes. Closed.
+
+**State after round six.** All 5,124 families on one H100: 520-527 s. Every direction measured in rounds four to
+six is closed with a number: kernels (dense formulation at its floor, 26 s per whole-population pass), tensor
+cores, float16 / bfloat16, CPU offload, sparsity of the Pi table, the optimizer recipe (2-3 passes above the
+exact-curvature floor), curvature updates, step rules, starting points, starting curvature (oracle -5.7 %),
+coarse-to-fine by truncation or thinning, and coordinates. What remains are decisions rather than techniques:
+tolerance 1e-2 (470.6 s, +30.5 bits), stopping on the NLL change (about -8 %, a different certificate), the
+honest unpruned certificate (+32 s), and more than one GPU (declined for this target).
+
+## Count-informed EM warm-up campaign — 6 September 2026
+
+The subsequent coordinator/two-Sol-agent campaign reduced the all-5,124-family
+fit to roughly **400 s on one interactive H100 NVL**, with the original rate box,
+pruning, precision, and freeze-time projected-gradient stopping rule unchanged.
+The contemporaneous warmed Adam control was 512.718 s. Two EM warm-up steps
+took 396.305 / 403.470 s; three took 398.290 / 396.401 s. Their two-run means
+are 399.888 and 397.345 s, respectively: about 22% less time than the control,
+with no decisive sub-percent separation between the two EM variants.
+
+The improvement combines positive survival-augmented event counts from the
+existing final VJP, an exact 27-active-set bounded multinomial M-step, and an
+endpoint complete-information Hessian scaled/corrected by an already-paid EM
+secant. The original log-rate BFGS/Newton loop resumes afterward. Counts do not
+require a second extinction/adjoint solve, and initialization reuses the initial
+model. The earlier post-Adam coordinate trials were not a matched test of an
+EM-plus-hierarchical continuation.
+
+All runs passed the existing 5,124-family freeze-time certificate. Fresh matched
+audits improve total NLL by 1.63 bits (EM2) or 1.76 bits (EM3), but change local
+solutions: 13/14 families worsen and 12 improve by more than 0.01 bit. Fresh
+strict 1e-3 certification is numerically unstable for **Adam too**: identical
+Adam parameters change projected-gradient measurements by up to 0.001515.
+Do not interpret the cached certificate as strict cold/unpruned stationarity.
+
+Adam remains the default. Opt in with
+`fit_dtl(..., genewise_warmup_method="em", genewise_em_steps=2)` (or 3), or add
+`--warmup-method em --em-steps 2` to `benchmark/cc/run_genewise.py`.
+See [the full report](../experiments/coleman_sol_20260906/REPORT.md) for source
+snapshots, exact work accounting, repeatability, 91 passing focused tests,
+negative experiments, and reproducible Slurm commands.
+
+Scope of the negative geometry evidence: the earlier hierarchical trials started
+after Adam, not after EM. They do **not** exclude an EM-plus-hierarchical hybrid.
+The user-requested matched-endpoint follow-up is now complete: on 200 families,
+two order-balanced native continuations averaged 25.459 s and 13.5399
+EM-inclusive gradient/clade equivalents, versus 26.777 s and 14.0009 for the
+hierarchical/native-trust-metric implementation. Both certified 200/200, with
+effectively equivalent fresh NLL and no recorded step stalls. The tested
+implementation was not promoted to full H100; this does not exclude better
+hierarchical bound solvers or globalization. See
+[the hybrid results](../experiments/coleman_sol_20260906/hybrid/RESULTS.md).

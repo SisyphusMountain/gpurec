@@ -1,0 +1,56 @@
+{
+  "schema": "gpurec.rebuild_gradient_reuse_ceiling.v1",
+  "trace": "/home/enzo/Documents/git/gpurec/gpurec/experiments/coleman_sol_20260906/geometry/hybrid/diagnosis/trace200.pt",
+  "arms": {
+    "native": {
+      "continuation_clades": 17342928,
+      "moved_or_first": 15456675,
+      "same_point_after_same_tier_build": 1857617,
+      "settled_resident": 28636,
+      "same_point_rows": 303,
+      "same_point_fraction_of_continuation_gradient_clades": 0.10711092152374732,
+      "same_point_fraction_including_two_shared_EM_passes": 0.09139509478119892,
+      "same_point_gradient_abs_max_difference": {
+        "min": 0.0,
+        "p50": 1.3667304301634431e-05,
+        "p90": 0.0005102227441966536,
+        "max": 0.001513393595814705
+      },
+      "same_point_nll_abs_difference_bits": {
+        "min": 0.0,
+        "p50": 0.0,
+        "p90": 0.0,
+        "max": 0.0
+      }
+    },
+    "hierarchical_native_metric": {
+      "continuation_clades": 17735824,
+      "moved_or_first": 16475928,
+      "same_point_after_same_tier_build": 575524,
+      "settled_resident": 684372,
+      "same_point_rows": 232,
+      "same_point_fraction_of_continuation_gradient_clades": 0.03244980329078592,
+      "same_point_fraction_including_two_shared_EM_passes": 0.027778904011309186,
+      "same_point_gradient_abs_max_difference": {
+        "min": 0.0,
+        "p50": 1.4219549484550953e-06,
+        "p90": 9.077126160264024e-05,
+        "max": 0.0013288464397192001
+      },
+      "same_point_nll_abs_difference_bits": {
+        "min": 0.0,
+        "p50": 0.0,
+        "p90": 0.0,
+        "max": 0.0
+      }
+    }
+  },
+  "h100_projection": {
+    "reference_total_seconds": 396.305,
+    "reference_gradient_seconds": 307.0,
+    "note": "Optimistic projection applies the 200-family native same-point clade fraction to the entire H100 gradient phase. It is a ceiling, not a measured full-data saving.",
+    "optimistic_seconds_saved": 32.88305290779043,
+    "optimistic_total_seconds_after_reuse": 363.42194709220956,
+    "optimistic_total_speedup_percent": 8.297410556967595
+  }
+}

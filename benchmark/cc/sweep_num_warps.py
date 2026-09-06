@@ -50,7 +50,7 @@ def _targets():
         ),
         "self_loop_transpose": (
             wave_backward, "_NUM_WARPS_SELF_LOOP_TRANSPOSE",
-            "_apply_reconciliation_self_loop_transpose_kernel", "grad",
+            "_reconciliation_self_loop_transpose_series_kernel", "grad",
         ),
         "prepare_self_loop_vjp": (
             wave_backward, "_NUM_WARPS_PREPARE_SELF_LOOP_VJP",
@@ -262,8 +262,6 @@ def main() -> int:
     from gpurec.api.solver_options import SolverOptions
     from gpurec.fit.genewise_fit import _BASE_SOLVER
 
-    # Cold adjoint, exactly as benchmark/cc/test_grad_scaling.py --warm 0 does it.
-    os.environ.pop("GPUREC_WARM_ADJOINT", None)
     solver_options = SolverOptions(**{**dict(_BASE_SOLVER), "pi_iters": PI_ITERS,
                                       "neumann_terms": NEUMANN_TERMS})
 
@@ -274,7 +272,7 @@ def main() -> int:
     model.receiver_weights.requires_grad_(False)
     torch.cuda.synchronize()
     print(f"[sweep] build {time.perf_counter() - t0:.1f}s families={len(paths)} "
-          f"batches={len(model.batch_statics)} warm_ok={getattr(model, 'warm_adjoint_ok', None)} "
+          f"batches={len(model.batch_statics)} "
           f"warps={warps} phase={args.phase} theta_init={args.theta_init}", flush=True)
 
     defaults = {k: getattr(v[0], v[1]) for k, v in _targets().items()}

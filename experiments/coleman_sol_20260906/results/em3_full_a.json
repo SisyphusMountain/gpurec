@@ -1,0 +1,573 @@
+{
+  "tag": "em3_full_a",
+  "warmup_method": "em",
+  "em_steps": 3,
+  "init_rate": "none",
+  "clade_budget": 0,
+  "n_families": 5124,
+  "wall_s": 398.29017161298543,
+  "nll_bits": 9049360.610243797,
+  "nll_nats": 6272538.792860714,
+  "opt_seconds": 390.7258942699991,
+  "n_steps": 65,
+  "n_builds": 14,
+  "adam_seconds": 0.0,
+  "hessian_seconds": 8.338362941052765,
+  "em_seconds": 75.47962783137336,
+  "gradient_work": [
+    {
+      "phase": "em",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "em",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "em",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 5124,
+      "clades": 23332712
+    },
+    {
+      "phase": "newton",
+      "families": 3379,
+      "clades": 16806831
+    },
+    {
+      "phase": "newton",
+      "families": 3379,
+      "clades": 16806831
+    },
+    {
+      "phase": "newton",
+      "families": 2360,
+      "clades": 9806524
+    },
+    {
+      "phase": "newton",
+      "families": 2360,
+      "clades": 9806524
+    },
+    {
+      "phase": "newton",
+      "families": 1588,
+      "clades": 5187106
+    },
+    {
+      "phase": "newton",
+      "families": 1588,
+      "clades": 5187106
+    },
+    {
+      "phase": "newton",
+      "families": 1071,
+      "clades": 3017167
+    },
+    {
+      "phase": "newton",
+      "families": 1071,
+      "clades": 3017167
+    },
+    {
+      "phase": "newton",
+      "families": 707,
+      "clades": 1796311
+    },
+    {
+      "phase": "newton",
+      "families": 707,
+      "clades": 1796311
+    },
+    {
+      "phase": "newton",
+      "families": 707,
+      "clades": 1796311
+    },
+    {
+      "phase": "newton",
+      "families": 707,
+      "clades": 1796311
+    },
+    {
+      "phase": "newton",
+      "families": 253,
+      "clades": 829275
+    },
+    {
+      "phase": "newton",
+      "families": 253,
+      "clades": 829275
+    },
+    {
+      "phase": "newton",
+      "families": 253,
+      "clades": 829275
+    },
+    {
+      "phase": "newton",
+      "families": 253,
+      "clades": 829275
+    },
+    {
+      "phase": "newton",
+      "families": 48,
+      "clades": 125120
+    },
+    {
+      "phase": "newton",
+      "families": 48,
+      "clades": 125120
+    },
+    {
+      "phase": "newton",
+      "families": 42,
+      "clades": 79234
+    },
+    {
+      "phase": "newton",
+      "families": 42,
+      "clades": 79234
+    },
+    {
+      "phase": "newton",
+      "families": 33,
+      "clades": 48739
+    },
+    {
+      "phase": "newton",
+      "families": 33,
+      "clades": 48739
+    },
+    {
+      "phase": "newton",
+      "families": 33,
+      "clades": 48739
+    },
+    {
+      "phase": "newton",
+      "families": 33,
+      "clades": 48739
+    },
+    {
+      "phase": "newton",
+      "families": 18,
+      "clades": 23730
+    },
+    {
+      "phase": "newton",
+      "families": 18,
+      "clades": 23730
+    },
+    {
+      "phase": "newton",
+      "families": 18,
+      "clades": 23730
+    },
+    {
+      "phase": "newton",
+      "families": 18,
+      "clades": 23730
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 2218
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 221
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 165
+    }
+  ],
+  "gradient_calls": 82,
+  "gradient_clades": 314195984,
+  "gradient_full_clade_equivalents": 13.46590074912852,
+  "n_hessians": 4,
+  "newton_grad_seconds": 282.84534247405827,
+  "n_verify_builds": 0,
+  "verify_seconds": 0.0,
+  "n_rebuilds": 13,
+  "rebuild_seconds": 13.926890773233026,
+  "certify_seconds": 0.0005427580326795578,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 4,
+        "dropped": 165,
+        "remain": 4959
+      },
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 1580,
+        "remain": 3379
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 1019,
+        "remain": 2360
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 772,
+        "remain": 1588
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 517,
+        "remain": 1071
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 364,
+        "remain": 707
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 206,
+        "remain": 501
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 248,
+        "remain": 253
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 70,
+        "remain": 183
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 135,
+        "remain": 48
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 6,
+        "remain": 42
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 9,
+        "remain": 33
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 3,
+        "remain": 30
+      },
+      {
+        "pi": 16,
+        "it": 30,
+        "dropped": 12,
+        "remain": 18
+      },
+      {
+        "pi": 16,
+        "it": 32,
+        "dropped": 5,
+        "remain": 13
+      },
+      {
+        "pi": 16,
+        "it": 34,
+        "dropped": 9,
+        "remain": 4
+      },
+      {
+        "pi": 16,
+        "it": 46,
+        "dropped": 1,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 52,
+        "dropped": 1,
+        "remain": 2
+      },
+      {
+        "pi": 16,
+        "it": 60,
+        "dropped": 1,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 78,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 23.424681663513184,
+  "memory_phases": null,
+  "certificate": {
+    "converged": 5124,
+    "bound_active": 680,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009993399726226926
+  }
+}

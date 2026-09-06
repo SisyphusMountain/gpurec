@@ -1,0 +1,145 @@
+{
+  "baseline": {
+    "tag": "baseline_b",
+    "n_families": 200,
+    "em_steps": 0,
+    "seed": "baseline",
+    "clade_budget": 200740,
+    "parse_seconds": 0.604994056000578,
+    "build_seconds": 0.0,
+    "pass_seconds": 0.0,
+    "prototype_warm_seconds": 0.0,
+    "fit_wall_seconds": 43.41609128900018,
+    "algorithm_wall_seconds": 43.41609128900018,
+    "prototype_wall_seconds": 44.021085345000756,
+    "nll_vector_seconds": 1.2567949000003864,
+    "nll_bits_fit": 613262.1197252274,
+    "nll_bits_vector": 613262.1186612155,
+    "n_steps": 25,
+    "n_hessians": 1,
+    "n_rebuilds": 9,
+    "converged": 200,
+    "unconverged": 0,
+    "bound_active": 14,
+    "pg_max": 0.0009913085959851742,
+    "adam_seconds": 6.871223235997604,
+    "newton_grad_seconds": 31.91533141999389,
+    "hessian_seconds": 1.4031662039997173,
+    "rebuild_seconds": 1.8919316550018266,
+    "certify_seconds": 0.00027054200108977966,
+    "gradient_calls": 38,
+    "gradient_clades_total": 25314150,
+    "gradient_clade_equivalents": 16.976829186506606,
+    "gradient_seconds_traced": 38.25340392999351,
+    "warm_count_calls": 0,
+    "fit_gradient_calls": 38,
+    "config_solver": {
+      "e_max_iter": 128,
+      "e_tol": 1e-08,
+      "pi_iters": 64,
+      "neumann_terms": 64,
+      "neumann_term_tol": 1e-07,
+      "e_adjoint_max_iter": 128,
+      "e_adjoint_tol": 1e-07,
+      "adjoint_pruning_threshold": 1e-06,
+      "use_adjoint_pruning": true,
+      "pibar_side_threshold": 0.0,
+      "e_tangent_tol": 1e-09,
+      "exact_range_log2": 100.0
+    },
+    "config_precision": {
+      "model_dtype": "float32",
+      "accumulator_dtype": "float64"
+    }
+  },
+  "candidate": {
+    "tag": "em2_endpoint_scaled_secants",
+    "n_families": 200,
+    "em_steps": 2,
+    "seed": "endpoint_scaled_secants",
+    "clade_budget": 200740,
+    "parse_seconds": 0.5879380449987366,
+    "build_seconds": 0.7925170609996712,
+    "pass_seconds": 4.661049493999599,
+    "prototype_warm_seconds": 5.45356655499927,
+    "fit_wall_seconds": 29.779068685998936,
+    "algorithm_wall_seconds": 34.440118179998535,
+    "prototype_wall_seconds": 35.82057328599694,
+    "nll_vector_seconds": 1.2254191499996523,
+    "nll_bits_fit": 613261.8016309738,
+    "nll_bits_vector": 613261.8007111223,
+    "n_steps": 21,
+    "n_hessians": 1,
+    "n_rebuilds": 9,
+    "converged": 200,
+    "unconverged": 0,
+    "bound_active": 15,
+    "pg_max": 0.0009981929324567318,
+    "adam_seconds": 0.0,
+    "newton_grad_seconds": 25.98823330900632,
+    "hessian_seconds": 0.843629297996813,
+    "rebuild_seconds": 1.667921454001771,
+    "certify_seconds": 0.0005233200026850682,
+    "gradient_calls": 33,
+    "gradient_clades_total": 20208910,
+    "gradient_clade_equivalents": 13.553021259472873,
+    "gradient_seconds_traced": 30.646816144995682,
+    "warm_count_calls": 2,
+    "fit_gradient_calls": 31,
+    "config_solver": {
+      "e_max_iter": 128,
+      "e_tol": 1e-08,
+      "pi_iters": 64,
+      "neumann_terms": 64,
+      "neumann_term_tol": 1e-07,
+      "e_adjoint_max_iter": 128,
+      "e_adjoint_tol": 1e-07,
+      "adjoint_pruning_threshold": 1e-06,
+      "use_adjoint_pruning": true,
+      "pibar_side_threshold": 0.0,
+      "e_tangent_tol": 1e-09,
+      "exact_range_log2": 100.0
+    },
+    "config_precision": {
+      "model_dtype": "float32",
+      "accumulator_dtype": "float64"
+    }
+  },
+  "candidate_minus_baseline_nll_bits": -0.317950093206802,
+  "per_family_delta_median_bits": 2.3775540739734424e-05,
+  "per_family_delta_min_bits": -0.6374191790439312,
+  "per_family_delta_max_bits": 0.30154680293173897,
+  "material_threshold_bits": 0.01,
+  "material_families": [
+    {
+      "index": 24,
+      "family": "COG0014_1",
+      "delta_nll_bits": 0.30154680293173897,
+      "baseline_theta": [
+        -3.2776994705200195,
+        -1.4054044485092163,
+        -16.962156295776367
+      ],
+      "candidate_theta": [
+        -16.66598129272461,
+        -2.7188096046447754,
+        -3.5723438262939453
+      ]
+    },
+    {
+      "index": 117,
+      "family": "COG0057_2",
+      "delta_nll_bits": -0.6374191790439312,
+      "baseline_theta": [
+        -2.998394727706909,
+        -1.348081350326538,
+        -2.4540820121765137
+      ],
+      "candidate_theta": [
+        -3.5800576210021973,
+        -13.542168617248535,
+        -2.551225185394287
+      ]
+    }
+  ]
+}

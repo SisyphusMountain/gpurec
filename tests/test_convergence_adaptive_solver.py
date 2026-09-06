@@ -177,23 +177,3 @@ def test_forward_residual_converges_with_pi_iters(tmp_path: Path) -> None:
     lo = solve_forward_residual(static, model.theta.detach(), model.receiver_weights, pi_iters=2)
     assert float(hi.max()) < 1e-2
     assert float(lo.max()) > float(hi.max())
-
-
-def test_backward_relres_monotone_in_neumann_terms(tmp_path: Path) -> None:
-    device = _require_cuda()
-    _require_native()
-    from gpurec.api._execution import evaluate_static_convergence
-
-    model = _build_archaea(16, device=device)
-    _set_moderate_theta(model)
-    static = model.batch_statics[0]
-    theta = model.theta.detach()
-    medians = []
-    for nt in (2, 8, 16):
-        _f, relres, _vk = evaluate_static_convergence(
-            static, theta, model.receiver_weights, pi_iters_high=400, neumann_terms=nt
-        )
-        finite = relres[torch.isfinite(relres)]
-        medians.append(float(finite.median()))
-    # more Neumann terms -> smaller residual
-    assert medians[0] > medians[1] > medians[2]

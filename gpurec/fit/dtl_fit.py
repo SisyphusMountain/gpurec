@@ -9,7 +9,8 @@ this module is the ONLY place that choice is made, so no caller can drift onto t
     (drop families as they converge), and pi-tier escalation. Far faster than joint descent.
   - ``global`` (theta ``[3]``): a single shared 3-parameter box-bounded MLE -- the same 3x3 sub-problem
     as one genewise family, with the family gradients/curvature summed into one aggregate 3x3. So it
-    uses the SAME recipe (``fit_global``): Adam warm-up + a 3x3 trust-region Newton on the FD Hessian.
+    uses the SAME recipe (``fit_global``): Adam warm-up + a 3x3 trust-region Newton on the analytic
+    exact Hessian.
     (Validated to reach optimize()'s optimum to <1e-4 rel, ~5x faster.)
   - ``specieswise`` (theta ``[S,3]``): the parameters are COUPLED (a species rate affects every family;
     families couple species through the transfer matrix), so the raw MLE is non-identifiable and
@@ -31,7 +32,7 @@ import time
 import torch
 
 from gpurec.config import GpurecConfig
-from gpurec.fit.genewise_fit import fit_genewise
+from gpurec.fit.genewise_fit import TRUST_TEST_OFF, fit_genewise
 from gpurec.fit.global_fit import fit_global
 
 _LN2 = 0.6931471805599453
@@ -41,7 +42,7 @@ _MODES = ("global", "specieswise", "genewise")
 def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
             dtype: torch.dtype | str | None = None, max_steps=300, init_rate=None,
             solver_options=None, config: GpurecConfig | None = None, clade_budget=None,
-            verbose=False) -> dict:
+            verbose=False, genewise_warmup_method: str = "adam", genewise_em_steps: int = 2) -> dict:
     """Fit DTL rates with the best recipe for ``mode``. Returns a normalized result dict:
     ``{mode, theta[cpu], rates[cpu], nll_bits, nll_nats, n_families, wall_s, ...}`` (``gnorm`` for the
     coupled modes; ``genewise_result`` -- the full ``fit_genewise`` dict -- for genewise).
@@ -50,6 +51,11 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
     fit's peak GPU memory. ``None`` derives it from the card -- the tuned 315,000 when it fits, less
     when it does not -- so the same fit runs on a 94 GiB H100 and on a 24 GB card. See
     ``fit_genewise``.
+
+    ``genewise_warmup_method="em"`` opts into complete-history EM warm-up
+    steps before the usual genewise BFGS/Newton fit. The default ``"adam"``
+    preserves the established initialization. This option applies only to
+    genewise fits. ``genewise_em_steps`` selects two (default) or three EM steps.
 
     ``init_rate`` (a rate, not log2) seeds theta for the coupled modes; ignored for genewise (which has
     its own box-projected warm start). ``solver_options`` overrides solver knobs (iteration caps,
@@ -97,11 +103,29 @@ def fit_dtl(species_tree, gene_trees, mode, *, device="cuda",
         # overshoot on the last steps (200-family sweep: 19.9 gradient equivalents with 3 steps
         # against 21.1 with 5, same certification, NLL 0.07 bits better).
         res = fit_genewise(species_tree, gene_trees, device=device, dtype=dtype, adam_steps=3,
+                           warmup_method=genewise_warmup_method,
+                           em_steps=genewise_em_steps,
                            certify=True, certify_curvature=False, min_drop=32, rebuild_frac=0.25,
                            hessian_refresh=15, init_curvature="adam_bfgs", mu=1e-4,
+                           # How the 3x3 curvature is carried between exact Hessians. "bfgs" is the
+                           # measured production choice; "sr1" and "multisecant" are the alternatives
+                           # fit_genewise implements (see its ``curvature_update`` documentation).
+                           curvature_update="bfgs",
                            solver_options=solver_options, config=config, verbose=verbose,
                            init_log2_rates=init_log2_rates, clade_budget=clade_budget,
                            stall_patience=120,   # = max_iter: the stall rule is available but off (it settled 3-4 near-converged families early)
+                           # Round-5 step experiments, all left OFF in production (each reproduces
+                           # the measured recipe bit for bit at these values): no step
+                           # extrapolation, the quadratic step model, no predicted-remaining-NLL
+                           # stopping rule and no coarse-gradient approach phase.
+                           step_extrapolation=1.0, step_model="quadratic",
+                           stop_nll_bits=0.0, approach_pruning_threshold=0.0,
+                           # Round-6 experiments, also OFF in production (each reproduces the
+                           # measured recipe bit for bit at these values): no targeted exact
+                           # Hessian for stuck families, no coordinate staging, and the ratio
+                           # test's own four measured numbers.
+                           targeted_hessian=(0, 0.0), coordinate_staging=(0, 0),
+                           trust_test=TRUST_TEST_OFF,
                            trust_max=8.0)   # radius growth up to 8: on the full dataset growth to 16 needed 48 Newton iterations against 65 with a fixed radius, but 16 sent one of 200 local families into oscillation; 4 and 8 behaved like 2 locally
         wall_s = time.perf_counter() - t0
         nll_bits = float(res["loss_bits"])  # cold PD-certified total NLL in bits (log2)

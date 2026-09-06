@@ -38,7 +38,6 @@ def main() -> int:
     ][: args.limit]
     options = SolverOptions(**{
         **_BASE_SOLVER, "pi_iters": args.pi_iters, "neumann_terms": args.neumann_terms,
-        "forward_self_loop": "exact", "adjoint_self_loop": "exact",
     })
     model = GeneReconModel(
         args.species, paths, mode="genewise", device="cuda", dtype=torch.float32,

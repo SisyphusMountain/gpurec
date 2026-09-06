@@ -399,19 +399,17 @@ def implicit_grad_loglik_vjp_wave(
     genewise: bool = False,
     neumann_terms: int | None = None,
     neumann_term_tol: float | None = None,
-    adjoint_self_loop: str | None = None,
     wide_row: torch.Tensor | None = None,
     e_adjoint_max_iter: int | None = None,
     e_adjoint_tol=None,
     adjoint_pruning_threshold: float | None = None,
     use_adjoint_pruning: bool = True,
     pibar_side_threshold: float | None = None,
-    collect_backward_relres: bool = False,
-    warm_v: dict | None = None,
     reserved_scratch_bytes: int | None = None,
     seed_root: torch.Tensor | None = None,
     drop_norm: bool = False,
     cache: dict | None = None,
+    event_counts_out: torch.Tensor | None = None,
     origination_log_probs: torch.Tensor | None = None,
     origination_probs: torch.Tensor | None = None,
     accumulator_dtype: torch.dtype | None = None,
@@ -428,8 +426,6 @@ def implicit_grad_loglik_vjp_wave(
     neumann_term_tol = float(neumann_term_tol)
     if neumann_term_tol < 0.0:
         raise ValueError("neumann_term_tol must be non-negative")
-    if adjoint_self_loop is None:
-        adjoint_self_loop = SolverOptions().adjoint_self_loop
     if e_adjoint_max_iter is None:
         e_adjoint_max_iter = SolverOptions().e_adjoint_max_iter
     if adjoint_pruning_threshold is None:
@@ -530,16 +526,6 @@ def implicit_grad_loglik_vjp_wave(
     compact_level_child2 = species_helpers["compact_level_child2"]
     leaf_species_idx = wave_layout["leaf_species_index"].to(device=device, dtype=torch.int32).contiguous()
 
-    # Diagnostic: per-family max relative size of the last Neumann increment (stiffness).
-    # Uses the true per-clade family map (batch-local), independent of the rate `family_idx`.
-    backward_relres = None
-    backward_vk_mag = None
-    if collect_backward_relres:
-        clade_family = wave_layout["family_idx"].to(device=device, dtype=torch.long)
-        n_fam = int(clade_family.max().item()) + 1 if clade_family.numel() else 0
-        backward_relres = torch.zeros(n_fam, device=device, dtype=torch.float32)
-        backward_vk_mag = torch.zeros(n_fam, device=device, dtype=torch.float32)
-
     # One free-memory reading for the whole reverse sweep instead of one per wave. Each wave's
     # self-loop scratch is allocated and freed inside that wave, so every wave used to read the
     # same number back at the cost of a blocking cudaMemGetInfo and two memory_stats() dict
@@ -549,7 +535,6 @@ def implicit_grad_loglik_vjp_wave(
     for meta in reversed(wave_layout["wave_metas"]):
         ws = int(meta["start"])
         W = int(meta["W"])
-        init_v = warm_v.get(ws) if warm_v is not None else None   # per-wave adjoint warm-start
         rhs_k = accumulated_rhs[ws : ws + W]
         active_mask = compute_active_adjoint_row_mask(
             rhs_k,
@@ -613,7 +598,6 @@ def implicit_grad_loglik_vjp_wave(
             None,
             neumann_terms=neumann_terms,
             neumann_term_tol=neumann_term_tol,
-            adjoint_self_loop=adjoint_self_loop,
             wide_row=wide_row,
             leaf_species_idx=leaf_species_idx,
             leaf_logp=log_pS_family,
@@ -637,64 +621,20 @@ def implicit_grad_loglik_vjp_wave(
             compact_level_child2=compact_level_child2,
             grad_receiver_log_probs=grad_receiver_log_probs,
             use_receiver_weights=use_receiver_weights,
-            return_last_increment=collect_backward_relres,
-            initial_v=init_v,
             reserved_scratch_bytes=wave_scratch_budget,
             pi_offset=pi_offset,
             pibar_offset=pibar_offset,
             gene_split_offset=dts_offset,
         )
-        if collect_backward_relres:
-            (
-                v_k,
-                duplication_loss_event_vjp,
-                transfer_loss_event_vjp,
-                transfer_event_vjp,
-                speciation_leaf_event_vjp,
-                speciation_child1_event_vjp,
-                speciation_child2_event_vjp,
-                last_relres,
-            ) = backward_out
-            wave_family = clade_family[ws : ws + W]
-            row_active = active_mask.reshape(active_mask.shape[0], -1).ne(0).any(dim=1)
-            vk_norm = torch.where(
-                row_active, v_k.float().norm(dim=1), torch.zeros(W, device=device, dtype=torch.float32)
-            )
-            backward_vk_mag.scatter_reduce_(
-                0,
-                wave_family,
-                vk_norm,
-                reduce="amax",
-                include_self=True,
-            )
-            if last_relres is not None:
-                backward_relres.scatter_reduce_(
-                    0,
-                    wave_family,
-                    last_relres.to(dtype=torch.float32),
-                    reduce="amax",
-                    include_self=True,
-                )
-        else:
-            (
-                v_k,
-                duplication_loss_event_vjp,
-                transfer_loss_event_vjp,
-                transfer_event_vjp,
-                speciation_leaf_event_vjp,
-                speciation_child1_event_vjp,
-                speciation_child2_event_vjp,
-            ) = backward_out
-        if warm_v is not None:
-            # Cache the solved adjoint for next call's warm-start, but ZERO the pruned/inactive rows first
-            # -- they hold uninitialized scratch, and reusing that garbage as initial_v poisons the next
-            # solve (NaN in the downstream E-adjoint), especially when the active set shifts between thetas.
-            # NaN-safe select (NOT multiply: inactive rows hold uninitialized scratch = NaN/inf, and
-            # 0.0 * NaN = NaN, which would poison the next warm-start). torch.where drops them cleanly.
-            _row_active = active_mask.reshape(active_mask.shape[0], -1).ne(0).any(dim=1)
-            warm_v[ws] = torch.where(
-                _row_active.unsqueeze(-1), v_k, torch.zeros((), dtype=v_k.dtype, device=v_k.device)
-            ).detach()
+        (
+            v_k,
+            duplication_loss_event_vjp,
+            transfer_loss_event_vjp,
+            transfer_event_vjp,
+            speciation_leaf_event_vjp,
+            speciation_child1_event_vjp,
+            speciation_child2_event_vjp,
+        ) = backward_out
         if cache is not None:
             # per-wave adjoint state for the exact-HVP tangent sweep (theta fixed across CG). Pruning
             # leaves inactive v_k rows uninitialized; the primal never reads them but the second-order
@@ -788,10 +728,6 @@ def implicit_grad_loglik_vjp_wave(
                 use_receiver_weights=use_receiver_weights,
                 side_active_threshold=pibar_side_threshold,
             )
-    if collect_backward_relres:
-        # Diagnostic short-circuit: the per-family backward residual is fully accumulated
-        # from the per-wave self-loop solves; the E-adjoint solve is not needed here.
-        return backward_relres, backward_vk_mag
     if cache is not None:
         cache["accum"] = dict(
             grad_E=grad_E_acc, grad_Ebar=grad_Ebar_acc, grad_E_s1=grad_E_s1_acc,
@@ -812,6 +748,7 @@ def implicit_grad_loglik_vjp_wave(
         e_adjoint_max_iter=e_adjoint_max_iter,
         e_adjoint_tol=e_adjoint_tol,
         cache=cache,
+        event_counts_out=event_counts_out,
         origination_probs=origination_probs,
         accumulator_dtype=accumulator_dtype,
     )
@@ -827,6 +764,7 @@ def _e_adjoint_and_theta_vjp(
     e_adjoint_max_iter: int | None = None,
     e_adjoint_tol=None,
     cache=None,
+    event_counts_out: torch.Tensor | None = None,
     origination_probs=None,
     accumulator_dtype: torch.dtype | None = None,
 ):
@@ -945,12 +883,25 @@ def _e_adjoint_and_theta_vjp(
         # gradient": ask autograd for theta alone (which also skips the receiver branch of this
         # graph) and hand back None, so a caller that uses it anyway fails at once instead of
         # silently reading a value that is missing its reconciliation half.
+        # Event counts are opt-in. Keep the ordinary requested-input tuple unchanged so the
+        # default gradient path remains exactly the one measured in production.
         wanted = (theta_req,) if grad_receiver_log_probs is None else (theta_req, receiver_req)
+        if event_counts_out is not None:
+            wanted = (*wanted, log_pS_r, log_pD_r, log_pL_r, mt_r)
         grads = torch.autograd.grad(
             (param_loss, Ebar_from_params, E_from_params),
             wanted,
             grad_outputs=(torch.ones_like(param_loss), grad_Ebar, wE),
         )
+    if event_counts_out is not None:
+        # A common shift of every transfer-recipient log probability is the free family
+        # log-pT direction, so its adjoint is the species sum of the transfer-matrix adjoint.
+        adjoint_s, adjoint_d, adjoint_l, adjoint_mt = grads[-4:]
+        adjoint_t = adjoint_mt.reshape(theta.shape[0], -1).sum(dim=1)
+        event_counts_out.copy_(-torch.stack(
+            (adjoint_s.reshape(-1), adjoint_d.reshape(-1), adjoint_l.reshape(-1), adjoint_t),
+            dim=1,
+        ))
     if grad_receiver_log_probs is None:
         return grads[0], None
     return grads[0], grads[1]

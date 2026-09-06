@@ -1,0 +1,174 @@
+**********************************************************************
+*                         SLURM Batch System                         *
+*              IN2P3 Computing Centre, Villeurbanne FR               *
+**********************************************************************
+* Date:                 Sun Sep  6 21:35:00 CEST 2026
+* Job name:             sol_coleman_em3
+* Job id:               58006172
+* User:                 emarsot
+* Account:              biometr
+* Submit host:          cca014
+* Partition:            gpu_h100_interactive
+* Quality of service:   gpu
+* Nodelist:             ccwgislurm0200
+* Operating System:     Red Hat Enterprise Linux release 9.8 (Plow)
+* Architecture:         x86_64
+**********************************************************************
+[campaign] host=ccwgislurm0200 job=58006172 start=2026-09-06T21:35:00+02:00
+name, uuid, driver_version, memory.total [MiB]
+NVIDIA H100 NVL, GPU-8a9add16-cb62-9282-f039-9213619d52fa, 590.48.01, 95830 MiB
+e24d71fdd15ba77f2a5a29e918a5edb2edf9630f418cfe7bde7a0301667a7e5e  gpurec/fit/genewise_fit.py
+8e5ab5b627b2ab2921f86d2e775cb321fe937de5428cf9168da6d98fb2298399  gpurec/fit/em_warmup.py
+b63b247710137b87938b104c466cea4091e1c57825417542a272fd9b211158c1  gpurec/fit/dtl_fit.py
+e76f7f9f133b2dec259b30168f3289752b831ebdea7649b825538393f857c477  gpurec/api/_implicit_grad.py
+d8cf83e5aed706e4e34b0c73e2e81d417a61919437e25e8a0a616eb678becbe3  gpurec/api/_execution.py
+4ba77289f74026273c828e9bfb3363982c21fd955b60807a81ed41e3c8c1b6fc  gpurec/api/model.py
+e62a9a93070ca53ea72702c91430bb86021cc509de1ab17d5ffb09b2c3f6ceb0  gpurec/config/gpurec_config.py
+3b4f52384a615f77ff329079fe983d5502946d58102cf094b067bf2ee99be84f  benchmark/cc/run_genewise.py
+53be2dc26f9d8b50038d9c0415541503fd138900e4520f2e53561c0d1c00dff2  /sps/biometr/emarsot/gpurec-data/coleman/families_all.txt
+1c3957c584ec3b64da13310dcafaa8a6babe1b88528bb07ca79ec966b1462490  /sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk
+[     3.72s] [driver] 5124 families, species=/sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk, torch 2.13.0+cu130, gpu=NVIDIA H100 NVL
+[     9.65s] [fit_genewise] clade_budget=315,000 (the tuned default; it fits): device budget 79.1 GiB, statics 1.79 GiB, one batch 23.62 GiB, predicted peak 25.41 GiB
+[    18.35s] [fit_genewise] tier pi=16: 5124 families
+/sps/biometr/emarsot/envs/gpurec-h100/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: RuntimeWarning: neumann tol=1.00e-07 is below the torch.float32 finite-precision residual floor 4.77e-07; clamping to the floor. A tighter relative residual is unreachable in this precision -- use fp64.
+  return func(*args, **kwargs)
+[    41.65s] [fit_genewise] EM warm-up 1/3: nll=11284079.268557 bits
+[    67.52s] [fit_genewise] EM warm-up 2/3: nll=9195263.478536 bits
+[    93.83s] [fit_genewise] EM warm-up 3/3: nll=9099375.920430 bits
+[   120.40s]   [pi16 it0] live=5124 (+0 settled in batch) conv=5 (nll_stop=0) |Pg|max=2.25e+02 clades: live 23.33M of 23.33M in model
+[   174.24s]   [pi16 it2] live=5124 (+0 settled in batch) conv=3 (nll_stop=0) |Pg|max=2.14e+02 clades: live 23.33M of 23.33M in model
+[   227.98s]   [pi16 it4] live=5124 (+0 settled in batch) conv=165 (nll_stop=0) |Pg|max=7.46e+01 clades: live 23.33M of 23.33M in model
+[   281.72s]   [pi16 it6] live=4959 (+165 settled in batch) conv=1580 (nll_stop=0) |Pg|max=5.17e+01 clades: live 23.20M of 23.33M in model
+[   287.56s]   [pi16 it6] re-planned over 3379 live families
+[   325.98s]   [pi16 it8] live=3379 (+0 settled in batch) conv=1019 (nll_stop=0) |Pg|max=1.70e+01 clades: live 16.81M of 16.81M in model
+[   329.42s]   [pi16 it8] re-planned over 2360 live families
+[   351.95s]   [pi16 it10] live=2360 (+0 settled in batch) conv=772 (nll_stop=0) |Pg|max=1.18e+01 clades: live 9.81M of 9.81M in model
+[   353.64s]   [pi16 it10] re-planned over 1588 live families
+[   365.66s]   [pi16 it12] live=1588 (+0 settled in batch) conv=517 (nll_stop=0) |Pg|max=1.24e+01 clades: live 5.19M of 5.19M in model
+[   366.80s]   [pi16 it12] re-planned over 1071 live families
+[   373.83s]   [pi16 it14] live=1071 (+0 settled in batch) conv=364 (nll_stop=0) |Pg|max=1.58e+01 clades: live 3.02M of 3.02M in model
+[   374.62s]   [pi16 it14] re-planned over 707 live families
+[   378.93s]   [pi16 it16] live=707 (+0 settled in batch) conv=206 (nll_stop=0) |Pg|max=6.82e+00 clades: live 1.80M of 1.80M in model
+[   383.24s]   [pi16 it18] live=501 (+206 settled in batch) conv=248 (nll_stop=0) |Pg|max=9.44e+00 clades: live 1.38M of 1.80M in model
+[   383.88s]   [pi16 it18] re-planned over 253 live families
+[   385.89s]   [pi16 it20] live=253 (+0 settled in batch) conv=70 (nll_stop=0) |Pg|max=9.44e+00 clades: live 0.83M of 0.83M in model
+[   395.97s]   [pi16 it22] live=183 (+70 settled in batch) conv=135 (nll_stop=0) |Pg|max=6.46e-01 clades: live 0.68M of 0.83M in model
+[   396.20s]   [pi16 it22] re-planned over 48 live families
+[   396.57s]   [pi16 it24] live=48 (+0 settled in batch) conv=6 (nll_stop=0) |Pg|max=1.70e+00 clades: live 0.13M of 0.13M in model
+[   396.69s]   [pi16 it24] re-planned over 42 live families
+[   396.97s]   [pi16 it26] live=42 (+0 settled in batch) conv=9 (nll_stop=0) |Pg|max=1.70e+00 clades: live 0.08M of 0.08M in model
+[   397.04s]   [pi16 it26] re-planned over 33 live families
+[   397.29s]   [pi16 it28] live=33 (+0 settled in batch) conv=3 (nll_stop=0) |Pg|max=9.29e-01 clades: live 0.05M of 0.05M in model
+[   397.52s]   [pi16 it30] live=30 (+3 settled in batch) conv=12 (nll_stop=0) |Pg|max=8.46e-01 clades: live 0.05M of 0.05M in model
+[   397.57s]   [pi16 it30] re-planned over 18 live families
+[   397.79s]   [pi16 it32] live=18 (+0 settled in batch) conv=5 (nll_stop=0) |Pg|max=6.96e-01 clades: live 0.02M of 0.02M in model
+[   398.00s]   [pi16 it34] live=13 (+5 settled in batch) conv=9 (nll_stop=0) |Pg|max=3.91e-01 clades: live 0.02M of 0.02M in model
+[   398.01s]   [pi16 it34] re-planned over 4 live families
+[   398.06s]   [pi16 it36] live=4 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.58e-01 clades: live 0.00M of 0.00M in model
+[   398.12s]   [pi16 it38] live=4 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.58e-01 clades: live 0.00M of 0.00M in model
+[   398.17s]   [pi16 it40] live=4 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.58e-01 clades: live 0.00M of 0.00M in model
+[   398.34s]   [pi16 it42] live=4 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=1.78e-01 clades: live 0.00M of 0.00M in model
+[   398.39s]   [pi16 it44] live=4 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   398.45s]   [pi16 it46] live=4 (+0 settled in batch) conv=1 (nll_stop=0) |Pg|max=1.20e+00 clades: live 0.00M of 0.00M in model
+[   398.46s]   [pi16 it46] re-planned over 3 live families
+[   398.50s]   [pi16 it48] live=3 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.92e-01 clades: live 0.00M of 0.00M in model
+[   398.54s]   [pi16 it50] live=3 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.05e-01 clades: live 0.00M of 0.00M in model
+[   398.59s]   [pi16 it52] live=3 (+0 settled in batch) conv=1 (nll_stop=0) |Pg|max=8.05e-01 clades: live 0.00M of 0.00M in model
+[   398.63s]   [pi16 it54] live=2 (+1 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.05e-01 clades: live 0.00M of 0.00M in model
+[   398.68s]   [pi16 it56] live=2 (+1 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.05e-01 clades: live 0.00M of 0.00M in model
+[   398.82s]   [pi16 it58] live=2 (+1 settled in batch) conv=0 (nll_stop=0) |Pg|max=1.99e-02 clades: live 0.00M of 0.00M in model
+[   398.87s]   [pi16 it60] live=2 (+1 settled in batch) conv=1 (nll_stop=0) |Pg|max=2.86e-01 clades: live 0.00M of 0.00M in model
+[   398.87s]   [pi16 it60] re-planned over 1 live families
+[   399.91s]   [pi16 it62] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.86e-01 clades: live 0.00M of 0.00M in model
+[   399.96s]   [pi16 it64] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.86e-01 clades: live 0.00M of 0.00M in model
+[   400.01s]   [pi16 it66] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.86e-01 clades: live 0.00M of 0.00M in model
+[   400.05s]   [pi16 it68] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.86e-01 clades: live 0.00M of 0.00M in model
+[   400.10s]   [pi16 it70] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.86e-01 clades: live 0.00M of 0.00M in model
+[   400.15s]   [pi16 it72] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.86e-01 clades: live 0.00M of 0.00M in model
+[   400.30s]   [pi16 it74] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=1.77e-01 clades: live 0.00M of 0.00M in model
+[   400.34s]   [pi16 it76] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=6.54e-02 clades: live 0.00M of 0.00M in model
+[   400.39s]   [pi16 it78] live=1 (+0 settled in batch) conv=1 (nll_stop=0) |Pg|max=5.12e-04 clades: live 0.00M of 0.00M in model
+[   402.04s] [driver] DONE wall=398.3s nll_bits=9049360.610 nll_nats=6272538.793 steps=65 builds=14 peak=23.42GiB adam=0s em=75s hess=4x/8s grad=283s verify=0x/0s rebuild=13x/14s cert=0s {'converged': 5124, 'bound_active': 680, 'unconverged': 0, 'premature_drops': 0, 'pg_max': 0.0009993399726226926}
+[     0.33s] [driver] 5124 families, species=/sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk, torch 2.13.0+cu130, gpu=NVIDIA H100 NVL
+[     6.02s] [fit_genewise] clade_budget=315,000 (the tuned default; it fits): device budget 79.1 GiB, statics 1.79 GiB, one batch 23.62 GiB, predicted peak 25.41 GiB
+[    14.43s] [fit_genewise] tier pi=16: 5124 families
+/sps/biometr/emarsot/envs/gpurec-h100/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: RuntimeWarning: neumann tol=1.00e-07 is below the torch.float32 finite-precision residual floor 4.77e-07; clamping to the floor. A tighter relative residual is unreachable in this precision -- use fp64.
+  return func(*args, **kwargs)
+[    37.86s] [fit_genewise] EM warm-up 1/3: nll=11284079.268557 bits
+[    63.87s] [fit_genewise] EM warm-up 2/3: nll=9195263.481222 bits
+[    90.31s] [fit_genewise] EM warm-up 3/3: nll=9099375.916690 bits
+[   116.93s]   [pi16 it0] live=5124 (+0 settled in batch) conv=5 (nll_stop=0) |Pg|max=2.25e+02 clades: live 23.33M of 23.33M in model
+[   170.83s]   [pi16 it2] live=5124 (+0 settled in batch) conv=3 (nll_stop=0) |Pg|max=2.14e+02 clades: live 23.33M of 23.33M in model
+[   224.58s]   [pi16 it4] live=5124 (+0 settled in batch) conv=164 (nll_stop=0) |Pg|max=7.46e+01 clades: live 23.33M of 23.33M in model
+[   278.36s]   [pi16 it6] live=4960 (+164 settled in batch) conv=1582 (nll_stop=0) |Pg|max=5.17e+01 clades: live 23.20M of 23.33M in model
+[   283.90s]   [pi16 it6] re-planned over 3378 live families
+[   322.26s]   [pi16 it8] live=3378 (+0 settled in batch) conv=1019 (nll_stop=0) |Pg|max=1.70e+01 clades: live 16.76M of 16.76M in model
+[   325.30s]   [pi16 it8] re-planned over 2359 live families
+[   347.86s]   [pi16 it10] live=2359 (+0 settled in batch) conv=778 (nll_stop=0) |Pg|max=1.18e+01 clades: live 9.81M of 9.81M in model
+[   349.56s]   [pi16 it10] re-planned over 1581 live families
+[   361.38s]   [pi16 it12] live=1581 (+0 settled in batch) conv=518 (nll_stop=0) |Pg|max=1.24e+01 clades: live 5.08M of 5.08M in model
+[   362.40s]   [pi16 it12] re-planned over 1063 live families
+[   369.06s]   [pi16 it14] live=1063 (+0 settled in batch) conv=351 (nll_stop=0) |Pg|max=1.57e+01 clades: live 2.85M of 2.85M in model
+[   369.97s]   [pi16 it14] re-planned over 712 live families
+[   374.48s]   [pi16 it16] live=712 (+0 settled in batch) conv=209 (nll_stop=0) |Pg|max=6.82e+00 clades: live 1.90M of 1.90M in model
+[   375.34s]   [pi16 it16] re-planned over 503 live families
+[   378.67s]   [pi16 it18] live=503 (+0 settled in batch) conv=164 (nll_stop=0) |Pg|max=6.10e+00 clades: live 1.38M of 1.38M in model
+[   379.31s]   [pi16 it18] re-planned over 339 live families
+[   381.72s]   [pi16 it20] live=339 (+0 settled in batch) conv=102 (nll_stop=0) |Pg|max=9.40e+00 clades: live 0.98M of 0.98M in model
+[   384.12s]   [pi16 it22] live=237 (+102 settled in batch) conv=100 (nll_stop=0) |Pg|max=2.09e+00 clades: live 0.78M of 0.98M in model
+[   384.60s]   [pi16 it22] re-planned over 137 live families
+[   390.16s]   [pi16 it24] live=137 (+0 settled in batch) conv=88 (nll_stop=0) |Pg|max=6.46e-01 clades: live 0.42M of 0.42M in model
+[   390.55s]   [pi16 it24] re-planned over 49 live families
+[   390.95s]   [pi16 it26] live=49 (+0 settled in batch) conv=9 (nll_stop=0) |Pg|max=1.70e+00 clades: live 0.13M of 0.13M in model
+[   391.10s]   [pi16 it26] re-planned over 40 live families
+[   391.37s]   [pi16 it28] live=40 (+0 settled in batch) conv=9 (nll_stop=0) |Pg|max=1.70e+00 clades: live 0.04M of 0.04M in model
+[   391.44s]   [pi16 it28] re-planned over 31 live families
+[   391.51s]   [pi16 it30] live=31 (+0 settled in batch) conv=3 (nll_stop=0) |Pg|max=9.29e-01 clades: live 0.01M of 0.01M in model
+[   391.58s]   [pi16 it32] live=28 (+3 settled in batch) conv=12 (nll_stop=0) |Pg|max=8.46e-01 clades: live 0.01M of 0.01M in model
+[   391.60s]   [pi16 it32] re-planned over 16 live families
+[   391.67s]   [pi16 it34] live=16 (+0 settled in batch) conv=3 (nll_stop=0) |Pg|max=6.87e-01 clades: live 0.00M of 0.00M in model
+[   391.68s]   [pi16 it34] re-planned over 13 live families
+[   391.83s]   [pi16 it36] live=13 (+0 settled in batch) conv=1 (nll_stop=0) |Pg|max=4.00e-01 clades: live 0.00M of 0.00M in model
+[   392.15s]   [pi16 it38] live=12 (+1 settled in batch) conv=8 (nll_stop=0) |Pg|max=3.59e-01 clades: live 0.00M of 0.00M in model
+[   392.33s]   [pi16 it40] live=4 (+9 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.63e-01 clades: live 0.00M of 0.00M in model
+[   392.55s]   [pi16 it42] live=4 (+9 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.65e-01 clades: live 0.00M of 0.00M in model
+[   392.75s]   [pi16 it44] live=4 (+9 settled in batch) conv=0 (nll_stop=0) |Pg|max=1.78e-01 clades: live 0.00M of 0.00M in model
+[   393.05s]   [pi16 it46] live=4 (+9 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   393.11s]   [pi16 it48] live=4 (+9 settled in batch) conv=1 (nll_stop=0) |Pg|max=1.20e+00 clades: live 0.00M of 0.00M in model
+[   393.12s]   [pi16 it48] re-planned over 3 live families
+[   393.17s]   [pi16 it50] live=3 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.11e-01 clades: live 0.00M of 0.00M in model
+[   393.22s]   [pi16 it52] live=3 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=7.99e-01 clades: live 0.00M of 0.00M in model
+[   393.27s]   [pi16 it54] live=3 (+0 settled in batch) conv=1 (nll_stop=0) |Pg|max=7.99e-01 clades: live 0.00M of 0.00M in model
+[   393.32s]   [pi16 it56] live=2 (+1 settled in batch) conv=0 (nll_stop=0) |Pg|max=7.99e-01 clades: live 0.00M of 0.00M in model
+[   393.38s]   [pi16 it58] live=2 (+1 settled in batch) conv=0 (nll_stop=0) |Pg|max=7.99e-01 clades: live 0.00M of 0.00M in model
+[   393.53s]   [pi16 it60] live=2 (+1 settled in batch) conv=0 (nll_stop=0) |Pg|max=1.89e-02 clades: live 0.00M of 0.00M in model
+[   393.58s]   [pi16 it62] live=2 (+1 settled in batch) conv=1 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   393.59s]   [pi16 it62] re-planned over 1 live families
+[   393.65s]   [pi16 it64] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   393.80s]   [pi16 it66] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   393.93s]   [pi16 it68] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   394.08s]   [pi16 it70] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   394.25s]   [pi16 it72] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   394.30s]   [pi16 it74] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=2.82e-01 clades: live 0.00M of 0.00M in model
+[   394.46s]   [pi16 it76] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=1.63e-01 clades: live 0.00M of 0.00M in model
+[   394.81s]   [pi16 it78] live=1 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=6.59e-02 clades: live 0.00M of 0.00M in model
+[   394.86s]   [pi16 it80] live=1 (+0 settled in batch) conv=1 (nll_stop=0) |Pg|max=3.79e-04 clades: live 0.00M of 0.00M in model
+[   396.73s] [driver] DONE wall=396.4s nll_bits=9049360.598 nll_nats=6272538.784 steps=65 builds=16 peak=23.02GiB adam=0s em=76s hess=4x/5s grad=283s verify=0x/0s rebuild=15x/14s cert=0s {'converged': 5124, 'bound_active': 663, 'unconverged': 0, 'premature_drops': 0, 'pg_max': 0.0009996123844757676}
+/sps/biometr/emarsot/envs/gpurec-h100/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: RuntimeWarning: neumann tol=1.00e-07 is below the torch.float32 finite-precision residual floor 4.77e-07; clamping to the floor. A tighter relative residual is unreachable in this precision -- use fp64.
+  return func(*args, **kwargs)
+{"n_families": 5124, "pruning_threshold": 1e-06, "baseline_path": "/sps/biometr/emarsot/gpurec-sol-em2-20260906-NVUB8w/results/adam_full_b.pt", "candidate_path": "/sps/biometr/emarsot/gpurec-sol-em3-20260906-mBtGwJ/results/em3_full_b.pt", "metrics": {"baseline": {"nll_bits": 9049362.374245338, "cold_certified": 5052, "cold_pg_max": 0.002486881334334612}, "candidate": {"nll_bits": 9049360.610597292, "cold_certified": 5052, "cold_pg_max": 0.0023558761458843946}, "candidate_repeat": {"nll_bits": 9049360.609391667, "cold_certified": 5055, "cold_pg_max": 0.0021010308992117643}, "baseline_repeat": {"nll_bits": 9049362.374245338, "cold_certified": 5050, "cold_pg_max": 0.0017443406395614147}}, "nll_difference_bits": -1.7636480443790514, "max_regression_bits": 1.489717905607975, "max_improvement_bits": 2.3864914834519055, "regressions_above_0_01_bits": 14, "improvements_above_0_01_bits": 12, "changed_families": [{"index": 24, "name": "COG0014_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.30246763946036026}, {"index": 117, "name": "COG0057_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.6376525089889}, {"index": 235, "name": "COG0128_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.08874471420719843}, {"index": 470, "name": "COG0266_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.43375228470631555}, {"index": 543, "name": "COG0304_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.19193252703799857}, {"index": 613, "name": "COG0337_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.08874904488397561}, {"index": 1100, "name": "COG0604_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.5911600668885413}, {"index": 1327, "name": "COG0750_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 1.489717905607975}, {"index": 1564, "name": "COG1045_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.828687685016007}, {"index": 1631, "name": "COG1085_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.5516573589443894}, {"index": 1752, "name": "COG1180_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.3775676700561057}, {"index": 2153, "name": "COG1488_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.7270496273603726}, {"index": 2425, "name": "COG1744_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.42773408388960377}, {"index": 2954, "name": "COG2169_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.5899199025203785}, {"index": 2972, "name": "COG2178_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.19343479755940507}, {"index": 3078, "name": "COG2271_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -2.3864914834519055}, {"index": 3119, "name": "COG2352_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.25155169853972836}, {"index": 3309, "name": "COG2822_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.24785141916339626}, {"index": 3439, "name": "COG2948_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -2.299134755504319}, {"index": 3458, "name": "COG2968_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.259514200484098}, {"index": 3473, "name": "COG2981_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 1.422176225263513}, {"index": 4076, "name": "COG3550_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.09269867517603103}, {"index": 4509, "name": "COG4137_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -2.1728259911611474}, {"index": 4975, "name": "COG5010_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.956391040937504}, {"index": 4983, "name": "COG5019_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 1.3785734398633878}, {"index": 5070, "name": "COG5495_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.03246809727752975}], "audit_seconds": 215.94181916676462, "solver": {"pi_iters": 16, "neumann_terms": 16, "e_max_iter": 128, "e_tol": 1e-08, "e_adjoint_tol": 1e-07}, "clade_budget": 315000, "theta_dtype": "torch.float32", "accumulator_dtype": "torch.float64", "torch_version": "2.13.0+cu130", "gpu": "NVIDIA H100 NVL", "baseline_same_theta_repeat": {"nll_difference_bits": 0.0, "max_family_abs_bits": 0.0, "max_pg_change": 0.001291941647650674}, "candidate_fit_repeat": {"path": "/sps/biometr/emarsot/gpurec-sol-em3-20260906-mBtGwJ/results/em3_full_a.pt", "nll_difference_bits": -0.001205625622009876, "max_family_abs_bits": 0.0017417341769032646, "families_above_0_01_bits": 0}}
+/sps/biometr/emarsot/envs/gpurec-h100/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: RuntimeWarning: neumann tol=1.00e-07 is below the torch.float32 finite-precision residual floor 4.77e-07; clamping to the floor. A tighter relative residual is unreachable in this precision -- use fp64.
+  return func(*args, **kwargs)
+{"n_families": 5124, "pruning_threshold": 1e-06, "baseline_path": "/sps/biometr/emarsot/gpurec-sol-em2-20260906-NVUB8w/results/adam_full_b.pt", "candidate_path": "/sps/biometr/emarsot/gpurec-sol-em2-20260906-NVUB8w/results/em_full_a.pt", "metrics": {"baseline": {"nll_bits": 9049362.374245338, "cold_certified": 5058, "cold_pg_max": 0.002413884736597538}, "candidate": {"nll_bits": 9049360.739734966, "cold_certified": 5053, "cold_pg_max": 0.003294372698292136}}, "nll_difference_bits": -1.6345103721430174, "max_regression_bits": 1.4897362098715057, "max_improvement_bits": 2.386492297379178, "regressions_above_0_01_bits": 13, "improvements_above_0_01_bits": 12, "changed_families": [{"index": 24, "name": "COG0014_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.30142145552454735}, {"index": 117, "name": "COG0057_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.6374174967376973}, {"index": 235, "name": "COG0128_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.08835524561396468}, {"index": 470, "name": "COG0266_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.4337343477874924}, {"index": 543, "name": "COG0304_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.19197171407763136}, {"index": 613, "name": "COG0337_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.08835965297287629}, {"index": 1100, "name": "COG0604_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.5909590380321355}, {"index": 1327, "name": "COG0750_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 1.4897362098715057}, {"index": 1564, "name": "COG1045_3.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.8286855576766499}, {"index": 1631, "name": "COG1085_4.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.5516655279216636}, {"index": 1752, "name": "COG1180_5.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.37803643273097975}, {"index": 2153, "name": "COG1488_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.7268318442550026}, {"index": 2425, "name": "COG1744_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.4284898876273573}, {"index": 2954, "name": "COG2169_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.5902276638017128}, {"index": 2972, "name": "COG2178_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.19266397717228756}, {"index": 3078, "name": "COG2271_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -2.386492297379178}, {"index": 3309, "name": "COG2822_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.24807988611145504}, {"index": 3439, "name": "COG2948_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -2.299135037233299}, {"index": 3458, "name": "COG2968_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.25871283103806775}, {"index": 3473, "name": "COG2981_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 1.4233428479490158}, {"index": 4076, "name": "COG3550_2.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.0926855509574267}, {"index": 4509, "name": "COG4137_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -2.1740369355976696}, {"index": 4975, "name": "COG5010_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": -0.956113799251483}, {"index": 4983, "name": "COG5019_0.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 1.3787530677659277}, {"index": 5070, "name": "COG5495_1.faa.aln.trimmed.filtered.faa.aln.stitched.trimmed.filtered.treefile.subclusters2.faa.aln.stitched.trimmed.filtered.ufboot.ale", "nll_difference_bits": 0.032998572594095776}], "audit_seconds": 163.04239689884707, "solver": {"pi_iters": 16, "neumann_terms": 16, "e_max_iter": 128, "e_tol": 1e-08, "e_adjoint_tol": 1e-07}, "clade_budget": 315000, "theta_dtype": "torch.float32", "accumulator_dtype": "torch.float64", "torch_version": "2.13.0+cu130", "gpu": "NVIDIA H100 NVL"}
+[campaign] end=2026-09-06T21:55:11+02:00
+****************************************************************
+*                      SLURM Batch System                      *
+*           IN2P3 Computing Centre, Villeurbanne FR            *
+****************************************************************
+Date: Sun Sep  6 21:55:11 CEST 2026
+Job informations can be found using these commands:
+Accounting:
+sacct -j 58006172
+Efficiency:
+seff 58006172
+****************************************************************

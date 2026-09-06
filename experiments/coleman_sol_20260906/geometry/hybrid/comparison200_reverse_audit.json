@@ -1,0 +1,42 @@
+{
+  "fits": "experiments/coleman_sol_20260906/geometry/hybrid/comparison200_reverse.pt",
+  "n_families": 200,
+  "pruning_threshold": 1e-06,
+  "metrics": {
+    "hierarchical_native_metric": {
+      "nll_bits": 613261.7982813937,
+      "fresh_certified": 192,
+      "fresh_pg_max": 0.0014101327396929264
+    },
+    "native": {
+      "nll_bits": 613261.8008153113,
+      "fresh_certified": 198,
+      "fresh_pg_max": 0.001233194605447352
+    },
+    "native_repeat": {
+      "nll_bits": 613261.8008153113,
+      "fresh_certified": 197,
+      "fresh_pg_max": 0.0017204394098371267
+    }
+  },
+  "differences_from_native": {
+    "hierarchical_native_metric": {
+      "nll_change_bits": -0.0025339175514034196,
+      "max_family_abs_bits": 0.0013578313572963907,
+      "regressions_above_0_01": 0,
+      "improvements_above_0_01": 0,
+      "max_pg_change": 0.00121210771612823,
+      "changed_families": []
+    },
+    "native_repeat": {
+      "nll_change_bits": 0.0,
+      "max_family_abs_bits": 0.0,
+      "regressions_above_0_01": 0,
+      "improvements_above_0_01": 0,
+      "max_pg_change": 0.0006050309166312218,
+      "changed_families": []
+    }
+  },
+  "audit_seconds": 11.42240903599668,
+  "note": "Separate fresh audit, not part of any fit time; original pruned FP32 recipe."
+}

@@ -1,0 +1,175 @@
+{
+  "baseline": {
+    "tag": "baseline_500",
+    "n_families": 500,
+    "em_steps": 0,
+    "seed": "baseline",
+    "clade_budget": 200740,
+    "parse_seconds": 1.393432868997479,
+    "build_seconds": 0.0,
+    "pass_seconds": 0.0,
+    "prototype_warm_seconds": 0.0,
+    "fit_wall_seconds": 106.93611648799924,
+    "algorithm_wall_seconds": 106.93611648799924,
+    "prototype_wall_seconds": 108.32954935699672,
+    "nll_vector_seconds": 3.1844574010028737,
+    "nll_bits_fit": 1618461.9692716599,
+    "nll_bits_vector": 1618461.966966605,
+    "n_steps": 35,
+    "n_hessians": 2,
+    "n_rebuilds": 11,
+    "converged": 500,
+    "unconverged": 0,
+    "bound_active": 37,
+    "pg_max": 0.00099784298799932,
+    "adam_seconds": 15.598051474000385,
+    "newton_grad_seconds": 81.55676011700416,
+    "hessian_seconds": 2.8031858510039456,
+    "rebuild_seconds": 3.922438518002309,
+    "certify_seconds": 0.00033117999919340946,
+    "gradient_calls": 50,
+    "gradient_clades_total": 68302216,
+    "gradient_clade_equivalents": 17.273307460461087,
+    "gradient_seconds_traced": 96.64225007798086,
+    "warm_count_calls": 0,
+    "fit_gradient_calls": 50,
+    "config_solver": {
+      "e_max_iter": 128,
+      "e_tol": 1e-08,
+      "pi_iters": 64,
+      "neumann_terms": 64,
+      "neumann_term_tol": 1e-07,
+      "e_adjoint_max_iter": 128,
+      "e_adjoint_tol": 1e-07,
+      "adjoint_pruning_threshold": 1e-06,
+      "use_adjoint_pruning": true,
+      "pibar_side_threshold": 0.0,
+      "e_tangent_tol": 1e-09,
+      "exact_range_log2": 100.0
+    },
+    "config_precision": {
+      "model_dtype": "float32",
+      "accumulator_dtype": "float64"
+    }
+  },
+  "candidate": {
+    "tag": "em2_500",
+    "n_families": 500,
+    "em_steps": 2,
+    "seed": "endpoint_scaled_secants",
+    "clade_budget": 200740,
+    "parse_seconds": 1.4169946139991225,
+    "build_seconds": 1.6261018810000678,
+    "pass_seconds": 11.306619581999257,
+    "prototype_warm_seconds": 12.932721462999325,
+    "fit_wall_seconds": 77.15636909399836,
+    "algorithm_wall_seconds": 88.46298867599762,
+    "prototype_wall_seconds": 91.50608517099681,
+    "nll_vector_seconds": 3.0540619519997563,
+    "nll_bits_fit": 1618461.9916725159,
+    "nll_bits_vector": 1618461.9945340753,
+    "n_steps": 23,
+    "n_hessians": 1,
+    "n_rebuilds": 9,
+    "converged": 500,
+    "unconverged": 0,
+    "bound_active": 40,
+    "pg_max": 0.000998389907181263,
+    "adam_seconds": 0.0,
+    "newton_grad_seconds": 69.23905800699868,
+    "hessian_seconds": 1.954519529001118,
+    "rebuild_seconds": 3.080929098003253,
+    "certify_seconds": 0.0002882799999497365,
+    "gradient_calls": 35,
+    "gradient_clades_total": 54014952,
+    "gradient_clade_equivalents": 13.660125951961026,
+    "gradient_seconds_traced": 80.54143936502078,
+    "warm_count_calls": 2,
+    "fit_gradient_calls": 33,
+    "config_solver": {
+      "e_max_iter": 128,
+      "e_tol": 1e-08,
+      "pi_iters": 64,
+      "neumann_terms": 64,
+      "neumann_term_tol": 1e-07,
+      "e_adjoint_max_iter": 128,
+      "e_adjoint_tol": 1e-07,
+      "adjoint_pruning_threshold": 1e-06,
+      "use_adjoint_pruning": true,
+      "pibar_side_threshold": 0.0,
+      "e_tangent_tol": 1e-09,
+      "exact_range_log2": 100.0
+    },
+    "config_precision": {
+      "model_dtype": "float32",
+      "accumulator_dtype": "float64"
+    }
+  },
+  "candidate_minus_baseline_nll_bits": 0.027567470341873346,
+  "per_family_delta_median_bits": 4.755785994348116e-06,
+  "per_family_delta_min_bits": -0.6374196344032725,
+  "per_family_delta_max_bits": 0.433744753383678,
+  "material_threshold_bits": 0.01,
+  "material_families": [
+    {
+      "index": 24,
+      "family": "COG0014_1",
+      "delta_nll_bits": 0.3014281470460105,
+      "baseline_theta": [
+        -3.2777040004730225,
+        -1.4054054021835327,
+        -16.200389862060547
+      ],
+      "candidate_theta": [
+        -16.66595458984375,
+        -2.7188093662261963,
+        -3.5723438262939453
+      ]
+    },
+    {
+      "index": 117,
+      "family": "COG0057_2",
+      "delta_nll_bits": -0.6374196344032725,
+      "baseline_theta": [
+        -2.9983959197998047,
+        -1.3480826616287231,
+        -2.454082727432251
+      ],
+      "candidate_theta": [
+        -3.5800576210021973,
+        -13.541906356811523,
+        -2.551225423812866
+      ]
+    },
+    {
+      "index": 235,
+      "family": "COG0128_1",
+      "delta_nll_bits": -0.08838573956823481,
+      "baseline_theta": [
+        -12.181267738342285,
+        -0.8911038637161255,
+        -12.05431842803955
+      ],
+      "candidate_theta": [
+        -18.5106143951416,
+        -11.309537887573242,
+        -2.5836424827575684
+      ]
+    },
+    {
+      "index": 470,
+      "family": "COG0266_1",
+      "delta_nll_bits": 0.433744753383678,
+      "baseline_theta": [
+        -15.685531616210938,
+        0.4316183924674988,
+        0.3205890357494354
+      ],
+      "candidate_theta": [
+        -19.05814552307129,
+        -0.2216813713312149,
+        -0.9446535110473633
+      ]
+    }
+  ]
+}

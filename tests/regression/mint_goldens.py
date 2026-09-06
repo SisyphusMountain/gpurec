@@ -41,8 +41,7 @@ def fit_mode(mode, species_path, gene_paths, *, verbose=False):
         from gpurec.api.solver_options import SolverOptions
         from gpurec.fit.specieswise_fit import fit_specieswise
         model = GeneReconModel(species_path, gene_paths, mode="specieswise", device="cuda",
-                               dtype=torch.float32,
-                               solver_options=SolverOptions(e_adjoint_solver="neumann"))
+                               dtype=torch.float32, solver_options=SolverOptions())
         # init AND ridge center at a sensible rate, NOT the model's degenerate 1e-10 default (which
         # centers the prior on ~zero rates -> fit snaps to the prior in ~2 steps).
         S = model.theta.shape[0]

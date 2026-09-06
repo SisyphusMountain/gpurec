@@ -56,11 +56,7 @@ def _family_paths(ale_dir, n_families):
 
 
 def _library_identity():
-    """What the run can say about the checkout it is actually importing.
-
-    ``forward_self_loop`` / ``adjoint_self_loop`` exist only on the newer checkout; their absence is
-    how the old one identifies itself, so the two output files are self-labelling.
-    """
+    """What the run can say about the checkout it is actually importing."""
     import gpurec
     from gpurec.api.solver_options import SolverOptions
 
@@ -68,8 +64,6 @@ def _library_identity():
     return {
         "gpurec_file": gpurec.__file__,
         "solver_option_fields": sorted(vars(options).keys()),
-        "forward_self_loop": getattr(options, "forward_self_loop", None),
-        "adjoint_self_loop": getattr(options, "adjoint_self_loop", None),
         "torch": torch.__version__,
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
     }

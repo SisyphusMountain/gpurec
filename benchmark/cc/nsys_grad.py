@@ -49,13 +49,9 @@ def _streamed_hessian(m, theta, pi_cur):
         for j in range(3):
             u_b = torch.zeros(G_b, 3, device=dev, dtype=dtype)
             u_b[:, j] = 1.0
-            out_b = hvp(u_b.reshape(-1), probe_id=j)[: G_b * 3].reshape(G_b, 3)
+            out_b = hvp(u_b.reshape(-1))[: G_b * 3].reshape(G_b, 3)
             cols[j].index_add_(0, fam, out_b)
         del hvp, sv
-        # Drop this batch's tangent-adjoint warm-start cache (3 probes x clades x species floats,
-        # ~7.6 GiB for a 315k-clade batch): it is only reused across repeated HVP calls on the SAME
-        # batch, and keeping all batches' copies alive is what exhausts the GPU.
-        static.warm_v_tangent = None
         free_cuda_cache_if_tight()
     H = torch.stack(cols, dim=-1)
     return 0.5 * (H + H.transpose(1, 2))
@@ -70,8 +66,6 @@ def main() -> int:
     ap.add_argument("--hessian", required=True, choices=("library", "streamed"),
                     help="which curvature implementation to capture in the NVTX range")
     args = ap.parse_args()
-
-    os.environ["GPUREC_WARM_ADJOINT"] = "1"
 
     from gpurec.api.model import GeneReconModel
     from gpurec.api.solver_options import SolverOptions

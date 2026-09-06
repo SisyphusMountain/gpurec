@@ -21,7 +21,6 @@ from gpurec.api.solver_options import dtype_scaled_self_loop_tol
 from gpurec.core.kernels.wave_backward_kernels import (
     _select_active_adjoint_rows_kernel,
     _prepare_reconciliation_self_loop_vjp_kernel,
-    _apply_reconciliation_self_loop_transpose_kernel,
     _reconciliation_self_loop_transpose_series_kernel,
     _solve_reconciliation_self_loop_transpose_row_kernel,
     _accumulate_transfer_receiver_log_probability_vjp_kernel,
@@ -55,9 +54,9 @@ _NUM_WARPS_TRANSFER_SUBTREE_VJP = 8
 _THREADS_PER_WARP = 32
 
 # Species-tree nodes per tile in the level walks of the kernels launched with
-# ``_NUM_WARPS_SELF_LOOP_TRANSPOSE``: the transposed self-loop term (single-term and fused-series
-# kernels alike) and the receiver-log-probability VJP. Launch-shape tuning only: the walks visit
-# every node of a level in the same order either way.
+# ``_NUM_WARPS_SELF_LOOP_TRANSPOSE``: the transposed self-loop numerical fallback and the
+# receiver-log-probability VJP. Launch-shape tuning only: the walks visit every node of a level in
+# the same order either way.
 #
 # The tile MUST hold one node per thread, so it is the warp count times the 32 threads in a warp
 # and not a number of its own. A wider tile does not buy anything: a Triton program cannot idle a
@@ -130,27 +129,6 @@ def _valid_receiver_tables(species_subtree_start, species_subtree_end, S, *, dev
     return tables
 
 
-# Debug instrumentation for the fused Neumann-series kernel, off in production.
-# When switched on with ``set_neumann_term_stat_collection(True)`` every wave's
-# self-loop solve appends a [W] int32 tensor to ``_NEUMANN_TERM_COUNTS`` holding
-# the number of Neumann terms each row block actually ran before its early exit.
-# A module-level switch (not a function argument or an environment variable) so
-# the production call path keeps its exact signature and costs nothing.
-_COLLECT_NEUMANN_TERM_STATS = False
-_NEUMANN_TERM_COUNTS = []
-
-# A/B switch between the fused Neumann-series kernel (production) and the historical
-# one-launch-per-term reference loop. Only benchmark/cc/test_neumann_exit.py flips it,
-# to show the two agree bit for bit at neumann_term_tol=0.
-_USE_FUSED_NEUMANN_SERIES = True
-
-# The two adjoint self-loop implementations selectable through ``SolverOptions.adjoint_self_loop``.
-# "series": sum the Neumann terms of (I - J^T)^-1 rhs, stopping early per row block.
-# "exact":  solve (I - J^T) v = rhs directly by elimination on the species tree
-#           (``_solve_reconciliation_self_loop_transpose_row_kernel``), which is what the series
-#           converges to.
-ADJOINT_SELF_LOOP_MODES = ("series", "exact")
-
 # Debug instrumentation for the exact adjoint solve, off in production. When switched on with
 # ``set_exact_adjoint_guard_trip_collection(True)`` every wave appends a [W, 2] int32 tensor to
 # ``_EXACT_ADJOINT_GUARD_TRIPS``: column 0 counts a row's non-positive elimination pivots
@@ -160,68 +138,12 @@ ADJOINT_SELF_LOOP_MODES = ("series", "exact")
 _COLLECT_EXACT_ADJOINT_GUARD_TRIPS = False
 _EXACT_ADJOINT_GUARD_TRIPS = []
 
-# How the exact adjoint decides, per wave, whether to run the Neumann series at all. The exact
-# transposed solve hands a row to the series only when its elimination is badly conditioned, which
-# is rare, so most waves have nothing for the series to do.
-#   "always": launch regardless. The series kernel returns on its first load when its row is not
-#             in the mask (see _reconciliation_self_loop_transpose_series_kernel), so an empty
-#             launch is a few microseconds and the host never waits for the device.
-#   "sync":   read that wave's spill count back to the host and launch only when it is nonzero --
-#             no launch at all in the ordinary case, but one device-to-host copy per wave, and
-#             each of those drains the stream and stops the host running ahead.
-# Mirrors ``gpurec.core.inference.forward.EXACT_RANGE_FALLBACK_DECISIONS`` for the forward's
-# equivalent choice, and like it is a module-level switch rather than a setting: which one wins is
-# a property of the GPU and the wave count, not something a run should have to state.
-#
-# Measured on the 200-family Coleman batch (RTX 4090, fp32, exact/exact, 1977 waves,
-# benchmark/cc/test_adjoint_series_cost.py, the two decisions interleaved one gradient at a time
-# because another process shared the card): "sync" was 1.15 s per gradient SLOWER than "always"
-# (median of the per-rep difference, 5 of 7 reps slower). 1977 stream drains per gradient cost far
-# more than 1977 launches of a kernel that returns at once, so "always" is the default and the
-# spill counter is only built on the "sync" side. Before the kernel learned to return early those
-# same empty launches were 66 ms of GPU time, 2.7 % of one gradient, which is what made this a
-# question at all. See docs/genewise_h100_runtime.md.
-ADJOINT_SERIES_SPILL_DECISIONS = ("sync", "always")
-_ADJOINT_SERIES_SPILL_DECISION = "always"
-
-
-def set_adjoint_series_spill_decision(mode):
-    """Choose how the per-wave series-launch decision is taken; see the constant above."""
-    global _ADJOINT_SERIES_SPILL_DECISION
-    if mode not in ADJOINT_SERIES_SPILL_DECISIONS:
-        raise ValueError(
-            f"decision must be one of {ADJOINT_SERIES_SPILL_DECISIONS}, got {mode!r}"
-        )
-    _ADJOINT_SERIES_SPILL_DECISION = mode
-
-
-
 def set_exact_adjoint_guard_trip_collection(enabled):
     """Turn the exact adjoint solve's per-row pivot-guard counters on or off."""
     global _COLLECT_EXACT_ADJOINT_GUARD_TRIPS
     _COLLECT_EXACT_ADJOINT_GUARD_TRIPS = bool(enabled)
     if not _COLLECT_EXACT_ADJOINT_GUARD_TRIPS:
         _EXACT_ADJOINT_GUARD_TRIPS.clear()
-
-
-def set_fused_neumann_series(enabled):
-    """Choose the fused series kernel (True) or the per-term reference loop (False)."""
-    global _USE_FUSED_NEUMANN_SERIES
-    _USE_FUSED_NEUMANN_SERIES = bool(enabled)
-
-
-def set_neumann_term_stat_collection(enabled):
-    """Turn per-row Neumann-term counting on or off and clear any counts held."""
-    global _COLLECT_NEUMANN_TERM_STATS
-    _COLLECT_NEUMANN_TERM_STATS = bool(enabled)
-    _NEUMANN_TERM_COUNTS.clear()
-
-
-def take_neumann_term_counts():
-    """Return and clear the per-wave [W] int32 term counts collected so far."""
-    counts = list(_NEUMANN_TERM_COUNTS)
-    _NEUMANN_TERM_COUNTS.clear()
-    return counts
 
 
 def _tl_float_dtype(dtype):
@@ -399,7 +321,6 @@ def _solve_reconciliation_wave_vjp_2d(
     *,
     neumann_terms,
     neumann_term_tol,
-    adjoint_self_loop,
     wide_row,
     leaf_species_idx,
     leaf_logp,
@@ -422,8 +343,6 @@ def _solve_reconciliation_wave_vjp_2d(
     grad_receiver_log_probs=None,
     use_receiver_weights=True,
     self_loop_grad_targets=None,
-    initial_v=None,
-    return_last_increment=False,
     reserved_scratch_bytes=None,
     pi_offset,
     pibar_offset,
@@ -448,10 +367,6 @@ def _solve_reconciliation_wave_vjp_2d(
             "2D self-loop fast path estimated scratch "
             f"{required_bytes / (1024 ** 3):.2f} GiB above memory budget "
             f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB",
-        )
-    if adjoint_self_loop not in ADJOINT_SELF_LOOP_MODES:
-        raise ValueError(
-            f"adjoint_self_loop must be one of {ADJOINT_SELF_LOOP_MODES}, got {adjoint_self_loop!r}"
         )
     if const_layout not in (0, 1, 2):
         raise RuntimeError("unsupported self-loop constant layout")
@@ -488,7 +403,6 @@ def _solve_reconciliation_wave_vjp_2d(
         leaf_logp=leaf_logp,
         pibar_row_max=pibar_row_max,
         grad_receiver_log_probs=grad_receiver_log_probs,
-        initial_v=initial_v,
         **grad_targets,
     )
     expected_rows = int(Pi_star.shape[0])
@@ -592,42 +506,24 @@ def _solve_reconciliation_wave_vjp_2d(
     )
     speciation_child1_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
     speciation_child2_probability = torch.empty(scratch_shape, device=device, dtype=dtype)
-    use_exact_adjoint = adjoint_self_loop == "exact"
     # The forward flagged the rows whose lanes it could not hold under one row scale and solved
     # them in log space instead. The transposed solve underflows on exactly those rows, so they
     # go to the Neumann series and the exact elimination skips them. ``wide_row`` is None
     # whenever the forward flagged nothing, which is the ordinary case and leaves both paths
     # exactly as they were.
-    wide_rows_in_wave = None
-    if use_exact_adjoint and wide_row is not None:
-        wide_rows_in_wave = wide_row[int(ws): int(ws) + int(W)].to(torch.bool)
-    split_by_range = wide_rows_in_wave is not None
-    # One [2, W, S] allocation instead of two [W, S] ones (same total bytes): the
-    # fused series kernel ping-pongs the two Neumann term buffers by adding an
-    # integer offset of 0 or W*S to a single base pointer, which Triton can carry
-    # through a while loop (a pointer swap it cannot).
-    #
-    # The exact solve has no terms to ping-pong. It spends the same two [W, S] arrays on the two
-    # of its three per-node numbers that need their own storage; the third shares
-    # ``subtree_donor_adjoint``, which is pure scratch until the receiver-gradient kernel below
-    # rewrites it. So the exact path allocates exactly what the series path does.
-    term_pair = torch.empty(
-        (2, 1, 1) if use_exact_adjoint else (2, W, S), device=device, dtype=dtype
+    wide_rows_in_wave = (
+        None
+        if wide_row is None
+        else wide_row[int(ws): int(ws) + int(W)].to(torch.bool)
     )
-    spec_buf = term_pair[0]
-    term_buf = term_pair[1]
+    split_by_range = wide_rows_in_wave is not None
     subtree_donor_adjoint = torch.empty(scratch_shape, device=device, dtype=dtype)
-    if use_exact_adjoint:
-        elimination_pair = torch.empty((2, W, S), device=device, dtype=dtype)
-        subtree_donor_weight = elimination_pair[0]
-        subtree_donor_constant = elimination_pair[1]
+    elimination_pair = torch.empty((2, W, S), device=device, dtype=dtype)
     # The prepare kernel builds each donor's valid receiver mass from two running sums, which need
-    # one [W, S] slot each. No new allocation: on the exact path the elimination pair is pure
-    # scratch until the tree solve seeds every species of it, and on the series path the term pair
-    # is pure scratch until the first J^T application writes into it -- and both of those happen
-    # after the prepare kernel has finished with them. Same trick, and same reason, as
+    # one [W, S] slot each. No new allocation: the elimination pair is pure scratch until the tree
+    # solve seeds every species of it, after the prepare kernel has finished. Same trick as
     # ``subtree_donor_adjoint`` being scratch until the receiver-gradient kernel rewrites it.
-    valid_receiver_scratch = elimination_pair if use_exact_adjoint else term_pair
+    valid_receiver_scratch = elimination_pair
 
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained 2D self-loop path")
@@ -656,19 +552,14 @@ def _solve_reconciliation_wave_vjp_2d(
         if use_fraction_missing
         else torch.empty(1, device=device, dtype=dtype)
     )
-    use_child_edge_self_loop = True
-
     launch_options = {"num_warps": 8}
 
-    def _launch_prepare(prepare_rows, use_prepare_row_mask):
+    def _launch_prepare(prepare_rows):
         """Write the five per-species self-loop coefficient arrays, and seed ``v_k`` with the rhs.
 
-        On the "series" adjoint this covers every active row -- the series reads all five arrays
-        at every term. On the "exact" adjoint it covers only the rows the register-resident solve
-        did NOT take: the ones the forward flagged as too wide for one row scale, plus the ones
-        that solve refused on conditioning grounds. That is almost always none of them, and the
-        kernel returns on its first load when its row is not in the mask, so the launch costs a
-        few microseconds rather than a full pass over the wave.
+        This covers only rows the register-resident exact solve did not take: rows the forward
+        flagged as too wide for one scale, plus rows refused on conditioning grounds. The kernel
+        returns on its first load for every other row.
         """
         _prepare_reconciliation_self_loop_vjp_kernel[(n_row_blocks,)](
             Pi_star,
@@ -705,7 +596,6 @@ def _solve_reconciliation_wave_vjp_2d(
             donor_adjoint_coefficient,
             receiver_mass,
             speciation_child1_probability,
-            speciation_child2_probability,
             ws,
             W,
             S,
@@ -716,306 +606,121 @@ def _solve_reconciliation_wave_vjp_2d(
             HAS_LEAF_TERM=bool(has_leaf_term),
             LEAF_LOGP_MODE=int(leaf_logp_mode),
             USE_FRACTION_MISSING=bool(use_fraction_missing),
-            USE_ACTIVE_MASK=bool(use_prepare_row_mask),
             SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
             CONST_LAYOUT=int(const_layout),
             DTYPE=_tl_float_dtype(dtype),
-            USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
             USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
             num_warps=_NUM_WARPS_PREPARE_SELF_LOOP_VJP,
         )
 
     jt_options = {"num_warps": 2}
-    if not use_exact_adjoint:
-        _launch_prepare(
-            active_mask if active_mask is not None else rhs, active_mask is not None
-        )
-        if initial_v is not None:
-            # Warm start: the series then iterates the fixed point v <- rhs + J^T v
-            # from this v instead of summing Neumann terms from scratch. The exact solve
-            # lands on that fixed point in one shot, so a starting point buys it nothing.
-            if tuple(initial_v.shape) != scratch_shape:
-                raise ValueError(
-                    f"initial_v shape {tuple(initial_v.shape)} does not match "
-                    f"wave scratch shape {scratch_shape}"
-                )
-            v_k.copy_(initial_v.contiguous())
+    collect_guard_trips = _COLLECT_EXACT_ADJOINT_GUARD_TRIPS
+    guard_trips = (
+        torch.zeros((W, 2), device=device, dtype=torch.int32)
+        if collect_guard_trips
+        else compact_level_ptr
+    )
+    # The exact elimination handles every active well-scaled row. Rows flagged by the forward or
+    # refused because of a poor pivot are added to ``series_rows`` and handled by the numerical
+    # fallback below.
+    active_rows = (
+        active_mask.reshape(W, -1).ne(0).any(dim=1)
+        if active_mask is not None
+        else torch.ones(W, device=device, dtype=torch.bool)
+    )
+    if split_by_range:
+        exact_rows = (active_rows & ~wide_rows_in_wave).to(torch.int8)
+        series_rows = (active_rows & wide_rows_in_wave).to(torch.int8)
+    else:
+        exact_rows = active_rows.to(torch.int8)
+        series_rows = torch.zeros(W, device=device, dtype=torch.int8)
 
-    if use_exact_adjoint:
-        # One launch, no terms: solve (I - J^T) v = rhs by elimination on the species tree.
-        collect_guard_trips = _COLLECT_EXACT_ADJOINT_GUARD_TRIPS
-        guard_trips = (
-            torch.zeros((W, 2), device=device, dtype=torch.int32)
-            if collect_guard_trips
-            else compact_level_ptr
-        )
-        # Three row sets, not two. The forward already handed some rows to the log sweeps, and
-        # those go to the series here. The elimination takes the rest -- but it can also refuse a
-        # row of its own accord, because the TRANSPOSE is a different operator with its own pivots
-        # and its own sibling-coupling divisors, and it spills such a row into the same series
-        # mask. All of it
-        # stays inside the pruner's active mask, so a pruned row is skipped by every launch.
-        active_rows = (
-            active_mask.reshape(W, -1).ne(0).any(dim=1)
-            if active_mask is not None
-            else torch.ones(W, device=device, dtype=torch.bool)
-        )
-        if split_by_range:
-            exact_rows = (active_rows & ~wide_rows_in_wave).to(torch.int8)
-            series_rows = (active_rows & wide_rows_in_wave).to(torch.int8)
-        else:
-            exact_rows = active_rows.to(torch.int8)
-            series_rows = torch.zeros(W, device=device, dtype=torch.int8)
-        # One counter per wave, incremented by the exact kernel for every row it refuses. Only
-        # allocated on the "sync" decision AND when the forward flagged nothing: a wave that
-        # already has forward-flagged rows needs the series whatever the elimination decides, so
-        # there is nothing to read back.
-        count_spills = (
-            _ADJOINT_SERIES_SPILL_DECISION == "sync" and not split_by_range
-        )
-        spill_count = (
-            torch.zeros((1,), device=device, dtype=torch.int32)
-            if count_spills
-            else compact_level_ptr
-        )
-        # One launch, one program per clade row, no [clades, species] round trip: the row's
-        # coefficients are built from the primal row in registers and the two elimination walks
-        # run there too. The prepare kernel below then fills those arrays for the rows this one
-        # refused, which is what the series needs and almost always nobody.
-        _solve_reconciliation_self_loop_transpose_row_kernel[(int(W),)](
-            Pi_star,
-            Pibar_star,
-            pi_offset,
-            pibar_offset,
-            pibar_row_max,
-            gene_split_log_likelihood if gene_split_log_likelihood is not None else Pi_star,
-            gene_split_offset if gene_split_offset is not None else Pi_star,
-            gene_split_log_likelihood is not None,
-            rhs,
-            exact_rows,
-            duplication_loss_const,
-            Ebar,
-            E,
-            speciation_child1_const,
-            speciation_child2_const,
-            receiver_log_probs,
-            species_child1,
-            species_child2,
-            species_parent,
-            species_height,
-            not_open_source,
-            closed_source,
-            not_open_index,
-            closed_index,
-            leaf_term_wt,
-            leaf_species_arg,
-            leaf_logp_arg,
-            leaf_fm_log_arg,
-            family_idx,
-            v_k,
-            donor_adjoint_coefficient,
-            receiver_mass,
-            guard_trips,
-            series_rows,
-            spill_count,
-            exact_conditioning_floor(dtype),
-            ws,
-            W,
-            S,
-            Pi_star.stride(0),
-            block_s,
-            compact_level_ptr.numel() - 1,
-            USE_LEAF_INDEX=bool(use_leaf_index),
-            HAS_LEAF_TERM=bool(has_leaf_term),
-            LEAF_LOGP_MODE=int(leaf_logp_mode),
-            USE_FRACTION_MISSING=bool(use_fraction_missing),
-            CONST_LAYOUT=int(const_layout),
-            DTYPE=_tl_float_dtype(dtype),
-            USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
-            PUBLISH_DONOR_TERMS=bool(grad_receiver_log_probs is not None),
-            WRITE_GUARD_TRIPS=bool(collect_guard_trips),
-            COUNT_SPILLS=bool(count_spills),
-            num_warps=_num_warps_self_loop_transpose_row(Pi_star.device),
-        )
-        if collect_guard_trips:
-            _EXACT_ADJOINT_GUARD_TRIPS.append(guard_trips)
-        _launch_prepare(series_rows, True)
-        # Whether the series has any row to work on. ``elimination_pair`` is [2, W, S] and dead
-        # once the tree solve above has finished with it, so the series ping-pongs in it and this
-        # path allocates nothing of its own. v_k still holds rhs for every masked row -- the
-        # prepare kernel wrote it and the elimination either skipped or refused the row -- which
-        # is exactly what the series' cold branch starts from. See
-        # ``ADJOINT_SERIES_SPILL_DECISIONS`` for the two ways to spend this decision.
-        run_series = (
-            int(spill_count.item()) > 0 if count_spills else True
-        )
-        if run_series:
-            _reconciliation_self_loop_transpose_series_kernel[(n_row_blocks,)](
-                rhs,
-                elimination_pair,
-                series_rows,
-                self_loop_diagonal,
-                donor_adjoint_coefficient,
-                receiver_mass,
-                speciation_child1_probability,
-                speciation_child2_probability,
-                species_child1,
-                species_child2,
-                species_parent,
-                compact_level_ptr,
-                compact_level_parents,
-                compact_level_child1,
-                compact_level_child2,
-                subtree_donor_adjoint,
-                v_k,
-                compact_level_ptr,
-                float(dtype_scaled_self_loop_tol(neumann_term_tol, dtype)),
-                int(neumann_terms),
-                W,
-                S,
-                block_w,
-                block_s,
-                block_nodes,
-                compact_level_ptr.numel() - 1,
-                USE_ACTIVE_MASK=True,
-                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-                FIXED_POINT_UPDATE=False,
-                DTYPE=_tl_float_dtype(dtype),
-                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-                COLLECT_TERMS=False,
-                WRITE_LAST_TERM=False,
-                num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
-            )
-    elif int(neumann_terms) > 0 and not _USE_FUSED_NEUMANN_SERIES:
-        # Reference path: one launch per Neumann term, no early exit. Kept only so
-        # benchmark/cc/test_neumann_exit.py can show the fused kernel below repro-
-        # duces it bit for bit; production never takes this branch.
-        for n in range(int(neumann_terms)):
-            if initial_v is not None:
-                term_in = v_k
-                term_out = spec_buf
-            else:
-                term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
-                term_out = spec_buf if n % 2 == 0 else term_buf
-            _apply_reconciliation_self_loop_transpose_kernel[(n_row_blocks,)](
-                term_in,
-                term_out,
-                rhs,
-                active_mask if active_mask is not None else rhs,
-                self_loop_diagonal,
-                donor_adjoint_coefficient,
-                receiver_mass,
-                speciation_child1_probability,
-                speciation_child2_probability,
-                species_child1,
-                species_child2,
-                species_parent,
-                compact_level_ptr,
-                compact_level_parents,
-                compact_level_child1,
-                compact_level_child2,
-                subtree_donor_adjoint,
-                v_k,
-                W,
-                S,
-                block_w,
-                block_s,
-                block_nodes,
-                compact_level_ptr.numel() - 1,
-                USE_ACTIVE_MASK=bool(active_mask is not None),
-                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-                FIXED_POINT_UPDATE=bool(initial_v is not None),
-                DTYPE=_tl_float_dtype(dtype),
-                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-                OUTPUT_A=False,
-                ACCUMULATE_V=True,
-                num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
-            )
-        if return_last_increment and initial_v is None:
-            # The reference path leaves the final term in whichever buffer the
-            # launch parity picked; mirror it where the diagnostic below looks.
-            if (int(neumann_terms) - 1) % 2 != 0:
-                spec_buf.copy_(term_buf)
-    elif int(neumann_terms) > 0:
-        # One launch for the WHOLE Neumann series (was one launch per term). Each
-        # program runs its row block's terms in-kernel and stops as soon as the
-        # block's largest remaining term is at or below
-        # neumann_term_tol (rescaled to this solve's dtype) * (block max |v_k|).
-        # The self-loop operator is a strong contraction (spectral radius ~0.04), so
-        # the tail terms are below the working dtype's resolution and the launches
-        # that carried them did no useful work.
-        collect_terms = _COLLECT_NEUMANN_TERM_STATS
-        terms_taken = (
-            torch.zeros((W,), device=device, dtype=torch.int32)
-            if collect_terms
-            else compact_level_ptr
-        )
-        write_last_term = bool(return_last_increment and initial_v is None)
-        _reconciliation_self_loop_transpose_series_kernel[(n_row_blocks,)](
-            rhs,
-            term_pair,
-            active_mask if active_mask is not None else rhs,
-            self_loop_diagonal,
-            donor_adjoint_coefficient,
-            receiver_mass,
-            speciation_child1_probability,
-            speciation_child2_probability,
-            species_child1,
-            species_child2,
-            species_parent,
-            compact_level_ptr,
-            compact_level_parents,
-            compact_level_child1,
-            compact_level_child2,
-            subtree_donor_adjoint,
-            v_k,
-            terms_taken,
-            dtype_scaled_self_loop_tol(neumann_term_tol, dtype),
-            int(neumann_terms),
-            W,
-            S,
-            block_w,
-            block_s,
-            block_nodes,
-            compact_level_ptr.numel() - 1,
-            USE_ACTIVE_MASK=bool(active_mask is not None),
-            SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-            FIXED_POINT_UPDATE=bool(initial_v is not None),
-            DTYPE=_tl_float_dtype(dtype),
-            USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-            COLLECT_TERMS=bool(collect_terms),
-            WRITE_LAST_TERM=write_last_term,
-            num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
-        )
-        if collect_terms:
-            _NEUMANN_TERM_COUNTS.append(terms_taken)
-    # Per-row relative size of the last Neumann increment = validated stiffness predictor.
-    # Computed before the param-store kernel runs (which may reuse scratch buffers).
-    last_increment_relres = None
-    if return_last_increment and use_exact_adjoint:
-        # There is no remaining increment: the solve is exact, so the residual it would measure
-        # is zero up to rounding. Reported as such rather than left None, which every caller of
-        # this diagnostic would then have to special-case.
-        last_increment_relres = torch.zeros(W, device=device, dtype=torch.float32)
-    elif (
-        return_last_increment
-        and initial_v is None
-        and int(neumann_terms) > 0
-    ):
-        # The series kernel mirrors each row's final term into term_pair[0]
-        # (= spec_buf) whatever term it stopped at, so no parity bookkeeping.
-        last_buf = spec_buf
-        positive_floor = torch.finfo(torch.float32).tiny
-        last_increment_norm = last_buf.float().norm(dim=1)
-        adjoint_norm = v_k.float().norm(dim=1).clamp_min(positive_floor)
-        relres = last_increment_norm / adjoint_norm
-        # Inactive (pruned) rows hold uninitialized scratch — their adjoint is negligible,
-        # so treat them as converged (0) rather than letting garbage pollute the per-family max.
-        if active_mask is not None:
-            row_active = active_mask.reshape(active_mask.shape[0], -1).ne(0).any(dim=1)
-            relres = torch.where(row_active, relres, torch.zeros_like(relres))
-        last_increment_relres = relres
+    _solve_reconciliation_self_loop_transpose_row_kernel[(int(W),)](
+        Pi_star,
+        Pibar_star,
+        pi_offset,
+        pibar_offset,
+        pibar_row_max,
+        gene_split_log_likelihood if gene_split_log_likelihood is not None else Pi_star,
+        gene_split_offset if gene_split_offset is not None else Pi_star,
+        gene_split_log_likelihood is not None,
+        rhs,
+        exact_rows,
+        duplication_loss_const,
+        Ebar,
+        E,
+        speciation_child1_const,
+        speciation_child2_const,
+        receiver_log_probs,
+        species_child1,
+        species_child2,
+        species_parent,
+        species_height,
+        not_open_source,
+        closed_source,
+        not_open_index,
+        closed_index,
+        leaf_term_wt,
+        leaf_species_arg,
+        leaf_logp_arg,
+        leaf_fm_log_arg,
+        family_idx,
+        v_k,
+        donor_adjoint_coefficient,
+        receiver_mass,
+        guard_trips,
+        series_rows,
+        exact_conditioning_floor(dtype),
+        ws,
+        W,
+        S,
+        Pi_star.stride(0),
+        block_s,
+        compact_level_ptr.numel() - 1,
+        USE_LEAF_INDEX=bool(use_leaf_index),
+        HAS_LEAF_TERM=bool(has_leaf_term),
+        LEAF_LOGP_MODE=int(leaf_logp_mode),
+        USE_FRACTION_MISSING=bool(use_fraction_missing),
+        CONST_LAYOUT=int(const_layout),
+        DTYPE=_tl_float_dtype(dtype),
+        USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
+        PUBLISH_DONOR_TERMS=bool(grad_receiver_log_probs is not None),
+        WRITE_GUARD_TRIPS=bool(collect_guard_trips),
+        num_warps=_num_warps_self_loop_transpose_row(Pi_star.device),
+    )
+    if collect_guard_trips:
+        _EXACT_ADJOINT_GUARD_TRIPS.append(guard_trips)
 
+    # Always launch the masked fallback. On the common no-fallback path each program returns after
+    # its first mask load, avoiding a device-to-host synchronization just to count rows.
+    _launch_prepare(series_rows)
+    _reconciliation_self_loop_transpose_series_kernel[(n_row_blocks,)](
+        rhs,
+        elimination_pair,
+        series_rows,
+        self_loop_diagonal,
+        donor_adjoint_coefficient,
+        receiver_mass,
+        speciation_child1_probability,
+        species_parent,
+        compact_level_ptr,
+        compact_level_parents,
+        compact_level_child1,
+        compact_level_child2,
+        subtree_donor_adjoint,
+        v_k,
+        float(dtype_scaled_self_loop_tol(neumann_term_tol, dtype)),
+        int(neumann_terms),
+        W,
+        S,
+        block_w,
+        block_s,
+        block_nodes,
+        compact_level_ptr.numel() - 1,
+        SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
+        DTYPE=_tl_float_dtype(dtype),
+        num_warps=_NUM_WARPS_SELF_LOOP_TRANSPOSE,
+    )
     if accum_self_loop_grads:
         (
             grad_log_pD_ptr,
@@ -1134,8 +839,6 @@ def _solve_reconciliation_wave_vjp_2d(
             speciation_child1_event_vjp,
             speciation_child2_event_vjp,
         )
-    if return_last_increment:
-        return (*base, last_increment_relres)
     return base
 
 
@@ -1166,18 +869,15 @@ def solve_reconciliation_wave_vjp(
     grad_receiver_log_probs=None,
     use_receiver_weights=True,
     self_loop_grad_targets=None,
-    initial_v=None,
-    return_last_increment=False,
     reserved_scratch_bytes=None,
     *,
     neumann_term_tol,
-    adjoint_self_loop,
     wide_row,
     pi_offset,
     pibar_offset,
     gene_split_offset=None,
 ):
-    """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
+    """Exact self-loop adjoint followed by the event-parameter VJP kernels.
 
     Args:
         Pi_star: [C, S] converged Pi
@@ -1191,20 +891,14 @@ def solve_reconciliation_wave_vjp(
             [S], [W, S], or [G, S] when family_indexed_consts=True
         species_child1, species_child2: [S] long
         leaf_term_wt: [W, S]
-        neumann_terms: int, the maximum number of Neumann terms
-        neumann_term_tol: stop a row block's series once its largest remaining
-            term is <= neumann_term_tol * (that block's max |v_k|).
-            0.0 disables the early exit (full ``neumann_terms`` every row).
-        adjoint_self_loop: "series" to sum Neumann terms, "exact" to solve
-            (I - J^T) v = rhs directly by elimination on the species tree. "exact"
-            ignores ``neumann_terms``, ``neumann_term_tol`` and ``initial_v``: it
-            returns the v the series converges to.
+        neumann_terms: maximum number of terms for ill-conditioned fallback rows
+        neumann_term_tol: relative stopping tolerance for fallback rows
         leaf_species_idx: optional [C] row -> species leaf index, -1 for non-leaves
         leaf_logp: optional [S], [G], or [G, S] log_pS values used with
             leaf_species_idx
 
     Returns:
-        v_k: [W, S] Neumann-solved adjoint
+        v_k: [W, S] exactly solved adjoint (with an iterative numerical fallback)
         Per-event VJP tensors for duplication-loss, transfer-loss, transfer,
         combined speciation/leaf, and the two speciation child assignments.
     """
@@ -1267,7 +961,6 @@ def solve_reconciliation_wave_vjp(
         leaf_term_wt,
         neumann_terms=neumann_terms,
         neumann_term_tol=neumann_term_tol,
-        adjoint_self_loop=adjoint_self_loop,
         wide_row=wide_row,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
@@ -1290,8 +983,6 @@ def solve_reconciliation_wave_vjp(
         grad_receiver_log_probs=grad_receiver_log_probs,
         use_receiver_weights=use_receiver_weights,
         self_loop_grad_targets=self_loop_grad_targets,
-        initial_v=initial_v,
-        return_last_increment=return_last_increment,
         reserved_scratch_bytes=reserved_scratch_bytes,
         pi_offset=pi_offset,
         pibar_offset=pibar_offset,
@@ -1586,7 +1277,7 @@ def accumulate_transfer_complement_vjp_from_donor_adjoint(
     use_receiver_weights=True,
     side_active_threshold=0.0,
 ):
-    """Accumulate the transfer-complement VJP from staged donor adjoints."""
+    """Accumulate the exact tree-walk transfer-complement VJP."""
     n_splits = split_left_rows.shape[0]
     if n_splits == 0:
         return

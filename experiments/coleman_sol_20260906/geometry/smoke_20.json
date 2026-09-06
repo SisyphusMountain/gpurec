@@ -1,0 +1,306 @@
+{
+  "arguments": {
+    "species": "data/external/benchmarks/large_dataset_capacity/datasets/coleman/Section01.SpeciesTree/ReferenceTree.nwk",
+    "families": "data/external/benchmarks/large_dataset_capacity/datasets/coleman/families_no_largest.txt",
+    "limit": 20,
+    "clade_budget": 0,
+    "rounds": 4,
+    "runs": "log2,hier_raw,hier_scaled",
+    "rebuild_fraction": 0.25,
+    "trust": 2.0,
+    "trust_max": 8.0,
+    "output": "experiments/coleman_sol_20260906/geometry/smoke_20.pt"
+  },
+  "clade_budget": 211133,
+  "total_clades": 174742.0,
+  "adam_trace": [
+    {
+      "iteration": 0,
+      "seconds": 0.7264595110027585,
+      "nll_bits": 100391.13222010733,
+      "pg_max": 797.548583984375
+    },
+    {
+      "iteration": 1,
+      "seconds": 0.24731199099915102,
+      "nll_bits": 93323.81413261668,
+      "pg_max": 725.803955078125
+    },
+    {
+      "iteration": 2,
+      "seconds": 0.25597180100157857,
+      "nll_bits": 87794.9992994383,
+      "pg_max": 616.828125
+    }
+  ],
+  "warmup_seconds": 1.229743303003488,
+  "post_adam_ordinary_seconds": 0.26322531899859314,
+  "post_adam_count_seconds": 0.261087683000369,
+  "post_adam_gradient_disagreement_max": 0.00152587890625,
+  "post_adam_nll_disagreement_max": 0.0,
+  "summaries": {
+    "log2": {
+      "variant": "log2",
+      "rounds_run": 4,
+      "frozen_before_certificate": 0,
+      "rejected_total": 8,
+      "charged_clade_passes_before_certificate": 8.0,
+      "gradient_seconds_before_certificate": 2.632976390996191,
+      "rebuild_seconds": 0.0,
+      "trace": [
+        {
+          "evaluation": 0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "pg_max": 575.0307006835938,
+          "nll_bits": 85630.98964645246,
+          "charged_clade_passes": 4.0
+        },
+        {
+          "evaluation": 1,
+          "seconds": 0.27498016100071254,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 5.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 82040.98291052984,
+          "pg_max": 298.1349182128906,
+          "rejected": 0,
+          "uphill": 0,
+          "radius_median": 2.0
+        },
+        {
+          "evaluation": 2,
+          "seconds": 0.2929107129966724,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 6.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81650.7024876892,
+          "pg_max": 370.08551025390625,
+          "rejected": 6,
+          "uphill": 6,
+          "radius_median": 1.0
+        },
+        {
+          "evaluation": 3,
+          "seconds": 0.2837089669992565,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 7.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81082.61884916334,
+          "pg_max": 121.82095336914062,
+          "rejected": 2,
+          "uphill": 2,
+          "radius_median": 2.0
+        },
+        {
+          "evaluation": 4,
+          "seconds": 0.2884079279974685,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 8.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81012.16609253045,
+          "pg_max": 34.5740966796875,
+          "rejected": 0,
+          "uphill": 0,
+          "radius_median": 2.0
+        }
+      ],
+      "seed": {},
+      "certificate": {
+        "seconds": 0.29027728700020816,
+        "nll_bits": 81012.16609253045,
+        "certified": 0,
+        "pg_max": 34.573970794677734,
+        "pg_median": 0.8146945238113403
+      },
+      "charged_clade_passes_with_certificate": 9.0,
+      "gradient_seconds_with_certificate": 2.9232536779963993
+    },
+    "hier_raw": {
+      "variant": "hier_raw",
+      "rounds_run": 4,
+      "frozen_before_certificate": 0,
+      "rejected_total": 1,
+      "charged_clade_passes_before_certificate": 8.0,
+      "gradient_seconds_before_certificate": 2.6215208650028217,
+      "rebuild_seconds": 0.0,
+      "trace": [
+        {
+          "evaluation": 0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "pg_max": 575.0304565429688,
+          "nll_bits": 85630.98964645246,
+          "charged_clade_passes": 4.0
+        },
+        {
+          "evaluation": 1,
+          "seconds": 0.2737971179994929,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 5.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81854.87034650584,
+          "pg_max": 311.8640441894531,
+          "rejected": 0,
+          "uphill": 0,
+          "radius_median": 2.0
+        },
+        {
+          "evaluation": 2,
+          "seconds": 0.2843051660020137,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 6.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81253.6399227155,
+          "pg_max": 166.750732421875,
+          "rejected": 1,
+          "uphill": 1,
+          "radius_median": 2.0
+        },
+        {
+          "evaluation": 3,
+          "seconds": 0.288028076000046,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 7.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81079.14331789166,
+          "pg_max": 38.925846099853516,
+          "rejected": 0,
+          "uphill": 0,
+          "radius_median": 2.0
+        },
+        {
+          "evaluation": 4,
+          "seconds": 0.28455951899741194,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 8.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81034.45672114287,
+          "pg_max": 28.04819107055664,
+          "rejected": 0,
+          "uphill": 0,
+          "radius_median": 2.0
+        }
+      ],
+      "seed": {
+        "scale_median": 1.0,
+        "scale_p90": 1.0,
+        "scale_valid": 20
+      },
+      "certificate": {
+        "seconds": 0.28934238600049866,
+        "nll_bits": 81034.45672114287,
+        "certified": 0,
+        "pg_max": 28.0483341217041,
+        "pg_median": 2.128763437271118
+      },
+      "charged_clade_passes_with_certificate": 9.0,
+      "gradient_seconds_with_certificate": 2.9108632510033203
+    },
+    "hier_scaled": {
+      "variant": "hier_scaled",
+      "rounds_run": 4,
+      "frozen_before_certificate": 0,
+      "rejected_total": 5,
+      "charged_clade_passes_before_certificate": 8.0,
+      "gradient_seconds_before_certificate": 2.637605241005076,
+      "rebuild_seconds": 0.0,
+      "trace": [
+        {
+          "evaluation": 0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "pg_max": 575.0304565429688,
+          "nll_bits": 85630.98964645246,
+          "charged_clade_passes": 4.0
+        },
+        {
+          "evaluation": 1,
+          "seconds": 0.2780524100016919,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 5.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 82177.15255241908,
+          "pg_max": 313.16357421875,
+          "rejected": 2,
+          "uphill": 2,
+          "radius_median": 2.0
+        },
+        {
+          "evaluation": 2,
+          "seconds": 0.2925344909999694,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 6.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81345.09773257347,
+          "pg_max": 174.7978515625,
+          "rejected": 3,
+          "uphill": 3,
+          "radius_median": 2.0
+        },
+        {
+          "evaluation": 3,
+          "seconds": 0.2896984799990605,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 7.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 81068.89860572423,
+          "pg_max": 123.6689682006836,
+          "rejected": 0,
+          "uphill": 0,
+          "radius_median": 2.0
+        },
+        {
+          "evaluation": 4,
+          "seconds": 0.28648887400049716,
+          "model_families": 20,
+          "model_clades": 174742.0,
+          "charged_clade_passes": 8.0,
+          "frozen": 0,
+          "live_clade_fraction": 1.0,
+          "nll_bits": 80993.69056704263,
+          "pg_max": 27.390989303588867,
+          "rejected": 0,
+          "uphill": 0,
+          "radius_median": 2.0
+        }
+      ],
+      "seed": {
+        "scale_median": 0.380141188015507,
+        "scale_p90": 0.5296335429170899,
+        "scale_valid": 20
+      },
+      "certificate": {
+        "seconds": 0.29079400999762584,
+        "nll_bits": 80993.69056704263,
+        "certified": 0,
+        "pg_max": 27.391042709350586,
+        "pg_median": 1.401767611503601
+      },
+      "charged_clade_passes_with_certificate": 9.0,
+      "gradient_seconds_with_certificate": 2.928399251002702
+    }
+  }
+}

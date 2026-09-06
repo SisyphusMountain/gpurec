@@ -37,12 +37,6 @@ def _mode_flags(mode: str) -> tuple[bool, bool]:
         raise ValueError(f"mode must be one of {sorted(_MODE_FLAGS)}, got {mode!r}") from exc
 
 
-# Number of Hessian-vector-product probe directions the genewise Newton recipe uses: one unit
-# direction per rate parameter (D, L, T) -- see gpurec/fit/genewise_fit.py::_analytic_hessian. A fact
-# of the 3-parameter DTL model, not a setting; used only to size the resident HVP warm-start caches.
-_HVP_PROBE_DIRECTIONS = 3
-
-
 class GeneReconModel(torch.nn.Module):
     def __init__(
         self,
@@ -175,7 +169,6 @@ class GeneReconModel(torch.nn.Module):
         self.wave_layout = first.wave_layout
         self.rate_family_idx = first.rate_family_idx
         self.warm_E = first.warm_E
-        self._resolve_warm_adjoint_gate()
         self._resolve_forward_gene_split_gate()
 
     def _resolve_forward_gene_split_gate(self) -> None:
@@ -217,51 +210,6 @@ class GeneReconModel(torch.nn.Module):
                 f"({cache / gib:.1f} GiB) on top of one batch's working set "
                 f"({working / gib:.1f} GiB) exceeds the budget {(budget or 0) / gib:.1f} GiB "
                 f"[{max(batch_clades, default=0):,} clades in the largest batch x {S} species]",
-                flush=True,
-            )
-
-    def _resolve_warm_adjoint_gate(self) -> None:
-        """Memory-gate the GPUREC_WARM_ADJOINT cache by the clades x species product.
-
-        The warm-adjoint cache (``static.warm_v``) is resident at ~``total_clades * S * dtype`` and on
-        large family sets dwarfs both the static base (~0.25 GiB) and one batch's transient scratch
-        (~1.8 GiB) -- full Hogenom ~19 GiB. Decide ONCE per (re)build whether it (plus the largest
-        batch's backward scratch) fits the free-memory budget; if not, mark every batch static so
-        ``_execution`` ignores the warm-adjoint env and runs cold. Small/medium sets (e.g. Hogenom-1055
-        ~5.5 GiB) keep warm and its speed. This is the right gate (clades x species) vs a family count.
-        """
-        device = self.theta.device
-        if device.type != "cuda":
-            return
-        from gpurec.core.memory_policy import warm_adjoint_fits
-
-        S = int(self.species_helpers["S"])
-        batch_clades = [
-            sum(int(self.families[i]["C"]) for i in batch) for batch in self.family_batches
-        ]
-        total_clades = sum(batch_clades)
-        # Resident caches: the gradient adjoint, plus one tangent-adjoint cache per Hessian probe
-        # direction when the HVP warm start is on (gpurec/solver/hvp/exact.py keeps
-        # ``static.warm_v_tangent[probe_id]``, one [C,S] per probe id).
-        resident_caches = 1 + (_HVP_PROBE_DIRECTIONS if self.solver_options.use_hvp_warm_start else 0)
-        ok, cache, scratch, budget = warm_adjoint_fits(
-            total_clades, S, self.theta.dtype, device=device, max_batch_clades=max(batch_clades, default=0),
-            resident_caches=resident_caches,
-        )
-        for static in self.batch_statics:
-            static.warm_adjoint_ok = ok
-            # When warm fits, the build gate verified ``cache + scratch <= budget`` with ``scratch``
-            # covering the largest batch's per-wave scratch (W <= max_batch_clades). Record it so the
-            # forward self-loop gate trusts this reservation instead of re-reading the depleted
-            # post-cache free memory (the double-gate bug). Cleared to None when warm does not fit.
-            static.warm_scratch_reserved_bytes = scratch if ok else None
-        self.warm_adjoint_ok = ok
-        if not ok:
-            gib = 1024 ** 3
-            print(
-                f"[gpurec] warm-adjoint disabled (running cold): cache {cache / gib:.1f} GiB + scratch "
-                f"{scratch / gib:.1f} GiB > budget {(budget or 0) / gib:.1f} GiB "
-                f"[{total_clades:,} clades x {S} species, {len(self.family_batches)} batches]",
                 flush=True,
             )
 
@@ -344,6 +292,7 @@ class GeneReconModel(torch.nn.Module):
         origination_weights: torch.Tensor | None = None,
         need_grad: bool = True,
         update_warm_starts: bool = False,
+        event_counts_out: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """Return per-family NLLs and optional independent genewise gradients.
 
@@ -352,12 +301,38 @@ class GeneReconModel(torch.nn.Module):
         mode because shared-theta modes do not have independent per-family
         parameter rows. Warm starts are not updated by default so line-search
         probes stay deterministic even when trial points are rejected.
+
+        When ``event_counts_out`` is supplied, it is filled in place with the
+        posterior expected event counts in ``(S, D, L, T)`` order for each family,
+        including the survival-conditioning contribution. The buffer must have
+        shape ``[F, 4]``, share theta's device, use floating point precision at
+        least as wide as theta, and may only be requested with ``need_grad=True``.
+        The method's three-value return contract is unchanged.
         """
         if not self.genewise:
             raise ValueError("genewise_loss_vector_and_grad() requires genewise mode")
         theta = self.theta if theta is None else theta
         receiver_weights = self.receiver_weights if receiver_weights is None else receiver_weights
         origination_weights = self.origination_weights if origination_weights is None else origination_weights
+        if event_counts_out is not None:
+            if not need_grad:
+                raise ValueError("event_counts_out requires need_grad=True")
+            expected_shape = (int(theta.shape[0]), 4)
+            if tuple(event_counts_out.shape) != expected_shape:
+                raise ValueError(
+                    f"event_counts_out must have shape {expected_shape}, got {tuple(event_counts_out.shape)}"
+                )
+            if event_counts_out.device != theta.device:
+                raise ValueError(
+                    f"event_counts_out must be on theta device {theta.device}, got {event_counts_out.device}"
+                )
+            valid_float_dtype = event_counts_out.dtype in (torch.float32, torch.float64)
+            not_narrower = event_counts_out.element_size() >= theta.element_size()
+            if not valid_float_dtype or not not_narrower:
+                raise TypeError(
+                    "event_counts_out must use torch.float32 or torch.float64 and must not be "
+                    "narrower than theta"
+                )
         loss_vec, grad_theta, grad_receiver, _grad_origination = stream_genewise_loss_vector_grad(
             self.batch_statics,
             theta,
@@ -370,6 +345,7 @@ class GeneReconModel(torch.nn.Module):
             # weights are still trainable.
             need_receiver_grad=bool(receiver_weights.requires_grad),
             update_warm_starts=update_warm_starts,
+            event_counts_out=event_counts_out,
         )
         return loss_vec, grad_theta, grad_receiver
 
@@ -435,7 +411,6 @@ class GeneReconModel(torch.nn.Module):
         self.wave_layout = self.batch_statics[0].wave_layout
         self.rate_family_idx = self.batch_statics[0].rate_family_idx
         self.warm_E = self.batch_statics[0].warm_E
-        self._resolve_warm_adjoint_gate()
         self._resolve_forward_gene_split_gate()
         return self.family_batches
 
@@ -467,43 +442,25 @@ class GeneReconModel(torch.nn.Module):
             static.solver_options = options
         return self.batch_statics
 
-    def convergence_report(self, *, pi_iters_high: int = 400, neumann_terms=None):
-        """Per-family solver-convergence diagnostics over all batches.
-
-        Runs a diagnostic forward (at a high ``pi_iters`` so the forward fixed point is
-        converged) + backward self-loop pass per batch, mapping each batch's local
-        per-family results to global family indices. Returns a dict of three
-        ``[n_families]`` tensors: ``forward_resid`` (last Pi update size),
-        ``backward_relres`` (last Neumann increment / partial sum), and ``vk_magnitude``
-        (max adjoint norm — large => non-normal overshoot). ``neumann_terms=None`` measures
-        at each batch's current setting.
-        """
+    def convergence_report(self, *, pi_iters_high: int = 400):
+        """Return each family's largest automatic forward-fallback update."""
         from gpurec.api._execution import evaluate_static_convergence
 
         n = len(self.families)
         device = self.theta.device
         forward_resid = torch.zeros(n, device=device, dtype=torch.float32)
-        backward_relres = torch.zeros(n, device=device, dtype=torch.float32)
-        vk_magnitude = torch.zeros(n, device=device, dtype=torch.float32)
         with torch.no_grad():
             for static in self.batch_statics:
                 theta_b = theta_for_static(static, self.theta.detach(), genewise=self.genewise)
-                f, b, v = evaluate_static_convergence(
+                f = evaluate_static_convergence(
                     static,
                     theta_b,
                     self.receiver_weights.detach(),
                     pi_iters_high=int(pi_iters_high),
-                    neumann_terms=neumann_terms,
                 )
                 idx = static.family_index_tensor.to(device)
                 forward_resid[idx] = f.to(device)
-                backward_relres[idx] = b.to(device)
-                vk_magnitude[idx] = v.to(device)
-        return {
-            "forward_resid": forward_resid,
-            "backward_relres": backward_relres,
-            "vk_magnitude": vk_magnitude,
-        }
+        return {"forward_resid": forward_resid}
 
     def forward(
         self,

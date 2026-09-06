@@ -1,0 +1,472 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,geometry,microtype}
+\usepackage{xcolor,hyperref}
+\geometry{margin=25mm}
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black}
+\setlength{\emergencystretch}{2em}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\tr}{\mathsf T}
+\newcommand{\Ic}{I_{\mathrm c}}
+\newcommand{\Imis}{I_{\mathrm m}}
+\newcommand{\Io}{I_{\mathrm o}}
+
+\title{Natural Coordinates for GPURec:\\Diagnosis and Practical Optimization Suggestions}
+\author{A standalone mathematical and experimental assessment}
+\date{6 September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The gene-wise duplication--loss--transfer model admits a useful hierarchical
+logit parameterization: one coordinate describes duplication/transfer intensity,
+one their relative mixture, and one loss relative to speciation. For fixed
+complete-history counts, including the appropriate survival-conditioning
+augmentation, its objective is a sum of three scalar binary likelihoods with an
+exactly diagonal Hessian. This does not diagonalize the observed likelihood:
+uncertainty over reconciliation histories reintroduces coupling and weak
+curvature. The most defensible practical strategy is therefore to use
+complete-history counts for a short bounded EM initialization and a cheap
+curvature seed, then learn the observed curvature with safeguarded per-family
+BFGS updates. Original log-rate bounds and convergence tests should remain
+authoritative. This note separates exact identities, implementation suggestions,
+and the experimental evidence available at the time of writing.
+\end{abstract}
+
+\section{Diagnosis: the coordinates are only part of the difficulty}
+
+For one family, write
+\[
+ \theta=(\theta_D,\theta_L,\theta_T)
+       =(\log_2 D,\log_2 L,\log_2 T),\qquad
+ Z=1+D+L+T.
+\]
+Speciation is the reference event, with rate one, so
+\begin{equation}
+ (p_S,p_D,p_L,p_T)=\frac{(1,D,L,T)}{Z}.
+ \label{eq:probabilities}
+\end{equation}
+This discussion holds recipient and other non-rate parameters fixed, as in the
+gene-wise Coleman fits. Their contributions to each complete history are then
+independent of these three rates.
+
+The existing log rates are already canonical exponential-family parameters, up
+to multiplication by $\ln 2$. Thus they are not an intrinsically inappropriate
+starting point. For fixed nonnegative expected event counts $N_k$, put
+$N=\sum_k N_k$. The complete-history negative log-likelihood surrogate in bits is
+\begin{equation}
+ Q_\theta(\theta;N)
+ =N\log_2 Z-N_D\theta_D-N_L\theta_L-N_T\theta_T+\text{constant}.
+ \label{eq:surrogate-theta}
+\end{equation}
+It is convex, with
+\begin{equation}
+ \nabla Q_\theta=Np-(N_D,N_L,N_T)^\tr,\qquad
+ C_\theta(\theta;N)=\ln(2)N\{\diag(p)-pp^\tr\},
+ \quad p=(p_D,p_L,p_T)^\tr.
+ \label{eq:surrogate-curvature}
+\end{equation}
+
+The observed family does not specify its event counts. Alternative histories can
+explain similar gene-tree patterns using different combinations of duplication,
+transfer, loss, and extinct lineages. Moving the rates changes that posterior
+mixture. Consequently, observed curvature can be much weaker than complete-data
+curvature, strongly coupled, and indefinite away from a solution. This is a
+statistical ambiguity as well as a numerical scaling problem.
+
+\section{An exact hierarchical coordinate system}
+
+\subsection{Definition, interpretation, and inverse}
+
+Define $\psi=(u,v,w)$ by
+\begin{equation}
+ \boxed{\quad
+ u=\log_2\frac{D+T}{1+L},\qquad
+ v=\log_2\frac{T}{D},\qquad
+ w=\log_2 L.
+ \quad}
+ \label{eq:hierarchy}
+\end{equation}
+Here $u$ compares the event groups $\{D,T\}$ and $\{S,L\}$; $v$ compares
+transfer with duplication within the first group; and $w$ compares loss with
+speciation within the second. This directly exposes the observed
+duplication--transfer substitution rather than mixing it into two absolute rates.
+
+Let $F(x)=\log_2(1+2^x)$. The inverse is smooth for positive rates:
+\begin{equation}
+ \theta_D=u+F(w)-F(v),\qquad
+ \theta_L=w,\qquad
+ \theta_T=u+F(w)+v-F(v).
+ \label{eq:inverse}
+\end{equation}
+Equivalently, $D=2^u(1+2^w)/(1+2^v)$, $L=2^w$, and $T=2^vD$.
+Evaluate $F$ using a stable softplus implementation.
+
+For $\sigma(x)=1/(1+e^{-x})$, set
+\[
+ a=\sigma(u\ln 2),\qquad b=\sigma(v\ln 2),\qquad
+ c=\sigma(w\ln 2).
+\]
+Then the four-way event choice factors into binary choices:
+\begin{equation}
+ p_D=a(1-b),\qquad p_T=ab,\qquad
+ p_S=(1-a)(1-c),\qquad p_L=(1-a)c.
+ \label{eq:binary-factorization}
+\end{equation}
+This is a computationally natural factorization, not a claim that the original
+log rates cease to be the canonical parameters of the model.
+
+\subsection{Exact separation of the fixed-count surrogate}
+
+Write $N_A=N_D+N_T$ and $N_B=N_S+N_L$, so $N=N_A+N_B$. Substituting
+\eqref{eq:binary-factorization} into the surrogate gives
+\begin{equation}
+ Q_\psi(\psi;N)
+ =\underbrace{NF(u)-N_Au}_{\text{group choice}}
+ +\underbrace{N_AF(v)-N_Tv}_{\text{transfer versus duplication}}
+ +\underbrace{N_BF(w)-N_Lw}_{\text{loss versus speciation}}
+ +\text{constant}.
+ \label{eq:surrogate-hierarchy}
+\end{equation}
+All counts in this differentiation are held fixed. In particular,
+\begin{align}
+ \nabla_\psi Q_\psi
+ &=\begin{pmatrix}Na-N_A\\N_Ab-N_T\\N_Bc-N_L\end{pmatrix},
+ \label{eq:hierarchical-gradient}\\
+ C_\psi(\psi;N)
+ &=\ln(2)\diag\!\left(Na(1-a),\;N_Ab(1-b),\;N_Bc(1-c)\right).
+ \label{eq:hierarchical-curvature}
+\end{align}
+The Hessian is exactly diagonal. When all relevant counts are positive, the
+unconstrained minimizer is
+\begin{equation}
+ u^+=\log_2\frac{N_A}{N_B},\qquad
+ v^+=\log_2\frac{N_T}{N_D},\qquad
+ w^+=\log_2\frac{N_L}{N_S}.
+ \label{eq:hierarchical-em}
+\end{equation}
+After inversion, these are precisely $D^+=N_D/N_S$, $L^+=N_L/N_S$, and
+$T^+=N_T/N_S$. Thus an exact unconstrained EM update is the same operation in
+either coordinate system; a mere invertible reparameterization does not
+accelerate that exact update. Zero counts and the actual rate bounds require
+the constrained calculation below.
+
+\section{Survival conditioning and missing information}
+
+\subsection{Use genuine augmented counts, not an arbitrary signed score decomposition}
+
+Let $A_y$ be the unconditioned likelihood numerator, $q$ the survival probability,
+and $e=1-q$ the extinction probability. The fitted likelihood is $A_y/q$. Since
+\[
+ \frac{A_y}{q}=A_y\sum_{m=0}^{\infty}e^m,
+\]
+it admits an augmentation by the observed family and a geometrically distributed
+number of extinct ``ghost'' families. For this augmentation,
+\begin{equation}
+ N_k=\E[n_k\mid y,\theta]
+       +\frac{e}{q}\E[n_k\mid\text{extinct},\theta]\geq0.
+ \label{eq:ghost-counts}
+\end{equation}
+These are the appropriate expected sufficient statistics for the EM surrogate.
+Data-minus-survival expressions can yield the same observed score, but score
+agreement alone does not establish an EM lower-bound argument for those signed
+quantities.
+
+The existing adjoint calculation can expose the four independent event
+log-probability derivatives before the softmax chain rule:
+\begin{equation}
+ a_k=\frac{\partial\ell}{\partial\log_2 p_k}=-N_k,
+ \qquad
+ g_k=a_k-p_k\sum_j a_j=Np_k-N_k,
+ \quad k\in\{D,L,T\}.
+ \label{eq:count-check}
+\end{equation}
+The extinction and survival-normalization derivatives must be included. Transfer
+recipient contributions are summed to obtain the family-level transfer count.
+This makes count extraction approximately a by-product of the ordinary reverse
+pass, not a second reconciliation solve.
+
+\subsection{What diagonal complete-data curvature does not imply}
+
+For an augmented complete history $h$, let
+$s_\psi(h)=\nabla_\psi\log_2 P(h,y\mid\psi)$. With posterior expectations
+evaluated at the current point, the observed Hessian in bits satisfies
+\begin{equation}
+ H_\psi=I_{\mathrm c,\psi}-I_{\mathrm m,\psi},\qquad
+ I_{\mathrm c,\psi}=C_\psi(\psi;\E[n\mid y,\psi]),\qquad
+ I_{\mathrm m,\psi}=\ln(2)\Cov[s_\psi(h)\mid y,\psi].
+ \label{eq:missing-information}
+\end{equation}
+The covariance generally has off-diagonal entries. Diagonalizing the first term
+therefore neither diagonalizes the observed Hessian nor removes weakly
+identified directions. A diagonal complete-data metric can also be much too
+stiff: the subtraction in \eqref{eq:missing-information} can be substantial.
+
+For clarity, a nonlinear Hessian transformation is not just a change of basis.
+If $J=\partial\theta/\partial\psi$ and $g=\nabla_\theta\ell$, then
+\begin{equation}
+ H_\psi=J^\tr H_\theta J
+       +\sum_k g_k\nabla_\psi^2\theta_k.
+ \label{eq:hessian-transform}
+\end{equation}
+For \eqref{eq:inverse}, the Jacobian and correction are
+\begin{align}
+ J&=\begin{pmatrix}1&-b&c\\0&0&1\\1&1-b&c\end{pmatrix},\\
+ \sum_k g_k\nabla_\psi^2\theta_k
+ &=\ln(2)(g_D+g_T)\diag\!\left(0,-b(1-b),c(1-c)\right).
+ \label{eq:explicit-correction}
+\end{align}
+This gradient-dependent term explains why the hierarchy can remove much apparent
+negative curvature away from an optimum. At an interior stationary point it
+vanishes, and Hessian inertia is preserved under the remaining congruence.
+
+At a regular interior EM fixed point, the local EM convergence matrix is
+$R=\Ic^{-1}\Imis$. Its eigenvalues, equivalently those of
+$\Ic^{-1/2}\Imis\Ic^{-1/2}$, are unchanged by a smooth invertible
+reparameterization of the same exact EM map. A coordinate change can improve
+numerical scaling, but cannot remove the underlying missing-information
+fraction. These stationary-point statements should not be applied to an
+arbitrary off-stationary Hessian. At a constrained optimum the relevant
+second-order analysis uses feasible directions and the constraint geometry.
+
+\section{Bounds are a substantive part of the problem}
+
+Coleman uses $r_{\min}=10^{-6}$ and $r_{\max}=2$. Let
+$\ell_b=\log_2 r_{\min}$ and $h_b=\log_2 r_{\max}$. The original box becomes
+\begin{align}
+ \ell_b&\leq w\leq h_b,\\
+ \ell_b&\leq u+F(w)-F(v)\leq h_b,\\
+ \ell_b&\leq u+F(w)+v-F(v)\leq h_b.
+ \label{eq:coupled-bounds}
+\end{align}
+Replacing this region by three independent coordinate intervals changes the
+optimization problem. Mapping a proposal back and clipping its rates preserves
+feasibility, but changes the actual step; predicted decrease and acceptance
+must be evaluated consistently with that step.
+
+The bounded EM M-step is particularly cheap in the original log rates. For each
+assignment of a coordinate to its lower bound, free state, or upper bound,
+let $B$ be the pinned coordinates and $b_j$ their log-rate bounds. Set
+\[
+ c_B=1+\sum_{j\in B}2^{b_j},\qquad
+ A_B=N_S+\sum_{j\in B}N_j.
+\]
+The free stationary solution is
+\begin{equation}
+ \theta_k^+=\log_2\frac{N_kc_B}{A_B},\qquad k\notin B.
+ \label{eq:bounded-em}
+\end{equation}
+Enumerate the $3^3=27$ active-set assignments and check feasibility and KKT signs.
+For the maximizing score $s_k=N_k-Np_k$, the signs are $s_k\leq0$ at a
+lower bound, $s_k=0$ when free, and $s_k\geq0$ at an upper bound. This avoids
+irreversible-pinning mistakes: pinning one rate can require releasing another.
+Positive-total counts and finite bounds make the surrogate strictly convex
+in $\theta$, so a feasible KKT solution is its unique minimizer.
+
+The convergence criterion should remain the original projected log-rate
+gradient, $\|P_\theta g_\theta\|_\infty<10^{-3}$. Applying the same numerical
+threshold to a rescaled-coordinate gradient would silently change the test.
+
+\section{Recommended optimization strategy}
+
+\subsection{Short EM initialization, followed by observed-curvature learning}
+
+The strongest currently supported combination is:
+\begin{enumerate}
+ \item Start from the same feasible rates as the baseline. Take two or three
+       bounded EM steps using counts extracted in the existing gradient passes.
+       Reuse the already-built model and parsed families.
+ \item At the final warm-up endpoint $\theta_K$, form
+       $C=C_\theta(\theta_K;N^{K-1})$ using the latest fixed count set and
+       \eqref{eq:surrogate-curvature}. This is the exact Hessian of that
+       fixed-count surrogate, not the observed Hessian at $\theta_K$.
+ \item Calibrate its scale using the already-paid latest observed-gradient
+       secant, $s=\theta_{K-1}-\theta_{K-2}$ and
+       $y=g_{K-1}-g_{K-2}$. When both quadratic quantities are finite and
+       positive, use
+       \[
+        \alpha=\frac{s^\tr y}{s^\tr Cs},\qquad B_0=\alpha C.
+       \]
+       Otherwise retain a safe positive scale. Apply a safeguarded BFGS
+       correction on coordinates eligible at both secant endpoints.
+ \item Continue with the original per-family trust-region/BFGS method,
+       scheduled exact curvature refreshes, bound handling, and convergence
+       tests. Keep the full $3\times3$ matrix: its algebra is cheap compared
+       with a reconciliation gradient.
+\end{enumerate}
+
+For a positive-definite $B$ and suitable positive-curvature secant, the familiar
+update is
+\[
+ B^+=B-\frac{Bss^\tr B}{s^\tr Bs}+\frac{yy^\tr}{s^\tr y}.
+\]
+Practical curvature floors and free-coordinate safeguards remain necessary.
+The calibration learns only one direction and uses a secant preceding the
+endpoint. It is a useful approximation, not a proof that $B_0$ equals observed
+information or globally majorizes the objective.
+
+Exact posterior counts and an exact bounded M-step imply EM likelihood
+monotonicity. Pruned FP32 adjoints, finite fixed-point tolerances, and rounding
+the endpoint back to model precision weaken that software guarantee. A double
+output buffer does not turn FP32-derived counts into exact counts. Observed
+likelihood checks and the unchanged final certificate remain important.
+
+\subsection{Interpret adaptive curvature as local coordinates}
+
+For a safeguarded positive-definite approximation $B_f$ in one family's free
+subspace, write $B_f=R_f^\tr R_f$. Then
+\begin{equation}
+ z_f=R_f(\theta_f-\bar\theta_f)
+ \label{eq:whitening}
+\end{equation}
+gives an identity quadratic curvature in the local model. These are
+family-specific, adaptive coordinates: they can scale and rotate to follow the
+posterior ambiguity. They need not be materialized in the likelihood kernels;
+the step can be solved directly in $\theta$, with its simple box constraints.
+
+A crucial distinction is that an SPD preconditioning metric transforms as a
+tensor, while an ordinary off-stationary Hessian has the extra term in
+\eqref{eq:hessian-transform}. Pulling the diagonal matrix
+\eqref{eq:hierarchical-curvature} back without that term defines a possible
+metric, but is not generally the exact fixed-count Hessian in log rates.
+Computing \eqref{eq:surrogate-curvature} directly avoids this ambiguity.
+
+Whitening alone is not an additional acceleration over solving the same
+quadratic model exactly in the original variables. It helps when it improves
+the approximation, numerical conditioning, or trust-region metric. Any changed
+trust-region geometry should therefore be tested as its own algorithmic choice.
+
+\subsection{Priorities for further experiments, not established gains}
+
+\begin{enumerate}
+ \item Prefer count-informed full-matrix curvature over a permanently diagonal
+       hierarchical optimizer. The latter discards precisely the posterior
+       coupling responsible for difficult families.
+ \item Test any new scaling or metric with matched bounds, acceptance rules,
+       and curvature-refresh schedules. A negative result for one hierarchical
+       replay is not a theorem that every hierarchical hybrid fails.
+ \item Consider improving the latent augmentation only if missing information
+       remains the bottleneck. Collapsing avoidable latent variables or using a
+       valid alternative augmentation can change EM's convergence spectrum;
+       renaming the same parameters cannot. Such changes require a new
+       likelihood/EM derivation, not ad hoc subtraction of ghost counts.
+ \item Do not assume that a better median condition number or a shorter path
+       to saved optima lowers runtime. Charge additional gradient evaluations,
+       Hessian probes, rejected trials, initialization, and difficult-family
+       completion. Saved fitted optima are evaluation references, never inputs
+       to a proposed initialization.
+\end{enumerate}
+
+\section{Experimental evidence and its limits}
+
+\subsection{Hierarchical coordinates improve geometry, but have not won the runtime comparison}
+
+On 500 saved Coleman-family states, the hierarchical formulas, Jacobian, and
+Hessian transformation were checked numerically against differentiation. At the
+post-Adam point, observed-Hessian indefiniteness fell from $64\%$ in log rates
+to $9\%$ in the hierarchy. The median relative curvature drift to the fitted
+endpoint was still about $1.06$.
+
+In the subsequent 200-family GPU replay, a scaled hierarchical diagonal reached
+186/200 fresh certificates after the longer bounded run, with NLL about
+$1.37$ bits worse than the fully converged production baseline. Some failures
+were at coupled rate-bound corners. That replay lacked the production exact
+refresh at step 15, so it was not an otherwise-identical full hybrid comparison.
+The evidence supports rejecting that tested configuration, not ruling out every
+coordinate-aware method.
+
+\subsection{Count-informed initialization has measured gains}
+
+Table~\ref{tab:local-results} gives the matched 500-family RTX 4090 prototype
+runs recorded in the campaign. Both EM prototypes include their redundant
+warm-model construction in wall time. All three use the same production
+freeze-time projected-gradient criterion and certify all 500 families.
+
+\begin{table}[htbp]
+ \centering
+ \small
+ \begin{tabular}{lrrr}
+  \toprule
+  Initialization & Wall time (s) & Gradient clade equivalents & NLL (bits)\\
+  \midrule
+  Three Adam steps & 108.33 & 17.273 & 1618461.966967\\
+  Two EM steps + scaled curvature & 91.51 & 13.660 & 1618461.994534\\
+  Three EM steps + scaled curvature & 87.21 & 13.299 & 1618461.952767\\
+  \bottomrule
+ \end{tabular}
+ \caption{Matched local prototype evidence; these are not full-Coleman H100 timings.}
+ \label{tab:local-results}
+\end{table}
+
+The three-EM-step prototype is approximately $19.5\%$ faster than the Adam
+prototype. Small aggregate NLL differences do not imply identical family-wise
+solutions: four families change NLL by more than $0.01$ bits relative to Adam,
+with both improvements and regressions. The recorded integrated three-step
+gate subsequently took $81.42$ s on 500 families and certified all of them;
+that number should not be presented as a matched integrated Adam speedup.
+
+The first locally recorded full-Coleman H100 result is also encouraging:
+two EM steps followed by the existing optimizer completed all 5,124 families
+in $396.31$ s, with 28 Newton steps and all 5,124 freeze-time certificates.
+This is about $23.9\%$ below the historical $520.5$ s record. Its fit-reported
+NLL is $9049360.7436$ bits. However, the available contemporaneous Adam run
+took $634.02$ s with unusually expensive startup/warm-up; it is not a fair sole
+denominator for a warm speedup claim. The warmed paired control, repetitions,
+and fresh common-model likelihood/gradient audits were not yet available in
+the local result snapshot used here. The full-scale comparison is therefore
+preliminary, not a completed paired validation.
+
+For fair accounting, define gradient clade equivalents by
+\[
+ W_g=\sum_j
+ \frac{\text{clades resident in the model evaluated on gradient call }j}
+      {\text{clades in the initial full population}}.
+\]
+Frozen families still cost work until a replan removes them. Report Hessian
+cost separately; its probes are not automatically equivalent to a fixed number
+of gradient calls. The campaign's certificate uses the pruned FP32 gradient
+recorded at freezing. It is not an unpruned mathematical stationarity proof.
+
+\section{Conclusion}
+
+There is a natural and exact hierarchical factorization of the event model.
+It makes the fixed-count problem separable and provides useful geometric
+diagnostics. The hard part of the observed problem, however, is the changing
+posterior over histories, together with active bounds and expensive gradient
+passes. A globally fixed coordinate transformation cannot erase that ambiguity.
+
+\begin{quote}
+Use complete-history structure to enter a good region cheaply and initialize
+curvature; use observed-gradient information to learn each family's actual
+local geometry; preserve the original constrained problem and its certificate.
+\end{quote}
+
+\section*{Provenance and scope}
+
+This is an independent side-conversation note. It does not modify the earlier
+mathematical report, the optimization code, or the running campaign. The evidence
+is a snapshot of the local files read on 6 September 2026, not a continuously
+updated campaign status. In particular, the older report's statement that EM
+had not been measured is superseded by the later experiment records.
+
+The model and earlier coordinate diagnosis are documented in
+\path{agent_mathematical_report.tex}. Hierarchical identities, numerical checks,
+and replay limitations are recorded in
+\path{experiments/coleman_sol_20260906/geometry/PROGRESS.md}.
+The survival-count and bounded-M-step review is in
+\path{experiments/coleman_sol_20260906/geometry/EM_MATH_REVIEW.md}.
+Local timing and likelihood comparisons are in
+\path{experiments/coleman_sol_20260906/em/PROGRESS.md}.
+The preliminary full-H100 result is
+\path{experiments/coleman_sol_20260906/results/em_full_a.json}, with its
+cold control in
+\path{experiments/coleman_sol_20260906/results/baseline_interactive_a.json}.
+Implementation details were checked against
+\path{gpurec/fit/em_warmup.py} and the associated count API discussion.
+
+\end{document}

@@ -158,6 +158,7 @@ def test_centered_wave_so_matches_reconstructed_absolute(
         use_receiver_weights=weighted,
         d_rhs=d_rhs,
         dreceiver_log_probs=dreceiver_log_probs,
+        active_mask=None,   # this fixture checks every row, so nothing is pruned
     )
     absolute = wave_backward_so(
         pi_absolute,
@@ -345,6 +346,7 @@ def test_centered_dts_so_matches_reconstructed_absolute(
             dreceiver_log_probs=receiver_tangent,
             pi_offset=pi_gauge,
             pibar_offset=pibar_gauge,
+            active_mask=None,   # this fixture checks every split row, so nothing is pruned
             **levels,
         )
         return d_rhs, d_grad_pD, d_grad_pS, d_grad_mt, d_grad_receiver_log_probs

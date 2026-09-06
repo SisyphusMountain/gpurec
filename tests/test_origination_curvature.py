@@ -57,12 +57,10 @@ def _require_cuda_triton() -> torch.device:
     return torch.device("cuda")
 
 
-def _tiny(tmp_path, device, forward_self_loop, adjoint_self_loop):
+def _tiny(tmp_path, device):
     (tmp_path / "s.nwk").write_text("((A:1,B:1)AB:1,C:1)Root:1;\n", encoding="utf-8")
     (tmp_path / "f.nwk").write_text("((A_1:1,B_1:1)g:1,C_1:1)GeneRoot:1;\n", encoding="utf-8")
-    so = SolverOptions(pi_iters=200, neumann_terms=128, e_max_iter=500, e_tol=1e-15,
-                       forward_self_loop=forward_self_loop,
-                       adjoint_self_loop=adjoint_self_loop)
+    so = SolverOptions(pi_iters=200, neumann_terms=128, e_max_iter=500, e_tol=1e-15)
     return GeneReconModel(tmp_path / "s.nwk", [tmp_path / "f.nwk"], mode="specieswise",
                           device=str(device), family_chunk_size=1, clade_budget=None,
                           batch_packing="sequential", max_wave_size=4, solver_options=so)
@@ -82,7 +80,7 @@ def test_joint_hvp_symmetric_and_gauge_null(tmp_path: Path):
     device = _require_cuda_triton()
     from gpurec.solver.curvature.origination import build_joint_hvp
     torch.manual_seed(0)
-    m = _tiny(tmp_path, device, "log", "series")
+    m = _tiny(tmp_path, device)
     S = int(m.species_helpers["S"]); tn = 3 * S; p = tn + 2 * S
     th = 0.3 * torch.randn(S, 3, dtype=DT, device=device)
     al = (lambda a: a - a.mean())(0.6 * torch.randn(S, dtype=DT, device=device))
@@ -96,42 +94,12 @@ def test_joint_hvp_symmetric_and_gauge_null(tmp_path: Path):
     assert float(hvp(ea).norm()) < 1e-10 and float(hvp(eo).norm()) < 1e-10   # both gauge nulls
 
 
-def test_exact_solves_reproduce_the_joint_hessian_under_weighted_receivers(tmp_path: Path):
-    """The three exact tree solves must give the iterated solves' joint Hessian, weights and all.
-
-    They are not the default, so every other test here runs the log/series/sweeps paths and
-    none of them would notice. They are also the only paths whose receiver-weight handling is
-    written out by hand instead of falling out of the primal recurrence, which is exactly what a
-    non-uniform alpha probes: the exact tangent used to drop the half of a node's receiver-weight
-    tangent that its children see through their own remaining donor tangent, which left this
-    Hessian asymmetric by 2.8e-3 in float64 while every uniform-weight result stayed bit-identical
-    and every fit stayed green.
-    """
-    device = _require_cuda_triton()
-    torch.manual_seed(0)
-    reference = _tiny(tmp_path, device, "log", "series")
-    S = int(reference.species_helpers["S"])
-    th = 0.3 * torch.randn(S, 3, dtype=DT, device=device)
-    al = (lambda a: a - a.mean())(0.6 * torch.randn(S, dtype=DT, device=device))
-    om = (lambda a: a - a.mean())(0.7 * torch.randn(S, dtype=DT, device=device))
-    assert float(al.std()) > 0.1, "the receiver weights must be non-uniform for this to test anything"
-
-    reference_hessian = _joint_hessian(reference, th, al, om, device)
-    for forward_self_loop, adjoint_self_loop in (("exact", "series"), ("log", "exact"),
-                                                 ("exact", "exact")):
-        model = _tiny(tmp_path, device, forward_self_loop, adjoint_self_loop)
-        hessian = _joint_hessian(model, th, al, om, device)
-        label = f"{forward_self_loop}/{adjoint_self_loop}"
-        assert float((hessian - hessian.T).abs().max()) < 1e-10, f"{label} Hessian is asymmetric"
-        assert float((hessian - reference_hessian).abs().max()) < 1e-10, f"{label} Hessian moved"
-
-
 def test_certify_matches_dense_and_fisher_converges(tmp_path: Path):
     device = _require_cuda_triton()
     from gpurec.solver.curvature.origination import (
         build_joint_hvp, certify_joint_min, origination_information)
     torch.manual_seed(0)
-    m = _tiny(tmp_path, device, "log", "series")
+    m = _tiny(tmp_path, device)
     S = int(m.species_helpers["S"]); tn = 3 * S; p = tn + 2 * S
     th = 0.3 * torch.randn(S, 3, dtype=DT, device=device)
     al = (lambda a: a - a.mean())(0.6 * torch.randn(S, dtype=DT, device=device))
@@ -163,7 +131,7 @@ def test_newton_joint_descends_and_holds_gauge(tmp_path: Path):
     device = _require_cuda_triton()
     from gpurec.solver.curvature.origination import newton_joint
     torch.manual_seed(0)
-    m = _tiny(tmp_path, device, "log", "series")
+    m = _tiny(tmp_path, device)
     S = int(m.species_helpers["S"])
     th = 0.2 * torch.randn(S, 3, dtype=DT, device=device)
     al = (lambda a: a - a.mean())(0.3 * torch.randn(S, dtype=DT, device=device))
@@ -183,7 +151,7 @@ def test_newton_joint_wires_in_origination_penalty(tmp_path: Path):
     from gpurec.solver.curvature.origination import newton_joint
     from gpurec.solver.penalties import OriginationPenalty, origination_penalty_and_grad
     torch.manual_seed(0)
-    m = _tiny(tmp_path, device, "log", "series")
+    m = _tiny(tmp_path, device)
     S = int(m.species_helpers["S"])
     th = 0.2 * torch.randn(S, 3, dtype=DT, device=device)
     al = (lambda a: a - a.mean())(0.3 * torch.randn(S, dtype=DT, device=device))

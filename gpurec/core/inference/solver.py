@@ -103,7 +103,6 @@ def solve_resident_e_pi(
         pi_iters=solver_options.pi_iters if pi_iters is None else int(pi_iters),
         pi_residual_out=pi_residual_out,
         accumulator_dtype=accumulator_dtype,
-        self_loop_mode=solver_options.forward_self_loop,
         exact_range_log2=solver_options.exact_range_log2,
         # Exact-solve pivot-guard counts are a benchmarking probe, not production state; the
         # benchmark wraps ``pi_wave_forward`` to pass its own tensor.

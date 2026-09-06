@@ -55,7 +55,7 @@ def test_fit_specieswise_fits_at_given_lam(tmp_path):
     sp, genes = simulate_dataset("specieswise", tmp_path, n_species=60, n_families=80,
                                  dtl=0.05, seed=5)
     m = GeneReconModel(sp, genes, mode="specieswise", device="cuda", dtype=torch.float32,
-                       solver_options=SolverOptions(e_adjoint_solver="neumann"))
+                       solver_options=SolverOptions())
     S = m.theta.shape[0]
     res = fit_specieswise(m.batch_statics, m.theta.detach(), m.receiver_weights.detach(),
                           lam=10.0, verbose=False)

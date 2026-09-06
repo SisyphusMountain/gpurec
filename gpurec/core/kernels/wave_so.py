@@ -21,6 +21,16 @@ from gpurec.core.kernels.species_tree_sums import (
 )
 
 
+# Warps per program for the wave second-order contraction
+# (``_reconciliation_vjp_directional_derivative_kernel``). One program holds one clade row's whole
+# species tile, so the warp count decides how many species lanes each thread carries, and this
+# kernel needs the full 255 registers per thread. Measured on the RTX 4090 at S=2013, one probe's
+# 190 launches: 57.4 ms at 4 warps, 35.9 at 8 (the value it was launched with before), 31.1 at 16,
+# 30.2 at 32; the answer moves by 3e-7 relative, a warp reduction order, far inside float32 noise.
+# Measured on the 4090 only.
+_NUM_WARPS_WAVE_SO = 32
+
+
 # ``ws`` is the wave's start row and changes every launch; keeping it out of the
 # specialization key avoids one JIT compile per divisibility state (see README.md).
 @triton.jit(do_not_specialize=["ws"])
@@ -49,12 +59,14 @@ def _reconciliation_vjp_directional_derivative_kernel(
     d_speciation_leaf_event_vjp_ptr,
     d_speciation_child1_event_vjp_ptr,
     d_speciation_child2_event_vjp_ptr,
+    active_mask_ptr,   # optional [W] bool row-activity mask (the adjoint pruner's)
     CONST_ROW_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
     N_LEVELS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     USE_RECEIVER_WEIGHTS: tl.constexpr,
     FOLD_RHS: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     LN2 = 0.6931471805599453
@@ -70,6 +82,31 @@ def _reconciliation_vjp_directional_derivative_kernel(
     s_offs = tl.arange(0, BLOCK_S)
     mask = s_offs < S
     zero = tl.zeros([BLOCK_S], dtype=DTYPE)
+
+    if USE_ACTIVE_MASK:
+        if tl.load(active_mask_ptr + w) == 0:
+            # Every quantity this kernel produces is written as ``v * (...)`` -- read the six
+            # event stores and the donor adjoint below -- and the first-order adjoint pruner has
+            # already set this row's ``v`` to zero, so the whole contraction is exactly zero. The
+            # seven output buffers are uninitialised (torch.empty) and the caller sums them over
+            # rows, so the zeros still have to be written; the solve seed keeps the FOLD_RHS
+            # pass-through, which is what the full computation would have stored. 53 % of the
+            # clade rows are pruned on the 200-family Coleman batch.
+            if FOLD_RHS:
+                tl.store(
+                    d_self_loop_vjp_ptr + out_base + s_offs,
+                    tl.load(d_rhs_ptr + (ws + w) * S + s_offs, mask=mask, other=0.0),
+                    mask=mask,
+                )
+            else:
+                tl.store(d_self_loop_vjp_ptr + out_base + s_offs, zero, mask=mask)
+            tl.store(d_duplication_loss_event_vjp_ptr + out_base + s_offs, zero, mask=mask)
+            tl.store(d_transfer_loss_event_vjp_ptr + out_base + s_offs, zero, mask=mask)
+            tl.store(d_transfer_event_vjp_ptr + out_base + s_offs, zero, mask=mask)
+            tl.store(d_speciation_leaf_event_vjp_ptr + out_base + s_offs, zero, mask=mask)
+            tl.store(d_speciation_child1_event_vjp_ptr + out_base + s_offs, zero, mask=mask)
+            tl.store(d_speciation_child2_event_vjp_ptr + out_base + s_offs, zero, mask=mask)
+            return
 
     reconciliation_log_likelihood = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG)
     d_reconciliation_log_likelihood = tl.load(dPi_ptr + pi_base + s_offs, mask=mask, other=0.0)
@@ -467,9 +504,13 @@ def wave_backward_so(
     *, species_height, species_levels,
     leaf_species_idx, leaf_logp, d_leaf_logp, family_idx, has_leaf_term=True,
     use_receiver_weights=False, d_rhs=None, dreceiver_log_probs=None,
-    pi_offset, pibar_offset, gene_split_offset=None,
+    pi_offset, pibar_offset, gene_split_offset=None, active_mask,
 ):
     """Return the wave second-order contraction documented in LaTeX.
+
+    ``active_mask`` is the adjoint pruner's per-row activity mask for this wave (``None`` runs
+    every row, which is what this function did before). Every output is a product with the row's
+    first-order adjoint ``v``, so a pruned row -- where ``v`` is zero -- writes zeros and returns.
 
     ``species_height`` (0 at a leaf, 1 + the taller child above) and ``species_levels`` (the tree's
     height, so the number of bottom-up passes) drive the additive valid-receiver and off-subtree
@@ -566,14 +607,16 @@ def wave_backward_so(
         d_self_loop_vjp, d_rhs if fold_rhs else dummy,
         d_grad_receiver_log_probs,
         *d_local_event_vjps,
+        active_mask if active_mask is not None else dummy,
         CONST_ROW_STRIDE=const_row_stride,
         BLOCK_S=block_s,
         N_LEVELS=int(species_levels),
         USE_LEAF_INDEX=bool(has_leaf_term),
         USE_RECEIVER_WEIGHTS=bool(use_receiver_weights),
         FOLD_RHS=fold_rhs,
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
-        num_warps=8,
+        num_warps=_NUM_WARPS_WAVE_SO,
     )
     return (
         d_self_loop_vjp,

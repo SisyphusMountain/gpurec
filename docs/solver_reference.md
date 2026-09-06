@@ -43,7 +43,7 @@ gpurec/solver/
     krylov.py               — generic, domain-agnostic iterative linear-algebra solvers
     hvp/
         forward_tangent.py   — forward-mode directional derivative of the root scores ("J")
-        gauss_newton.py        — cheap, always-well-behaved approximate curvature ("J^T B J")
+        vjp.py                  — root-score cotangent adapter over the production backward
         exact.py                 — the fully exact curvature (analytic Hessian-vector product)
     curvature/
         gauge.py               — shared gauge-fixing + damped-Newton machinery
@@ -299,64 +299,19 @@ f(theta, x*)`, i.e. the answer is defined as "the value that, fed back into the 
 itself." Nudging `theta` shifts `x*` two ways at once — directly (the formula itself moves) and
 indirectly (the shifted `x*` feeds back into the same formula) — so the true tangent obeys its own
 self-referential equation with the unknown tangent on both sides; you can't read it off from
-evaluating the formula once. The fix mirrors how the *primal* solve itself converges: start the
-tangent at zero, apply the linearized update, repeat, until it stops changing — exactly what
-`e_tangent_fixed_point` does for the E-tangent and the self-loop `step()` helper does for the
-Pi-tangent, warning loudly (`warnings.warn`) if it hits the iteration cap (200) without converging.
-One deliberate exception: when `self_iters` is fixed rather than convergence-checked, that's not a
-shortcut — it matches the *primal* solve, which in production also runs a fixed iteration count
-rather than to full convergence, and a tangent for an under-converged primal must be under-converged
-by exactly the same amount to remain consistent with it.
+evaluating the formula once. The E tangent uses its contraction iteration; the Pi tangent solves
+the differentiated tree system by exact elimination. Rows outside the scaled-linear dynamic range
+use the same masked iterative fallback as the primal.
 
 **Connections.** Uses `gpurec/core/inference/solver.py`, `gpurec/core/parameters/extract_parameters.py`,
-and several `gpurec/core/kernels/*_tangent.py` kernels. Called by `gauss_newton.py` (for the plain
-root tangent) and by `exact.py` (with `return_full=True`, needing every intermediate tangent, not
-just the final one, for its more elaborate second-order sweep).
-
-### `gauss_newton.py` — the cheap, always-safe approximation ("M = J^T B J")
-
-Builds the **Gauss-Newton (Fisher) approximation** to the curvature. The payoff: `M = J^T B J` is
-mathematically guaranteed **positive semi-definite** — for *any* direction `v`, `v` dotted with `M
-v` can never come out negative — unlike the true Hessian, which genuinely can curve the wrong way
-far from a good fit. You trade fidelity to the true curvature for an approximation that "always
-curves the right way," which is what a robust optimizer step wants, especially early in fitting.
-
-- **`vjp_root_to_theta(static, sv, seed_root, theta, receiver_weights, ..., drop_norm=True)`** —
-  the backward half ("J^T"): a genuinely thin wrapper over the production gradient function
-  (`implicit_grad_loglik_vjp_wave` in `gpurec/api/_implicit_grad.py`), not a separate
-  reimplementation. Passing a custom `seed_root` (instead of the default loss-gradient seed) and
-  `drop_norm=True` (skip a loss-specific normalization term unrelated to `d(Pi_root)/dtheta`) turns
-  the same production code into a general-purpose "apply the transpose of J."
-
-- **`make_ggn_hvp(static, theta, receiver_weights, sv, ...)`** — the factory. Precomputes the
-  model's current predicted probabilities `q = softmax(root_Pi)` once. Returns `hvp(v_vec)`, which:
-  computes `t = J v` via `jvp_root_scores`; forms `u = ln(2) * q * (t - (q*t).sum())` — this is `B`
-  applied to `t`, where `B = ln(2) * (diag(q) - q qᵀ)` is exactly the "spread of `q` around its own
-  mean" (a covariance-style matrix built purely from the model's own current predictions, called the
-  Fisher information of the softmax); feeds `u` back through `vjp_root_to_theta` (`J^T`) to get
-  `M v`.
-
-**Why the sandwich is always safe.** For any `v`: `v^T M v = v^T J^T B J v = t^T B t` where `t = J
-v`. Since `B` is a "spread around the mean" matrix, `t^T B t` is a variance — a sum of squared
-numbers — which can never be negative, for *any* `t`, hence for *any* `v`. This textbook trick is
-exactly why Gauss-Newton/Fisher approximations are popular: no matter how poor the current fit is,
-this particular curvature approximation never sends an iterative solver into a divide-by-negative-
-curvature failure.
-
-**Connections.** Reuses `forward_tangent.py`'s `jvp_root_scores` unmodified, and
-`gpurec/api/_implicit_grad.py`'s production gradient function unmodified (just with different
-arguments). Not currently called by any `curvature/` fitting loop found in this review — those
-mostly use the exact HVP instead — so it reads as an available, cheaper/more-robust alternative
-rather than something actively wired into the current fitting recipes.
+and several `gpurec/core/kernels/*_tangent.py` kernels. Called by `exact.py` with
+`return_full=True`, because the second-order sweep needs every intermediate tangent.
 
 ### `exact.py` — the fully exact curvature (largest file in `solver/`, ~1000 lines)
 
 Computes the *true* Hessian-vector product by differentiating the entire solve-then-gradient
-pipeline a second time — "**forward-over-reverse**" differentiation — fully accounting for terms the
-Gauss-Newton approximation drops (in particular, terms arising specifically because the likelihood
-itself requires an iterative fixed-point solve). Used (a) to check the approximation is trustworthy
-and (b) directly, as the final "polish" step of fitting once a cheaper optimizer has gotten close,
-where getting the curvature exactly right matters for a good last step.
+pipeline a second time — "**forward-over-reverse**" differentiation. It is used directly by the
+Newton fitting and curvature-certification paths.
 
 - **`build_point_cache(static, theta, col_weights, sv, ...)`** — runs the *existing*, already-
   verified first-order backward pass (`vjp_root_to_theta`) exactly once, but with a `cache`
@@ -376,9 +331,8 @@ where getting the curvature exactly right matters for a good last step.
   every batch's cache resident at once would exceed GPU memory).
 
 **The algorithm, in four steps.** (1) *Forward tangent* — `jvp_root_scores` (from `forward_tangent.py`)
-computes how every intermediate quantity moves for a chosen nudge `u`, exactly as in
-`gauss_newton.py`. (2) *Forward-over-reverse* — instead of stopping at Gauss-Newton's two-pass
-approximation, the code differentiates the *backward pass itself* along that same tangent: wherever
+computes how every intermediate quantity moves for a chosen nudge `u`. (2) *Forward-over-reverse* —
+the code differentiates the *backward pass itself* along that same tangent: wherever
 the ordinary backward pass combined a frozen value (`Pi`, `Pibar`, `E`, `v_k`) into a gradient
 contribution, this file calls a matching "second-order" kernel (`wave_backward_so`,
 `dts_backward_so`, `e_step_backward_so` — literally named "directional derivative" kernels in their
@@ -400,12 +354,9 @@ the same `theta`* — only `u` changes; `theta` is fixed for the whole inner loo
 graph) depends only on `theta`, never on `u`. Without caching, every single `hvp(u)` call would redo
 that *entire* first-order backward pass. With it, that work happens once per outer Newton point, and
 each subsequent call only pays for the genuinely `u`-dependent work — matching the file's own
-docstring: "theta is fixed across all CG iterations, so the cache amortizes." A second, smaller
-layer of reuse exists on top: repeated calls tagged with the same `probe_id`, with warm-start
-enabled, reuse the previous call's converged tangent-adjoint as a starting guess rather than
-starting from zero.
+docstring: "theta is fixed across all CG iterations, so the cache amortizes."
 
-**Connections.** Uses `forward_tangent.py` (`jvp_root_scores`), `gauss_newton.py`
+**Connections.** Uses `forward_tangent.py` (`jvp_root_scores`), `vjp.py`
 (`vjp_root_to_theta`), `value_and_grad.py` (`forward_solve`, `free_cuda_cache_if_tight`), and several
 `gpurec/core/kernels/*_so.py` second-order kernels. Called by all three `curvature/` Newton loops
 (`receiver.py`'s and `origination.py`'s `build_joint_hvp`, `genewise.py`'s per-batch construction)
@@ -579,8 +530,6 @@ plugged into the genewise fitting pipeline, the same situation as `origination.p
   certification) but not called from any `fit/` recipe found in this review.
 - **`origination.py`'s `newton_joint` doesn't wire in `OriginationPenalty`**, despite
   `penalties.py` having dedicated machinery for exactly this parameter block.
-- **`gauss_newton.py`'s cheaper, always-safe approximate HVP doesn't appear to be called by any
-  `curvature/` fitting loop** — those all use the exact HVP from `hvp/exact.py` instead.
 - **`krylov.py`'s `steihaug_cg`** (the trust-region solver) didn't turn up in a grep of current
   callers within `solver/`.
 - **`genewise.py`'s arrowhead-structured direct solver is explicit test-only scaffolding** — a

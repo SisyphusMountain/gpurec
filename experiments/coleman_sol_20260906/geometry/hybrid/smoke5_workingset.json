@@ -1,0 +1,225 @@
+{
+  "schema": "gpurec.hierarchical_shared_endpoint.v1",
+  "artifact": "experiments/coleman_sol_20260906/em/hybrid_shared_200_v2.pt",
+  "n_families": 5,
+  "max_iter": 6,
+  "certify": false,
+  "production_source_sha256": "7d398d3e596f150c7eb5fc36f5eccce3b94b7dd14561c337bbbf5d7363409cd5",
+  "charged_shared_em_gradient_work": [
+    {
+      "phase": "em",
+      "step": 0,
+      "families": 5,
+      "clades": 56581
+    },
+    {
+      "phase": "em",
+      "step": 1,
+      "families": 5,
+      "clades": 56581
+    }
+  ],
+  "common_em_timing_full_artifact": {
+    "parse_seconds": 0.6098155820000102,
+    "build_seconds": 0.6213385039991408,
+    "pass_seconds": [
+      2.4907428509977763,
+      2.11013242899935
+    ],
+    "em_pass_seconds": 4.600875279997126,
+    "total_seconds": 5.928965522998624
+  },
+  "arms": {
+    "native": {
+      "loss_bits": null,
+      "n_steps": 6,
+      "n_builds": 1,
+      "n_hessians": 0,
+      "n_rebuilds": 0,
+      "converged": null,
+      "unconverged": null,
+      "bound_active": null,
+      "pg_max": null,
+      "newton_grad_seconds": 1.1075783579981362,
+      "hessian_seconds": 0.0,
+      "rebuild_seconds": 0.0,
+      "certify_seconds": 0.0,
+      "wall_seconds": 1.4227071320019604,
+      "gradient_work": [
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        }
+      ],
+      "gradient_clades": 339486,
+      "theta_finite": true,
+      "curvature_finite": true,
+      "theta_min": -5.953079700469971,
+      "theta_max": -0.5864117741584778,
+      "gradient_clades_with_shared_em": 452648,
+      "gradient_full_clade_equivalents_with_shared_em": 8.0
+    },
+    "hierarchical_native_metric": {
+      "loss_bits": null,
+      "n_steps": 6,
+      "n_builds": 1,
+      "n_hessians": 0,
+      "n_rebuilds": 0,
+      "converged": null,
+      "unconverged": null,
+      "bound_active": null,
+      "pg_max": null,
+      "newton_grad_seconds": 0.5757590809989779,
+      "hessian_seconds": 0.0,
+      "rebuild_seconds": 0.0,
+      "certify_seconds": 0.0,
+      "wall_seconds": 0.8142315940021945,
+      "gradient_work": [
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        }
+      ],
+      "gradient_clades": 339486,
+      "theta_finite": true,
+      "curvature_finite": true,
+      "theta_min": -5.968592643737793,
+      "theta_max": -0.6082502603530884,
+      "ray_diagnostics": {
+        "zero_steps": 0,
+        "nearzero_steps": 0,
+        "boundary_zero_steps": 0,
+        "zero_direction_nonconverged_steps": 0,
+        "actual_native_zero_nonconverged_steps": 0,
+        "zero_family_ids": [],
+        "nearzero_family_ids": [],
+        "boundary_zero_family_ids": [],
+        "zero_direction_family_ids": [],
+        "actual_native_zero_family_ids": [],
+        "min_ray_fraction": 0.5421141982078552
+      },
+      "gradient_clades_with_shared_em": 452648,
+      "gradient_full_clade_equivalents_with_shared_em": 8.0
+    },
+    "hierarchical_coordinate_metric": {
+      "loss_bits": null,
+      "n_steps": 6,
+      "n_builds": 1,
+      "n_hessians": 0,
+      "n_rebuilds": 0,
+      "converged": null,
+      "unconverged": null,
+      "bound_active": null,
+      "pg_max": null,
+      "newton_grad_seconds": 0.5830842140021559,
+      "hessian_seconds": 0.0,
+      "rebuild_seconds": 0.0,
+      "certify_seconds": 0.0,
+      "wall_seconds": 0.7964703049983655,
+      "gradient_work": [
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        },
+        {
+          "phase": "newton",
+          "families": 5,
+          "clades": 56581
+        }
+      ],
+      "gradient_clades": 339486,
+      "theta_finite": true,
+      "curvature_finite": true,
+      "theta_min": -5.968392848968506,
+      "theta_max": -0.6030201315879822,
+      "ray_diagnostics": {
+        "zero_steps": 0,
+        "nearzero_steps": 0,
+        "boundary_zero_steps": 0,
+        "zero_direction_nonconverged_steps": 0,
+        "actual_native_zero_nonconverged_steps": 0,
+        "zero_family_ids": [],
+        "nearzero_family_ids": [],
+        "boundary_zero_family_ids": [],
+        "zero_direction_family_ids": [],
+        "actual_native_zero_family_ids": [],
+        "min_ray_fraction": 0.6619685292243958
+      },
+      "gradient_clades_with_shared_em": 452648,
+      "gradient_full_clade_equivalents_with_shared_em": 8.0
+    }
+  }
+}

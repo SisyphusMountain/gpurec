@@ -88,7 +88,7 @@ def main() -> int:
 
     paths = [ln.strip() for ln in open(args.families)
              if ln.strip() and not ln.startswith("#")][: args.limit]
-    so = SolverOptions(**{**_BASE_SOLVER, "forward_self_loop": "exact", "adjoint_self_loop": "exact"})
+    so = SolverOptions(**_BASE_SOLVER)
     m = GeneReconModel(args.species, paths, mode="genewise", device="cuda", dtype=torch.float32,
                        solver_options=so, clade_budget=args.clade_budget)
     m.receiver_weights.requires_grad_(False)
@@ -116,7 +116,7 @@ def main() -> int:
         for j in range(3):
             u = torch.zeros(int(fam.numel()), 3, device=theta.device, dtype=theta.dtype)
             u[:, j] = 1.0
-            hvp(u.reshape(-1), probe_id=j)
+            hvp(u.reshape(-1))
 
     # --- wall, alternating so a busy card loads both sides equally ---
     grad(); hess(); torch.cuda.synchronize()

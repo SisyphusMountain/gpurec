@@ -1,0 +1,91 @@
+**********************************************************************
+*                         SLURM Batch System                         *
+*              IN2P3 Computing Centre, Villeurbanne FR               *
+**********************************************************************
+* Date:                 Sun Sep  6 21:00:40 CEST 2026
+* Job name:             sol_coleman_ibase
+* Job id:               58003625
+* User:                 emarsot
+* Account:              biometr
+* Submit host:          cca020
+* Partition:            gpu_h100_interactive
+* Quality of service:   gpu
+* Nodelist:             ccwgislurm0200
+* Operating System:     Red Hat Enterprise Linux release 9.8 (Plow)
+* Architecture:         x86_64
+**********************************************************************
+[campaign] host=ccwgislurm0200 job=58003625 start=2026-09-06T21:00:40+02:00
+name, uuid, driver_version, memory.total [MiB]
+NVIDIA H100 NVL, GPU-8a9add16-cb62-9282-f039-9213619d52fa, 590.48.01, 95830 MiB
+a76c20314f9dabdc0deb75643d3a9a5cf2abeceb6540d447d7fa516d6acc5075  gpurec/fit/genewise_fit.py
+8ef9899cb187bfaa12fdf35a5d51732b12a662b59ba1f3e251d15fd67cd1b9fb  gpurec/api/_implicit_grad.py
+e62a9a93070ca53ea72702c91430bb86021cc509de1ab17d5ffb09b2c3f6ceb0  gpurec/config/gpurec_config.py
+53be2dc26f9d8b50038d9c0415541503fd138900e4520f2e53561c0d1c00dff2  /sps/biometr/emarsot/gpurec-data/coleman/families_all.txt
+1c3957c584ec3b64da13310dcafaa8a6babe1b88528bb07ca79ec966b1462490  /sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk
+[     9.31s] [driver] 5124 families, species=/sps/biometr/emarsot/gpurec-data/coleman/ReferenceTree.nwk, torch 2.13.0+cu130, gpu=NVIDIA H100 NVL
+[    38.28s] [fit_genewise] clade_budget=315,000 (the tuned default; it fits): device budget 79.1 GiB, statics 1.79 GiB, one batch 23.62 GiB, predicted peak 25.41 GiB
+[    48.87s] [fit_genewise] tier pi=16: 5124 families
+/sps/biometr/emarsot/envs/gpurec-h100/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: RuntimeWarning: neumann tol=1.00e-07 is below the torch.float32 finite-precision residual floor 4.77e-07; clamping to the floor. A tighter relative residual is unreachable in this precision -- use fp64.
+  return func(*args, **kwargs)
+[   221.52s]   [pi16 it0] live=5124 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.12e+02 clades: live 23.33M of 23.33M in model
+[   276.47s]   [pi16 it2] live=5124 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.14e+02 clades: live 23.33M of 23.33M in model
+[   329.84s]   [pi16 it4] live=5124 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.15e+02 clades: live 23.33M of 23.33M in model
+[   383.38s]   [pi16 it6] live=5124 (+0 settled in batch) conv=102 (nll_stop=0) |Pg|max=6.92e+01 clades: live 23.33M of 23.33M in model
+[   436.99s]   [pi16 it8] live=5022 (+102 settled in batch) conv=599 (nll_stop=0) |Pg|max=2.33e+01 clades: live 23.31M of 23.33M in model
+[   490.59s]   [pi16 it10] live=4423 (+701 settled in batch) conv=1414 (nll_stop=0) |Pg|max=8.26e+00 clades: live 22.04M of 23.33M in model
+[   494.85s]   [pi16 it10] re-planned over 3009 live families
+[   524.27s]   [pi16 it12] live=3009 (+0 settled in batch) conv=577 (nll_stop=0) |Pg|max=1.38e+01 clades: live 12.67M of 12.67M in model
+[   527.10s]   [pi16 it12] re-planned over 2432 live families
+[   545.69s]   [pi16 it14] live=2432 (+0 settled in batch) conv=328 (nll_stop=0) |Pg|max=1.38e+01 clades: live 7.89M of 7.89M in model
+[   547.80s]   [pi16 it14] re-planned over 2104 live families
+[   559.47s]   [pi16 it16] live=2104 (+0 settled in batch) conv=215 (nll_stop=0) |Pg|max=1.05e+01 clades: live 4.75M of 4.75M in model
+[   561.13s]   [pi16 it16] re-planned over 1889 live families
+[   569.24s]   [pi16 it18] live=1889 (+0 settled in batch) conv=146 (nll_stop=0) |Pg|max=4.73e+00 clades: live 3.22M of 3.22M in model
+[   623.01s]   [pi16 it20] live=1743 (+146 settled in batch) conv=1256 (nll_stop=0) |Pg|max=9.28e+00 clades: live 2.75M of 3.22M in model
+[   624.63s]   [pi16 it20] re-planned over 487 live families
+[   628.75s]   [pi16 it22] live=487 (+0 settled in batch) conv=55 (nll_stop=0) |Pg|max=4.99e+00 clades: live 1.66M of 1.66M in model
+[   629.49s]   [pi16 it22] re-planned over 432 live families
+[   632.39s]   [pi16 it24] live=432 (+0 settled in batch) conv=149 (nll_stop=0) |Pg|max=8.63e+00 clades: live 1.18M of 1.18M in model
+[   632.97s]   [pi16 it24] re-planned over 283 live families
+[   635.12s]   [pi16 it26] live=283 (+0 settled in batch) conv=120 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.88M of 0.88M in model
+[   635.63s]   [pi16 it26] re-planned over 163 live families
+[   637.21s]   [pi16 it28] live=163 (+0 settled in batch) conv=69 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.61M of 0.61M in model
+[   637.68s]   [pi16 it28] re-planned over 94 live families
+[   638.58s]   [pi16 it30] live=94 (+0 settled in batch) conv=37 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.35M of 0.35M in model
+[   638.84s]   [pi16 it30] re-planned over 57 live families
+[   639.31s]   [pi16 it32] live=57 (+0 settled in batch) conv=22 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.17M of 0.17M in model
+[   639.43s]   [pi16 it32] re-planned over 35 live families
+[   639.72s]   [pi16 it34] live=35 (+0 settled in batch) conv=4 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.08M of 0.08M in model
+[   639.76s]   [pi16 it34] re-planned over 31 live families
+[   639.92s]   [pi16 it36] live=31 (+0 settled in batch) conv=5 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.03M of 0.03M in model
+[   640.08s]   [pi16 it38] live=26 (+5 settled in batch) conv=8 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.02M of 0.03M in model
+[   640.11s]   [pi16 it38] re-planned over 18 live families
+[   640.25s]   [pi16 it40] live=18 (+0 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.01M of 0.01M in model
+[   640.39s]   [pi16 it42] live=18 (+0 settled in batch) conv=5 (nll_stop=0) |Pg|max=3.50e+00 clades: live 0.01M of 0.01M in model
+[   640.90s]   [pi16 it44] live=13 (+5 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.91e-01 clades: live 0.01M of 0.01M in model
+[   641.04s]   [pi16 it46] live=13 (+5 settled in batch) conv=4 (nll_stop=0) |Pg|max=9.29e-01 clades: live 0.01M of 0.01M in model
+[   641.06s]   [pi16 it46] re-planned over 9 live families
+[   641.13s]   [pi16 it48] live=9 (+0 settled in batch) conv=3 (nll_stop=0) |Pg|max=8.75e-01 clades: live 0.00M of 0.00M in model
+[   641.14s]   [pi16 it48] re-planned over 6 live families
+[   641.21s]   [pi16 it50] live=6 (+0 settled in batch) conv=3 (nll_stop=0) |Pg|max=3.32e-01 clades: live 0.00M of 0.00M in model
+[   641.22s]   [pi16 it50] re-planned over 3 live families
+[   641.29s]   [pi16 it52] live=3 (+0 settled in batch) conv=1 (nll_stop=0) |Pg|max=3.41e-01 clades: live 0.00M of 0.00M in model
+[   641.35s]   [pi16 it54] live=2 (+1 settled in batch) conv=1 (nll_stop=0) |Pg|max=3.43e-01 clades: live 0.00M of 0.00M in model
+[   641.42s]   [pi16 it56] live=1 (+2 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.43e-01 clades: live 0.00M of 0.00M in model
+[   641.49s]   [pi16 it58] live=1 (+2 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.43e-01 clades: live 0.00M of 0.00M in model
+[   641.56s]   [pi16 it60] live=1 (+2 settled in batch) conv=0 (nll_stop=0) |Pg|max=3.43e-01 clades: live 0.00M of 0.00M in model
+[   641.79s]   [pi16 it62] live=1 (+2 settled in batch) conv=0 (nll_stop=0) |Pg|max=8.01e-03 clades: live 0.00M of 0.00M in model
+[   641.86s]   [pi16 it64] live=1 (+2 settled in batch) conv=1 (nll_stop=0) |Pg|max=7.28e-05 clades: live 0.00M of 0.00M in model
+[   643.45s] [driver] DONE wall=634.0s nll_bits=9049362.380 nll_nats=6272540.019 steps=48 builds=17 peak=39.73GiB adam=148s hess=3x/44s grad=384s verify=0x/0s rebuild=16x/15s cert=0s {'converged': 5124, 'bound_active': 505, 'unconverged': 0, 'premature_drops': 0, 'pg_max': 0.00099945068359375}
+[campaign] end=2026-09-06T21:12:55+02:00
+****************************************************************
+*                      SLURM Batch System                      *
+*           IN2P3 Computing Centre, Villeurbanne FR            *
+****************************************************************
+Date: Sun Sep  6 21:12:55 CEST 2026
+Job informations can be found using these commands:
+Accounting:
+sacct -j 58003625
+Efficiency:
+seff 58003625
+****************************************************************

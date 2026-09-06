@@ -38,7 +38,6 @@ def test_no_divergent_signature_defaults():
     # None-sentinel -> resolved to SolverOptions default at call time
     assert sig["neumann_terms"].default in (None, so.neumann_terms)
     assert sig["neumann_term_tol"].default in (None, so.neumann_term_tol)
-    assert sig["adjoint_self_loop"].default in (None, so.adjoint_self_loop)
     assert sig["e_adjoint_max_iter"].default in (None, so.e_adjoint_max_iter)
     assert sig["e_adjoint_tol"].default in (None, so.e_adjoint_tol)
     assert sig["adjoint_pruning_threshold"].default in (None, so.adjoint_pruning_threshold)
@@ -73,16 +72,3 @@ def test_tv_eps_single_source():
 
     assert DEFAULT_TV_EPS == 1e-3
     assert vg.DEFAULT_TV_EPS is DEFAULT_TV_EPS
-
-
-def test_self_max_iter_single_source():
-    """``DEFAULT_SELF_MAX_ITER`` is defined once in ``forward_tangent.py``; ``ggn`` must import
-    (not re-literal) it."""
-    from gpurec.solver.hvp import forward_tangent, gauss_newton as ggn
-    from gpurec.solver.hvp.forward_tangent import DEFAULT_SELF_MAX_ITER
-
-    assert DEFAULT_SELF_MAX_ITER == 200
-    fwd_params = inspect.signature(forward_tangent.jvp_root_scores).parameters
-    assert fwd_params["self_max_iter"].default is DEFAULT_SELF_MAX_ITER
-    ggn_params = inspect.signature(ggn.make_ggn_hvp).parameters
-    assert ggn_params["self_max_iter"].default is DEFAULT_SELF_MAX_ITER

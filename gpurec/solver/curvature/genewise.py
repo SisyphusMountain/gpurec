@@ -418,7 +418,7 @@ def make_multibatch_joint_hvp_genewise(batch_statics, theta, alpha, omega, *, ta
 
 def multibatch_joint_vg_genewise(batch_statics, theta_shape, S, G):
     """Multi-batch joint value-and-grad ``vg(x, warm_E=None) -> (loss, g_z, None, None)`` over
-    ``z = [theta (3G); alpha (S); omega (G*S)]`` (matches ``_fd_hessian_hvp``'s vg contract) -- this is
+    ``z = [theta (3G); alpha (S); omega (G*S)]`` -- this is
     the joint ``[theta; alpha; omega]`` gradient consumed by the FD gate and by ``newton_joint_genewise``.
 
     Loops the batches; per batch evaluates the genewise loss + grad over that batch's OWN families

@@ -1,0 +1,275 @@
+{
+  "tag": "integrated_500_em3",
+  "warmup_method": "em",
+  "em_steps": 3,
+  "init_rate": "none",
+  "clade_budget": 200740,
+  "n_families": 500,
+  "wall_s": 81.42178512399914,
+  "nll_bits": 1618461.9568595886,
+  "nll_nats": 1121832.3422407557,
+  "opt_seconds": 79.82326290999845,
+  "n_steps": 19,
+  "n_builds": 10,
+  "adam_seconds": 0.0,
+  "hessian_seconds": 1.1555984430015087,
+  "em_seconds": 16.863175631999184,
+  "gradient_work": [
+    {
+      "phase": "em",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "em",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "em",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 500,
+      "clades": 3954206
+    },
+    {
+      "phase": "newton",
+      "families": 173,
+      "clades": 1115573
+    },
+    {
+      "phase": "newton",
+      "families": 173,
+      "clades": 1115573
+    },
+    {
+      "phase": "newton",
+      "families": 111,
+      "clades": 622203
+    },
+    {
+      "phase": "newton",
+      "families": 111,
+      "clades": 622203
+    },
+    {
+      "phase": "newton",
+      "families": 69,
+      "clades": 295749
+    },
+    {
+      "phase": "newton",
+      "families": 69,
+      "clades": 295749
+    },
+    {
+      "phase": "newton",
+      "families": 43,
+      "clades": 182815
+    },
+    {
+      "phase": "newton",
+      "families": 43,
+      "clades": 182815
+    },
+    {
+      "phase": "newton",
+      "families": 43,
+      "clades": 182815
+    },
+    {
+      "phase": "newton",
+      "families": 43,
+      "clades": 182815
+    },
+    {
+      "phase": "newton",
+      "families": 16,
+      "clades": 122074
+    },
+    {
+      "phase": "newton",
+      "families": 16,
+      "clades": 122074
+    },
+    {
+      "phase": "newton",
+      "families": 11,
+      "clades": 64535
+    },
+    {
+      "phase": "newton",
+      "families": 11,
+      "clades": 64535
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 46480
+    },
+    {
+      "phase": "newton",
+      "families": 4,
+      "clades": 46480
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 22711
+    },
+    {
+      "phase": "newton",
+      "families": 3,
+      "clades": 22711
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 123
+    },
+    {
+      "phase": "newton",
+      "families": 1,
+      "clades": 123
+    }
+  ],
+  "gradient_calls": 32,
+  "gradient_clades": 52760628,
+  "gradient_full_clade_equivalents": 13.342913343412054,
+  "n_hessians": 1,
+  "newton_grad_seconds": 58.118053243008035,
+  "n_verify_builds": 0,
+  "verify_seconds": 0.0,
+  "n_rebuilds": 9,
+  "rebuild_seconds": 2.0163184760131116,
+  "certify_seconds": 0.00026368299950263463,
+  "history": {
+    "rebatch": [
+      {
+        "pi": 16,
+        "it": 6,
+        "dropped": 149,
+        "remain": 351
+      },
+      {
+        "pi": 16,
+        "it": 8,
+        "dropped": 178,
+        "remain": 173
+      },
+      {
+        "pi": 16,
+        "it": 10,
+        "dropped": 62,
+        "remain": 111
+      },
+      {
+        "pi": 16,
+        "it": 12,
+        "dropped": 42,
+        "remain": 69
+      },
+      {
+        "pi": 16,
+        "it": 14,
+        "dropped": 26,
+        "remain": 43
+      },
+      {
+        "pi": 16,
+        "it": 16,
+        "dropped": 13,
+        "remain": 30
+      },
+      {
+        "pi": 16,
+        "it": 18,
+        "dropped": 14,
+        "remain": 16
+      },
+      {
+        "pi": 16,
+        "it": 20,
+        "dropped": 5,
+        "remain": 11
+      },
+      {
+        "pi": 16,
+        "it": 22,
+        "dropped": 7,
+        "remain": 4
+      },
+      {
+        "pi": 16,
+        "it": 24,
+        "dropped": 1,
+        "remain": 3
+      },
+      {
+        "pi": 16,
+        "it": 26,
+        "dropped": 2,
+        "remain": 1
+      },
+      {
+        "pi": 16,
+        "it": 28,
+        "dropped": 1,
+        "remain": 0
+      }
+    ],
+    "defer": []
+  },
+  "peak_gib": 7.568628311157227,
+  "memory_phases": null,
+  "certificate": {
+    "converged": 500,
+    "bound_active": 53,
+    "unconverged": 0,
+    "premature_drops": 0,
+    "pg_max": 0.0009975287830457091
+  }
+}

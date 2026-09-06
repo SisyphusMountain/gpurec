@@ -42,9 +42,6 @@ def test_genewise_reference_factory_reproduces_recipe():
     assert solver.adjoint_pruning_threshold == 1e-6
     assert solver.use_adjoint_pruning is True
     assert solver.pibar_side_threshold == 0.0
-    # The recipe solves each clade row's self-loop exactly (tree elimination) in both directions.
-    assert solver.forward_self_loop == "exact"
-    assert solver.adjoint_self_loop == "exact"
     assert cfg.rates == RateBounds.genewise()
 
 
@@ -80,9 +77,3 @@ def test_map_cv_cv_so_matches_factory():
     ref_solver = GpurecConfig.map_cv_reference().solver
     for k, v in _CV_SO.items():
         assert getattr(ref_solver, k) == v
-
-
-def test_solver_options_use_hvp_warm_start_defaults_true():
-    from gpurec import SolverOptions
-    so = SolverOptions()
-    assert so.use_hvp_warm_start is True

@@ -71,7 +71,7 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype: torch.dtype | 
     ``eval_pi``/``eval_neu`` for the final NLL). Every other solver field comes from
     ``solver_options`` (a ``SolverOptions`` or a dict of overrides) when given, else from
     ``config.solver``, else from the ``SolverOptions`` defaults -- so the self-loop kernel
-    choice (``forward_self_loop`` / ``adjoint_self_loop``) reaches the fit.
+    exact solver safeguards and tolerances reach the fit.
     """
     bounds = _GLOBAL_RATE_BOUNDS
     lo, hi = log2_rate_bounds(bounds=bounds)          # hi finite (2.0), so bound-active logic is well defined
@@ -91,13 +91,9 @@ def fit_global(species_tree, gene_trees, *, device="cuda", dtype: torch.dtype | 
     elif isinstance(solver_options, dict):
         base.update(solver_options)
 
-    # With the exact forward tree solve the accurate eval tier would recompute an IDENTICAL
-    # forward: its answer is the converged fixed point whatever `pi_iters` is (the same argument
-    # fit_genewise makes when it collapses its two pi tiers). So run one tier and skip the rebuild.
-    if base["forward_self_loop"] == "exact":
-        eval_pi = fit_pi
-    if base["adjoint_self_loop"] == "exact":
-        eval_neu = fit_neu
+    # Exact elimination makes the accurate tier identical to the fit tier.
+    eval_pi = fit_pi
+    eval_neu = fit_neu
 
     # genewise-mode model at the cheap fit tier: per-family loss+grad that we ACCUMULATE (sum over
     # families) into the shared 3x3. sum_f NLL_f(theta) with theta shared -> grad = sum_f grad_f.

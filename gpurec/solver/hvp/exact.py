@@ -36,7 +36,7 @@ from gpurec.core.parameters.extract_parameters import (
     resolve_accumulator_dtype,
 )
 from gpurec.solver.hvp.forward_tangent import jvp_root_scores, wave_step_constants
-from gpurec.solver.hvp.gauss_newton import vjp_root_to_theta
+from gpurec.solver.hvp.vjp import vjp_root_to_theta
 
 _LN2 = 0.6931471805599453
 
@@ -52,22 +52,9 @@ def _single_static(static):
     return static
 
 
-def _warm_reserved_scratch_bytes(static):
-    """Mirror ``_execution.py``'s memory-gate sourcing: the warm-adjoint cache
-    (``static.warm_v``) is only resident -- and thus only depletes the free-memory budget the
-    gated fast path re-reads -- when ``GPUREC_WARM_ADJOINT`` is set AND the build-time gate
-    (``static.warm_adjoint_ok``) allowed it. Same condition as ``evaluate_static_loss_grad``'s
-    ``_warm_v is not None``; returns ``None`` (cold, unchanged) otherwise.
-    """
-    import os
-    if os.environ.get("GPUREC_WARM_ADJOINT") and getattr(static, "warm_adjoint_ok", True):
-        return static.warm_scratch_reserved_bytes
-    return None
-
-
 @torch.no_grad()
 def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=None,
-                      origination_probs=None, warm_v=None):
+                      origination_probs=None):
     """Cache each wave adjoint, split likelihood, activity mask, and the E adjoint.
 
     Returns ``(grad_theta, grad_receiver_weights, cache)``.
@@ -77,13 +64,11 @@ def build_point_cache(static, theta, col_weights, sv, *, origination_log_probs=N
     grad_theta, grad_col = vjp_root_to_theta(
         static, sv, None, theta, col_weights, drop_norm=False, cache=cache,
         origination_log_probs=origination_log_probs, origination_probs=origination_probs,
-        reserved_scratch_bytes=_warm_reserved_scratch_bytes(static),
-        warm_v=warm_v,
         # Fraction-missing is E-only and fixed; thread it so the cached first-order
         # adjoint (wE) + cotangents match the fraction-missing forward. Without this the
         # HVP's point cache would be fraction-missing-wrong (its first-order gradient would
         # not match the production autograd gradient), corrupting every second-order term
-        # built on the cache. vjp_root_to_theta already accepts leaf_fm_log (see gauss_newton.py).
+        # built on the cache. vjp_root_to_theta accepts the fixed leaf boundary as well.
         leaf_fm_log=getattr(static, "leaf_fm_log", None),
     )
     return grad_theta, grad_col, cache
@@ -195,10 +180,9 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     """Analytic exact-Hessian HVP for a SINGLE batch. Builds the per-point adjoint cache once
     (if not given) and returns ``hvp(u_vec) -> H u`` (flat 3S). Runs in the dtype of ``theta``/``sv``.
 
-    ``tangent_self_iters`` sets the FIXED per-wave self-loop iteration count for the tangent
-    forward sweep (sync-free; see ``jvp_root_scores``). Resolution order: this argument, then
-    the ``NEWTON_TANGENT_SELF_ITERS`` env var, then ``solver_options.pi_iters`` (matching the
-    primal forward truncation). Not hardcoded — change it per run via the env var or the arg.
+    ``tangent_self_iters`` bounds the rare iterative fallback for rows the exact tangent cannot
+    hold under one scale. Resolution order: this argument, then the
+    ``NEWTON_TANGENT_SELF_ITERS`` environment variable, then ``solver_options.pi_iters``.
     """
     import os
 
@@ -209,21 +193,18 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
         if _env:
             tangent_self_iters = int(_env)
         elif getattr(so, "pi_iters", None):
-            # Match the primal forward's truncation so the HVP is the exact
-            # Hessian of the *truncated* objective.
+            # Match the primal forward fallback's iteration budget.
             tangent_self_iters = int(so.pi_iters)
         else:
-            # No primal pi_iters to match (ad-hoc caller). 16 is documented as
-            # non-convergent on the representative fixture (+33 NLL, ~2.6x grad
-            # bias), so fall back to the validated floor of 64 and warn rather
-            # than silently returning a wrong curvature.
+            # No primal fallback budget to match (ad-hoc caller), so use the
+            # validated floor and make the assumption visible.
             import warnings
             tangent_self_iters = 64
             warnings.warn(
                 "hvp_exact: no tangent_self_iters / NEWTON_TANGENT_SELF_ITERS / "
                 "solver_options.pi_iters provided; defaulting to 64 (the validated "
                 "convergence floor). Pass tangent_self_iters to match your primal "
-                "forward truncation.",
+                "forward fallback budget.",
                 RuntimeWarning, stacklevel=2,
             )
     # How often to run free_cuda_cache_if_tight() in the reverse sweep. It is a blocking
@@ -292,27 +273,13 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
         origination_probs = torch.exp2(origination_log_probs)
 
     if cache is None:
-        if getattr(static, "warm_adjoint_ok", True) and static.solver_options.use_hvp_warm_start:
-            if static.warm_v is None:
-                static.warm_v = {}
-            _warm_v = static.warm_v
-        else:
-            _warm_v = None
         _, _, cache = build_point_cache(static, theta, col_weights, sv,
                                         origination_log_probs=origination_log_probs,
-                                        origination_probs=origination_probs,
-                                        warm_v=_warm_v)
+                                        origination_probs=origination_probs)
     acc = cache["accum"]
     wE = cache["e_side"]["wE"]
-    # One free-memory reading for this whole reverse sweep. On the cold path (no resident warm
-    # cache) ``_warm_reserved_scratch_bytes`` returns None, and the per-wave gate inside
-    # ``solve_reconciliation_wave_vjp`` then read free memory itself once per wave -- a blocking
-    # cudaMemGetInfo plus two memory_stats() dict builds each time, for a number that cannot move
-    # between waves (the scratch is allocated and freed inside one wave). Same fix as the gradient
-    # path in gpurec/api/_implicit_grad.py.
-    reserved_scratch_bytes = wave_scratch_budget_bytes(
-        _warm_reserved_scratch_bytes(static), device=sv["pi_wave"].device
-    )
+    # One free-memory reading for this whole reverse sweep instead of one per wave.
+    reserved_scratch_bytes = wave_scratch_budget_bytes(None, device=sv["pi_wave"].device)
 
     wave_constants = wave_step_constants(sv, S)
     pibar_row_max = sv["pibar_row_max"]
@@ -457,8 +424,18 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
     # which is the same tensor the gradient path already budgets for, so reuse its build-time
     # memory decision: a card that cannot afford it keeps recomputing, exactly as before.
     primal_gene_split = {} if bool(getattr(static, "forward_gene_split_ok", False)) else None
+    # The tangent of those same gene-split rows was ALSO built twice per wave per probe: once by
+    # the tangent forward sweep inside jvp_root_scores, and once again in the reverse loop below,
+    # which threw the first copy away (keep_d_dts=False) to save a buffer. The two are the same
+    # numbers -- same theta, same Pi/Pibar, and the dPi/dPibar rows a split reads are its
+    # CHILDREN's, which the forward sweep finalises before it reaches their parent's wave. Keeping
+    # them removes 189 of the 378 _gene_split_reduction_jvp_kernel launches a probe fired (21 ms of
+    # its 412 ms on the 200-family Coleman batch; that kernel runs at 92 % of peak DRAM, so the
+    # saving is pure memory traffic). Cost: one more [batch clades x species] tensor, the same
+    # 0.75 GiB the primal rows above cost, so it takes the same build-time memory decision.
+    keep_tangent_gene_split = bool(getattr(static, "forward_gene_split_ok", False))
 
-    def hvp(u_vec, probe_id=None):
+    def hvp(u_vec):
         # Joint split: u = [u_theta (theta_numel); u_alpha (S)]. The theta-milestone harness still
         # passes a length-(theta_numel) vector (u_alpha implicitly 0); accept both. theta_shape is
         # explicit (do NOT assume [S,3]).
@@ -495,7 +472,8 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
             _alpha = col_weights if use_receiver_weights else None
             _u_alpha = u_alpha if use_receiver_weights else None
             t_root, full = jvp_root_scores(static, theta, u, sv, return_full=True,
-                                           keep_d_dts=False, self_iters=tangent_self_iters,
+                                           keep_d_dts=keep_tangent_gene_split,
+                                           self_iters=tangent_self_iters,
                                            primal_gene_split=primal_gene_split,
                                            alpha=_alpha, u_alpha=_u_alpha,
                                            leaf_fm_log=leaf_fm_log)
@@ -571,26 +549,20 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                 if _wi % free_cache_every == 0:
                     free_cuda_cache_if_tight()
                 ws, W = wave["ws"], wave["W"]
-                _tangent_warm = (
-                    probe_id is not None
-                    and getattr(static, "warm_adjoint_ok", True)
-                    and static.solver_options.use_hvp_warm_start
-                )
-                _probe_cache = None
-                _init_v = None
-                if _tangent_warm:
-                    if static.warm_v_tangent is None:
-                        static.warm_v_tangent = {}
-                    _probe_cache = static.warm_v_tangent.setdefault(probe_id, {})
-                    _init_v = _probe_cache.get(ws)
                 meta = wave["meta"]
                 v_k = wave["v"]
                 gene_split_log_likelihood = wave["dts_r"]
                 gene_split_offset = wave["dts_offset"]
-                # Recompute the split-likelihood tangent from the cached, pruned
-                # split likelihood. Storing every tangent would cost another
-                # Pi-sized buffer; one tangent launch per wave is cheap.
+                # The split-likelihood tangent: read back the rows the tangent forward sweep
+                # already built when the memory gate allowed keeping them (see
+                # keep_tangent_gene_split above), and otherwise rebuild them here from the cached,
+                # pruned split likelihood as this loop always did.
                 if gene_split_log_likelihood is not None:
+                    d_gene_split_log_likelihood = (
+                        full["d_gene_split_by_wave_start"].get(ws)
+                        if keep_tangent_gene_split else None
+                    )
+                if gene_split_log_likelihood is not None and d_gene_split_log_likelihood is None:
                     from gpurec.core.kernels.dts_tangent import compute_dts_tangent
                     d_gene_split_log_likelihood = compute_dts_tangent(
                         sv["pi_wave"], sv["pibar_wave"], dPi, dPibar, meta["sl"], meta["sr"],
@@ -605,7 +577,7 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         pibar_offset=pibar_offset,
                         gene_split_offset=gene_split_offset,
                     )
-                else:
+                elif gene_split_log_likelihood is None:
                     d_gene_split_log_likelihood = None
                 has_leaf = wave["has_leaf_term"]
                 # (a) second-order contraction at fixed v_k; d_rhs folds the wave's rhs cotangent
@@ -643,6 +615,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     pi_offset=pi_offset,
                     pibar_offset=pibar_offset,
                     gene_split_offset=gene_split_offset,
+                    # The pruner's row mask, the same one the tangent-adjoint solve below already
+                    # takes. Every output of the contraction is a product with this row's v_k,
+                    # which is zero on a pruned row: 53 % of the clade rows on the 200-family
+                    # Coleman batch.
+                    active_mask=wave["active_mask"],
                 )
                 # S5: accumulate the wave-SO receiver-log-probability cotangent
                 # (the tangent of the wave self-loop receiver gradient). It is
@@ -671,7 +648,6 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     wave_constants["speciation_child2_const"], receiver_log_probs,
                     species_child1, species_child2, None, neumann_terms=int(so.neumann_terms),
                     neumann_term_tol=float(so.neumann_term_tol),
-                    adjoint_self_loop=so.adjoint_self_loop,
                     wide_row=wide_row,
                     leaf_species_idx=leaf_species_idx,
                     leaf_logp=wave_constants["leaf_log_probability"],
@@ -688,23 +664,11 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                     compact_level_child2=sh["compact_level_child2"],
                     grad_receiver_log_probs=wave_grad_receiver_log_probs,
                     use_receiver_weights=use_receiver_weights,
-                    initial_v=_init_v,
-                    return_last_increment=False,
                     reserved_scratch_bytes=reserved_scratch_bytes,
                     pi_offset=pi_offset,
                     pibar_offset=pibar_offset,
                     gene_split_offset=gene_split_offset,
                 )
-                if _tangent_warm:
-                    _mask = wave.get("active_mask")
-                    if _mask is not None:
-                        _row_active = _mask.reshape(_mask.shape[0], -1).ne(0).any(dim=1)
-                        _cached_v = torch.where(
-                            _row_active.unsqueeze(-1), dv, torch.zeros((), dtype=dv.dtype, device=dv.device)
-                        )
-                    else:
-                        _cached_v = dv
-                    _probe_cache[ws] = _cached_v.detach()
                 duplication_loss_event_vjp = (
                     contraction_duplication_loss_vjp + linear_duplication_loss_vjp
                 )
@@ -811,6 +775,12 @@ def make_exact_hvp_single(static, theta, col_weights, sv, *, cache=None, debug_o
                         use_receiver_weights=use_receiver_weights, dreceiver_log_probs=dreceiver_log_probs,
                         pi_offset=pi_offset,
                         pibar_offset=pibar_offset,
+                        # The pruner's row mask, the same one the two first-order calls above
+                        # already take. Both second-order DTS kernels are products with the
+                        # parent row's adjoint v_k, which is zero on a pruned row, so those
+                        # programs return immediately: 53 % of the clade rows on the 200-family
+                        # Coleman batch.
+                        active_mask=wave["active_mask"],
                     )
 
             # ---- E-side ---- (the big tangent buffers are no longer needed)
@@ -986,7 +956,7 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
     S = int(col_weights.numel())
     per_family_orig = (origination_weights is not None and origination_weights.ndim == 2)
 
-    def hvp(u_vec, probe_id=None):
+    def hvp(u_vec):
         u_vec = u_vec.to(device=dev, dtype=dtype)
         n_tail = int(u_vec.numel()) - theta_numel
         if not genewise:
@@ -1001,7 +971,7 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
                     origination_log_probs=origination_log_probs,
                     origination_probs=origination_probs, origination_weights=origination_weights,
                 )
-                contrib = hvp_b(u_vec, probe_id=probe_id)
+                contrib = hvp_b(u_vec)
                 out = contrib if out is None else out + contrib
                 del hvp_b, sv_b
                 free_cuda_cache_if_tight()
@@ -1041,9 +1011,7 @@ def _make_exact_hvp_streaming(batch_statics, theta, col_weights, *, debug_out=No
                 parts.append(u_alpha)
             if has_omega:
                 parts.append(u_omega_full.index_select(0, fam_b).reshape(-1))
-            o_b = hvp_b(
-                torch.cat(parts) if len(parts) > 1 else u_theta_b, probe_id=probe_id
-            ).to(dtype=dtype)
+            o_b = hvp_b(torch.cat(parts) if len(parts) > 1 else u_theta_b).to(dtype=dtype)
             out_theta.index_add_(0, fam_b, o_b[:3 * G_b].reshape(G_b, 3))
             if has_alpha:
                 out_alpha = out_alpha + o_b[3 * G_b:3 * G_b + S]

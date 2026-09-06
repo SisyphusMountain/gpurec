@@ -234,35 +234,15 @@ def newton_polish(batch_statics, theta_stage1, receiver_weights, *, ridge=False,
 
     theta_shape = tuple(theta_stage1.shape)
     theta_f = theta_stage1.detach().reshape(theta_shape).float().contiguous()
-    S = int((batch_statics[0] if isinstance(batch_statics, (list, tuple)) else batch_statics).species_helpers["S"])
-    # A global (3,) theta has no per-species structure: the exact-HVP ridge estimator is
-    # (S,3)-specific (it misreads a broadcast global theta), so skip it and let newton_lanczos
-    # self-damp its FD-Hessian descent.
-    is_global = (theta_f.numel() == 3 and S > 1)
-    # The exact-HVP ridge estimator (_exact_ridge_lambda -> forward_solve + make_exact_hvp) now
-    # STREAMS over batches (make_exact_hvp accumulates H u = sum_b H_b u, rebuilding each batch's
-    # sv_b/point cache per HVP), so it works at multi-batch scale. But make_exact_hvp is
-    # SPECIESWISE (S,3)-oriented: its tangent sweeps are species-indexed and FD-Hessian-validated
-    # for specieswise theta only. Genewise (G,3) theta is per-family; feeding it into the
-    # species-indexed exact HVP is unvalidated, and the genewise multi-batch full recipe is verified
-    # (commit 92742bca) to complete with lam=0 self-damping. So use the exact ridge ONLY for
-    # specieswise (and never global, whose broadcast (3,) theta has no per-species structure); genewise
-    # + global fall back to lam=0 and let newton_lanczos self-damp its (multi-batch-safe) FD-Hessian
-    # descent (newton_lanczos also downgrades hvp_mode exact->fd for a non-(S,3) theta).
-    _first_static = batch_statics[0] if isinstance(batch_statics, (list, tuple)) else batch_statics
-    is_specieswise = bool(getattr(_first_static, "specieswise", False)) and not bool(getattr(_first_static, "genewise", False))
-    use_exact_ridge = ridge and not is_global and is_specieswise
-    if is_global:
-        # each 3-D FD-Newton step is cheap; give it room to reach the gtol stop (the exact-HVP
-        # default of 8 is tuned for expensive large-S steps and stops the global fit early).
-        max_newton = max(int(max_newton), 30)
+    # The exact HVP streams over batches and supports shared, specieswise, and genewise theta.
+    use_exact_ridge = bool(ridge)
     lam = 0.0
     if use_exact_ridge:
         lam = _exact_ridge_lambda(batch_statics, theta_f, receiver_weights,
                                   m=max(20, lanczos_m), sigma=sigma, verbose=verbose)
     t_start = time.perf_counter() if t0_wall is None else t0_wall
     theta_hat, h_newton = newton_lanczos(
-        batch_statics, theta_f, receiver_weights, hvp_mode="exact", lanczos_m=lanczos_m,
+        batch_statics, theta_f, receiver_weights, lanczos_m=lanczos_m,
         sigma=sigma, max_newton=max_newton, gtol=gtol, lam=lam,
         theta_ref=(theta_f if use_exact_ridge else None), verbose=verbose,
     )
